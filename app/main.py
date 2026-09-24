@@ -13,21 +13,35 @@ from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .state import runtime_state
-from .strategy import OpeningRangeVwapStrategy
+from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
 
 settings = get_settings()
 client = AlpacaClient(settings)
 market_data = MarketDataClient(settings)
-strategy = OpeningRangeVwapStrategy(
-    opening_range_minutes=settings.opening_range_minutes,
-    max_opening_range_pct=settings.max_opening_range_pct,
-    max_breakout_extension_pct=settings.max_breakout_extension_pct,
-    stop_pct=settings.stop_pct,
-    target_pct=settings.target_pct,
-    entry_start=settings.entry_start,
-    entry_cutoff=settings.entry_cutoff,
-    confirmation_symbols=settings.confirmation_symbols,
-)
+if settings.strategy_name == "rolling_momentum_vwap":
+    strategy = RollingMomentumVwapStrategy(
+        fast_window=settings.fast_window,
+        slow_window=settings.slow_window,
+        min_momentum_pct=settings.min_momentum_pct,
+        min_vwap_edge_pct=settings.min_vwap_edge_pct,
+        stop_pct=settings.stop_pct,
+        target_pct=settings.target_pct,
+        entry_start=settings.entry_start,
+        entry_cutoff=settings.entry_cutoff,
+        confirmation_symbols=settings.confirmation_symbols,
+        min_confirmations=settings.min_confirmations,
+    )
+else:
+    strategy = OpeningRangeVwapStrategy(
+        opening_range_minutes=settings.opening_range_minutes,
+        max_opening_range_pct=settings.max_opening_range_pct,
+        max_breakout_extension_pct=settings.max_breakout_extension_pct,
+        stop_pct=settings.stop_pct,
+        target_pct=settings.target_pct,
+        entry_start=settings.entry_start,
+        entry_cutoff=settings.entry_cutoff,
+        confirmation_symbols=settings.confirmation_symbols,
+    )
 engine = ExecutionEngine(settings, client, market_data, strategy, runtime_state)
 _stop = asyncio.Event()
 
@@ -147,6 +161,12 @@ async def command_snapshot() -> dict:
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
             "opening_range_minutes": settings.opening_range_minutes,
+            "fast_window": settings.fast_window,
+            "slow_window": settings.slow_window,
+            "min_momentum_pct": str(settings.min_momentum_pct),
+            "min_vwap_edge_pct": str(settings.min_vwap_edge_pct),
+            "min_confirmations": settings.min_confirmations,
+            "max_hold_minutes": settings.max_hold_minutes,
             "max_opening_range_pct": str(settings.max_opening_range_pct),
             "max_breakout_extension_pct": str(settings.max_breakout_extension_pct),
             "entry_start": settings.entry_start_raw,
