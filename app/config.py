@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     allowed_symbols_raw: str = Field(default="SPY", alias="ALLOWED_SYMBOLS")
     scan_symbols_raw: str = Field(default="", alias="SCAN_SYMBOLS")
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
+    fast_window: int = Field(default=3, alias="FAST_WINDOW")
+    slow_window: int = Field(default=8, alias="SLOW_WINDOW")
+    min_momentum_pct: Decimal = Field(default=Decimal("0.0005"), alias="MIN_MOMENTUM_PCT")
+    min_vwap_edge_pct: Decimal = Field(default=Decimal("0"), alias="MIN_VWAP_EDGE_PCT")
     strategy_symbol: str = Field(default="SPY", alias="STRATEGY_SYMBOL")
     confirmation_symbols_raw: str = Field(default="QQQ,SMH", alias="CONFIRMATION_SYMBOLS")
     min_confirmations: int = Field(default=1, alias="MIN_CONFIRMATIONS")
@@ -142,8 +146,8 @@ class Settings(BaseSettings):
     def validate_settings(self):
         if self.trading_mode not in {"paper", "live"}:
             raise ValueError("TRADING_MODE must be paper or live")
-        if self.strategy_name != "opening_range_vwap":
-            raise ValueError("Only STRATEGY_NAME=opening_range_vwap is supported")
+        if self.strategy_name not in {"opening_range_vwap", "rolling_momentum_vwap"}:
+            raise ValueError("STRATEGY_NAME must be opening_range_vwap or rolling_momentum_vwap")
         if self.data_feed not in {"iex", "sip", "delayed_sip"}:
             raise ValueError("DATA_FEED must be iex, sip, or delayed_sip")
         if self.poll_seconds < 15:
@@ -152,6 +156,12 @@ class Settings(BaseSettings):
             raise ValueError("BAR_TIMEFRAME must be 1Min for the opening-range strategy")
         if self.lookback_bars < 50:
             raise ValueError("LOOKBACK_BARS must be at least 50")
+        if not 1 <= self.fast_window < self.slow_window <= 60:
+            raise ValueError("FAST_WINDOW and SLOW_WINDOW must satisfy 1 <= FAST_WINDOW < SLOW_WINDOW <= 60")
+        if not Decimal("0") <= self.min_momentum_pct < Decimal("0.05"):
+            raise ValueError("MIN_MOMENTUM_PCT must be between 0 and 0.05")
+        if not Decimal("0") <= self.min_vwap_edge_pct < Decimal("0.05"):
+            raise ValueError("MIN_VWAP_EDGE_PCT must be between 0 and 0.05")
         if self.lookback_days < 1:
             raise ValueError("LOOKBACK_DAYS must be positive")
         if not 1 <= self.opening_range_minutes <= 30:
