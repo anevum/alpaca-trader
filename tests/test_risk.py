@@ -101,3 +101,53 @@ def test_sell_to_flat_can_exit_allowed_symbol_removed_from_scan():
         {"symbol": "QQQ", "qty": "0.25", "market_value": "100"},
     )
     assert result.allowed
+
+
+def test_concurrent_positions_allowed_below_configured_limit():
+    s = settings(
+        MAX_CONCURRENT_POSITIONS="3",
+        MAX_TOTAL_POSITION_NOTIONAL="15",
+    )
+    result = validate_buy(
+        s,
+        "QQQ",
+        Decimal("5"),
+        {"cash": "20", "equity": "20", "last_equity": "20"},
+        [{"symbol": "SPY", "qty": "0.05", "market_value": "5"}],
+        0,
+    )
+    assert result.allowed
+
+
+def test_duplicate_symbol_is_blocked_even_with_free_concurrency_slot():
+    s = settings(
+        MAX_CONCURRENT_POSITIONS="3",
+        MAX_TOTAL_POSITION_NOTIONAL="15",
+    )
+    result = validate_buy(
+        s,
+        "SPY",
+        Decimal("5"),
+        {"cash": "20", "equity": "20", "last_equity": "20"},
+        [{"symbol": "SPY", "qty": "0.05", "market_value": "5"}],
+        0,
+    )
+    assert not result.allowed
+    assert "already open" in result.reason
+
+
+def test_total_position_notional_caps_concurrent_entries():
+    s = settings(
+        MAX_CONCURRENT_POSITIONS="3",
+        MAX_TOTAL_POSITION_NOTIONAL="10",
+    )
+    result = validate_buy(
+        s,
+        "QQQ",
+        Decimal("5"),
+        {"cash": "20", "equity": "20", "last_equity": "20"},
+        [{"symbol": "SPY", "qty": "0.05", "market_value": "6"}],
+        0,
+    )
+    assert not result.allowed
+    assert "MAX_TOTAL_POSITION_NOTIONAL" in result.reason
