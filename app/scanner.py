@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .market_data import MarketDataClient
+from .research import enrich_signal, record_scan_samples, resolve_forward_outcomes
 from .state import RuntimeState
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
 
@@ -71,28 +72,39 @@ class ReadOnlyScanner:
         buy_signals: list[Signal] = []
         scan: dict[str, Any] = {}
         for symbol in self.settings.scan_symbols:
+            confirmation_bars = {
+                confirmation_symbol: market_bars.get(confirmation_symbol, [])
+                for confirmation_symbol in self.settings.confirmation_symbols
+            }
             signal = self.strategy.evaluate(
                 bars=market_bars.get(symbol, []),
-                confirmation_bars={
-                    confirmation_symbol: market_bars.get(confirmation_symbol, [])
-                    for confirmation_symbol in self.settings.confirmation_symbols
-                },
+                confirmation_bars=confirmation_bars,
                 symbol=symbol,
                 has_position=False,
                 order_notional=self.settings.order_notional,
                 now=now,
+            )
+            signal = enrich_signal(
+                signal,
+                market_bars.get(symbol, []),
+                confirmation_bars,
+                now,
             )
             scan[symbol] = self._signal_payload(signal)
             if signal.action == "buy":
                 buy_signals.append(signal)
 
         self.state.record_scan(scan, at=now)
+        record_scan_samples(self.state, scan, now)
+        resolved = resolve_forward_outcomes(self.state, market_bars, now)
         print(
             "SAFE_SCAN_CYCLE",
             {
                 "at": now.isoformat(),
                 "symbols": len(self.settings.scan_symbols),
                 "ready": [signal.symbol for signal in buy_signals],
+                "research_samples": len(self.state.research_samples),
+                "forward_outcomes_resolved": resolved,
             },
             flush=True,
         )
