@@ -141,6 +141,7 @@ async def command_snapshot() -> dict:
             "execution_enabled": settings.execution_enabled,
             "execution_authorized": settings.execution_authorized,
             "bot_armed": settings.bot_armed,
+            "scan_only": settings.scan_only,
             "runtime_paused": runtime_state.paused,
             "entries_enabled": runtime_state.entries_enabled,
             "funding_ready": runtime_state.funding_ready,
@@ -223,7 +224,10 @@ async def monitor_loop():
         try:
             if settings.credentials_configured:
                 await refresh_account_state()
-                if settings.execution_enabled and settings.bot_armed and not runtime_state.paused:
+                should_run_strategy = settings.scan_only or (
+                    settings.execution_enabled and settings.bot_armed
+                )
+                if should_run_strategy and not runtime_state.paused:
                     await engine.run_once()
             else:
                 runtime_state.funding_ready = False
@@ -259,6 +263,7 @@ async def health():
         "execution_enabled": settings.execution_enabled,
         "execution_authorized": settings.execution_authorized,
         "bot_armed": settings.bot_armed,
+        "scan_only": settings.scan_only,
         "runtime_paused": runtime_state.paused,
         "credentials_configured": settings.credentials_configured,
         "funding_ready": runtime_state.funding_ready,
