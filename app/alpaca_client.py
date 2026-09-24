@@ -49,6 +49,9 @@ class AlpacaClient:
     async def positions(self) -> list[dict[str, Any]]:
         return await self._request("GET", "/v2/positions")
 
+    async def asset(self, symbol: str) -> dict[str, Any]:
+        return await self._request("GET", f"/v2/assets/{symbol.upper()}")
+
     async def open_orders(self) -> list[dict[str, Any]]:
         return await self._request(
             "GET",
