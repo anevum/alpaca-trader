@@ -68,10 +68,10 @@ For each candidate, the rolling mode:
 4. Requires short-term momentum of at least `MIN_MOMENTUM_PCT`.
 5. Requires price above session VWAP by at least `MIN_VWAP_EDGE_PCT`.
 6. Requires at least `MIN_CONFIRMATIONS` configured market confirmations to pass.
-7. Can re-enter after a prior position has fully exited, subject to account-wide order/loss limits.
+7. Can re-enter after a prior position has fully exited, subject to account-wide order/loss limits and `REENTRY_COOLDOWN_MINUTES`.
 8. Uses the normal protective bracket and, when configured, a `MAX_HOLD_MINUTES` time stop.
 
-The aggressive small-account profile in `.env.example` uses a 3/8-minute fast/slow structure, 0.35% stop, 0.50% target, 15-minute maximum hold, entries through 3:30 PM ET, and up to 12 entry orders while retaining the $1 daily-loss circuit breaker. These are implementation choices, not a claim of profitability.
+The aggressive small-account profile in `.env.example` uses a 3/8-minute fast/slow structure, 0.35% stop, 0.50% target, 15-minute maximum hold, 2-minute same-symbol re-entry cooldown, entries through 3:30 PM ET, and up to 12 entry orders while retaining the $1 daily-loss circuit breaker. These are implementation choices, not a claim of profitability.
 
 ## Risk controls
 
