@@ -74,11 +74,13 @@ async def lifespan(app: FastAPI):
     await task
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Alpaca Trading Bot", version="0.4.1", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health():
+    signal = runtime_state.last_signal or {}
+    order = runtime_state.last_order or {}
     return {
         "ok": True,
         "trading_mode": settings.trading_mode,
@@ -89,6 +91,17 @@ async def health():
         "runtime_paused": runtime_state.paused,
         "credentials_configured": settings.credentials_configured,
         "funding_ready": runtime_state.funding_ready,
+        "last_strategy_at": runtime_state.last_strategy_at,
+        "last_decision": runtime_state.last_decision,
+        "last_signal": {
+            "action": signal.get("action"),
+            "reason": signal.get("reason"),
+        },
+        "last_order": {
+            "side": order.get("side"),
+            "status": order.get("status"),
+            "reason": order.get("reason"),
+        },
         "last_error": runtime_state.last_error,
     }
 
