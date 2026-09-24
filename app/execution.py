@@ -12,7 +12,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .risk import validate_buy, validate_sell_to_flat
 from .state import RuntimeState
-from .strategy import OpeningRangeVwapStrategy, Signal
+from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
 
 
 NY = ZoneInfo("America/New_York")
@@ -24,7 +24,7 @@ class ExecutionEngine:
         settings: Settings,
         client: AlpacaClient,
         market_data: MarketDataClient,
-        strategy: OpeningRangeVwapStrategy,
+        strategy: OpeningRangeVwapStrategy | RollingMomentumVwapStrategy,
         state: RuntimeState,
     ):
         self.settings = settings
@@ -106,6 +106,33 @@ class ExecutionEngine:
                 continue
         return False
 
+
+    @staticmethod
+    def _latest_bot_buy_today(
+        orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> datetime | None:
+        today = datetime.now(NY).date()
+        prefix = f"anevum-{symbol.lower()}-buy-"
+        latest: datetime | None = None
+        for order in orders:
+            if str(order.get("side", "")).lower() != "buy":
+                continue
+            if not str(order.get("client_order_id", "")).startswith(prefix):
+                continue
+            submitted = order.get("submitted_at")
+            if not submitted:
+                continue
+            try:
+                stamp = datetime.fromisoformat(str(submitted).replace("Z", "+00:00")).astimezone(NY)
+            except ValueError:
+                continue
+            if stamp.date() != today:
+                continue
+            if latest is None or stamp > latest:
+                latest = stamp
+        return latest
+
     @staticmethod
     def _client_order_id(symbol: str, action: str) -> str:
         suffix = uuid4().hex[:20]
@@ -139,8 +166,11 @@ class ExecutionEngine:
         account: dict[str, Any],
         position: dict[str, Any],
         open_orders: list[dict[str, Any]],
+        *,
+        exit_reason: str = "forced end-of-day flatten",
+        action_tag: str = "eod",
     ) -> dict[str, Any]:
-        if self._has_eod_exit_order(open_orders, symbol):
+        if action_tag == "eod" and self._has_eod_exit_order(open_orders, symbol):
             self.state.last_decision = "end-of-day exit order already open"
             return {
                 "action": "hold",
@@ -193,7 +223,7 @@ class ExecutionEngine:
         order = await self.client.submit_market_sell(
             symbol=symbol,
             qty=str(position.get("qty")),
-            client_order_id=self._client_order_id(symbol, "eod"),
+            client_order_id=self._client_order_id(symbol, action_tag),
         )
         self.state.last_order = {
             "id": order.get("id"),
@@ -203,9 +233,9 @@ class ExecutionEngine:
             "qty": order.get("qty"),
             "status": order.get("status"),
             "submitted_at": order.get("submitted_at"),
-            "reason": "forced end-of-day flatten",
+            "reason": exit_reason,
         }
-        self.state.last_decision = "end-of-day flatten order submitted"
+        self.state.last_decision = f"{exit_reason} order submitted"
         return {"action": "submitted", "order": self.state.last_order}
 
     async def cancel_pending_bot_orders(self) -> dict[str, Any]:
@@ -324,8 +354,23 @@ class ExecutionEngine:
                     position=position,
                     open_orders=open_orders,
                 )
+
+            if self.settings.max_hold_minutes > 0:
+                entry_time = self._latest_bot_buy_today(recent_orders, symbol)
+                if entry_time is not None:
+                    held_minutes = (now - entry_time).total_seconds() / 60
+                    if held_minutes >= self.settings.max_hold_minutes:
+                        return await self._force_flatten(
+                            symbol=symbol,
+                            account=account,
+                            position=position,
+                            open_orders=open_orders,
+                            exit_reason=f"max hold {self.settings.max_hold_minutes} minutes",
+                            action_tag="time",
+                        )
+
             self.state.last_decision = (
-                f"{symbol} position already open; bracket exits manage risk"
+                f"{symbol} position already open; bracket/time exits manage risk"
             )
             return {
                 "action": "hold",
