@@ -454,6 +454,22 @@ class ExecutionEngine:
                 "signal": self.state.last_signal,
             }
 
+        if self.settings.reentry_cooldown_minutes > 0:
+            latest_entry = self._latest_bot_buy_today(recent_orders, symbol)
+            if latest_entry is not None:
+                minutes_since_entry = (now - latest_entry).total_seconds() / 60
+                if minutes_since_entry < self.settings.reentry_cooldown_minutes:
+                    self.state.last_decision = (
+                        f"{symbol} re-entry cooldown active "
+                        f"({self.settings.reentry_cooldown_minutes} minutes)"
+                    )
+                    return {
+                        "action": "hold",
+                        "symbol": symbol,
+                        "reason": self.state.last_decision,
+                        "signal": self.state.last_signal,
+                    }
+
         risk = validate_buy(
             self.settings,
             symbol,
