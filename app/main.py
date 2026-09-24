@@ -12,12 +12,19 @@ from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .state import runtime_state
-from .strategy import SmaCrossStrategy
+from .strategy import OpeningRangeVwapStrategy
 
 settings = get_settings()
 client = AlpacaClient(settings)
 market_data = MarketDataClient(settings)
-strategy = SmaCrossStrategy(settings.fast_window, settings.slow_window)
+strategy = OpeningRangeVwapStrategy(
+    opening_range_minutes=settings.opening_range_minutes,
+    stop_pct=settings.stop_pct,
+    target_pct=settings.target_pct,
+    entry_start=settings.entry_start,
+    entry_cutoff=settings.entry_cutoff,
+    confirmation_symbols=settings.confirmation_symbols,
+)
 engine = ExecutionEngine(settings, client, market_data, strategy, runtime_state)
 _stop = asyncio.Event()
 
@@ -67,7 +74,7 @@ async def lifespan(app: FastAPI):
     await task
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Alpaca Trading Bot", version="0.4.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -101,8 +108,13 @@ async def status(authorization: str | None = Header(default=None)):
         "strategy": {
             "name": settings.strategy_name,
             "symbol": settings.normalized_strategy_symbol,
-            "fast_window": settings.fast_window,
-            "slow_window": settings.slow_window,
+            "confirmation_symbols": list(settings.confirmation_symbols),
+            "opening_range_minutes": settings.opening_range_minutes,
+            "entry_start": settings.entry_start_raw,
+            "entry_cutoff": settings.entry_cutoff_raw,
+            "force_flat_time": settings.force_flat_time_raw,
+            "stop_pct": str(settings.stop_pct),
+            "target_pct": str(settings.target_pct),
             "bar_timeframe": settings.bar_timeframe,
             "data_feed": settings.data_feed,
             "order_notional": str(settings.order_notional),
