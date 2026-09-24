@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -44,6 +45,9 @@ class MarketDataClient:
             data = response.json()
 
         bars = data.get("bars", [])
-        # Strategy calculations expect oldest -> newest.
         bars.reverse()
         return bars
+
+    async def bars_many(self, symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
+        results = await asyncio.gather(*(self.bars(symbol) for symbol in symbols))
+        return dict(zip(symbols, results, strict=True))
