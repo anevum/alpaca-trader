@@ -13,22 +13,38 @@ from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .state import runtime_state
-from .strategy import OpeningRangeVwapStrategy
+from .scanner import ReadOnlyScanner
+from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
 
 settings = get_settings()
 client = AlpacaClient(settings)
 market_data = MarketDataClient(settings)
-strategy = OpeningRangeVwapStrategy(
-    opening_range_minutes=settings.opening_range_minutes,
-    max_opening_range_pct=settings.max_opening_range_pct,
-    max_breakout_extension_pct=settings.max_breakout_extension_pct,
-    stop_pct=settings.stop_pct,
-    target_pct=settings.target_pct,
-    entry_start=settings.entry_start,
-    entry_cutoff=settings.entry_cutoff,
-    confirmation_symbols=settings.confirmation_symbols,
-)
+if settings.strategy_name == "rolling_momentum_vwap":
+    strategy = RollingMomentumVwapStrategy(
+        fast_window=settings.fast_window,
+        slow_window=settings.slow_window,
+        min_momentum_pct=settings.min_momentum_pct,
+        min_vwap_edge_pct=settings.min_vwap_edge_pct,
+        stop_pct=settings.stop_pct,
+        target_pct=settings.target_pct,
+        entry_start=settings.entry_start,
+        entry_cutoff=settings.entry_cutoff,
+        confirmation_symbols=settings.confirmation_symbols,
+        min_confirmations=settings.min_confirmations,
+    )
+else:
+    strategy = OpeningRangeVwapStrategy(
+        opening_range_minutes=settings.opening_range_minutes,
+        max_opening_range_pct=settings.max_opening_range_pct,
+        max_breakout_extension_pct=settings.max_breakout_extension_pct,
+        stop_pct=settings.stop_pct,
+        target_pct=settings.target_pct,
+        entry_start=settings.entry_start,
+        entry_cutoff=settings.entry_cutoff,
+        confirmation_symbols=settings.confirmation_symbols,
+    )
 engine = ExecutionEngine(settings, client, market_data, strategy, runtime_state)
+scanner = ReadOnlyScanner(settings, client, market_data, strategy, runtime_state)
 _stop = asyncio.Event()
 
 
@@ -127,6 +143,7 @@ async def command_snapshot() -> dict:
             "execution_enabled": settings.execution_enabled,
             "execution_authorized": settings.execution_authorized,
             "bot_armed": settings.bot_armed,
+            "scan_only": settings.scan_only,
             "runtime_paused": runtime_state.paused,
             "entries_enabled": runtime_state.entries_enabled,
             "funding_ready": runtime_state.funding_ready,
@@ -147,6 +164,13 @@ async def command_snapshot() -> dict:
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
             "opening_range_minutes": settings.opening_range_minutes,
+            "fast_window": settings.fast_window,
+            "slow_window": settings.slow_window,
+            "min_momentum_pct": str(settings.min_momentum_pct),
+            "min_vwap_edge_pct": str(settings.min_vwap_edge_pct),
+            "min_confirmations": settings.min_confirmations,
+            "max_hold_minutes": settings.max_hold_minutes,
+            "reentry_cooldown_minutes": settings.reentry_cooldown_minutes,
             "max_opening_range_pct": str(settings.max_opening_range_pct),
             "max_breakout_extension_pct": str(settings.max_breakout_extension_pct),
             "entry_start": settings.entry_start_raw,
@@ -201,9 +225,18 @@ async def monitor_loop():
     while not _stop.is_set():
         try:
             if settings.credentials_configured:
-                await refresh_account_state()
-                if settings.execution_enabled and settings.bot_armed and not runtime_state.paused:
-                    await engine.run_once()
+                if settings.scan_only:
+                    runtime_state.mark_poll()
+                    runtime_state.funding_ready = False
+                    await scanner.scan_once()
+                else:
+                    await refresh_account_state()
+                    if (
+                        settings.execution_enabled
+                        and settings.bot_armed
+                        and not runtime_state.paused
+                    ):
+                        await engine.run_once()
             else:
                 runtime_state.funding_ready = False
                 runtime_state.last_error = "credentials not configured"
@@ -218,6 +251,30 @@ async def monitor_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print(
+        "SAFE_RUNTIME_CONFIG",
+        {
+            "scan_only": settings.scan_only,
+            "execution_enabled": settings.execution_enabled,
+            "bot_armed": settings.bot_armed,
+            "live_trading": settings.live_trading,
+            "strategy_name": settings.strategy_name,
+            "scan_symbols": list(settings.scan_symbols),
+            "confirmation_symbols": list(settings.confirmation_symbols),
+            "fast_window": settings.fast_window,
+            "slow_window": settings.slow_window,
+            "entry_start": settings.entry_start_raw,
+            "entry_cutoff": settings.entry_cutoff_raw,
+            "max_hold_minutes": settings.max_hold_minutes,
+            "reentry_cooldown_minutes": settings.reentry_cooldown_minutes,
+            "stop_pct": str(settings.stop_pct),
+            "target_pct": str(settings.target_pct),
+            "order_notional": str(settings.order_notional),
+            "max_daily_orders": settings.max_daily_orders,
+            "max_daily_loss": str(settings.max_daily_loss),
+        },
+        flush=True,
+    )
     task = asyncio.create_task(monitor_loop())
     yield
     _stop.set()
@@ -238,6 +295,7 @@ async def health():
         "execution_enabled": settings.execution_enabled,
         "execution_authorized": settings.execution_authorized,
         "bot_armed": settings.bot_armed,
+        "scan_only": settings.scan_only,
         "runtime_paused": runtime_state.paused,
         "credentials_configured": settings.credentials_configured,
         "funding_ready": runtime_state.funding_ready,
@@ -277,6 +335,13 @@ async def status(authorization: str | None = Header(default=None)):
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
             "opening_range_minutes": settings.opening_range_minutes,
+            "fast_window": settings.fast_window,
+            "slow_window": settings.slow_window,
+            "min_momentum_pct": str(settings.min_momentum_pct),
+            "min_vwap_edge_pct": str(settings.min_vwap_edge_pct),
+            "min_confirmations": settings.min_confirmations,
+            "max_hold_minutes": settings.max_hold_minutes,
+            "reentry_cooldown_minutes": settings.reentry_cooldown_minutes,
             "max_opening_range_pct": str(settings.max_opening_range_pct),
             "max_breakout_extension_pct": str(settings.max_breakout_extension_pct),
             "entry_start": settings.entry_start_raw,
@@ -346,6 +411,8 @@ async def run_once(authorization: str | None = Header(default=None)):
     if runtime_state.paused:
         raise HTTPException(status_code=409, detail="runtime is paused")
     try:
+        if settings.scan_only:
+            return await scanner.scan_once()
         return await engine.run_once()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -399,6 +466,8 @@ async def command_disable_entries(authorization: str | None = Header(default=Non
 @app.post("/v1/command/entries/enable")
 async def command_enable_entries(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
+    if settings.scan_only:
+        raise HTTPException(status_code=409, detail="scan-only service cannot enable entries")
     if runtime_state.paused:
         raise HTTPException(status_code=409, detail="runtime is paused")
     if not settings.execution_authorized:
@@ -416,6 +485,8 @@ async def command_enable_entries(authorization: str | None = Header(default=None
 @app.post("/v1/command/orders/cancel")
 async def command_cancel_orders(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
+    if settings.scan_only:
+        raise HTTPException(status_code=409, detail="scan-only service cannot cancel orders")
     try:
         result = await engine.cancel_pending_bot_orders()
         if result.get("action") == "blocked":
@@ -430,6 +501,8 @@ async def command_cancel_orders(authorization: str | None = Header(default=None)
 @app.post("/v1/command/position/close")
 async def command_close_position(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
+    if settings.scan_only:
+        raise HTTPException(status_code=409, detail="scan-only service cannot close positions")
     runtime_state.entries_enabled = False
     try:
         result = await engine.close_managed_position()

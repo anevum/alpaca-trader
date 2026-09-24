@@ -12,7 +12,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .risk import validate_buy, validate_sell_to_flat
 from .state import RuntimeState
-from .strategy import OpeningRangeVwapStrategy, Signal
+from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
 
 
 NY = ZoneInfo("America/New_York")
@@ -24,7 +24,7 @@ class ExecutionEngine:
         settings: Settings,
         client: AlpacaClient,
         market_data: MarketDataClient,
-        strategy: OpeningRangeVwapStrategy,
+        strategy: OpeningRangeVwapStrategy | RollingMomentumVwapStrategy,
         state: RuntimeState,
     ):
         self.settings = settings
@@ -106,6 +106,33 @@ class ExecutionEngine:
                 continue
         return False
 
+
+    @staticmethod
+    def _latest_bot_buy_today(
+        orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> datetime | None:
+        today = datetime.now(NY).date()
+        prefix = f"anevum-{symbol.lower()}-buy-"
+        latest: datetime | None = None
+        for order in orders:
+            if str(order.get("side", "")).lower() != "buy":
+                continue
+            if not str(order.get("client_order_id", "")).startswith(prefix):
+                continue
+            submitted = order.get("submitted_at")
+            if not submitted:
+                continue
+            try:
+                stamp = datetime.fromisoformat(str(submitted).replace("Z", "+00:00")).astimezone(NY)
+            except ValueError:
+                continue
+            if stamp.date() != today:
+                continue
+            if latest is None or stamp > latest:
+                latest = stamp
+        return latest
+
     @staticmethod
     def _client_order_id(symbol: str, action: str) -> str:
         suffix = uuid4().hex[:20]
@@ -118,6 +145,25 @@ class ExecutionEngine:
         return (notional / reference_price).quantize(
             Decimal("0.000000001"),
             rounding=ROUND_DOWN,
+        )
+
+    @staticmethod
+    def _signal_rank(signal: Signal) -> tuple[Decimal, Decimal, int]:
+        metadata = signal.metadata or {}
+        return (
+            Decimal(str(metadata.get("momentum_pct", "0"))),
+            Decimal(str(metadata.get("vwap_edge_pct", "0"))),
+            int(metadata.get("confirmation_passes", 0) or 0),
+        )
+
+    def _same_symbol_lockout_minutes(self) -> int:
+        if self.settings.reentry_cooldown_minutes <= 0:
+            return 0
+        return (
+            self.settings.max_hold_minutes
+            + self.settings.reentry_cooldown_minutes
+            if self.settings.max_hold_minutes > 0
+            else self.settings.reentry_cooldown_minutes
         )
 
     @staticmethod
@@ -139,8 +185,11 @@ class ExecutionEngine:
         account: dict[str, Any],
         position: dict[str, Any],
         open_orders: list[dict[str, Any]],
+        *,
+        exit_reason: str = "forced end-of-day flatten",
+        action_tag: str = "eod",
     ) -> dict[str, Any]:
-        if self._has_eod_exit_order(open_orders, symbol):
+        if action_tag == "eod" and self._has_eod_exit_order(open_orders, symbol):
             self.state.last_decision = "end-of-day exit order already open"
             return {
                 "action": "hold",
@@ -193,7 +242,7 @@ class ExecutionEngine:
         order = await self.client.submit_market_sell(
             symbol=symbol,
             qty=str(position.get("qty")),
-            client_order_id=self._client_order_id(symbol, "eod"),
+            client_order_id=self._client_order_id(symbol, action_tag),
         )
         self.state.last_order = {
             "id": order.get("id"),
@@ -203,9 +252,9 @@ class ExecutionEngine:
             "qty": order.get("qty"),
             "status": order.get("status"),
             "submitted_at": order.get("submitted_at"),
-            "reason": "forced end-of-day flatten",
+            "reason": exit_reason,
         }
-        self.state.last_decision = "end-of-day flatten order submitted"
+        self.state.last_decision = f"{exit_reason} order submitted"
         return {"action": "submitted", "order": self.state.last_order}
 
     async def cancel_pending_bot_orders(self) -> dict[str, Any]:
@@ -324,8 +373,23 @@ class ExecutionEngine:
                     position=position,
                     open_orders=open_orders,
                 )
+
+            if self.settings.max_hold_minutes > 0:
+                entry_time = self._latest_bot_buy_today(recent_orders, symbol)
+                if entry_time is not None:
+                    held_minutes = (now - entry_time).total_seconds() / 60
+                    if held_minutes >= self.settings.max_hold_minutes:
+                        return await self._force_flatten(
+                            symbol=symbol,
+                            account=account,
+                            position=position,
+                            open_orders=open_orders,
+                            exit_reason=f"max hold {self.settings.max_hold_minutes} minutes",
+                            action_tag="time",
+                        )
+
             self.state.last_decision = (
-                f"{symbol} position already open; bracket exits manage risk"
+                f"{symbol} position already open; bracket/time exits manage risk"
             )
             return {
                 "action": "hold",
@@ -387,9 +451,9 @@ class ExecutionEngine:
             self.state.last_decision = self.state.last_signal["reason"]
             return self.state.last_signal
 
-        # SCAN_SYMBOLS order is the deterministic priority when multiple
-        # candidates qualify on the same completed bar.
-        signal = buy_signals[0]
+        # When multiple candidates qualify, prefer the strongest rolling
+        # momentum/VWAP setup. Equal scores preserve SCAN_SYMBOLS order.
+        signal = max(buy_signals, key=self._signal_rank)
         symbol = signal.symbol
         self.state.last_signal = self._signal_payload(signal)
 
@@ -408,6 +472,23 @@ class ExecutionEngine:
                 "reason": self.state.last_decision,
                 "signal": self.state.last_signal,
             }
+
+        lockout_minutes = self._same_symbol_lockout_minutes()
+        if lockout_minutes > 0:
+            latest_entry = self._latest_bot_buy_today(recent_orders, symbol)
+            if latest_entry is not None:
+                minutes_since_entry = (now - latest_entry).total_seconds() / 60
+                if minutes_since_entry < lockout_minutes:
+                    self.state.last_decision = (
+                        f"{symbol} same-symbol lockout active "
+                        f"({lockout_minutes} minutes from prior entry)"
+                    )
+                    return {
+                        "action": "hold",
+                        "symbol": symbol,
+                        "reason": self.state.last_decision,
+                        "signal": self.state.last_signal,
+                    }
 
         risk = validate_buy(
             self.settings,

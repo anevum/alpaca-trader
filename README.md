@@ -4,7 +4,7 @@ Private ANEVUM service for Alpaca account monitoring and deterministic automated
 
 ## Current build
 
-The service runs a guarded long-only opening-range/VWAP scanner for a configured universe of US equities or ETFs. It can:
+The service runs guarded long-only intraday scanners for a configured universe of US equities or ETFs. It supports both the original opening-range/VWAP mode and a rolling momentum/VWAP mode intended for shorter, repeatable intraday trades. It can:
 
 - read live or paper account cash, buying power, equity, positions, market clock and order state;
 - scan up to 30 configured symbols using batched Alpaca one-minute bars;
@@ -15,7 +15,7 @@ The service runs a guarded long-only opening-range/VWAP scanner for a configured
 - verify the selected asset is active, tradable and fractionable before submission;
 - enforce allowlisting, maximum entry/position size, an account-wide daily entry limit and daily-loss circuit breaker;
 - avoid averaging down and shorting;
-- preserve protective bracket exits and force bot-managed positions flat near the end of the regular session;
+- preserve protective bracket exits, optionally time-stop positions after `MAX_HOLD_MINUTES`, and force bot-managed positions flat near the end of the regular session;
 - expose safe public health state plus protected account, position, order and scanner telemetry.
 
 ## Execution gates
@@ -42,6 +42,10 @@ Every candidate in `SCAN_SYMBOLS` must also be in `ALLOWED_SYMBOLS`.
 
 ## Strategy
 
+Two deterministic modes are supported through `STRATEGY_NAME`.
+
+### `opening_range_vwap`
+
 For each candidate:
 
 1. Use completed one-minute regular-session bars only.
@@ -54,7 +58,20 @@ For each candidate:
 8. When multiple candidates qualify on the same cycle, `SCAN_SYMBOLS` order is the deterministic priority.
 9. Submit one bracket entry only after all account-wide risk checks pass.
 
-Defaults remain conservative and configurable. These rules are implementation choices, not a claim of profitability.
+### `rolling_momentum_vwap`
+
+For each candidate, the rolling mode:
+
+1. Uses completed one-minute regular-session bars.
+2. Requires the `FAST_WINDOW` close average to exceed the `SLOW_WINDOW` average.
+3. Requires the latest completed close to be rising versus the prior close.
+4. Requires short-term momentum of at least `MIN_MOMENTUM_PCT`.
+5. Requires price above session VWAP by at least `MIN_VWAP_EDGE_PCT`.
+6. Requires at least `MIN_CONFIRMATIONS` configured market confirmations to pass.
+7. Can re-enter after a prior position has fully exited, subject to account-wide order/loss limits and `REENTRY_COOLDOWN_MINUTES`.
+8. Uses the normal protective bracket and, when configured, a `MAX_HOLD_MINUTES` time stop.
+
+The aggressive small-account profile in `.env.example` uses a 3/8-minute fast/slow structure, 0.35% stop, 0.50% target, 15-minute maximum hold, 2-minute same-symbol re-entry cooldown, entries through 3:30 PM ET, and up to 12 entry orders while retaining the $1 daily-loss circuit breaker. These are implementation choices, not a claim of profitability.
 
 ## Risk controls
 
