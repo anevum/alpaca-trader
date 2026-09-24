@@ -236,12 +236,27 @@ async def monitor_loop():
                         and settings.bot_armed
                         and not runtime_state.paused
                     ):
-                        await engine.run_once()
+                        result = await engine.run_once()
+                        print(
+                            "LIVE_EXECUTION_CYCLE",
+                            {
+                                "action": result.get("action"),
+                                "symbol": result.get("symbol"),
+                                "reason": result.get("reason") or runtime_state.last_decision,
+                                "last_error": runtime_state.last_error,
+                            },
+                            flush=True,
+                        )
             else:
                 runtime_state.funding_ready = False
                 runtime_state.last_error = "credentials not configured"
         except Exception as exc:
             runtime_state.last_error = f"{type(exc).__name__}: {exc}"
+            print(
+                "LIVE_LOOP_ERROR",
+                {"error": runtime_state.last_error},
+                flush=True,
+            )
 
         try:
             await asyncio.wait_for(_stop.wait(), timeout=settings.poll_seconds)
@@ -281,7 +296,7 @@ async def lifespan(app: FastAPI):
     await task
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="Alpaca Trading Bot", version="0.6.1", lifespan=lifespan)
 
 
 @app.get("/health")
