@@ -148,8 +148,8 @@ class Settings(BaseSettings):
             raise ValueError("ORDER_NOTIONAL cannot exceed MAX_ORDER_NOTIONAL")
         if self.max_position_notional < self.order_notional:
             raise ValueError("MAX_POSITION_NOTIONAL cannot be below ORDER_NOTIONAL")
-        if self.max_daily_orders < 1:
-            raise ValueError("MAX_DAILY_ORDERS must be at least 1")
+        if self.max_daily_orders < 0:
+            raise ValueError("MAX_DAILY_ORDERS cannot be negative")
         if self.max_daily_loss <= 0:
             raise ValueError("MAX_DAILY_LOSS must be positive")
         if not self.confirmation_symbols:
