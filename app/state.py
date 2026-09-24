@@ -22,6 +22,8 @@ class RuntimeState:
     decision_history: list[dict[str, Any]] = field(default_factory=list)
     last_decision: str | None = None
     last_order: dict[str, Any] | None = None
+    research_samples: list[dict[str, Any]] = field(default_factory=list)
+    research_sample_keys: set[str] = field(default_factory=set)
 
     def mark_poll(self) -> None:
         self.last_poll_at = datetime.now(timezone.utc)
