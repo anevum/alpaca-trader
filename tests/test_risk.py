@@ -13,7 +13,8 @@ def settings(**overrides):
         LIVE_TRADING="false",
         BOT_ARMED="true",
         STRATEGY_SYMBOL="SPY",
-        ALLOWED_SYMBOLS="SPY",
+        SCAN_SYMBOLS="SPY,QQQ",
+        ALLOWED_SYMBOLS="SPY,QQQ",
         ORDER_NOTIONAL="5",
         MAX_ORDER_NOTIONAL="5",
         MAX_POSITION_NOTIONAL="10",
@@ -25,11 +26,11 @@ def settings(**overrides):
     return Settings(**base)
 
 
-def test_allowlisted_small_paper_buy_passes():
+def test_allowlisted_scanner_symbol_passes():
     s = settings()
     result = validate_buy(
         s,
-        "SPY",
+        "QQQ",
         Decimal("5"),
         {"cash": "10", "equity": "10", "last_equity": "10"},
         [],
@@ -42,13 +43,27 @@ def test_disallowed_symbol_is_blocked():
     s = settings()
     result = validate_buy(
         s,
-        "QQQ",
+        "AAPL",
         Decimal("5"),
         {"cash": "10", "equity": "10", "last_equity": "10"},
         [],
         0,
     )
     assert not result.allowed
+
+
+def test_allowed_but_unscanned_symbol_is_blocked_for_entry():
+    s = settings(ALLOWED_SYMBOLS="SPY,QQQ,AAPL")
+    result = validate_buy(
+        s,
+        "AAPL",
+        Decimal("5"),
+        {"cash": "10", "equity": "10", "last_equity": "10"},
+        [],
+        0,
+    )
+    assert not result.allowed
+    assert "SCAN_SYMBOLS" in result.reason
 
 
 def test_live_requires_explicit_acknowledgement():
@@ -73,12 +88,16 @@ def test_live_all_gates_authorize_execution():
     assert s.live_execution_authorized
 
 
-def test_sell_to_flat_is_risk_reducing():
-    s = settings(MAX_DAILY_ORDERS="0")
+def test_sell_to_flat_can_exit_allowed_symbol_removed_from_scan():
+    s = settings(
+        MAX_DAILY_ORDERS="0",
+        SCAN_SYMBOLS="SPY",
+        ALLOWED_SYMBOLS="SPY,QQQ",
+    )
     result = validate_sell_to_flat(
         s,
-        "SPY",
+        "QQQ",
         {"trading_blocked": False},
-        {"symbol": "SPY", "qty": "0.25", "market_value": "100"},
+        {"symbol": "QQQ", "qty": "0.25", "market_value": "100"},
     )
     assert result.allowed

@@ -25,7 +25,12 @@ def _account_can_trade(account: dict[str, Any]) -> RiskDecision | None:
     return None
 
 
-def _execution_gate(settings: Settings, symbol: str) -> RiskDecision | None:
+def _execution_gate(
+    settings: Settings,
+    symbol: str,
+    *,
+    require_scan: bool = True,
+) -> RiskDecision | None:
     symbol = symbol.upper()
     if not settings.execution_authorized:
         return RiskDecision(False, "execution is not authorized")
@@ -33,8 +38,8 @@ def _execution_gate(settings: Settings, symbol: str) -> RiskDecision | None:
         return RiskDecision(False, "no symbols are allowlisted")
     if symbol not in settings.allowed_symbols:
         return RiskDecision(False, f"{symbol} is not allowlisted")
-    if settings.normalized_strategy_symbol != symbol:
-        return RiskDecision(False, "signal symbol does not match STRATEGY_SYMBOL")
+    if require_scan and symbol not in settings.scan_symbols:
+        return RiskDecision(False, f"{symbol} is not in SCAN_SYMBOLS")
     return None
 
 
@@ -79,7 +84,11 @@ def validate_sell_to_flat(
     account: dict[str, Any],
     position: dict[str, Any] | None,
 ) -> RiskDecision:
-    blocked = _execution_gate(settings, symbol) or _account_can_trade(account)
+    blocked = _execution_gate(
+        settings,
+        symbol,
+        require_scan=False,
+    ) or _account_can_trade(account)
     if blocked:
         return blocked
     if not position:

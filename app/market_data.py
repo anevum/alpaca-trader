@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from .config import Settings
+
+
+NY = ZoneInfo("America/New_York")
 
 
 class MarketDataClient:
@@ -21,33 +24,52 @@ class MarketDataClient:
         }
 
     async def bars(self, symbol: str) -> list[dict[str, Any]]:
+        return (await self.bars_many([symbol])).get(symbol.upper(), [])
+
+    async def bars_many(self, symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
 
+        normalized = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
+        if not normalized:
+            return {}
+
+        now_ny = datetime.now(NY)
+        session_start_ny = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+        start = session_start_ny.astimezone(timezone.utc)
         end = datetime.now(timezone.utc)
-        start = end - timedelta(days=self.settings.lookback_days)
+
         params = {
+            "symbols": ",".join(normalized),
             "timeframe": self.settings.bar_timeframe,
             "start": start.isoformat(),
             "end": end.isoformat(),
-            "limit": self.settings.lookback_bars,
-            "sort": "desc",
+            "limit": 10000,
+            "sort": "asc",
             "feed": self.settings.data_feed,
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                f"{self.settings.data_base_url}/v2/stocks/{symbol}/bars",
-                headers=self.headers,
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
+        output: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in normalized}
+        page_token: str | None = None
 
-        bars = data.get("bars", [])
-        bars.reverse()
-        return bars
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for _ in range(5):
+                request_params = dict(params)
+                if page_token:
+                    request_params["page_token"] = page_token
+                response = await client.get(
+                    f"{self.settings.data_base_url}/v2/stocks/bars",
+                    headers=self.headers,
+                    params=request_params,
+                )
+                response.raise_for_status()
+                data = response.json()
+                for symbol, bars in (data.get("bars") or {}).items():
+                    output.setdefault(symbol.upper(), []).extend(bars or [])
+                page_token = data.get("next_page_token")
+                if not page_token:
+                    break
+            else:
+                raise RuntimeError("market-data pagination exceeded safety limit")
 
-    async def bars_many(self, symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
-        results = await asyncio.gather(*(self.bars(symbol) for symbol in symbols))
-        return dict(zip(symbols, results, strict=True))
+        return output

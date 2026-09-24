@@ -14,6 +14,17 @@ def parse_hhmm(value: str) -> time:
         raise ValueError(f"invalid HH:MM time: {value}") from exc
 
 
+def parse_csv(value: str) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in value.split(","):
+        symbol = raw.strip().upper()
+        if symbol and symbol not in seen:
+            result.append(symbol)
+            seen.add(symbol)
+    return tuple(result)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -36,12 +47,19 @@ class Settings(BaseSettings):
     max_daily_loss: Decimal = Field(default=Decimal("1.00"), alias="MAX_DAILY_LOSS")
 
     allowed_symbols_raw: str = Field(default="SPY", alias="ALLOWED_SYMBOLS")
+    scan_symbols_raw: str = Field(default="", alias="SCAN_SYMBOLS")
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
     strategy_symbol: str = Field(default="SPY", alias="STRATEGY_SYMBOL")
     confirmation_symbols_raw: str = Field(default="QQQ,SMH", alias="CONFIRMATION_SYMBOLS")
 
     order_notional: Decimal = Field(default=Decimal("80.00"), alias="ORDER_NOTIONAL")
     opening_range_minutes: int = Field(default=5, alias="OPENING_RANGE_MINUTES")
+    max_opening_range_pct: Decimal = Field(
+        default=Decimal("0.012"), alias="MAX_OPENING_RANGE_PCT"
+    )
+    max_breakout_extension_pct: Decimal = Field(
+        default=Decimal("0.004"), alias="MAX_BREAKOUT_EXTENSION_PCT"
+    )
     stop_pct: Decimal = Field(default=Decimal("0.006"), alias="STOP_PCT")
     target_pct: Decimal = Field(default=Decimal("0.0108"), alias="TARGET_PCT")
     entry_start_raw: str = Field(default="09:35", alias="ENTRY_START")
@@ -66,19 +84,23 @@ class Settings(BaseSettings):
 
     @property
     def allowed_symbols(self) -> set[str]:
-        return {s.strip().upper() for s in self.allowed_symbols_raw.split(",") if s.strip()}
+        return set(parse_csv(self.allowed_symbols_raw))
 
     @property
     def normalized_strategy_symbol(self) -> str:
         return self.strategy_symbol.strip().upper()
 
     @property
+    def scan_symbols(self) -> tuple[str, ...]:
+        configured = parse_csv(self.scan_symbols_raw)
+        if configured:
+            return configured
+        symbol = self.normalized_strategy_symbol
+        return (symbol,) if symbol else ()
+
+    @property
     def confirmation_symbols(self) -> tuple[str, ...]:
-        return tuple(
-            s.strip().upper()
-            for s in self.confirmation_symbols_raw.split(",")
-            if s.strip()
-        )
+        return parse_csv(self.confirmation_symbols_raw)
 
     @property
     def entry_start(self) -> time:
@@ -132,6 +154,10 @@ class Settings(BaseSettings):
             raise ValueError("LOOKBACK_DAYS must be positive")
         if not 1 <= self.opening_range_minutes <= 30:
             raise ValueError("OPENING_RANGE_MINUTES must be between 1 and 30")
+        if not Decimal("0") < self.max_opening_range_pct < Decimal("0.10"):
+            raise ValueError("MAX_OPENING_RANGE_PCT must be between 0 and 0.10")
+        if not Decimal("0") < self.max_breakout_extension_pct < Decimal("0.05"):
+            raise ValueError("MAX_BREAKOUT_EXTENSION_PCT must be between 0 and 0.05")
         if not Decimal("0") < self.stop_pct < Decimal("0.10"):
             raise ValueError("STOP_PCT must be between 0 and 0.10")
         if not Decimal("0") < self.target_pct < Decimal("0.20"):
@@ -152,6 +178,16 @@ class Settings(BaseSettings):
             raise ValueError("MAX_DAILY_ORDERS cannot be negative")
         if self.max_daily_loss <= 0:
             raise ValueError("MAX_DAILY_LOSS must be positive")
+        if not self.scan_symbols:
+            raise ValueError("SCAN_SYMBOLS/STRATEGY_SYMBOL cannot both be empty")
+        if len(self.scan_symbols) > 30:
+            raise ValueError("SCAN_SYMBOLS supports at most 30 symbols")
+        missing = [symbol for symbol in self.scan_symbols if symbol not in self.allowed_symbols]
+        if missing:
+            raise ValueError(
+                "Every SCAN_SYMBOLS symbol must also be in ALLOWED_SYMBOLS: "
+                + ",".join(missing)
+            )
         if not self.confirmation_symbols:
             raise ValueError("CONFIRMATION_SYMBOLS cannot be empty")
         return self

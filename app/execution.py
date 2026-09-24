@@ -11,7 +11,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .risk import validate_buy, validate_sell_to_flat
 from .state import RuntimeState
-from .strategy import OpeningRangeVwapStrategy
+from .strategy import OpeningRangeVwapStrategy, Signal
 
 
 NY = ZoneInfo("America/New_York")
@@ -62,14 +62,14 @@ class ExecutionEngine:
         )
 
     @staticmethod
-    def _entry_orders_today(orders: list[dict[str, Any]], symbol: str) -> int:
+    def _entry_orders_today(orders: list[dict[str, Any]]) -> int:
         today = datetime.now(NY).date()
-        prefix = f"anevum-{symbol.lower()}-buy-"
         count = 0
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
                 continue
-            if not str(order.get("client_order_id", "")).startswith(prefix):
+            client_order_id = str(order.get("client_order_id", ""))
+            if not client_order_id.startswith("anevum-") or "-buy-" not in client_order_id:
                 continue
             submitted = order.get("submitted_at")
             if not submitted:
@@ -81,6 +81,29 @@ class ExecutionEngine:
             except ValueError:
                 continue
         return count
+
+    @staticmethod
+    def _bot_bought_symbol_today(
+        orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> bool:
+        today = datetime.now(NY).date()
+        prefix = f"anevum-{symbol.lower()}-buy-"
+        for order in orders:
+            if str(order.get("side", "")).lower() != "buy":
+                continue
+            if not str(order.get("client_order_id", "")).startswith(prefix):
+                continue
+            submitted = order.get("submitted_at")
+            if not submitted:
+                continue
+            try:
+                stamp = datetime.fromisoformat(str(submitted).replace("Z", "+00:00"))
+                if stamp.astimezone(NY).date() == today:
+                    return True
+            except ValueError:
+                continue
+        return False
 
     @staticmethod
     def _client_order_id(symbol: str, action: str) -> str:
@@ -95,6 +118,19 @@ class ExecutionEngine:
             Decimal("0.000000001"),
             rounding=ROUND_DOWN,
         )
+
+    @staticmethod
+    def _signal_payload(signal: Signal) -> dict[str, Any]:
+        return {
+            "action": signal.action,
+            "symbol": signal.symbol,
+            "notional": str(signal.notional),
+            "reference_price": str(signal.reference_price),
+            "stop_price": str(signal.stop_price),
+            "take_profit_price": str(signal.take_profit_price),
+            "reason": signal.reason,
+            "metadata": signal.metadata,
+        }
 
     async def _force_flatten(
         self,
@@ -115,6 +151,18 @@ class ExecutionEngine:
             order_id = order.get("id")
             if order_id:
                 await self.client.cancel_order(str(order_id))
+
+        remaining_orders = self._orders_for_symbol(
+            await self.client.open_orders(),
+            symbol,
+        )
+        if remaining_orders:
+            self.state.last_decision = "waiting for protective orders to cancel"
+            return {
+                "action": "hold",
+                "symbol": symbol,
+                "reason": self.state.last_decision,
+            }
 
         positions = await self.client.positions()
         position = self._position_for_symbol(positions, symbol)
@@ -145,6 +193,7 @@ class ExecutionEngine:
             "client_order_id": order.get("client_order_id"),
             "symbol": order.get("symbol"),
             "side": order.get("side"),
+            "qty": order.get("qty"),
             "status": order.get("status"),
             "submitted_at": order.get("submitted_at"),
             "reason": "forced end-of-day flatten",
@@ -159,15 +208,15 @@ class ExecutionEngine:
             self.state.last_decision = "runtime paused"
             return {"action": "hold", "reason": "runtime paused"}
 
-        symbol = self.settings.normalized_strategy_symbol
-        if not symbol:
-            self.state.last_decision = "STRATEGY_SYMBOL is empty"
-            return {"action": "hold", "reason": "STRATEGY_SYMBOL is empty"}
-
         account = await self.client.account()
         cash = Decimal(str(account.get("cash", "0")))
+        equity = Decimal(str(account.get("equity", "0")))
+        last_equity = Decimal(str(account.get("last_equity", "0")))
         self.state.last_cash = str(cash)
         self.state.last_buying_power = str(account.get("buying_power", "0"))
+        self.state.last_equity = str(equity)
+        self.state.last_equity_reference = str(last_equity)
+        self.state.last_day_pnl = str(equity - last_equity)
         self.state.funding_ready = cash >= self.settings.min_ready_cash
 
         clock = await self.client.clock()
@@ -178,103 +227,157 @@ class ExecutionEngine:
         positions = await self.client.positions()
         open_orders = await self.client.open_orders()
         recent_orders = await self.client.recent_orders(limit=100)
-        position = self._position_for_symbol(positions, symbol)
         now = datetime.now(NY)
 
-        if position and now.time() >= self.settings.force_flat_time:
-            return await self._force_flatten(
-                symbol=symbol,
-                account=account,
-                position=position,
-                open_orders=open_orders,
+        managed_positions = [
+            position
+            for position in positions
+            if Decimal(str(position.get("qty", "0"))) > 0
+            and str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
+            and self._bot_bought_symbol_today(
+                recent_orders,
+                str(position.get("symbol", "")).upper(),
             )
+        ]
 
-        if self._orders_for_symbol(open_orders, symbol):
-            self.state.last_decision = "open order already exists for strategy symbol"
+        if managed_positions:
+            position = managed_positions[0]
+            symbol = str(position.get("symbol", "")).upper()
+            if now.time() >= self.settings.force_flat_time:
+                return await self._force_flatten(
+                    symbol=symbol,
+                    account=account,
+                    position=position,
+                    open_orders=open_orders,
+                )
+            self.state.last_decision = (
+                f"{symbol} position already open; bracket exits manage risk"
+            )
             return {
                 "action": "hold",
                 "symbol": symbol,
-                "reason": "open order already exists for strategy symbol",
+                "reason": self.state.last_decision,
             }
 
-        symbols = [symbol, *self.settings.confirmation_symbols]
-        market_bars = await self.market_data.bars_many(symbols)
-        signal = self.strategy.evaluate(
-            bars=market_bars[symbol],
-            confirmation_bars={
-                confirmation_symbol: market_bars[confirmation_symbol]
-                for confirmation_symbol in self.settings.confirmation_symbols
-            },
-            symbol=symbol,
-            has_position=position is not None
-            and Decimal(str(position.get("qty", "0"))) > 0,
-            order_notional=self.settings.order_notional,
-            now=now,
-        )
-        self.state.last_signal = {
-            "action": signal.action,
-            "symbol": signal.symbol,
-            "notional": str(signal.notional),
-            "reference_price": str(signal.reference_price),
-            "stop_price": str(signal.stop_price),
-            "take_profit_price": str(signal.take_profit_price),
-            "reason": signal.reason,
-            "metadata": signal.metadata,
-        }
+        if positions:
+            self.state.last_decision = "another account position is already open"
+            return {
+                "action": "hold",
+                "reason": self.state.last_decision,
+            }
 
-        if signal.action == "hold":
-            self.state.last_decision = signal.reason
+        if open_orders:
+            self.state.last_decision = "an account order is already open"
+            return {
+                "action": "hold",
+                "reason": self.state.last_decision,
+            }
+
+        symbols = list(
+            dict.fromkeys(
+                [*self.settings.scan_symbols, *self.settings.confirmation_symbols]
+            )
+        )
+        market_bars = await self.market_data.bars_many(symbols)
+
+        buy_signals: list[Signal] = []
+        scan: dict[str, Any] = {}
+        for symbol in self.settings.scan_symbols:
+            signal = self.strategy.evaluate(
+                bars=market_bars.get(symbol, []),
+                confirmation_bars={
+                    confirmation_symbol: market_bars.get(confirmation_symbol, [])
+                    for confirmation_symbol in self.settings.confirmation_symbols
+                },
+                symbol=symbol,
+                has_position=False,
+                order_notional=self.settings.order_notional,
+                now=now,
+            )
+            scan[symbol] = self._signal_payload(signal)
+            if signal.action == "buy":
+                buy_signals.append(signal)
+
+        self.state.last_scan = scan
+
+        if not buy_signals:
+            self.state.last_signal = {
+                "action": "hold",
+                "symbol": "",
+                "reason": (
+                    f"scanner watching {len(self.settings.scan_symbols)} symbols; "
+                    "no qualified entries"
+                ),
+                "metadata": {},
+            }
+            self.state.last_decision = self.state.last_signal["reason"]
             return self.state.last_signal
 
-        if signal.action == "buy":
-            risk = validate_buy(
-                self.settings,
-                symbol,
-                signal.notional,
-                account,
-                positions,
-                self._entry_orders_today(recent_orders, symbol),
-            )
-            self.state.last_decision = risk.reason
-            if not risk.allowed:
-                return {
-                    "action": "blocked",
-                    "symbol": symbol,
-                    "reason": risk.reason,
-                    "signal": self.state.last_signal,
-                }
+        # SCAN_SYMBOLS order is the deterministic priority when multiple
+        # candidates qualify on the same completed bar.
+        signal = buy_signals[0]
+        symbol = signal.symbol
+        self.state.last_signal = self._signal_payload(signal)
 
-            qty = self._fractional_qty(signal.notional, signal.reference_price)
-            if qty <= 0:
-                self.state.last_decision = "calculated quantity is zero"
-                return {
-                    "action": "blocked",
-                    "symbol": symbol,
-                    "reason": self.state.last_decision,
-                    "signal": self.state.last_signal,
-                }
-
-            order = await self.client.submit_bracket_market_buy(
-                symbol=symbol,
-                qty=str(qty),
-                take_profit_price=str(signal.take_profit_price),
-                stop_price=str(signal.stop_price),
-                client_order_id=self._client_order_id(symbol, "buy"),
-            )
-            self.state.last_order = {
-                "id": order.get("id"),
-                "client_order_id": order.get("client_order_id"),
-                "symbol": order.get("symbol"),
-                "side": order.get("side"),
-                "qty": order.get("qty"),
-                "status": order.get("status"),
-                "order_class": order.get("order_class"),
-                "submitted_at": order.get("submitted_at"),
-                "stop_price": str(signal.stop_price),
-                "take_profit_price": str(signal.take_profit_price),
+        risk = validate_buy(
+            self.settings,
+            symbol,
+            signal.notional,
+            account,
+            positions,
+            self._entry_orders_today(recent_orders),
+        )
+        self.state.last_decision = risk.reason
+        if not risk.allowed:
+            return {
+                "action": "blocked",
+                "symbol": symbol,
+                "reason": risk.reason,
+                "signal": self.state.last_signal,
             }
-            self.state.last_decision = "bracket entry submitted"
-            return {"action": "submitted", "order": self.state.last_order}
 
-        self.state.last_decision = "unsupported signal"
-        return {"action": "hold", "reason": "unsupported signal"}
+        asset = await self.client.asset(symbol)
+        if (
+            str(asset.get("status", "")).lower() != "active"
+            or not bool(asset.get("tradable"))
+            or not bool(asset.get("fractionable"))
+        ):
+            self.state.last_decision = "asset is not active, tradable, and fractionable"
+            return {
+                "action": "blocked",
+                "symbol": symbol,
+                "reason": self.state.last_decision,
+                "signal": self.state.last_signal,
+            }
+
+        qty = self._fractional_qty(signal.notional, signal.reference_price)
+        if qty <= 0:
+            self.state.last_decision = "calculated quantity is zero"
+            return {
+                "action": "blocked",
+                "symbol": symbol,
+                "reason": self.state.last_decision,
+                "signal": self.state.last_signal,
+            }
+
+        order = await self.client.submit_bracket_market_buy(
+            symbol=symbol,
+            qty=str(qty),
+            take_profit_price=str(signal.take_profit_price),
+            stop_price=str(signal.stop_price),
+            client_order_id=self._client_order_id(symbol, "buy"),
+        )
+        self.state.last_order = {
+            "id": order.get("id"),
+            "client_order_id": order.get("client_order_id"),
+            "symbol": order.get("symbol"),
+            "side": order.get("side"),
+            "qty": order.get("qty"),
+            "status": order.get("status"),
+            "order_class": order.get("order_class"),
+            "submitted_at": order.get("submitted_at"),
+            "stop_price": str(signal.stop_price),
+            "take_profit_price": str(signal.take_profit_price),
+        }
+        self.state.last_decision = "bracket entry submitted"
+        return {"action": "submitted", "order": self.state.last_order}

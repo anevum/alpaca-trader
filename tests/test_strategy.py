@@ -23,6 +23,8 @@ def bar(minute, o, h, l, c, v=1000, vw=None):
 def strategy():
     return OpeningRangeVwapStrategy(
         opening_range_minutes=5,
+        max_opening_range_pct=Decimal("0.012"),
+        max_breakout_extension_pct=Decimal("0.004"),
         stop_pct=Decimal("0.006"),
         target_pct=Decimal("0.0108"),
         entry_start=datetime.strptime("09:35", "%H:%M").time(),
@@ -31,14 +33,14 @@ def strategy():
     )
 
 
-def spy_breakout_bars():
+def breakout_bars():
     return [
         bar("09:30", 100, 100.2, 99.9, 100.0),
         bar("09:31", 100, 100.3, 99.95, 100.1),
         bar("09:32", 100.1, 100.4, 100.0, 100.2),
         bar("09:33", 100.2, 100.5, 100.1, 100.3),
         bar("09:34", 100.3, 100.6, 100.2, 100.5),
-        bar("09:35", 100.5, 101.0, 100.5, 100.9),
+        bar("09:35", 100.5, 100.75, 100.5, 100.7),
     ]
 
 
@@ -56,7 +58,7 @@ def confirm_bars(base):
 def test_breakout_generates_bracket_prices_when_confirmed():
     s = strategy()
     signal = s.evaluate(
-        bars=spy_breakout_bars(),
+        bars=breakout_bars(),
         confirmation_bars={"QQQ": confirm_bars(200), "SMH": confirm_bars(300)},
         symbol="SPY",
         has_position=False,
@@ -64,15 +66,15 @@ def test_breakout_generates_bracket_prices_when_confirmed():
         now=datetime(2026, 9, 24, 9, 36, 5, tzinfo=NY),
     )
     assert signal.action == "buy"
-    assert signal.reference_price == Decimal("100.9")
-    assert signal.stop_price == Decimal("100.29")
-    assert signal.take_profit_price == Decimal("101.99")
+    assert signal.reference_price == Decimal("100.7")
+    assert signal.stop_price == Decimal("100.10")
+    assert signal.take_profit_price == Decimal("101.79")
 
 
 def test_partial_current_bar_is_ignored():
     s = strategy()
     signal = s.evaluate(
-        bars=spy_breakout_bars(),
+        bars=breakout_bars(),
         confirmation_bars={"QQQ": confirm_bars(200), "SMH": confirm_bars(300)},
         symbol="SPY",
         has_position=False,
@@ -88,7 +90,7 @@ def test_confirmation_failure_blocks_entry():
     weak = confirm_bars(200)
     weak[-1] = bar("09:35", 200.08, 200.10, 199.50, 199.60)
     signal = s.evaluate(
-        bars=spy_breakout_bars(),
+        bars=breakout_bars(),
         confirmation_bars={"QQQ": weak, "SMH": confirm_bars(300)},
         symbol="SPY",
         has_position=False,
@@ -99,10 +101,57 @@ def test_confirmation_failure_blocks_entry():
     assert "QQQ confirmation failed" in signal.reason
 
 
+def test_self_confirmation_is_skipped_but_independent_confirmation_required():
+    s = strategy()
+    signal = s.evaluate(
+        bars=breakout_bars(),
+        confirmation_bars={"QQQ": breakout_bars(), "SMH": confirm_bars(300)},
+        symbol="QQQ",
+        has_position=False,
+        order_notional=Decimal("75"),
+        now=datetime(2026, 9, 24, 9, 36, 5, tzinfo=NY),
+    )
+    assert signal.action == "buy"
+    assert signal.metadata["confirmations"]["QQQ"]["ok"] is True
+    assert "self-confirmation skipped" in signal.metadata["confirmations"]["QQQ"]["reason"]
+
+
+def test_wide_opening_range_blocks_entry():
+    s = strategy()
+    bars = breakout_bars()
+    bars[0] = bar("09:30", 100, 101.5, 99.0, 100.0)
+    signal = s.evaluate(
+        bars=bars,
+        confirmation_bars={"QQQ": confirm_bars(200), "SMH": confirm_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("75"),
+        now=datetime(2026, 9, 24, 9, 36, 5, tzinfo=NY),
+    )
+    assert signal.action == "hold"
+    assert signal.reason == "opening range is too wide"
+
+
+def test_overextended_breakout_blocks_entry():
+    s = strategy()
+    bars = breakout_bars()
+    bars[-1] = bar("09:35", 100.5, 101.4, 100.5, 101.3)
+    signal = s.evaluate(
+        bars=bars,
+        confirmation_bars={"QQQ": confirm_bars(200), "SMH": confirm_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("75"),
+        now=datetime(2026, 9, 24, 9, 36, 5, tzinfo=NY),
+    )
+    assert signal.action == "hold"
+    assert signal.reason == "breakout is too extended above opening-range high"
+
+
 def test_no_late_entry_after_cutoff():
     s = strategy()
     signal = s.evaluate(
-        bars=spy_breakout_bars(),
+        bars=breakout_bars(),
         confirmation_bars={"QQQ": confirm_bars(200), "SMH": confirm_bars(300)},
         symbol="SPY",
         has_position=False,
@@ -116,7 +165,7 @@ def test_no_late_entry_after_cutoff():
 def test_existing_position_never_adds():
     s = strategy()
     signal = s.evaluate(
-        bars=spy_breakout_bars(),
+        bars=breakout_bars(),
         confirmation_bars={"QQQ": confirm_bars(200), "SMH": confirm_bars(300)},
         symbol="SPY",
         has_position=True,
