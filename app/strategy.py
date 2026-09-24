@@ -344,3 +344,207 @@ class OpeningRangeVwapStrategy:
             reason="fresh opening-range breakout above VWAP with confirmations",
             metadata=metadata,
         )
+
+
+class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
+    """Intraday rolling momentum strategy for repeated short-duration entries.
+
+    The strategy uses completed one-minute bars, compares short and slow moving
+    averages, requires positive short-term momentum and price above session
+    VWAP, and accepts a configurable minimum number of constructive market
+    confirmations. Protective exits remain the execution layer's responsibility.
+    """
+
+    def __init__(
+        self,
+        fast_window: int,
+        slow_window: int,
+        min_momentum_pct: Decimal,
+        min_vwap_edge_pct: Decimal,
+        stop_pct: Decimal,
+        target_pct: Decimal,
+        entry_start: time,
+        entry_cutoff: time,
+        confirmation_symbols: tuple[str, ...],
+        min_confirmations: int,
+    ):
+        super().__init__(
+            opening_range_minutes=1,
+            max_opening_range_pct=Decimal("0.099"),
+            max_breakout_extension_pct=Decimal("0.049"),
+            stop_pct=stop_pct,
+            target_pct=target_pct,
+            entry_start=entry_start,
+            entry_cutoff=entry_cutoff,
+            confirmation_symbols=confirmation_symbols,
+        )
+        self.fast_window = fast_window
+        self.slow_window = slow_window
+        self.min_momentum_pct = min_momentum_pct
+        self.min_vwap_edge_pct = min_vwap_edge_pct
+        self.min_confirmations = min_confirmations
+
+    @staticmethod
+    def _mean(values: list[Decimal]) -> Decimal:
+        return sum(values) / Decimal(len(values))
+
+    def evaluate(
+        self,
+        bars: list[dict[str, Any]],
+        confirmation_bars: dict[str, list[dict[str, Any]]],
+        symbol: str,
+        has_position: bool,
+        order_notional: Decimal,
+        now: datetime | None = None,
+    ) -> Signal:
+        now = (now or datetime.now(NY)).astimezone(NY)
+        symbol = symbol.upper()
+
+        if has_position:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="position already open; bracket/time exits manage risk",
+            )
+        if now.weekday() >= 5:
+            return Signal(action="hold", symbol=symbol, reason="weekend")
+        if now.time() < self.entry_start:
+            return Signal(action="hold", symbol=symbol, reason="before entry window")
+        if now.time() > self.entry_cutoff:
+            return Signal(action="hold", symbol=symbol, reason="entry window closed")
+
+        session = self._completed_session_bars(bars, now)
+        if len(session) < self.slow_window + 1:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="not enough completed bars for rolling signal",
+            )
+
+        closes = [self._d(bar["c"]) for bar in session]
+        current_close = closes[-1]
+        previous_close = closes[-2]
+        fast_average = self._mean(closes[-self.fast_window:])
+        slow_average = self._mean(closes[-self.slow_window:])
+        session_vwap = self._vwap(session)
+
+        momentum_anchor = closes[-(self.fast_window + 1)]
+        momentum_pct = (
+            (current_close - momentum_anchor) / momentum_anchor
+            if momentum_anchor > 0
+            else Decimal("0")
+        )
+        vwap_edge_pct = (
+            (current_close - session_vwap) / session_vwap
+            if session_vwap > 0
+            else Decimal("0")
+        )
+
+        fast_above_slow = fast_average > slow_average
+        rising = current_close > previous_close
+        momentum_ok = momentum_pct >= self.min_momentum_pct
+        vwap_ok = current_close > session_vwap and vwap_edge_pct >= self.min_vwap_edge_pct
+
+        metadata: dict[str, Any] = {
+            "bar_time": self._timestamp(session[-1]).isoformat(),
+            "current_close": str(current_close),
+            "previous_close": str(previous_close),
+            "fast_average": str(fast_average),
+            "slow_average": str(slow_average),
+            "session_vwap": str(session_vwap),
+            "momentum_pct": str(momentum_pct),
+            "vwap_edge_pct": str(vwap_edge_pct),
+            "checks": {
+                "fast_above_slow": fast_above_slow,
+                "rising": rising,
+                "momentum_ok": momentum_ok,
+                "vwap_ok": vwap_ok,
+                "confirmations_ok": False,
+            },
+            "confirmations": {},
+        }
+
+        confirmation_passes = 0
+        independent_confirmations = 0
+        for confirmation_symbol in self.confirmation_symbols:
+            confirmation_symbol = confirmation_symbol.upper()
+            if confirmation_symbol == symbol:
+                metadata["confirmations"][confirmation_symbol] = {
+                    "ok": True,
+                    "reason": "candidate symbol; self-confirmation skipped",
+                }
+                continue
+            independent_confirmations += 1
+            ok, reason, details = self._confirmation_ok(
+                confirmation_bars.get(confirmation_symbol, []),
+                now,
+            )
+            metadata["confirmations"][confirmation_symbol] = {
+                "ok": ok,
+                "reason": reason,
+                **details,
+            }
+            if ok:
+                confirmation_passes += 1
+
+        confirmations_ok = (
+            independent_confirmations >= self.min_confirmations
+            and confirmation_passes >= self.min_confirmations
+        )
+        metadata["checks"]["confirmations_ok"] = confirmations_ok
+        metadata["confirmation_passes"] = confirmation_passes
+        metadata["min_confirmations"] = self.min_confirmations
+
+        if not fast_above_slow:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="fast trend is not above slow trend",
+                metadata=metadata,
+            )
+        if not rising:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="latest completed bar is not rising",
+                metadata=metadata,
+            )
+        if not momentum_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="short-term momentum is below threshold",
+                metadata=metadata,
+            )
+        if not vwap_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="price does not have required VWAP edge",
+                metadata=metadata,
+            )
+        if not confirmations_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="not enough market confirmations passed",
+                metadata=metadata,
+            )
+
+        stop_price = self._price(current_close * (Decimal("1") - self.stop_pct))
+        take_profit_price = self._price(
+            current_close * (Decimal("1") + self.target_pct)
+        )
+        metadata["stop_price"] = str(stop_price)
+        metadata["take_profit_price"] = str(take_profit_price)
+
+        return Signal(
+            action="buy",
+            symbol=symbol,
+            notional=order_notional,
+            reference_price=current_close,
+            stop_price=stop_price,
+            take_profit_price=take_profit_price,
+            reason="rolling momentum above VWAP with required confirmation",
+            metadata=metadata,
+        )
