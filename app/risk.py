@@ -33,8 +33,8 @@ def _execution_gate(settings: Settings, symbol: str) -> RiskDecision | None:
         return RiskDecision(False, "no symbols are allowlisted")
     if symbol not in settings.allowed_symbols:
         return RiskDecision(False, f"{symbol} is not allowlisted")
-    if settings.normalized_strategy_symbol != symbol:
-        return RiskDecision(False, "signal symbol does not match STRATEGY_SYMBOL")
+    if symbol not in settings.scan_symbols:
+        return RiskDecision(False, f"{symbol} is not in SCAN_SYMBOLS")
     return None
 
 
