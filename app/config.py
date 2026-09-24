@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
     strategy_symbol: str = Field(default="SPY", alias="STRATEGY_SYMBOL")
     confirmation_symbols_raw: str = Field(default="QQQ,SMH", alias="CONFIRMATION_SYMBOLS")
+    min_confirmations: int = Field(default=1, alias="MIN_CONFIRMATIONS")
 
     order_notional: Decimal = Field(default=Decimal("80.00"), alias="ORDER_NOTIONAL")
     opening_range_minutes: int = Field(default=5, alias="OPENING_RANGE_MINUTES")
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
     entry_start_raw: str = Field(default="09:35", alias="ENTRY_START")
     entry_cutoff_raw: str = Field(default="11:30", alias="ENTRY_CUTOFF")
     force_flat_time_raw: str = Field(default="15:55", alias="FORCE_FLAT_TIME")
+    max_hold_minutes: int = Field(default=0, alias="MAX_HOLD_MINUTES")
 
     bar_timeframe: str = Field(default="1Min", alias="BAR_TIMEFRAME")
     lookback_bars: int = Field(default=500, alias="LOOKBACK_BARS")
@@ -190,6 +192,10 @@ class Settings(BaseSettings):
             )
         if not self.confirmation_symbols:
             raise ValueError("CONFIRMATION_SYMBOLS cannot be empty")
+        if not 1 <= self.min_confirmations <= len(self.confirmation_symbols):
+            raise ValueError("MIN_CONFIRMATIONS must be between 1 and the number of confirmation symbols")
+        if not 0 <= self.max_hold_minutes <= 390:
+            raise ValueError("MAX_HOLD_MINUTES must be between 0 and 390")
         return self
 
 
