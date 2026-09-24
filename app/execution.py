@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
@@ -152,12 +153,18 @@ class ExecutionEngine:
             if order_id:
                 await self.client.cancel_order(str(order_id))
 
-        remaining_orders = self._orders_for_symbol(
-            await self.client.open_orders(),
-            symbol,
-        )
+        remaining_orders: list[dict[str, Any]] = []
+        for _ in range(6):
+            remaining_orders = self._orders_for_symbol(
+                await self.client.open_orders(),
+                symbol,
+            )
+            if not remaining_orders:
+                break
+            await asyncio.sleep(0.25)
+
         if remaining_orders:
-            self.state.last_decision = "waiting for protective orders to cancel"
+            self.state.last_decision = "protective orders are still open; close deferred"
             return {
                 "action": "hold",
                 "symbol": symbol,
@@ -200,6 +207,73 @@ class ExecutionEngine:
         }
         self.state.last_decision = "end-of-day flatten order submitted"
         return {"action": "submitted", "order": self.state.last_order}
+
+    async def cancel_pending_bot_orders(self) -> dict[str, Any]:
+        positions = await self.client.positions()
+        if positions:
+            return {
+                "action": "blocked",
+                "reason": "cannot cancel protective orders while a position is open; close the position instead",
+            }
+
+        open_orders = await self.client.open_orders()
+        bot_orders = [
+            order
+            for order in open_orders
+            if str(order.get("client_order_id", "")).startswith("anevum-")
+        ]
+        for order in bot_orders:
+            order_id = order.get("id")
+            if order_id:
+                await self.client.cancel_order(str(order_id))
+
+        self.state.record_event(
+            kind="control",
+            action="cancel_orders",
+            message=f"cancel requested for {len(bot_orders)} ANEVUM open orders",
+        )
+        return {
+            "action": "cancel_requested",
+            "count": len(bot_orders),
+        }
+
+    async def close_managed_position(self) -> dict[str, Any]:
+        account = await self.client.account()
+        positions = await self.client.positions()
+        recent_orders = await self.client.recent_orders(limit=100)
+        open_orders = await self.client.open_orders()
+
+        managed_positions = [
+            position
+            for position in positions
+            if Decimal(str(position.get("qty", "0"))) > 0
+            and str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
+            and self._bot_bought_symbol_today(
+                recent_orders,
+                str(position.get("symbol", "")).upper(),
+            )
+        ]
+        if not managed_positions:
+            return {
+                "action": "hold",
+                "reason": "no bot-managed long position is open",
+            }
+
+        position = managed_positions[0]
+        symbol = str(position.get("symbol", "")).upper()
+        result = await self._force_flatten(
+            symbol=symbol,
+            account=account,
+            position=position,
+            open_orders=open_orders,
+        )
+        self.state.record_event(
+            kind="control",
+            symbol=symbol,
+            action=str(result.get("action") or ""),
+            message=str(result.get("reason") or "manual close requested"),
+        )
+        return result
 
     async def run_once(self) -> dict[str, Any]:
         self.state.mark_strategy()
@@ -298,7 +372,7 @@ class ExecutionEngine:
             if signal.action == "buy":
                 buy_signals.append(signal)
 
-        self.state.last_scan = scan
+        self.state.record_scan(scan, at=now)
 
         if not buy_signals:
             self.state.last_signal = {
@@ -318,6 +392,22 @@ class ExecutionEngine:
         signal = buy_signals[0]
         symbol = signal.symbol
         self.state.last_signal = self._signal_payload(signal)
+
+        if not self.state.entries_enabled:
+            self.state.last_decision = "qualified entry blocked because new entries are disabled"
+            self.state.record_event(
+                kind="control",
+                symbol=symbol,
+                action="blocked",
+                message=self.state.last_decision,
+                at=now,
+            )
+            return {
+                "action": "blocked",
+                "symbol": symbol,
+                "reason": self.state.last_decision,
+                "signal": self.state.last_signal,
+            }
 
         risk = validate_buy(
             self.settings,

@@ -230,6 +230,9 @@ class OpeningRangeVwapStrategy:
         fresh_breakout = previous_close <= opening_high and current_close > opening_high
         above_vwap = current_close > session_vwap
 
+        opening_range_ok = opening_range_pct <= self.max_opening_range_pct
+        extension_ok = breakout_extension_pct <= self.max_breakout_extension_pct
+
         metadata: dict[str, Any] = {
             "opening_range_high": str(opening_high),
             "opening_range_low": str(opening_low),
@@ -238,40 +241,20 @@ class OpeningRangeVwapStrategy:
             "previous_close": str(previous_close),
             "current_close": str(current_close),
             "breakout_extension_pct": str(breakout_extension_pct),
+            "distance_to_breakout_pct": str((current_close - opening_high) / opening_high),
             "bar_time": self._timestamp(current).isoformat(),
+            "checks": {
+                "opening_range_ok": opening_range_ok,
+                "fresh_breakout": fresh_breakout,
+                "breakout_extension_ok": extension_ok,
+                "above_vwap": above_vwap,
+            },
             "confirmations": {},
         }
 
-        if opening_range_pct > self.max_opening_range_pct:
-            return Signal(
-                action="hold",
-                symbol=symbol,
-                reason="opening range is too wide",
-                metadata=metadata,
-            )
-        if not fresh_breakout:
-            return Signal(
-                action="hold",
-                symbol=symbol,
-                reason="no fresh close above opening-range high",
-                metadata=metadata,
-            )
-        if breakout_extension_pct > self.max_breakout_extension_pct:
-            return Signal(
-                action="hold",
-                symbol=symbol,
-                reason="breakout is too extended above opening-range high",
-                metadata=metadata,
-            )
-        if not above_vwap:
-            return Signal(
-                action="hold",
-                symbol=symbol,
-                reason="breakout is below session VWAP",
-                metadata=metadata,
-            )
-
         independent_confirmations = 0
+        confirmations_ok = True
+        first_confirmation_failure = ""
         for confirmation_symbol in self.confirmation_symbols:
             confirmation_symbol = confirmation_symbol.upper()
             if confirmation_symbol == symbol:
@@ -291,18 +274,56 @@ class OpeningRangeVwapStrategy:
                 **details,
             }
             if not ok:
-                return Signal(
-                    action="hold",
-                    symbol=symbol,
-                    reason=f"{confirmation_symbol} confirmation failed: {reason}",
-                    metadata=metadata,
-                )
+                confirmations_ok = False
+                if not first_confirmation_failure:
+                    first_confirmation_failure = (
+                        f"{confirmation_symbol} confirmation failed: {reason}"
+                    )
 
+        metadata["checks"]["confirmations_ok"] = (
+            confirmations_ok and independent_confirmations > 0
+        )
+
+        if not opening_range_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="opening range is too wide",
+                metadata=metadata,
+            )
+        if not fresh_breakout:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="no fresh close above opening-range high",
+                metadata=metadata,
+            )
+        if not extension_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="breakout is too extended above opening-range high",
+                metadata=metadata,
+            )
+        if not above_vwap:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="breakout is below session VWAP",
+                metadata=metadata,
+            )
         if independent_confirmations == 0:
             return Signal(
                 action="hold",
                 symbol=symbol,
                 reason="no independent confirmation symbol available",
+                metadata=metadata,
+            )
+        if not confirmations_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason=first_confirmation_failure,
                 metadata=metadata,
             )
 

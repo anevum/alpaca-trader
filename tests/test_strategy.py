@@ -174,3 +174,23 @@ def test_existing_position_never_adds():
     )
     assert signal.action == "hold"
     assert "position already open" in signal.reason
+
+
+def test_hold_signal_still_exposes_confirmation_and_checkpoint_state():
+    s = strategy()
+    bars = breakout_bars()
+    bars[-1] = bar("09:35", 100.5, 100.6, 100.4, 100.55)
+    signal = s.evaluate(
+        bars=bars,
+        confirmation_bars={"QQQ": confirm_bars(200), "SMH": confirm_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("75"),
+        now=datetime(2026, 9, 24, 9, 36, 5, tzinfo=NY),
+    )
+    assert signal.action == "hold"
+    assert signal.metadata["checks"]["fresh_breakout"] is False
+    assert signal.metadata["checks"]["above_vwap"] is True
+    assert signal.metadata["checks"]["confirmations_ok"] is True
+    assert signal.metadata["confirmations"]["QQQ"]["ok"] is True
+    assert signal.metadata["confirmations"]["SMH"]["ok"] is True
