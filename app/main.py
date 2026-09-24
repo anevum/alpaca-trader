@@ -5,6 +5,7 @@ import hmac
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException
 
 from .alpaca_client import AlpacaClient
@@ -37,6 +38,140 @@ def require_admin(authorization: str | None):
     expected = f"Bearer {settings.admin_token}"
     if authorization is None or not hmac.compare_digest(authorization, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+SUPABASE_URL = "https://mfntzxheldzdvlokyntk.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_XfkgeXau2-6XOPzoXF-Nnw_FSnx0Sae"
+COMMAND_FOUNDER_EMAIL = "devon@anevum.com"
+
+
+async def require_command_admin(authorization: str | None) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="RHENLINK authorization required")
+
+    token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="RHENLINK authorization required")
+
+    async with httpx.AsyncClient(timeout=8.0) as http:
+        response = await http.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "apikey": SUPABASE_PUBLISHABLE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Cache-Control": "no-store",
+            },
+        )
+    payload = response.json() if response.content else {}
+    if not response.is_success:
+        raise HTTPException(status_code=401, detail="RHENLINK session is not valid")
+
+    metadata = payload.get("app_metadata") or {}
+    role = str(metadata.get("role") or "").strip().lower()
+    email = str(payload.get("email") or "").strip().lower()
+    confirmed = bool(payload.get("email_confirmed_at") or payload.get("confirmed_at"))
+    authorized = (
+        (email == COMMAND_FOUNDER_EMAIL and confirmed)
+        or metadata.get("command_admin") is True
+        or metadata.get("wiki_admin") is True
+        or role in {"owner", "founder", "admin", "command_admin", "wiki_admin"}
+    )
+    if not authorized:
+        raise HTTPException(status_code=403, detail="COMMAND administrator authorization required")
+    return payload
+
+
+def public_position(position: dict) -> dict:
+    keys = (
+        "symbol", "qty", "side", "avg_entry_price", "current_price",
+        "market_value", "cost_basis", "unrealized_pl", "unrealized_plpc",
+        "change_today",
+    )
+    return {key: position.get(key) for key in keys}
+
+
+def public_order(order: dict) -> dict:
+    keys = (
+        "id", "client_order_id", "symbol", "side", "type", "status",
+        "order_class", "qty", "filled_qty", "filled_avg_price",
+        "limit_price", "stop_price", "submitted_at", "filled_at",
+        "canceled_at",
+    )
+    return {key: order.get(key) for key in keys}
+
+
+async def command_snapshot() -> dict:
+    account = await client.account()
+    clock = await client.clock()
+    positions = await client.positions()
+    open_orders = await client.open_orders()
+    recent_orders = await client.recent_orders(limit=100)
+    bot_orders = [
+        order
+        for order in recent_orders
+        if str(order.get("client_order_id", "")).startswith("anevum-")
+    ]
+    entry_count = engine._entry_orders_today(recent_orders)
+    equity = Decimal(str(account.get("equity", "0")))
+    last_equity = Decimal(str(account.get("last_equity", "0")))
+    return {
+        "observed_at": runtime_state.last_poll_at,
+        "mode": settings.trading_mode,
+        "market": {
+            "is_open": bool(clock.get("is_open")),
+            "timestamp": clock.get("timestamp"),
+            "next_open": clock.get("next_open"),
+            "next_close": clock.get("next_close"),
+        },
+        "bot": {
+            "execution_enabled": settings.execution_enabled,
+            "execution_authorized": settings.execution_authorized,
+            "bot_armed": settings.bot_armed,
+            "runtime_paused": runtime_state.paused,
+            "entries_enabled": runtime_state.entries_enabled,
+            "funding_ready": runtime_state.funding_ready,
+            "last_strategy_at": runtime_state.last_strategy_at,
+            "last_decision": runtime_state.last_decision,
+            "last_error": runtime_state.last_error,
+        },
+        "account": {
+            "equity": str(account.get("equity", "0")),
+            "last_equity": str(account.get("last_equity", "0")),
+            "day_pnl": str(equity - last_equity),
+            "cash": str(account.get("cash", "0")),
+            "buying_power": str(account.get("buying_power", "0")),
+            "trading_blocked": bool(account.get("trading_blocked")),
+            "account_blocked": bool(account.get("account_blocked")),
+        },
+        "strategy": {
+            "scan_symbols": list(settings.scan_symbols),
+            "confirmation_symbols": list(settings.confirmation_symbols),
+            "opening_range_minutes": settings.opening_range_minutes,
+            "max_opening_range_pct": str(settings.max_opening_range_pct),
+            "max_breakout_extension_pct": str(settings.max_breakout_extension_pct),
+            "entry_start": settings.entry_start_raw,
+            "entry_cutoff": settings.entry_cutoff_raw,
+            "force_flat_time": settings.force_flat_time_raw,
+            "stop_pct": str(settings.stop_pct),
+            "target_pct": str(settings.target_pct),
+            "order_notional": str(settings.order_notional),
+            "data_feed": settings.data_feed,
+        },
+        "risk": {
+            "max_daily_orders": settings.max_daily_orders,
+            "entry_orders_today": entry_count,
+            "entries_remaining": max(settings.max_daily_orders - entry_count, 0),
+            "max_daily_loss": str(settings.max_daily_loss),
+            "max_order_notional": str(settings.max_order_notional),
+            "max_position_notional": str(settings.max_position_notional),
+        },
+        "scanner": runtime_state.last_scan,
+        "history": runtime_state.decision_history,
+        "positions": [public_position(position) for position in positions],
+        "open_orders": [public_order(order) for order in open_orders],
+        "recent_orders": [public_order(order) for order in bot_orders[:30]],
+        "last_order": runtime_state.last_order,
+    }
 
 
 def _ready_symbols() -> list[str]:
@@ -89,7 +224,7 @@ async def lifespan(app: FastAPI):
     await task
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="Alpaca Trading Bot", version="0.6.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -235,3 +370,73 @@ async def resume_paper(authorization: str | None = Header(default=None)):
     runtime_state.paused = False
     runtime_state.last_decision = "paper runtime resumed by administrator"
     return {"paused": False}
+
+
+@app.get("/v1/command/status")
+async def command_status(authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    try:
+        return await command_snapshot()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/v1/command/entries/disable")
+async def command_disable_entries(authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    runtime_state.entries_enabled = False
+    runtime_state.last_decision = "new entries disabled from COMMAND"
+    runtime_state.record_event(
+        kind="control",
+        action="entries_disabled",
+        message=runtime_state.last_decision,
+    )
+    return {"entries_enabled": False, "message": runtime_state.last_decision}
+
+
+@app.post("/v1/command/entries/enable")
+async def command_enable_entries(authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    if runtime_state.paused:
+        raise HTTPException(status_code=409, detail="runtime is paused")
+    if not settings.execution_authorized:
+        raise HTTPException(status_code=409, detail="live/paper execution is not authorized")
+    runtime_state.entries_enabled = True
+    runtime_state.last_decision = "new entries enabled from COMMAND"
+    runtime_state.record_event(
+        kind="control",
+        action="entries_enabled",
+        message=runtime_state.last_decision,
+    )
+    return {"entries_enabled": True, "message": runtime_state.last_decision}
+
+
+@app.post("/v1/command/orders/cancel")
+async def command_cancel_orders(authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    try:
+        result = await engine.cancel_pending_bot_orders()
+        if result.get("action") == "blocked":
+            raise HTTPException(status_code=409, detail=str(result.get("reason")))
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/v1/command/position/close")
+async def command_close_position(authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    runtime_state.entries_enabled = False
+    try:
+        result = await engine.close_managed_position()
+        if result.get("action") == "blocked":
+            raise HTTPException(status_code=409, detail=str(result.get("reason")))
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
