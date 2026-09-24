@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     max_position_notional: Decimal = Field(default=Decimal("80.35"), alias="MAX_POSITION_NOTIONAL")
     max_daily_orders: int = Field(default=2, alias="MAX_DAILY_ORDERS")
     max_daily_loss: Decimal = Field(default=Decimal("1.00"), alias="MAX_DAILY_LOSS")
+    max_concurrent_positions: int = Field(default=1, alias="MAX_CONCURRENT_POSITIONS")
+    max_new_entries_per_cycle: int = Field(default=1, alias="MAX_NEW_ENTRIES_PER_CYCLE")
+    max_total_position_notional: Decimal = Field(
+        default=Decimal("80.35"), alias="MAX_TOTAL_POSITION_NOTIONAL"
+    )
 
     allowed_symbols_raw: str = Field(default="SPY", alias="ALLOWED_SYMBOLS")
     scan_symbols_raw: str = Field(default="", alias="SCAN_SYMBOLS")
@@ -79,6 +84,8 @@ class Settings(BaseSettings):
     lookback_days: int = Field(default=2, alias="LOOKBACK_DAYS")
     data_feed: str = Field(default="iex", alias="DATA_FEED")
     poll_seconds: int = Field(default=15, alias="POLL_SECONDS")
+    max_bar_age_seconds: int = Field(default=90, alias="MAX_BAR_AGE_SECONDS")
+    max_spread_pct: Decimal = Field(default=Decimal("0.002"), alias="MAX_SPREAD_PCT")
 
     @property
     def base_url(self) -> str:
@@ -192,6 +199,20 @@ class Settings(BaseSettings):
             raise ValueError("MAX_DAILY_ORDERS cannot be negative")
         if self.max_daily_loss <= 0:
             raise ValueError("MAX_DAILY_LOSS must be positive")
+        if not 1 <= self.max_concurrent_positions <= 10:
+            raise ValueError("MAX_CONCURRENT_POSITIONS must be between 1 and 10")
+        if not 1 <= self.max_new_entries_per_cycle <= self.max_concurrent_positions:
+            raise ValueError(
+                "MAX_NEW_ENTRIES_PER_CYCLE must be between 1 and MAX_CONCURRENT_POSITIONS"
+            )
+        if self.max_total_position_notional < self.order_notional:
+            raise ValueError(
+                "MAX_TOTAL_POSITION_NOTIONAL cannot be below ORDER_NOTIONAL"
+            )
+        if not 30 <= self.max_bar_age_seconds <= 600:
+            raise ValueError("MAX_BAR_AGE_SECONDS must be between 30 and 600")
+        if not Decimal("0") < self.max_spread_pct < Decimal("0.05"):
+            raise ValueError("MAX_SPREAD_PCT must be between 0 and 0.05")
         if not self.scan_symbols:
             raise ValueError("SCAN_SYMBOLS/STRATEGY_SYMBOL cannot both be empty")
         if len(self.scan_symbols) > 30:
