@@ -251,6 +251,30 @@ async def monitor_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print(
+        "SAFE_RUNTIME_CONFIG",
+        {
+            "scan_only": settings.scan_only,
+            "execution_enabled": settings.execution_enabled,
+            "bot_armed": settings.bot_armed,
+            "live_trading": settings.live_trading,
+            "strategy_name": settings.strategy_name,
+            "scan_symbols": list(settings.scan_symbols),
+            "confirmation_symbols": list(settings.confirmation_symbols),
+            "fast_window": settings.fast_window,
+            "slow_window": settings.slow_window,
+            "entry_start": settings.entry_start_raw,
+            "entry_cutoff": settings.entry_cutoff_raw,
+            "max_hold_minutes": settings.max_hold_minutes,
+            "reentry_cooldown_minutes": settings.reentry_cooldown_minutes,
+            "stop_pct": str(settings.stop_pct),
+            "target_pct": str(settings.target_pct),
+            "order_notional": str(settings.order_notional),
+            "max_daily_orders": settings.max_daily_orders,
+            "max_daily_loss": str(settings.max_daily_loss),
+        },
+        flush=True,
+    )
     task = asyncio.create_task(monitor_loop())
     yield
     _stop.set()
