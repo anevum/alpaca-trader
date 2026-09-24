@@ -10,8 +10,8 @@ from .config import Settings
 class AlpacaClient:
     """Thin Alpaca Trading API client.
 
-    Execution is exposed here, but all automated order submission must pass through
-    ExecutionEngine, which enforces the configured paper/live gates and risk checks.
+    Automated order submission is exposed here, but every entry/exit is gated by
+    ExecutionEngine and the risk layer before this client is called.
     """
 
     def __init__(self, settings: Settings):
@@ -50,19 +50,30 @@ class AlpacaClient:
         return await self._request("GET", "/v2/positions")
 
     async def open_orders(self) -> list[dict[str, Any]]:
-        return await self._request("GET", "/v2/orders", params={"status": "open"})
+        return await self._request(
+            "GET",
+            "/v2/orders",
+            params={"status": "open", "nested": "true"},
+        )
 
     async def recent_orders(self, limit: int = 100) -> list[dict[str, Any]]:
         return await self._request(
             "GET",
             "/v2/orders",
-            params={"status": "all", "limit": limit, "direction": "desc"},
+            params={
+                "status": "all",
+                "limit": limit,
+                "direction": "desc",
+                "nested": "true",
+            },
         )
 
-    async def submit_market_buy(
+    async def submit_bracket_market_buy(
         self,
         symbol: str,
-        notional: str,
+        qty: str,
+        take_profit_price: str,
+        stop_price: str,
         client_order_id: str,
     ) -> dict[str, Any]:
         return await self._request(
@@ -70,10 +81,13 @@ class AlpacaClient:
             "/v2/orders",
             json={
                 "symbol": symbol,
-                "notional": notional,
+                "qty": qty,
                 "side": "buy",
                 "type": "market",
                 "time_in_force": "day",
+                "order_class": "bracket",
+                "take_profit": {"limit_price": take_profit_price},
+                "stop_loss": {"stop_price": stop_price},
                 "client_order_id": client_order_id,
             },
         )
@@ -96,3 +110,10 @@ class AlpacaClient:
                 "client_order_id": client_order_id,
             },
         )
+
+    async def cancel_order(self, order_id: str) -> None:
+        try:
+            await self._request("DELETE", f"/v2/orders/{order_id}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
