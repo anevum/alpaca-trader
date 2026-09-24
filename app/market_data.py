@@ -26,6 +26,24 @@ class MarketDataClient:
     async def bars(self, symbol: str) -> list[dict[str, Any]]:
         return (await self.bars_many([symbol])).get(symbol.upper(), [])
 
+    async def latest_quote(self, symbol: str) -> dict[str, Any]:
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+
+        normalized = symbol.strip().upper()
+        if not normalized:
+            return {}
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{self.settings.data_base_url}/v2/stocks/{normalized}/quotes/latest",
+                headers=self.headers,
+                params={"feed": self.settings.data_feed},
+            )
+            response.raise_for_status()
+            data = response.json()
+        return data.get("quote") or {}
+
     async def bars_many(self, symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
