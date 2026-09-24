@@ -87,6 +87,15 @@ class ReadOnlyScanner:
                 buy_signals.append(signal)
 
         self.state.record_scan(scan, at=now)
+        print(
+            "SAFE_SCAN_CYCLE",
+            {
+                "at": now.isoformat(),
+                "symbols": len(self.settings.scan_symbols),
+                "ready": [signal.symbol for signal in buy_signals],
+            },
+            flush=True,
+        )
 
         if not buy_signals:
             self.state.last_signal = {
