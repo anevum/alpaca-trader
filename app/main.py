@@ -12,6 +12,7 @@ from .alpaca_client import AlpacaClient
 from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
+from .research import research_summary
 from .state import runtime_state
 from .scanner import ReadOnlyScanner
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
@@ -196,6 +197,7 @@ async def command_snapshot() -> dict:
         },
         "scanner": runtime_state.last_scan,
         "history": runtime_state.decision_history,
+        "research": research_summary(runtime_state),
         "positions": [public_position(position) for position in positions],
         "open_orders": [public_order(order) for order in open_orders],
         "recent_orders": [public_order(order) for order in bot_orders[:30]],
@@ -406,6 +408,12 @@ async def status(authorization: str | None = Header(default=None)):
             "last_error": runtime_state.last_error,
         },
     }
+
+
+@app.get("/v1/research")
+async def research(authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    return research_summary(runtime_state)
 
 
 @app.get("/v1/account")
