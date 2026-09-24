@@ -55,14 +55,34 @@ def validate_buy(
     if blocked:
         return blocked
 
-    if positions:
-        return RiskDecision(False, "another position is already open")
+    normalized_symbol = symbol.upper()
+    if any(
+        str(position.get("symbol", "")).upper() == normalized_symbol
+        and d(position.get("qty")) > 0
+        for position in positions
+    ):
+        return RiskDecision(False, f"{normalized_symbol} position is already open")
+
+    long_positions = [
+        position for position in positions
+        if d(position.get("qty")) > 0
+    ]
+    if len(long_positions) >= settings.max_concurrent_positions:
+        return RiskDecision(False, "maximum concurrent-position limit reached")
     if notional <= 0:
         return RiskDecision(False, "order notional must be positive")
     if notional > settings.max_order_notional:
         return RiskDecision(False, "order exceeds MAX_ORDER_NOTIONAL")
     if notional > settings.max_position_notional:
         return RiskDecision(False, "order exceeds MAX_POSITION_NOTIONAL")
+
+    current_exposure = sum(
+        (abs(d(position.get("market_value"))) for position in long_positions),
+        Decimal("0"),
+    )
+    if current_exposure + notional > settings.max_total_position_notional:
+        return RiskDecision(False, "order exceeds MAX_TOTAL_POSITION_NOTIONAL")
+
     if entry_orders_today >= settings.max_daily_orders:
         return RiskDecision(False, "daily entry-order limit reached")
 
