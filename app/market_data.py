@@ -73,3 +73,34 @@ class MarketDataClient:
                 raise RuntimeError("market-data pagination exceeded safety limit")
 
         return output
+
+
+    async def latest_quotes_many(
+        self,
+        symbols: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+
+        normalized = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
+        if not normalized:
+            return {}
+
+        params = {
+            "symbols": ",".join(normalized),
+            "feed": self.settings.data_feed,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{self.settings.data_base_url}/v2/stocks/quotes/latest",
+                headers=self.headers,
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        quotes = data.get("quotes") or {}
+        return {
+            symbol: quotes.get(symbol, {})
+            for symbol in normalized
+        }
