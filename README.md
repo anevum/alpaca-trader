@@ -62,3 +62,6 @@ After account connectivity is verified, implement exactly one deterministic stra
 ## Stage 3: live execution
 
 Live execution is a separate change. It should require all of the following at runtime: an explicitly armed bot, an allowlisted symbol, order/position/daily-loss limits, and an explicit live-trading acknowledgement. Do not add live credentials until the paper strategy has been reviewed.
+
+
+Deployment bootstrap: Railway service `alpaca-trader` is connected to this repository; pushes to `main` may trigger deployment.
