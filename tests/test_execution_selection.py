@@ -1,16 +1,24 @@
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from app.execution import ExecutionEngine
 from app.strategy import Signal
 
 
-def engine_with_settings(max_hold=15, cooldown=2):
-    engine = object.__new__(ExecutionEngine)
-    engine.settings = SimpleNamespace(
-        max_hold_minutes=max_hold,
-        reentry_cooldown_minutes=cooldown,
+NY = ZoneInfo("America/New_York")
+
+
+def engine_with_settings(**overrides):
+    values = dict(
+        max_bar_age_seconds=90,
+        max_spread_pct=Decimal("0.002"),
+        min_confirmations=1,
     )
+    values.update(overrides)
+    engine = object.__new__(ExecutionEngine)
+    engine.settings = SimpleNamespace(**values)
     return engine
 
 
@@ -22,8 +30,24 @@ def signal(symbol, momentum, vwap_edge, confirmations):
             "momentum_pct": str(momentum),
             "vwap_edge_pct": str(vwap_edge),
             "confirmation_passes": confirmations,
+            "confirmations": {
+                "QQQ": {"ok": True},
+                "SMH": {"ok": False},
+            },
         },
     )
+
+
+def bar(minute, close="100"):
+    return {
+        "t": f"2026-09-24T{minute}:00-04:00",
+        "o": close,
+        "h": close,
+        "l": close,
+        "c": close,
+        "v": "1000",
+        "vw": close,
+    }
 
 
 def test_signal_rank_prefers_stronger_momentum_first():
@@ -40,16 +64,80 @@ def test_signal_rank_uses_vwap_edge_as_tiebreaker():
     assert ExecutionEngine._signal_rank(b) > ExecutionEngine._signal_rank(a)
 
 
-def test_same_symbol_lockout_extends_beyond_max_hold_window():
-    engine = engine_with_settings(max_hold=15, cooldown=2)
-    assert engine._same_symbol_lockout_minutes() == 17
+def test_latest_bot_exit_uses_actual_fill_time():
+    orders = [
+        {
+            "side": "sell",
+            "client_order_id": "anevum-spy-time-123",
+            "submitted_at": "2026-09-24T14:00:00Z",
+            "filled_at": "2026-09-24T14:00:05Z",
+        },
+        {
+            "side": "sell",
+            "client_order_id": "anevum-spy-target-456",
+            "submitted_at": "2026-09-24T15:00:00Z",
+            "filled_at": "2026-09-24T15:00:03Z",
+        },
+    ]
+    latest = ExecutionEngine._latest_bot_exit_today(orders, "SPY")
+    assert latest == datetime(2026, 9, 24, 11, 0, 3, tzinfo=NY)
 
 
-def test_same_symbol_lockout_uses_cooldown_when_no_max_hold():
-    engine = engine_with_settings(max_hold=0, cooldown=3)
-    assert engine._same_symbol_lockout_minutes() == 3
+def test_unfilled_sell_does_not_start_reentry_cooldown():
+    orders = [
+        {
+            "side": "sell",
+            "client_order_id": "anevum-spy-time-123",
+            "submitted_at": "2026-09-24T15:00:00Z",
+            "filled_at": None,
+        }
+    ]
+    assert ExecutionEngine._latest_bot_exit_today(orders, "SPY") is None
 
 
-def test_same_symbol_lockout_can_be_disabled():
-    engine = engine_with_settings(max_hold=15, cooldown=0)
-    assert engine._same_symbol_lockout_minutes() == 0
+def test_market_quality_rejects_stale_candidate_bar():
+    engine = engine_with_settings(max_bar_age_seconds=90)
+    s = signal("SPY", Decimal("0.001"), Decimal("0.001"), 1)
+    now = datetime(2026, 9, 24, 13, 37, 10, tzinfo=NY)
+    ok, reason, details = engine._market_quality(
+        s,
+        [bar("13:08")],
+        {"bp": "100", "ap": "100.05", "t": "2026-09-24T13:37:09-04:00"},
+        {"QQQ": [bar("13:36")]},
+        now,
+    )
+    assert not ok
+    assert "stale" in reason
+    assert details["bar_age_seconds"] > 90
+
+
+def test_market_quality_rejects_wide_spread():
+    engine = engine_with_settings(max_spread_pct=Decimal("0.002"))
+    s = signal("SPY", Decimal("0.001"), Decimal("0.001"), 1)
+    now = datetime(2026, 9, 24, 13, 37, 10, tzinfo=NY)
+    ok, reason, details = engine._market_quality(
+        s,
+        [bar("13:36")],
+        {"bp": "100", "ap": "100.30", "t": "2026-09-24T13:37:09-04:00"},
+        {"QQQ": [bar("13:36")]},
+        now,
+    )
+    assert not ok
+    assert "spread" in reason
+    assert Decimal(details["spread_pct"]) > Decimal("0.002")
+
+
+def test_market_quality_accepts_fresh_tight_market():
+    engine = engine_with_settings()
+    s = signal("SPY", Decimal("0.001"), Decimal("0.001"), 1)
+    now = datetime(2026, 9, 24, 13, 37, 10, tzinfo=NY)
+    ok, reason, details = engine._market_quality(
+        s,
+        [bar("13:36")],
+        {"bp": "100", "ap": "100.05", "t": "2026-09-24T13:37:09-04:00"},
+        {"QQQ": [bar("13:36")]},
+        now,
+    )
+    assert ok
+    assert reason == "market quality checks passed"
+    assert details["fresh_confirmation_passes"] == 1
