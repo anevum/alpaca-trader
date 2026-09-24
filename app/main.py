@@ -13,6 +13,7 @@ from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .state import runtime_state
+from .scanner import ReadOnlyScanner
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
 
 settings = get_settings()
@@ -43,6 +44,7 @@ else:
         confirmation_symbols=settings.confirmation_symbols,
     )
 engine = ExecutionEngine(settings, client, market_data, strategy, runtime_state)
+scanner = ReadOnlyScanner(settings, client, market_data, strategy, runtime_state)
 _stop = asyncio.Event()
 
 
@@ -223,12 +225,18 @@ async def monitor_loop():
     while not _stop.is_set():
         try:
             if settings.credentials_configured:
-                await refresh_account_state()
-                should_run_strategy = settings.scan_only or (
-                    settings.execution_enabled and settings.bot_armed
-                )
-                if should_run_strategy and not runtime_state.paused:
-                    await engine.run_once()
+                if settings.scan_only:
+                    runtime_state.mark_poll()
+                    runtime_state.funding_ready = False
+                    await scanner.scan_once()
+                else:
+                    await refresh_account_state()
+                    if (
+                        settings.execution_enabled
+                        and settings.bot_armed
+                        and not runtime_state.paused
+                    ):
+                        await engine.run_once()
             else:
                 runtime_state.funding_ready = False
                 runtime_state.last_error = "credentials not configured"
@@ -379,6 +387,8 @@ async def run_once(authorization: str | None = Header(default=None)):
     if runtime_state.paused:
         raise HTTPException(status_code=409, detail="runtime is paused")
     try:
+        if settings.scan_only:
+            return await scanner.scan_once()
         return await engine.run_once()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -432,6 +442,8 @@ async def command_disable_entries(authorization: str | None = Header(default=Non
 @app.post("/v1/command/entries/enable")
 async def command_enable_entries(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
+    if settings.scan_only:
+        raise HTTPException(status_code=409, detail="scan-only service cannot enable entries")
     if runtime_state.paused:
         raise HTTPException(status_code=409, detail="runtime is paused")
     if not settings.execution_authorized:
@@ -449,6 +461,8 @@ async def command_enable_entries(authorization: str | None = Header(default=None
 @app.post("/v1/command/orders/cancel")
 async def command_cancel_orders(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
+    if settings.scan_only:
+        raise HTTPException(status_code=409, detail="scan-only service cannot cancel orders")
     try:
         result = await engine.cancel_pending_bot_orders()
         if result.get("action") == "blocked":
@@ -463,6 +477,8 @@ async def command_cancel_orders(authorization: str | None = Header(default=None)
 @app.post("/v1/command/position/close")
 async def command_close_position(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
+    if settings.scan_only:
+        raise HTTPException(status_code=409, detail="scan-only service cannot close positions")
     runtime_state.entries_enabled = False
     try:
         result = await engine.close_managed_position()
