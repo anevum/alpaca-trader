@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 from uuid import uuid4
@@ -38,8 +38,9 @@ class ExecutionEngine:
         positions: list[dict[str, Any]],
         symbol: str,
     ) -> dict[str, Any] | None:
+        symbol = symbol.upper()
         for position in positions:
-            if str(position.get("symbol", "")).upper() == symbol.upper():
+            if str(position.get("symbol", "")).upper() == symbol:
                 return position
         return None
 
@@ -48,17 +49,19 @@ class ExecutionEngine:
         open_orders: list[dict[str, Any]],
         symbol: str,
     ) -> list[dict[str, Any]]:
+        symbol = symbol.upper()
         return [
             order
             for order in open_orders
-            if str(order.get("symbol", "")).upper() == symbol.upper()
+            if str(order.get("symbol", "")).upper() == symbol
         ]
 
     @staticmethod
-    def _has_eod_exit_order(open_orders: list[dict[str, Any]], symbol: str) -> bool:
-        prefix = f"anevum-{symbol.lower()}-eod-"
+    def _has_bot_exit_order(open_orders: list[dict[str, Any]], symbol: str) -> bool:
+        prefix = f"anevum-{symbol.lower()}-"
         return any(
-            str(order.get("client_order_id", "")).startswith(prefix)
+            str(order.get("side", "")).lower() == "sell"
+            and str(order.get("client_order_id", "")).startswith(prefix)
             for order in open_orders
         )
 
@@ -77,10 +80,10 @@ class ExecutionEngine:
                 continue
             try:
                 stamp = datetime.fromisoformat(str(submitted).replace("Z", "+00:00"))
-                if stamp.astimezone(NY).date() == today:
-                    count += 1
             except ValueError:
                 continue
+            if stamp.astimezone(NY).date() == today:
+                count += 1
         return count
 
     @staticmethod
@@ -100,12 +103,11 @@ class ExecutionEngine:
                 continue
             try:
                 stamp = datetime.fromisoformat(str(submitted).replace("Z", "+00:00"))
-                if stamp.astimezone(NY).date() == today:
-                    return True
             except ValueError:
                 continue
+            if stamp.astimezone(NY).date() == today:
+                return True
         return False
-
 
     @staticmethod
     def _latest_bot_buy_today(
@@ -120,11 +122,37 @@ class ExecutionEngine:
                 continue
             if not str(order.get("client_order_id", "")).startswith(prefix):
                 continue
-            submitted = order.get("submitted_at")
-            if not submitted:
+            raw_stamp = order.get("filled_at") or order.get("submitted_at")
+            if not raw_stamp:
                 continue
             try:
-                stamp = datetime.fromisoformat(str(submitted).replace("Z", "+00:00")).astimezone(NY)
+                stamp = datetime.fromisoformat(str(raw_stamp).replace("Z", "+00:00")).astimezone(NY)
+            except ValueError:
+                continue
+            if stamp.date() != today:
+                continue
+            if latest is None or stamp > latest:
+                latest = stamp
+        return latest
+
+    @staticmethod
+    def _latest_bot_exit_today(
+        orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> datetime | None:
+        today = datetime.now(NY).date()
+        prefix = f"anevum-{symbol.lower()}-"
+        latest: datetime | None = None
+        for order in orders:
+            if str(order.get("side", "")).lower() != "sell":
+                continue
+            if not str(order.get("client_order_id", "")).startswith(prefix):
+                continue
+            raw_stamp = order.get("filled_at")
+            if not raw_stamp:
+                continue
+            try:
+                stamp = datetime.fromisoformat(str(raw_stamp).replace("Z", "+00:00")).astimezone(NY)
             except ValueError:
                 continue
             if stamp.date() != today:
@@ -184,15 +212,121 @@ class ExecutionEngine:
             int(metadata.get("confirmation_passes", 0) or 0),
         )
 
-    def _same_symbol_lockout_minutes(self) -> int:
-        if self.settings.reentry_cooldown_minutes <= 0:
-            return 0
-        return (
-            self.settings.max_hold_minutes
-            + self.settings.reentry_cooldown_minutes
-            if self.settings.max_hold_minutes > 0
-            else self.settings.reentry_cooldown_minutes
-        )
+    @staticmethod
+    def _timestamp(raw: Any) -> datetime | None:
+        if not raw:
+            return None
+        try:
+            stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=NY)
+        return stamp.astimezone(NY)
+
+    def _latest_completed_bar(
+        self,
+        bars: list[dict[str, Any]],
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        latest: dict[str, Any] | None = None
+        latest_stamp: datetime | None = None
+        for bar in bars:
+            stamp = self._timestamp(bar.get("t"))
+            if stamp is None:
+                continue
+            if stamp.date() != now.date():
+                continue
+            if stamp + timedelta(minutes=1) > now:
+                continue
+            if latest_stamp is None or stamp > latest_stamp:
+                latest = bar
+                latest_stamp = stamp
+        return latest
+
+    def _market_quality(
+        self,
+        signal: Signal,
+        bars: list[dict[str, Any]],
+        quote: dict[str, Any],
+        confirmation_bars: dict[str, list[dict[str, Any]]],
+        now: datetime,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        details: dict[str, Any] = {}
+
+        latest = self._latest_completed_bar(bars, now)
+        if latest is None:
+            return False, "no recent completed bar", details
+
+        bar_stamp = self._timestamp(latest.get("t"))
+        if bar_stamp is None:
+            return False, "latest bar timestamp is invalid", details
+
+        completed_at = bar_stamp + timedelta(minutes=1)
+        bar_age_seconds = max((now - completed_at).total_seconds(), 0)
+        details["bar_age_seconds"] = round(bar_age_seconds, 3)
+        if bar_age_seconds > self.settings.max_bar_age_seconds:
+            return (
+                False,
+                f"latest completed bar is stale ({bar_age_seconds:.0f}s old)",
+                details,
+            )
+
+        bid = Decimal(str(quote.get("bp", quote.get("bid_price", "0")) or "0"))
+        ask = Decimal(str(quote.get("ap", quote.get("ask_price", "0")) or "0"))
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return False, "latest quote is missing or invalid", details
+
+        midpoint = (bid + ask) / Decimal("2")
+        spread_pct = (ask - bid) / midpoint if midpoint > 0 else Decimal("1")
+        details["bid"] = str(bid)
+        details["ask"] = str(ask)
+        details["spread_pct"] = str(spread_pct)
+        if spread_pct > self.settings.max_spread_pct:
+            return (
+                False,
+                f"spread {spread_pct:.4%} exceeds limit "
+                f"{self.settings.max_spread_pct:.4%}",
+                details,
+            )
+
+        quote_stamp = self._timestamp(quote.get("t", quote.get("timestamp")))
+        if quote_stamp is not None:
+            quote_age_seconds = max((now - quote_stamp).total_seconds(), 0)
+            details["quote_age_seconds"] = round(quote_age_seconds, 3)
+            if quote_age_seconds > self.settings.max_bar_age_seconds:
+                return (
+                    False,
+                    f"latest quote is stale ({quote_age_seconds:.0f}s old)",
+                    details,
+                )
+
+        fresh_confirmation_passes = 0
+        confirmations = (signal.metadata or {}).get("confirmations") or {}
+        for confirmation_symbol, payload in confirmations.items():
+            if not bool((payload or {}).get("ok")):
+                continue
+            latest_confirmation = self._latest_completed_bar(
+                confirmation_bars.get(confirmation_symbol, []),
+                now,
+            )
+            if latest_confirmation is None:
+                continue
+            confirmation_stamp = self._timestamp(latest_confirmation.get("t"))
+            if confirmation_stamp is None:
+                continue
+            age = max(
+                (now - (confirmation_stamp + timedelta(minutes=1))).total_seconds(),
+                0,
+            )
+            if age <= self.settings.max_bar_age_seconds:
+                fresh_confirmation_passes += 1
+
+        details["fresh_confirmation_passes"] = fresh_confirmation_passes
+        if fresh_confirmation_passes < self.settings.min_confirmations:
+            return False, "not enough fresh market confirmations passed", details
+
+        return True, "market quality checks passed", details
 
     @staticmethod
     def _signal_payload(signal: Signal) -> dict[str, Any]:
@@ -207,6 +341,22 @@ class ExecutionEngine:
             "metadata": signal.metadata,
         }
 
+    def _managed_positions(
+        self,
+        positions: list[dict[str, Any]],
+        recent_orders: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return [
+            position
+            for position in positions
+            if Decimal(str(position.get("qty", "0") or "0")) > 0
+            and str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
+            and self._bot_bought_symbol_today(
+                recent_orders,
+                str(position.get("symbol", "")).upper(),
+            )
+        ]
+
     async def _force_flatten(
         self,
         symbol: str,
@@ -217,12 +367,11 @@ class ExecutionEngine:
         exit_reason: str = "forced end-of-day flatten",
         action_tag: str = "eod",
     ) -> dict[str, Any]:
-        if action_tag == "eod" and self._has_eod_exit_order(open_orders, symbol):
-            self.state.last_decision = "end-of-day exit order already open"
+        if self._has_bot_exit_order(open_orders, symbol):
             return {
                 "action": "hold",
                 "symbol": symbol,
-                "reason": "end-of-day exit order already open",
+                "reason": "bot exit order already open",
             }
 
         for order in self._orders_for_symbol(open_orders, symbol):
@@ -241,25 +390,22 @@ class ExecutionEngine:
             await asyncio.sleep(0.25)
 
         if remaining_orders:
-            self.state.last_decision = "protective orders are still open; close deferred"
             return {
                 "action": "hold",
                 "symbol": symbol,
-                "reason": self.state.last_decision,
+                "reason": "orders are still open; close deferred",
             }
 
         positions = await self.client.positions()
         position = self._position_for_symbol(positions, symbol)
         if not position:
-            self.state.last_decision = "position closed while canceling protective orders"
             return {
                 "action": "hold",
                 "symbol": symbol,
-                "reason": self.state.last_decision,
+                "reason": "position closed before exit submission",
             }
 
         risk = validate_sell_to_flat(self.settings, symbol, account, position)
-        self.state.last_decision = risk.reason
         if not risk.allowed:
             return {
                 "action": "blocked",
@@ -272,7 +418,7 @@ class ExecutionEngine:
             qty=str(position.get("qty")),
             client_order_id=self._client_order_id(symbol, action_tag),
         )
-        self.state.last_order = {
+        order_payload = {
             "id": order.get("id"),
             "client_order_id": order.get("client_order_id"),
             "symbol": order.get("symbol"),
@@ -282,15 +428,29 @@ class ExecutionEngine:
             "submitted_at": order.get("submitted_at"),
             "reason": exit_reason,
         }
-        self.state.last_decision = f"{exit_reason} order submitted"
-        return {"action": "submitted", "order": self.state.last_order}
+        self.state.last_order = order_payload
+        self.state.record_event(
+            kind="execution",
+            symbol=symbol,
+            action="sell",
+            message=f"{exit_reason} order submitted",
+        )
+        return {
+            "action": "submitted",
+            "symbol": symbol,
+            "reason": f"{exit_reason} order submitted",
+            "order": order_payload,
+        }
 
     async def cancel_pending_bot_orders(self) -> dict[str, Any]:
         positions = await self.client.positions()
         if positions:
             return {
                 "action": "blocked",
-                "reason": "cannot cancel protective orders while a position is open; close the position instead",
+                "reason": (
+                    "cannot cancel bot orders while positions are open; "
+                    "close positions instead"
+                ),
             }
 
         open_orders = await self.client.open_orders()
@@ -299,10 +459,13 @@ class ExecutionEngine:
             for order in open_orders
             if str(order.get("client_order_id", "")).startswith("anevum-")
         ]
-        for order in bot_orders:
-            order_id = order.get("id")
-            if order_id:
-                await self.client.cancel_order(str(order_id))
+        await asyncio.gather(
+            *[
+                self.client.cancel_order(str(order.get("id")))
+                for order in bot_orders
+                if order.get("id")
+            ]
+        )
 
         self.state.record_event(
             kind="control",
@@ -320,37 +483,132 @@ class ExecutionEngine:
         recent_orders = await self.client.recent_orders(limit=100)
         open_orders = await self.client.open_orders()
 
-        managed_positions = [
-            position
-            for position in positions
-            if Decimal(str(position.get("qty", "0"))) > 0
-            and str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
-            and self._bot_bought_symbol_today(
-                recent_orders,
-                str(position.get("symbol", "")).upper(),
-            )
-        ]
+        managed_positions = self._managed_positions(positions, recent_orders)
         if not managed_positions:
             return {
                 "action": "hold",
                 "reason": "no bot-managed long position is open",
             }
 
-        position = managed_positions[0]
-        symbol = str(position.get("symbol", "")).upper()
-        result = await self._force_flatten(
-            symbol=symbol,
-            account=account,
-            position=position,
-            open_orders=open_orders,
+        results = await asyncio.gather(
+            *[
+                self._force_flatten(
+                    symbol=str(position.get("symbol", "")).upper(),
+                    account=account,
+                    position=position,
+                    open_orders=open_orders,
+                    exit_reason="manual close requested",
+                    action_tag="manual",
+                )
+                for position in managed_positions
+            ],
+            return_exceptions=True,
         )
-        self.state.record_event(
-            kind="control",
-            symbol=symbol,
-            action=str(result.get("action") or ""),
-            message=str(result.get("reason") or "manual close requested"),
+
+        normalized: list[dict[str, Any]] = []
+        for position, result in zip(managed_positions, results):
+            symbol = str(position.get("symbol", "")).upper()
+            if isinstance(result, Exception):
+                normalized.append(
+                    {
+                        "action": "error",
+                        "symbol": symbol,
+                        "reason": f"{type(result).__name__}: {result}",
+                    }
+                )
+            else:
+                normalized.append(result)
+
+        submitted = sum(item.get("action") == "submitted" for item in normalized)
+        return {
+            "action": "submitted" if submitted else "hold",
+            "reason": f"manual close submitted for {submitted} managed position(s)",
+            "results": normalized,
+        }
+
+    async def _exit_managed_positions(
+        self,
+        account: dict[str, Any],
+        managed_positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+        recent_orders: list[dict[str, Any]],
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        exit_specs: list[tuple[dict[str, Any], str, str]] = []
+
+        for position in managed_positions:
+            symbol = str(position.get("symbol", "")).upper()
+            if self._has_bot_exit_order(open_orders, symbol):
+                continue
+
+            if now.time() >= self.settings.force_flat_time:
+                exit_specs.append(
+                    (position, "eod", "forced end-of-day flatten")
+                )
+                continue
+
+            price_exit = self._managed_price_exit(
+                position,
+                self.settings.stop_pct,
+                self.settings.target_pct,
+            )
+            if price_exit is not None:
+                action_tag, exit_reason = price_exit
+                exit_specs.append((position, action_tag, exit_reason))
+                continue
+
+            if self.settings.max_hold_minutes > 0:
+                entry_time = self._latest_bot_buy_today(recent_orders, symbol)
+                if entry_time is not None:
+                    held_minutes = (now - entry_time).total_seconds() / 60
+                    if held_minutes >= self.settings.max_hold_minutes:
+                        exit_specs.append(
+                            (
+                                position,
+                                "time",
+                                f"max hold {self.settings.max_hold_minutes} minutes",
+                            )
+                        )
+
+        if not exit_specs:
+            return []
+
+        results = await asyncio.gather(
+            *[
+                self._force_flatten(
+                    symbol=str(position.get("symbol", "")).upper(),
+                    account=account,
+                    position=position,
+                    open_orders=open_orders,
+                    exit_reason=reason,
+                    action_tag=tag,
+                )
+                for position, tag, reason in exit_specs
+            ],
+            return_exceptions=True,
         )
-        return result
+
+        normalized: list[dict[str, Any]] = []
+        for (position, _tag, reason), result in zip(exit_specs, results):
+            symbol = str(position.get("symbol", "")).upper()
+            if isinstance(result, Exception):
+                normalized.append(
+                    {
+                        "action": "error",
+                        "symbol": symbol,
+                        "reason": f"{type(result).__name__}: {result}",
+                    }
+                )
+                self.state.record_event(
+                    kind="execution",
+                    symbol=symbol,
+                    action="error",
+                    message=f"exit failed: {reason}",
+                    reason=str(result),
+                )
+            else:
+                normalized.append(result)
+        return normalized
 
     async def run_once(self) -> dict[str, Any]:
         self.state.mark_strategy()
@@ -380,79 +638,27 @@ class ExecutionEngine:
         recent_orders = await self.client.recent_orders(limit=100)
         now = datetime.now(NY)
 
-        managed_positions = [
-            position
-            for position in positions
-            if Decimal(str(position.get("qty", "0"))) > 0
-            and str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
-            and self._bot_bought_symbol_today(
-                recent_orders,
-                str(position.get("symbol", "")).upper(),
+        managed_positions = self._managed_positions(positions, recent_orders)
+        exit_results = await self._exit_managed_positions(
+            account,
+            managed_positions,
+            open_orders,
+            recent_orders,
+            now,
+        )
+        if exit_results:
+            submitted = sum(
+                item.get("action") == "submitted"
+                for item in exit_results
             )
-        ]
-
-        if managed_positions:
-            position = managed_positions[0]
-            symbol = str(position.get("symbol", "")).upper()
-            if now.time() >= self.settings.force_flat_time:
-                return await self._force_flatten(
-                    symbol=symbol,
-                    account=account,
-                    position=position,
-                    open_orders=open_orders,
-                )
-
-            price_exit = self._managed_price_exit(
-                position,
-                self.settings.stop_pct,
-                self.settings.target_pct,
-            )
-            if price_exit is not None:
-                action_tag, exit_reason = price_exit
-                return await self._force_flatten(
-                    symbol=symbol,
-                    account=account,
-                    position=position,
-                    open_orders=open_orders,
-                    exit_reason=exit_reason,
-                    action_tag=action_tag,
-                )
-
-            if self.settings.max_hold_minutes > 0:
-                entry_time = self._latest_bot_buy_today(recent_orders, symbol)
-                if entry_time is not None:
-                    held_minutes = (now - entry_time).total_seconds() / 60
-                    if held_minutes >= self.settings.max_hold_minutes:
-                        return await self._force_flatten(
-                            symbol=symbol,
-                            account=account,
-                            position=position,
-                            open_orders=open_orders,
-                            exit_reason=f"max hold {self.settings.max_hold_minutes} minutes",
-                            action_tag="time",
-                        )
-
             self.state.last_decision = (
-                f"{symbol} position already open; bot-managed stop/target/time exits active"
+                f"managed {len(exit_results)} exit condition(s); "
+                f"submitted {submitted} sell order(s)"
             )
             return {
-                "action": "hold",
-                "symbol": symbol,
+                "action": "submitted" if submitted else "hold",
                 "reason": self.state.last_decision,
-            }
-
-        if positions:
-            self.state.last_decision = "another account position is already open"
-            return {
-                "action": "hold",
-                "reason": self.state.last_decision,
-            }
-
-        if open_orders:
-            self.state.last_decision = "an account order is already open"
-            return {
-                "action": "hold",
-                "reason": self.state.last_decision,
+                "results": exit_results,
             }
 
         symbols = list(
@@ -465,6 +671,7 @@ class ExecutionEngine:
         buy_signals: list[Signal] = []
         scan: dict[str, Any] = {}
         for symbol in self.settings.scan_symbols:
+            has_position = self._position_for_symbol(positions, symbol) is not None
             signal = self.strategy.evaluate(
                 bars=market_bars.get(symbol, []),
                 confirmation_bars={
@@ -472,13 +679,42 @@ class ExecutionEngine:
                     for confirmation_symbol in self.settings.confirmation_symbols
                 },
                 symbol=symbol,
-                has_position=False,
+                has_position=has_position,
                 order_notional=self.settings.order_notional,
                 now=now,
             )
             scan[symbol] = self._signal_payload(signal)
             if signal.action == "buy":
                 buy_signals.append(signal)
+
+        if buy_signals:
+            latest_quotes = await self.market_data.latest_quotes_many(
+                [signal.symbol for signal in buy_signals]
+            )
+            quality_signals: list[Signal] = []
+            confirmation_bars = {
+                confirmation_symbol: market_bars.get(confirmation_symbol, [])
+                for confirmation_symbol in self.settings.confirmation_symbols
+            }
+            for signal in buy_signals:
+                allowed, reason, quality = self._market_quality(
+                    signal,
+                    market_bars.get(signal.symbol, []),
+                    latest_quotes.get(signal.symbol, {}),
+                    confirmation_bars,
+                    now,
+                )
+                signal.metadata = dict(signal.metadata or {})
+                signal.metadata["market_quality"] = quality
+                if allowed:
+                    quality_signals.append(signal)
+                    scan[signal.symbol] = self._signal_payload(signal)
+                else:
+                    payload = self._signal_payload(signal)
+                    payload["action"] = "hold"
+                    payload["reason"] = reason
+                    scan[signal.symbol] = payload
+            buy_signals = quality_signals
 
         self.state.record_scan(scan, at=now)
         hold_reasons: dict[str, int] = {}
@@ -487,12 +723,18 @@ class ExecutionEngine:
                 continue
             reason = str(payload.get("reason") or "unknown")
             hold_reasons[reason] = hold_reasons.get(reason, 0) + 1
+
         print(
             "LIVE_SCAN_CYCLE",
             {
                 "at": now.isoformat(),
                 "symbols": len(self.settings.scan_symbols),
                 "ready": [signal.symbol for signal in buy_signals],
+                "open_positions": [
+                    str(position.get("symbol", "")).upper()
+                    for position in positions
+                    if Decimal(str(position.get("qty", "0") or "0")) > 0
+                ],
                 "hold_reasons": hold_reasons,
             },
             flush=True,
@@ -511,106 +753,206 @@ class ExecutionEngine:
             self.state.last_decision = self.state.last_signal["reason"]
             return self.state.last_signal
 
-        # When multiple candidates qualify, prefer the strongest rolling
-        # momentum/VWAP setup. Equal scores preserve SCAN_SYMBOLS order.
-        signal = max(buy_signals, key=self._signal_rank)
-        symbol = signal.symbol
-        self.state.last_signal = self._signal_payload(signal)
+        ranked = sorted(
+            buy_signals,
+            key=self._signal_rank,
+            reverse=True,
+        )
+        self.state.last_signal = self._signal_payload(ranked[0])
 
         if not self.state.entries_enabled:
-            self.state.last_decision = "qualified entry blocked because new entries are disabled"
-            self.state.record_event(
-                kind="control",
-                symbol=symbol,
-                action="blocked",
-                message=self.state.last_decision,
-                at=now,
+            self.state.last_decision = (
+                "qualified entries blocked because new entries are disabled"
             )
             return {
                 "action": "blocked",
-                "symbol": symbol,
                 "reason": self.state.last_decision,
-                "signal": self.state.last_signal,
+                "qualified_symbols": [signal.symbol for signal in ranked],
             }
 
-        lockout_minutes = self._same_symbol_lockout_minutes()
-        if lockout_minutes > 0:
-            latest_entry = self._latest_bot_buy_today(recent_orders, symbol)
-            if latest_entry is not None:
-                minutes_since_entry = (now - latest_entry).total_seconds() / 60
-                if minutes_since_entry < lockout_minutes:
-                    self.state.last_decision = (
-                        f"{symbol} same-symbol lockout active "
-                        f"({lockout_minutes} minutes from prior entry)"
-                    )
-                    return {
-                        "action": "hold",
-                        "symbol": symbol,
-                        "reason": self.state.last_decision,
-                        "signal": self.state.last_signal,
-                    }
-
-        risk = validate_buy(
-            self.settings,
-            symbol,
-            signal.notional,
-            account,
-            positions,
-            self._entry_orders_today(recent_orders),
-        )
-        self.state.last_decision = risk.reason
-        if not risk.allowed:
-            return {
-                "action": "blocked",
-                "symbol": symbol,
-                "reason": risk.reason,
-                "signal": self.state.last_signal,
-            }
-
-        asset = await self.client.asset(symbol)
-        if (
-            str(asset.get("status", "")).lower() != "active"
-            or not bool(asset.get("tradable"))
-            or not bool(asset.get("fractionable"))
-        ):
-            self.state.last_decision = "asset is not active, tradable, and fractionable"
-            return {
-                "action": "blocked",
-                "symbol": symbol,
-                "reason": self.state.last_decision,
-                "signal": self.state.last_signal,
-            }
-
-        qty = self._fractional_qty(signal.notional, signal.reference_price)
-        if qty <= 0:
-            self.state.last_decision = "calculated quantity is zero"
-            return {
-                "action": "blocked",
-                "symbol": symbol,
-                "reason": self.state.last_decision,
-                "signal": self.state.last_signal,
-            }
-
-        order = await self.client.submit_market_buy(
-            symbol=symbol,
-            qty=str(qty),
-            client_order_id=self._client_order_id(symbol, "buy"),
-        )
-        self.state.last_order = {
-            "id": order.get("id"),
-            "client_order_id": order.get("client_order_id"),
-            "symbol": order.get("symbol"),
-            "side": order.get("side"),
-            "qty": order.get("qty"),
-            "status": order.get("status"),
-            "order_class": order.get("order_class"),
-            "submitted_at": order.get("submitted_at"),
-            "stop_price": str(signal.stop_price),
-            "take_profit_price": str(signal.take_profit_price),
-            "exit_management": "bot",
+        open_order_symbols = {
+            str(order.get("symbol", "")).upper()
+            for order in open_orders
         }
-        self.state.last_decision = (
-            "fractional-compatible market entry submitted; "
-            "bot-managed stop/target/time exits active"
+        entry_count = self._entry_orders_today(recent_orders)
+        cycle_limit = min(
+            self.settings.max_new_entries_per_cycle,
+            self.settings.max_concurrent_positions,
         )
-        return {"action": "submitted", "order": self.state.last_order}
+
+        planned: list[tuple[Signal, Decimal]] = []
+        skipped: list[dict[str, str]] = []
+        simulated_positions = list(positions)
+        simulated_account = dict(account)
+        simulated_cash = Decimal(str(account.get("cash", "0")))
+
+        for signal in ranked:
+            if len(planned) >= cycle_limit:
+                break
+
+            symbol = signal.symbol.upper()
+            if symbol in open_order_symbols:
+                skipped.append(
+                    {
+                        "symbol": symbol,
+                        "reason": "open order already exists for symbol",
+                    }
+                )
+                continue
+
+            if self.settings.reentry_cooldown_minutes > 0:
+                latest_exit = self._latest_bot_exit_today(recent_orders, symbol)
+                if latest_exit is not None:
+                    minutes_since_exit = (now - latest_exit).total_seconds() / 60
+                    if minutes_since_exit < self.settings.reentry_cooldown_minutes:
+                        skipped.append(
+                            {
+                                "symbol": symbol,
+                                "reason": (
+                                    "same-symbol cooldown active "
+                                    f"({minutes_since_exit:.1f}/"
+                                    f"{self.settings.reentry_cooldown_minutes} min)"
+                                ),
+                            }
+                        )
+                        continue
+
+            simulated_account["cash"] = str(simulated_cash)
+            risk = validate_buy(
+                self.settings,
+                symbol,
+                signal.notional,
+                simulated_account,
+                simulated_positions,
+                entry_count + len(planned),
+            )
+            if not risk.allowed:
+                skipped.append({"symbol": symbol, "reason": risk.reason})
+                continue
+
+            asset = await self.client.asset(symbol)
+            if (
+                str(asset.get("status", "")).lower() != "active"
+                or not bool(asset.get("tradable"))
+                or not bool(asset.get("fractionable"))
+            ):
+                skipped.append(
+                    {
+                        "symbol": symbol,
+                        "reason": "asset is not active, tradable, and fractionable",
+                    }
+                )
+                continue
+
+            qty = self._fractional_qty(signal.notional, signal.reference_price)
+            if qty <= 0:
+                skipped.append(
+                    {"symbol": symbol, "reason": "calculated quantity is zero"}
+                )
+                continue
+
+            planned.append((signal, qty))
+            simulated_cash -= signal.notional
+            simulated_positions.append(
+                {
+                    "symbol": symbol,
+                    "qty": str(qty),
+                    "market_value": str(signal.notional),
+                }
+            )
+
+        if not planned:
+            reason = skipped[0]["reason"] if skipped else "no eligible candidates"
+            self.state.last_decision = (
+                f"qualified signals found but none eligible: {reason}"
+            )
+            return {
+                "action": "hold",
+                "reason": self.state.last_decision,
+                "skipped": skipped,
+            }
+
+        order_results = await asyncio.gather(
+            *[
+                self.client.submit_market_buy(
+                    symbol=signal.symbol,
+                    qty=str(qty),
+                    client_order_id=self._client_order_id(signal.symbol, "buy"),
+                )
+                for signal, qty in planned
+            ],
+            return_exceptions=True,
+        )
+
+        submitted_orders: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for (signal, _qty), result in zip(planned, order_results):
+            symbol = signal.symbol.upper()
+            if isinstance(result, Exception):
+                errors.append(
+                    {
+                        "symbol": symbol,
+                        "reason": f"{type(result).__name__}: {result}",
+                    }
+                )
+                self.state.record_event(
+                    kind="execution",
+                    symbol=symbol,
+                    action="error",
+                    message="market entry submission failed",
+                    reason=str(result),
+                    at=now,
+                )
+                continue
+
+            order_payload = {
+                "id": result.get("id"),
+                "client_order_id": result.get("client_order_id"),
+                "symbol": result.get("symbol"),
+                "side": result.get("side"),
+                "qty": result.get("qty"),
+                "status": result.get("status"),
+                "order_class": result.get("order_class"),
+                "submitted_at": result.get("submitted_at"),
+                "stop_price": str(signal.stop_price),
+                "take_profit_price": str(signal.take_profit_price),
+                "exit_management": "bot",
+            }
+            submitted_orders.append(order_payload)
+            self.state.last_order = order_payload
+            self.state.record_event(
+                kind="execution",
+                symbol=symbol,
+                action="buy",
+                message=(
+                    "fractional-compatible market entry submitted; "
+                    "bot-managed stop/target/time exits active"
+                ),
+                at=now,
+            )
+
+        if submitted_orders:
+            symbols_text = ",".join(
+                str(order.get("symbol") or "")
+                for order in submitted_orders
+            )
+            self.state.last_decision = (
+                f"submitted {len(submitted_orders)} concurrent entry order(s): "
+                f"{symbols_text}"
+            )
+            return {
+                "action": "submitted",
+                "symbol": symbols_text,
+                "reason": self.state.last_decision,
+                "orders": submitted_orders,
+                "skipped": skipped,
+                "errors": errors,
+            }
+
+        self.state.last_decision = "all planned entry submissions failed"
+        return {
+            "action": "error",
+            "reason": self.state.last_decision,
+            "errors": errors,
+            "skipped": skipped,
+        }
