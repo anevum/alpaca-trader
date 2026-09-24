@@ -148,6 +148,25 @@ class ExecutionEngine:
         )
 
     @staticmethod
+    def _signal_rank(signal: Signal) -> tuple[Decimal, Decimal, int]:
+        metadata = signal.metadata or {}
+        return (
+            Decimal(str(metadata.get("momentum_pct", "0"))),
+            Decimal(str(metadata.get("vwap_edge_pct", "0"))),
+            int(metadata.get("confirmation_passes", 0) or 0),
+        )
+
+    def _same_symbol_lockout_minutes(self) -> int:
+        if self.settings.reentry_cooldown_minutes <= 0:
+            return 0
+        return (
+            self.settings.max_hold_minutes
+            + self.settings.reentry_cooldown_minutes
+            if self.settings.max_hold_minutes > 0
+            else self.settings.reentry_cooldown_minutes
+        )
+
+    @staticmethod
     def _signal_payload(signal: Signal) -> dict[str, Any]:
         return {
             "action": signal.action,
@@ -432,9 +451,9 @@ class ExecutionEngine:
             self.state.last_decision = self.state.last_signal["reason"]
             return self.state.last_signal
 
-        # SCAN_SYMBOLS order is the deterministic priority when multiple
-        # candidates qualify on the same completed bar.
-        signal = buy_signals[0]
+        # When multiple candidates qualify, prefer the strongest rolling
+        # momentum/VWAP setup. Equal scores preserve SCAN_SYMBOLS order.
+        signal = max(buy_signals, key=self._signal_rank)
         symbol = signal.symbol
         self.state.last_signal = self._signal_payload(signal)
 
@@ -454,14 +473,15 @@ class ExecutionEngine:
                 "signal": self.state.last_signal,
             }
 
-        if self.settings.reentry_cooldown_minutes > 0:
+        lockout_minutes = self._same_symbol_lockout_minutes()
+        if lockout_minutes > 0:
             latest_entry = self._latest_bot_buy_today(recent_orders, symbol)
             if latest_entry is not None:
                 minutes_since_entry = (now - latest_entry).total_seconds() / 60
-                if minutes_since_entry < self.settings.reentry_cooldown_minutes:
+                if minutes_since_entry < lockout_minutes:
                     self.state.last_decision = (
-                        f"{symbol} re-entry cooldown active "
-                        f"({self.settings.reentry_cooldown_minutes} minutes)"
+                        f"{symbol} same-symbol lockout active "
+                        f"({lockout_minutes} minutes from prior entry)"
                     )
                     return {
                         "action": "hold",
