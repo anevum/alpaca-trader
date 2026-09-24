@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     live_trading: bool = Field(default=False, alias="LIVE_TRADING")
     acknowledge_live: str = Field(default="NO", alias="I_ACKNOWLEDGE_LIVE_TRADING")
     bot_armed: bool = Field(default=False, alias="BOT_ARMED")
+    scan_only: bool = Field(default=False, alias="SCAN_ONLY")
 
     admin_token: str = Field(default="", alias="ADMIN_TOKEN")
 
