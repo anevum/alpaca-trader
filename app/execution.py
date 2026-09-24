@@ -139,6 +139,17 @@ class ExecutionEngine:
         return f"anevum-{symbol.lower()}-{action}-{suffix}"
 
     @staticmethod
+    def _spread_pct(quote: dict[str, Any]) -> Decimal | None:
+        bid = Decimal(str(quote.get("bp", "0") or "0"))
+        ask = Decimal(str(quote.get("ap", "0") or "0"))
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return None
+        midpoint = (bid + ask) / Decimal("2")
+        if midpoint <= 0:
+            return None
+        return (ask - bid) / midpoint
+
+    @staticmethod
     def _fractional_qty(notional: Decimal, reference_price: Decimal) -> Decimal:
         if reference_price <= 0:
             raise ValueError("reference price must be positive")
@@ -579,6 +590,34 @@ class ExecutionEngine:
                 "symbol": symbol,
                 "reason": self.state.last_decision,
                 "signal": self.state.last_signal,
+            }
+
+        if self.settings.max_spread_pct > 0:
+            quote = await self.market_data.latest_quote(symbol)
+            spread_pct = self._spread_pct(quote)
+            if spread_pct is None:
+                self.state.last_decision = "entry blocked because a valid bid/ask quote is unavailable"
+                return {
+                    "action": "blocked",
+                    "symbol": symbol,
+                    "reason": self.state.last_decision,
+                    "signal": self.state.last_signal,
+                }
+            if spread_pct > self.settings.max_spread_pct:
+                self.state.last_decision = (
+                    f"entry blocked because spread {spread_pct:.6f} exceeds "
+                    f"limit {self.settings.max_spread_pct:.6f}"
+                )
+                return {
+                    "action": "blocked",
+                    "symbol": symbol,
+                    "reason": self.state.last_decision,
+                    "signal": self.state.last_signal,
+                }
+            self.state.last_signal.setdefault("metadata", {})["execution_quote"] = {
+                "bid": str(quote.get("bp")),
+                "ask": str(quote.get("ap")),
+                "spread_pct": str(spread_pct),
             }
 
         qty = self._fractional_qty(signal.notional, signal.reference_price)
