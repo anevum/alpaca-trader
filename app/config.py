@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     entry_cutoff_raw: str = Field(default="11:30", alias="ENTRY_CUTOFF")
     force_flat_time_raw: str = Field(default="15:55", alias="FORCE_FLAT_TIME")
     max_hold_minutes: int = Field(default=0, alias="MAX_HOLD_MINUTES")
+    reentry_cooldown_minutes: int = Field(default=0, alias="REENTRY_COOLDOWN_MINUTES")
 
     bar_timeframe: str = Field(default="1Min", alias="BAR_TIMEFRAME")
     lookback_bars: int = Field(default=500, alias="LOOKBACK_BARS")
@@ -206,6 +207,8 @@ class Settings(BaseSettings):
             raise ValueError("MIN_CONFIRMATIONS must be between 1 and the number of confirmation symbols")
         if not 0 <= self.max_hold_minutes <= 390:
             raise ValueError("MAX_HOLD_MINUTES must be between 0 and 390")
+        if not 0 <= self.reentry_cooldown_minutes <= 60:
+            raise ValueError("REENTRY_COOLDOWN_MINUTES must be between 0 and 60")
         return self
 
 
