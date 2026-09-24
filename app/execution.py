@@ -304,6 +304,8 @@ class ExecutionEngine:
         fresh_confirmation_passes = 0
         confirmations = (signal.metadata or {}).get("confirmations") or {}
         for confirmation_symbol, payload in confirmations.items():
+            if confirmation_symbol.upper() == signal.symbol.upper():
+                continue
             if not bool((payload or {}).get("ok")):
                 continue
             latest_confirmation = self._latest_completed_bar(
