@@ -44,17 +44,21 @@ def validate_buy(
     notional: Decimal,
     account: dict[str, Any],
     positions: list[dict[str, Any]],
-    orders_today: int,
+    entry_orders_today: int,
 ) -> RiskDecision:
     blocked = _execution_gate(settings, symbol) or _account_can_trade(account)
     if blocked:
         return blocked
 
+    if positions:
+        return RiskDecision(False, "another position is already open")
     if notional <= 0:
         return RiskDecision(False, "order notional must be positive")
     if notional > settings.max_order_notional:
         return RiskDecision(False, "order exceeds MAX_ORDER_NOTIONAL")
-    if orders_today >= settings.max_daily_orders:
+    if notional > settings.max_position_notional:
+        return RiskDecision(False, "order exceeds MAX_POSITION_NOTIONAL")
+    if entry_orders_today >= settings.max_daily_orders:
         return RiskDecision(False, "daily entry-order limit reached")
 
     cash = d(account.get("cash"))
@@ -65,14 +69,6 @@ def validate_buy(
     last_equity = d(account.get("last_equity"))
     if last_equity > 0 and (last_equity - equity) >= settings.max_daily_loss:
         return RiskDecision(False, "daily loss circuit breaker is active")
-
-    existing = Decimal("0")
-    for position in positions:
-        if str(position.get("symbol", "")).upper() == symbol.upper():
-            existing = abs(d(position.get("market_value")))
-            break
-    if existing + notional > settings.max_position_notional:
-        return RiskDecision(False, "position would exceed MAX_POSITION_NOTIONAL")
 
     return RiskDecision(True, "risk checks passed")
 
@@ -91,6 +87,4 @@ def validate_sell_to_flat(
     qty = d(position.get("qty"))
     if qty <= 0:
         return RiskDecision(False, "short or zero positions are not supported")
-    # A sell-to-flat is risk reducing, so the daily entry limit and daily-loss
-    # circuit breaker do not prevent an exit.
     return RiskDecision(True, "risk-reducing exit allowed")
