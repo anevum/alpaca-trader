@@ -25,7 +25,7 @@ def _account_can_trade(account: dict[str, Any]) -> RiskDecision | None:
     return None
 
 
-def _execution_gate(settings: Settings, symbol: str) -> RiskDecision | None:
+def _execution_gate(\n    settings: Settings, symbol: str, *, require_scan: bool = True\n) -> RiskDecision | None:
     symbol = symbol.upper()
     if not settings.execution_authorized:
         return RiskDecision(False, "execution is not authorized")
