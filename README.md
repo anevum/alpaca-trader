@@ -11,11 +11,11 @@ The service runs guarded long-only intraday scanners for a configured universe o
 - build a separate five-minute opening range and session VWAP for every candidate;
 - require a fresh completed-bar breakout plus configured market confirmations;
 - reject excessively wide opening ranges and overextended breakouts;
-- submit at most one position at a time as a fractional bracket order;
+- hold and manage multiple bounded fractional long positions concurrently;
 - verify the selected asset is active, tradable and fractionable before submission;
 - enforce allowlisting, maximum entry/position size, an account-wide daily entry limit and daily-loss circuit breaker;
 - avoid averaging down and shorting;
-- preserve protective bracket exits, optionally time-stop positions after `MAX_HOLD_MINUTES`, and force bot-managed positions flat near the end of the regular session;
+- manage per-position stop, target, time, and end-of-day exits independently; current fractional exits are bot-managed rather than broker-resident bracket legs;
 - expose safe public health state plus protected account, position, order and scanner telemetry.
 
 ## Execution gates
@@ -69,9 +69,12 @@ For each candidate, the rolling mode:
 5. Requires price above session VWAP by at least `MIN_VWAP_EDGE_PCT`.
 6. Requires at least `MIN_CONFIRMATIONS` configured market confirmations to pass.
 7. Can re-enter after a prior position has fully exited, subject to account-wide order/loss limits and `REENTRY_COOLDOWN_MINUTES`.
-8. Uses the normal protective bracket and, when configured, a `MAX_HOLD_MINUTES` time stop.
+8. Applies market-quality gates for fresh bars, fresh confirmations, and maximum spread before execution.
+9. Can hold multiple different symbols concurrently up to `MAX_CONCURRENT_POSITIONS` and `MAX_TOTAL_POSITION_NOTIONAL`.
+10. Re-entry cooldown is measured from the prior completed exit rather than from the prior entry.
+11. Uses bot-managed stop/target exits and, when configured, a `MAX_HOLD_MINUTES` time stop.
 
-The aggressive small-account profile in `.env.example` uses a 3/8-minute fast/slow structure, 0.35% stop, 0.50% target, 15-minute maximum hold, 2-minute same-symbol re-entry cooldown, entries through 3:30 PM ET, and up to 12 entry orders while retaining the $1 daily-loss circuit breaker. These are implementation choices, not a claim of profitability.
+The Test 002 small-account profile in `.env.example` uses a 3/8-minute fast/slow structure, 0.35% stop, 0.50% target, 15-minute maximum hold, 2-minute post-exit same-symbol cooldown, entries through 3:30 PM ET, up to 3 concurrent positions, up to 2 new entries in one scan cycle, a $60 total-position-notional cap, a 90-second latest-bar freshness limit, a 0.20% maximum quoted spread, and up to 12 entry orders while retaining the $1 daily-loss circuit breaker. These are implementation choices, not a claim of profitability.
 
 ## Risk controls
 
@@ -80,9 +83,10 @@ New entries are blocked when:
 - live/paper execution is not fully authorized;
 - a candidate is outside `SCAN_SYMBOLS` or `ALLOWED_SYMBOLS`;
 - the account reports trading/account blocked;
-- any position is already open;
-- any account order is already open;
-- the order exceeds `MAX_ORDER_NOTIONAL` or `MAX_POSITION_NOTIONAL`;
+- the same symbol already has a long position or open order;
+- the configured concurrent-position limit has been reached;
+- the order exceeds `MAX_ORDER_NOTIONAL`, `MAX_POSITION_NOTIONAL`, or `MAX_TOTAL_POSITION_NOTIONAL`;
+- the candidate bar/confirmation data is stale or its quoted spread exceeds `MAX_SPREAD_PCT`;
 - the account-wide daily ANEVUM entry limit has been reached;
 - cash is insufficient;
 - equity decline versus Alpaca `last_equity` reaches `MAX_DAILY_LOSS`;
@@ -91,7 +95,7 @@ New entries are blocked when:
 
 A risk-reducing end-of-day exit may close a bot-managed position even if that symbol has since been removed from `SCAN_SYMBOLS`, as long as it remains allowlisted.
 
-Market orders and stops can fill away from their reference prices because of spread, gaps and slippage.
+Market orders can fill away from their reference prices because of spread, gaps and slippage. The current fractional stop/target protection is managed by the running service, so process or network failure remains an operational risk until broker-resident protection is added.
 
 ## Market data
 

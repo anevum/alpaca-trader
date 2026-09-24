@@ -180,6 +180,8 @@ async def command_snapshot() -> dict:
             "target_pct": str(settings.target_pct),
             "order_notional": str(settings.order_notional),
             "data_feed": settings.data_feed,
+            "max_bar_age_seconds": settings.max_bar_age_seconds,
+            "max_spread_pct": str(settings.max_spread_pct),
         },
         "risk": {
             "max_daily_orders": settings.max_daily_orders,
@@ -188,6 +190,9 @@ async def command_snapshot() -> dict:
             "max_daily_loss": str(settings.max_daily_loss),
             "max_order_notional": str(settings.max_order_notional),
             "max_position_notional": str(settings.max_position_notional),
+            "max_concurrent_positions": settings.max_concurrent_positions,
+            "max_new_entries_per_cycle": settings.max_new_entries_per_cycle,
+            "max_total_position_notional": str(settings.max_total_position_notional),
         },
         "scanner": runtime_state.last_scan,
         "history": runtime_state.decision_history,
@@ -285,6 +290,11 @@ async def lifespan(app: FastAPI):
             "stop_pct": str(settings.stop_pct),
             "target_pct": str(settings.target_pct),
             "order_notional": str(settings.order_notional),
+            "max_concurrent_positions": settings.max_concurrent_positions,
+            "max_new_entries_per_cycle": settings.max_new_entries_per_cycle,
+            "max_total_position_notional": str(settings.max_total_position_notional),
+            "max_bar_age_seconds": settings.max_bar_age_seconds,
+            "max_spread_pct": str(settings.max_spread_pct),
             "max_daily_orders": settings.max_daily_orders,
             "max_daily_loss": str(settings.max_daily_loss),
         },
@@ -296,7 +306,7 @@ async def lifespan(app: FastAPI):
     await task
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.6.1", lifespan=lifespan)
+app = FastAPI(title="Alpaca Trading Bot", version="0.7.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -367,10 +377,15 @@ async def status(authorization: str | None = Header(default=None)):
             "bar_timeframe": settings.bar_timeframe,
             "data_feed": settings.data_feed,
             "order_notional": str(settings.order_notional),
+            "max_bar_age_seconds": settings.max_bar_age_seconds,
+            "max_spread_pct": str(settings.max_spread_pct),
         },
         "risk": {
             "max_order_notional": str(settings.max_order_notional),
             "max_position_notional": str(settings.max_position_notional),
+            "max_concurrent_positions": settings.max_concurrent_positions,
+            "max_new_entries_per_cycle": settings.max_new_entries_per_cycle,
+            "max_total_position_notional": str(settings.max_total_position_notional),
             "max_daily_orders": settings.max_daily_orders,
             "max_daily_loss": str(settings.max_daily_loss),
         },
