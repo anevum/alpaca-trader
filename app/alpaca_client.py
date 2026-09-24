@@ -35,7 +35,14 @@ class AlpacaClient:
                 headers=self.headers,
                 **kwargs,
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.text.strip()
+                raise RuntimeError(
+                    f"Alpaca {method} {path} failed "
+                    f"({response.status_code}): {detail}"
+                ) from exc
             if response.status_code == 204:
                 return None
             return response.json()
@@ -68,6 +75,25 @@ class AlpacaClient:
                 "limit": limit,
                 "direction": "desc",
                 "nested": "true",
+            },
+        )
+
+    async def submit_market_buy(
+        self,
+        symbol: str,
+        qty: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v2/orders",
+            json={
+                "symbol": symbol,
+                "qty": qty,
+                "side": "buy",
+                "type": "market",
+                "time_in_force": "day",
+                "client_order_id": client_order_id,
             },
         )
 
