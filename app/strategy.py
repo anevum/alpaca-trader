@@ -25,20 +25,23 @@ class Signal:
 
 
 class OpeningRangeVwapStrategy:
-    """Long-only SPY opening-range breakout with VWAP and QQQ/SMH confirmation.
+    """Long-only opening-range breakout strategy with VWAP confirmation.
 
-    The strategy evaluates only completed one-minute bars. It builds the first N
-    regular-session minutes as the opening range, waits for a fresh close above
-    that range and SPY VWAP, and requires each confirmation symbol to be above its
-    own VWAP without making a fresh one-bar low.
+    Each candidate is evaluated only on completed one-minute regular-session
+    bars. The strategy builds the first N minutes as an opening range, requires
+    a fresh close above that range and session VWAP, rejects abnormally wide
+    opening ranges and overly extended breakouts, and requires the configured
+    market confirmation symbols to be constructive.
 
-    Position exits are handled by the execution layer's bracket order and forced
-    end-of-day flattening; the strategy itself never shorts or averages down.
+    Position exits are handled by the execution layer's protective bracket and
+    end-of-day flattening. The strategy never shorts or averages down.
     """
 
     def __init__(
         self,
         opening_range_minutes: int,
+        max_opening_range_pct: Decimal,
+        max_breakout_extension_pct: Decimal,
         stop_pct: Decimal,
         target_pct: Decimal,
         entry_start: time,
@@ -46,6 +49,8 @@ class OpeningRangeVwapStrategy:
         confirmation_symbols: tuple[str, ...],
     ):
         self.opening_range_minutes = opening_range_minutes
+        self.max_opening_range_pct = max_opening_range_pct
+        self.max_breakout_extension_pct = max_breakout_extension_pct
         self.stop_pct = stop_pct
         self.target_pct = target_pct
         self.entry_start = entry_start
@@ -172,6 +177,7 @@ class OpeningRangeVwapStrategy:
         now: datetime | None = None,
     ) -> Signal:
         now = (now or datetime.now(NY)).astimezone(NY)
+        symbol = symbol.upper()
 
         if has_position:
             return Signal(
@@ -206,21 +212,43 @@ class OpeningRangeVwapStrategy:
         previous, current = session[-2], session[-1]
         previous_close = self._d(previous["c"])
         current_close = self._d(current["c"])
-        spy_vwap = self._vwap(session)
+        session_vwap = self._vwap(session)
 
+        if opening_low <= 0 or opening_high <= 0:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="invalid opening-range prices",
+            )
+
+        opening_range_pct = (opening_high - opening_low) / opening_low
+        breakout_extension_pct = (
+            (current_close - opening_high) / opening_high
+            if current_close > opening_high
+            else Decimal("0")
+        )
         fresh_breakout = previous_close <= opening_high and current_close > opening_high
-        above_vwap = current_close > spy_vwap
+        above_vwap = current_close > session_vwap
 
         metadata: dict[str, Any] = {
             "opening_range_high": str(opening_high),
             "opening_range_low": str(opening_low),
-            "spy_vwap": str(spy_vwap),
+            "opening_range_pct": str(opening_range_pct),
+            "session_vwap": str(session_vwap),
             "previous_close": str(previous_close),
             "current_close": str(current_close),
+            "breakout_extension_pct": str(breakout_extension_pct),
             "bar_time": self._timestamp(current).isoformat(),
             "confirmations": {},
         }
 
+        if opening_range_pct > self.max_opening_range_pct:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="opening range is too wide",
+                metadata=metadata,
+            )
         if not fresh_breakout:
             return Signal(
                 action="hold",
@@ -228,15 +256,31 @@ class OpeningRangeVwapStrategy:
                 reason="no fresh close above opening-range high",
                 metadata=metadata,
             )
+        if breakout_extension_pct > self.max_breakout_extension_pct:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="breakout is too extended above opening-range high",
+                metadata=metadata,
+            )
         if not above_vwap:
             return Signal(
                 action="hold",
                 symbol=symbol,
-                reason="SPY breakout is below session VWAP",
+                reason="breakout is below session VWAP",
                 metadata=metadata,
             )
 
+        independent_confirmations = 0
         for confirmation_symbol in self.confirmation_symbols:
+            confirmation_symbol = confirmation_symbol.upper()
+            if confirmation_symbol == symbol:
+                metadata["confirmations"][confirmation_symbol] = {
+                    "ok": True,
+                    "reason": "candidate symbol; self-confirmation skipped",
+                }
+                continue
+            independent_confirmations += 1
             ok, reason, details = self._confirmation_ok(
                 confirmation_bars.get(confirmation_symbol, []),
                 now,
@@ -254,6 +298,14 @@ class OpeningRangeVwapStrategy:
                     metadata=metadata,
                 )
 
+        if independent_confirmations == 0:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="no independent confirmation symbol available",
+                metadata=metadata,
+            )
+
         stop_price = self._price(current_close * (Decimal("1") - self.stop_pct))
         take_profit_price = self._price(
             current_close * (Decimal("1") + self.target_pct)
@@ -268,6 +320,6 @@ class OpeningRangeVwapStrategy:
             reference_price=current_close,
             stop_price=stop_price,
             take_profit_price=take_profit_price,
-            reason="fresh SPY opening-range breakout above VWAP with confirmations",
+            reason="fresh opening-range breakout above VWAP with confirmations",
             metadata=metadata,
         )
