@@ -148,6 +148,34 @@ class ExecutionEngine:
         )
 
     @staticmethod
+    def _managed_price_exit(
+        position: dict[str, Any],
+        stop_pct: Decimal,
+        target_pct: Decimal,
+    ) -> tuple[str, str] | None:
+        entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
+        current_price = Decimal(str(position.get("current_price", "0") or "0"))
+        if entry_price <= 0 or current_price <= 0:
+            return None
+
+        stop_price = entry_price * (Decimal("1") - stop_pct)
+        target_price = entry_price * (Decimal("1") + target_pct)
+
+        if current_price <= stop_price:
+            return (
+                "stop",
+                f"bot-managed stop loss triggered at {current_price} "
+                f"(entry {entry_price})",
+            )
+        if current_price >= target_price:
+            return (
+                "target",
+                f"bot-managed take profit triggered at {current_price} "
+                f"(entry {entry_price})",
+            )
+        return None
+
+    @staticmethod
     def _signal_rank(signal: Signal) -> tuple[Decimal, Decimal, int]:
         metadata = signal.metadata or {}
         return (
@@ -374,6 +402,22 @@ class ExecutionEngine:
                     open_orders=open_orders,
                 )
 
+            price_exit = self._managed_price_exit(
+                position,
+                self.settings.stop_pct,
+                self.settings.target_pct,
+            )
+            if price_exit is not None:
+                action_tag, exit_reason = price_exit
+                return await self._force_flatten(
+                    symbol=symbol,
+                    account=account,
+                    position=position,
+                    open_orders=open_orders,
+                    exit_reason=exit_reason,
+                    action_tag=action_tag,
+                )
+
             if self.settings.max_hold_minutes > 0:
                 entry_time = self._latest_bot_buy_today(recent_orders, symbol)
                 if entry_time is not None:
@@ -389,7 +433,7 @@ class ExecutionEngine:
                         )
 
             self.state.last_decision = (
-                f"{symbol} position already open; bracket/time exits manage risk"
+                f"{symbol} position already open; bot-managed stop/target/time exits active"
             )
             return {
                 "action": "hold",
@@ -437,6 +481,22 @@ class ExecutionEngine:
                 buy_signals.append(signal)
 
         self.state.record_scan(scan, at=now)
+        hold_reasons: dict[str, int] = {}
+        for payload in scan.values():
+            if payload.get("action") == "buy":
+                continue
+            reason = str(payload.get("reason") or "unknown")
+            hold_reasons[reason] = hold_reasons.get(reason, 0) + 1
+        print(
+            "LIVE_SCAN_CYCLE",
+            {
+                "at": now.isoformat(),
+                "symbols": len(self.settings.scan_symbols),
+                "ready": [signal.symbol for signal in buy_signals],
+                "hold_reasons": hold_reasons,
+            },
+            flush=True,
+        )
 
         if not buy_signals:
             self.state.last_signal = {
@@ -531,11 +591,9 @@ class ExecutionEngine:
                 "signal": self.state.last_signal,
             }
 
-        order = await self.client.submit_bracket_market_buy(
+        order = await self.client.submit_market_buy(
             symbol=symbol,
             qty=str(qty),
-            take_profit_price=str(signal.take_profit_price),
-            stop_price=str(signal.stop_price),
             client_order_id=self._client_order_id(symbol, "buy"),
         )
         self.state.last_order = {
@@ -549,6 +607,10 @@ class ExecutionEngine:
             "submitted_at": order.get("submitted_at"),
             "stop_price": str(signal.stop_price),
             "take_profit_price": str(signal.take_profit_price),
+            "exit_management": "bot",
         }
-        self.state.last_decision = "bracket entry submitted"
+        self.state.last_decision = (
+            "fractional-compatible market entry submitted; "
+            "bot-managed stop/target/time exits active"
+        )
         return {"action": "submitted", "order": self.state.last_order}
