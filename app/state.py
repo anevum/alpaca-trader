@@ -12,8 +12,12 @@ class RuntimeState:
     funding_ready: bool = False
     last_cash: str | None = None
     last_buying_power: str | None = None
+    last_equity: str | None = None
+    last_equity_reference: str | None = None
+    last_day_pnl: str | None = None
     paused: bool = False
     last_signal: dict[str, Any] | None = None
+    last_scan: dict[str, Any] = field(default_factory=dict)
     last_decision: str | None = None
     last_order: dict[str, Any] | None = None
 
