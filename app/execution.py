@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .alpaca_client import AlpacaClient
 from .config import Settings
 from .market_data import MarketDataClient
+from .research import enrich_signal, record_scan_samples, resolve_forward_outcomes
 from .risk import validate_buy, validate_sell_to_flat
 from .state import RuntimeState
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
@@ -674,16 +675,23 @@ class ExecutionEngine:
         scan: dict[str, Any] = {}
         for symbol in self.settings.scan_symbols:
             has_position = self._position_for_symbol(positions, symbol) is not None
+            confirmation_bars = {
+                confirmation_symbol: market_bars.get(confirmation_symbol, [])
+                for confirmation_symbol in self.settings.confirmation_symbols
+            }
             signal = self.strategy.evaluate(
                 bars=market_bars.get(symbol, []),
-                confirmation_bars={
-                    confirmation_symbol: market_bars.get(confirmation_symbol, [])
-                    for confirmation_symbol in self.settings.confirmation_symbols
-                },
+                confirmation_bars=confirmation_bars,
                 symbol=symbol,
                 has_position=has_position,
                 order_notional=self.settings.order_notional,
                 now=now,
+            )
+            signal = enrich_signal(
+                signal,
+                market_bars.get(symbol, []),
+                confirmation_bars,
+                now,
             )
             scan[symbol] = self._signal_payload(signal)
             if signal.action == "buy":
@@ -719,6 +727,8 @@ class ExecutionEngine:
             buy_signals = quality_signals
 
         self.state.record_scan(scan, at=now)
+        record_scan_samples(self.state, scan, now)
+        resolved = resolve_forward_outcomes(self.state, market_bars, now)
         hold_reasons: dict[str, int] = {}
         for payload in scan.values():
             if payload.get("action") == "buy":
@@ -738,6 +748,8 @@ class ExecutionEngine:
                     if Decimal(str(position.get("qty", "0") or "0")) > 0
                 ],
                 "hold_reasons": hold_reasons,
+                "research_samples": len(self.state.research_samples),
+                "forward_outcomes_resolved": resolved,
             },
             flush=True,
         )
