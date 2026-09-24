@@ -33,6 +33,8 @@ def settings(**overrides):
         MAX_TOTAL_POSITION_NOTIONAL="60",
         MAX_DAILY_ORDERS="12",
         MAX_DAILY_LOSS="1",
+        STOP_PCT="0.0035",
+        TARGET_PCT="0.005",
         MAX_HOLD_MINUTES="15",
         REENTRY_COOLDOWN_MINUTES="2",
         ENTRY_START="09:31",
