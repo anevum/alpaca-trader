@@ -387,7 +387,34 @@ class ExecutionEngine:
         state["desired_stop_price"] = str(self._price_for_order(desired_stop))
         return state
 
+    @staticmethod
     def _managed_price_exit(
+        position: dict[str, Any],
+        stop_pct: Decimal,
+        target_pct: Decimal,
+    ) -> tuple[str, str] | None:
+        entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
+        current_price = Decimal(str(position.get("current_price", "0") or "0"))
+        if entry_price <= 0 or current_price <= 0:
+            return None
+
+        stop_price = entry_price * (Decimal("1") - stop_pct)
+        target_price = entry_price * (Decimal("1") + target_pct)
+        if current_price <= stop_price:
+            return (
+                "stop",
+                f"bot-managed stop loss triggered at {current_price} "
+                f"(entry {entry_price})",
+            )
+        if current_price >= target_price:
+            return (
+                "target",
+                f"bot-managed take profit triggered at {current_price} "
+                f"(entry {entry_price})",
+            )
+        return None
+
+    def _stateful_price_exit(
         self,
         position: dict[str, Any],
     ) -> tuple[str, str] | None:
@@ -1189,7 +1216,7 @@ class ExecutionEngine:
                 )
                 continue
 
-            price_exit = self._managed_price_exit(position)
+            price_exit = self._stateful_price_exit(position)
             if price_exit is not None:
                 action_tag, exit_reason = price_exit
                 exit_specs.append(
