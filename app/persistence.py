@@ -42,6 +42,25 @@ class TradingEventSink:
             return True
         return f"-{owner_tag}-" in client_order_id
 
+    @staticmethod
+    def _is_standing_protective_stop(order: dict[str, Any]) -> bool:
+        client_order_id = str(order.get("client_order_id") or "")
+        return "-hardstop-" in client_order_id
+
+    @classmethod
+    def _projectable_order(cls, order: dict[str, Any]) -> bool:
+        if not cls._is_standing_protective_stop(order):
+            return True
+        filled_qty = Decimal(str(order.get("filled_qty") or "0"))
+        status = str(order.get("status") or "").lower()
+        return filled_qty > 0 or status == "filled"
+
+    @classmethod
+    def _inferred_exit_reason(cls, order: dict[str, Any]) -> str | None:
+        if cls._is_standing_protective_stop(order):
+            return "broker protective stop filled"
+        return None
+
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -345,11 +364,16 @@ class TradingEventSink:
             order
             for order in orders
             if self._owns_broker_order(order)
+            and self._projectable_order(order)
             and at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
         for order in bot_orders:
-            self.record_broker_order(order, correlation_id=correlation_id)
+            self.record_broker_order(
+                order,
+                exit_reason=self._inferred_exit_reason(order),
+                correlation_id=correlation_id,
+            )
 
         bot_order_ids = {
             str(order.get("id") or "")
@@ -443,6 +467,7 @@ class TradingEventSink:
             order
             for order in orders
             if self._owns_broker_order(order)
+            and self._projectable_order(order)
             and self._at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
