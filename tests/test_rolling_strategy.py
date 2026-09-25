@@ -211,3 +211,49 @@ def test_excessive_vwap_extension_blocks_chasing_entry():
     )
     assert signal.action == "hold"
     assert signal.reason == "price is too extended above session VWAP"
+
+
+def test_volatility_stop_is_capped_and_recorded_in_signal():
+    s = RollingMomentumVwapStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("0.0005"),
+        min_vwap_edge_pct=Decimal("0"),
+        stop_pct=Decimal("0.0035"),
+        target_pct=Decimal("0.005"),
+        entry_start=datetime.strptime("09:31", "%H:%M").time(),
+        entry_cutoff=datetime.strptime("15:30", "%H:%M").time(),
+        confirmation_symbols=("QQQ", "SMH"),
+        min_confirmations=1,
+        volatility_stop_enabled=True,
+        volatility_stop_multiplier=Decimal("10"),
+        volatility_stop_lookback_bars=8,
+        max_dynamic_stop_pct=Decimal("0.006"),
+    )
+    signal = s.evaluate(
+        bars=rising_bars(100),
+        confirmation_bars={"QQQ": rising_bars(200), "SMH": rising_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+
+    assert signal.action == "buy"
+    assert Decimal(signal.metadata["effective_stop_pct"]) == Decimal("0.006")
+    assert signal.metadata["stop_model"]["mode"] == "volatility"
+
+
+def test_position_health_flags_joint_market_and_candidate_failure():
+    s = strategy()
+    health = s.position_health(
+        bars=weak_bars(100),
+        confirmation_bars={"QQQ": weak_bars(200), "SMH": weak_bars(300)},
+        symbol="SPY",
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+
+    assert health["data_ready"] is True
+    assert health["regime_ok"] is False
+    assert health["candidate_failure_count"] >= 2
+    assert health["strong_failure"] is True
