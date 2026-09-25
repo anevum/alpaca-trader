@@ -312,17 +312,19 @@ class TradingEventSink:
         observed_utc = observed_at.astimezone(timezone.utc)
         self.last_reconcile_at = observed_utc
 
-        for order in orders:
-            client_order_id = str(order.get("client_order_id") or "")
-            if not client_order_id.startswith("anevum-"):
-                continue
+        bot_orders = [
+            order
+            for order in orders
+            if str(order.get("client_order_id") or "").startswith("anevum-")
+        ]
+        bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
+        for order in bot_orders:
             self.record_broker_order(order, correlation_id=correlation_id)
 
         bot_order_ids = {
             str(order.get("id") or "")
-            for order in orders
-            if str(order.get("client_order_id") or "").startswith("anevum-")
-            and order.get("id")
+            for order in bot_orders
+            if order.get("id")
         }
         for activity in fills:
             activity_id = str(activity.get("id") or "")
