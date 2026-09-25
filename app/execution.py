@@ -218,7 +218,13 @@ class ExecutionEngine:
             client_order_id = str(order.get("client_order_id", ""))
             if not client_order_id.startswith("anevum-"):
                 continue
-            raw_stamp = order.get("filled_at") or order.get("submitted_at")
+            status = str(order.get("status", "")).lower()
+            filled_qty = Decimal(str(order.get("filled_qty") or "0"))
+            if not order.get("filled_at") and not (
+                status == "filled" and filled_qty > 0
+            ):
+                continue
+            raw_stamp = order.get("filled_at")
             if not raw_stamp:
                 continue
             try:
