@@ -62,9 +62,10 @@ class ReplayPosition:
 class ReplayEngine:
     """Deterministic, broker-isolated replay of the production long-only logic."""
 
-    def __init__(self, settings: Settings, strategy: Any):
+    def __init__(self, settings: Settings, strategy: Any, entry_gate: Any | None = None):
         self.settings = settings
         self.strategy = strategy
+        self.entry_gate = entry_gate
 
     @staticmethod
     def _session_bar_map(
@@ -358,6 +359,8 @@ class ReplayEngine:
                 6,
             ),
             "signals_qualified": counters["signals_qualified"],
+            "quality_blocks": counters["quality_blocks"],
+            "entry_shape_blocks": counters["entry_shape_blocks"],
             "entries": counters["entries"],
             "correlation_blocks": counters["correlation_blocks"],
             "risk_blocks": counters["risk_blocks"],
@@ -511,6 +514,20 @@ class ReplayEngine:
                     signal.metadata["quality_components"] = ranking["components"]
                     signal.metadata["relative_volume_ratio"] = ranking["relative_volume_ratio"]
                     signal.metadata["trend_persistence"] = ranking["trend_persistence"]
+                    if Decimal(str(ranking["score"])) < self.settings.min_quality_score:
+                        counters["quality_blocks"] += 1
+                        continue
+                    if self.entry_gate is not None:
+                        decision = self.entry_gate(signal)
+                        signal.metadata["entry_shape_gate"] = {
+                            "allowed": decision.allowed,
+                            "lane": decision.lane,
+                            "reason": decision.reason,
+                            **decision.details,
+                        }
+                        if not decision.allowed:
+                            counters["entry_shape_blocks"] += 1
+                            continue
                     buy_signals.append(signal)
                     counters["signals_qualified"] += 1
 
@@ -657,6 +674,8 @@ class ReplayEngine:
                 "intrabar_stop_target_policy": "stop_first",
                 "historical_quotes_available": False,
                 "same_strategy_logic": True,
+                "live_quality_gate_enforced": True,
+                "research_entry_gate": bool(self.entry_gate),
                 "broker_orders_possible": False,
             },
             "strategy": {
