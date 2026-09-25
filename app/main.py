@@ -4,6 +4,7 @@ import asyncio
 import hmac
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
@@ -12,6 +13,7 @@ from .alpaca_client import AlpacaClient
 from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
+from .persistence import TradingEventSink
 from .state import runtime_state
 from .scanner import ReadOnlyScanner
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
@@ -45,7 +47,26 @@ else:
     )
 engine = ExecutionEngine(settings, client, market_data, strategy, runtime_state)
 scanner = ReadOnlyScanner(settings, client, market_data, strategy, runtime_state)
+event_sink = TradingEventSink(settings)
 _stop = asyncio.Event()
+
+
+def emit_runtime_event(event: dict) -> None:
+    event_sink.emit(
+        event_type=str(event.get("kind") or "runtime_event"),
+        occurred_at=str(event.get("at") or ""),
+        symbol=str(event.get("symbol") or ""),
+        correlation_id=event.get("correlation_id"),
+        payload={
+            "action": event.get("action"),
+            "message": event.get("message"),
+            "reason": event.get("reason"),
+            **(event.get("payload") or {}),
+        },
+    )
+
+
+runtime_state.set_event_emitter(emit_runtime_event)
 
 
 def require_admin(authorization: str | None):
@@ -228,6 +249,7 @@ async def refresh_account_state() -> None:
 
 async def monitor_loop():
     while not _stop.is_set():
+        runtime_state.begin_cycle(uuid4().hex)
         try:
             if settings.credentials_configured:
                 if settings.scan_only:
@@ -257,6 +279,11 @@ async def monitor_loop():
                 runtime_state.last_error = "credentials not configured"
         except Exception as exc:
             runtime_state.last_error = f"{type(exc).__name__}: {exc}"
+            event_sink.emit(
+                event_type="runtime_error",
+                correlation_id=runtime_state.current_correlation_id,
+                payload={"error": runtime_state.last_error},
+            )
             print(
                 "LIVE_LOOP_ERROR",
                 {"error": runtime_state.last_error},
@@ -300,10 +327,25 @@ async def lifespan(app: FastAPI):
         },
         flush=True,
     )
+    await event_sink.start()
+    event_sink.emit(
+        event_type="runtime_start",
+        correlation_id=uuid4().hex,
+        payload={
+            "trading_mode": settings.trading_mode,
+            "scan_only": settings.scan_only,
+            "execution_enabled": settings.execution_enabled,
+            "bot_armed": settings.bot_armed,
+            "strategy_name": settings.strategy_name,
+            "persistence_configured": settings.persistence_configured,
+        },
+    )
     task = asyncio.create_task(monitor_loop())
     yield
     _stop.set()
     await task
+    event_sink.emit(event_type="runtime_stop", correlation_id=uuid4().hex)
+    await event_sink.stop()
 
 
 app = FastAPI(title="Alpaca Trading Bot", version="0.7.0", lifespan=lifespan)
@@ -340,6 +382,7 @@ async def health():
             "reason": order.get("reason"),
         },
         "last_error": runtime_state.last_error,
+        "persistence": event_sink.status(),
     }
 
 
@@ -389,6 +432,7 @@ async def status(authorization: str | None = Header(default=None)):
             "max_daily_orders": settings.max_daily_orders,
             "max_daily_loss": str(settings.max_daily_loss),
         },
+        "persistence": event_sink.status(),
         "runtime": {
             "started_at": runtime_state.started_at,
             "last_poll_at": runtime_state.last_poll_at,

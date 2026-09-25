@@ -22,6 +22,14 @@ class RuntimeState:
     decision_history: list[dict[str, Any]] = field(default_factory=list)
     last_decision: str | None = None
     last_order: dict[str, Any] | None = None
+    current_correlation_id: str | None = None
+    event_emitter: Any = field(default=None, repr=False)
+
+    def set_event_emitter(self, emitter: Any) -> None:
+        self.event_emitter = emitter
+
+    def begin_cycle(self, correlation_id: str) -> None:
+        self.current_correlation_id = correlation_id
 
     def mark_poll(self) -> None:
         self.last_poll_at = datetime.now(timezone.utc)
@@ -38,6 +46,7 @@ class RuntimeState:
         action: str = "",
         reason: str = "",
         at: datetime | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         stamp = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         event = {
@@ -47,9 +56,12 @@ class RuntimeState:
             "action": action,
             "message": message,
             "reason": reason or message,
+            "correlation_id": self.current_correlation_id,
         }
         self.decision_history.insert(0, event)
         del self.decision_history[200:]
+        if self.event_emitter is not None:
+            self.event_emitter({**event, "payload": payload or {}})
 
     def record_scan(self, scan: dict[str, Any], at: datetime | None = None) -> None:
         previous = self.last_scan
@@ -67,6 +79,7 @@ class RuntimeState:
                     message=str(payload.get("reason") or ""),
                     reason=str(payload.get("reason") or ""),
                     at=at,
+                    payload={"signal": payload},
                 )
         self.last_scan = scan
 
