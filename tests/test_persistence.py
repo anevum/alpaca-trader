@@ -12,6 +12,7 @@ class CapturingSink(TradingEventSink):
             trading_run_id="run-1",
             strategy_version_id="version-1",
             ledger_reconcile_seconds=60,
+            trading_run_started_at=datetime(2026, 9, 24, 13, 30, tzinfo=timezone.utc),
         )
         super().__init__(settings)
         self.order_ids = []
@@ -39,9 +40,14 @@ def test_reconciliation_replays_bot_orders_oldest_first_and_filters_fills():
             "submitted_at": "2026-09-24T14:00:00Z",
         },
         {
+            "id": "old-bot-order",
+            "client_order_id": "anevum-spy-buy-before-run",
+            "submitted_at": "2026-09-24T13:00:00Z",
+        },
+        {
             "id": "manual-order",
             "client_order_id": "manual-1",
-            "submitted_at": "2026-09-24T13:00:00Z",
+            "submitted_at": "2026-09-24T13:45:00Z",
         },
     ]
     fills = [
@@ -53,6 +59,15 @@ def test_reconciliation_replays_bot_orders_oldest_first_and_filters_fills():
             "qty": "0.2",
             "price": "100",
             "transaction_time": "2026-09-24T14:00:01Z",
+        },
+        {
+            "id": "fill-old-bot",
+            "order_id": "old-bot-order",
+            "symbol": "SPY",
+            "side": "buy",
+            "qty": "0.2",
+            "price": "99",
+            "transaction_time": "2026-09-24T13:00:01Z",
         },
         {
             "id": "fill-manual",
