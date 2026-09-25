@@ -976,8 +976,10 @@ class FailingHealthStrategy(RollingMomentumVwapStrategy):
         )
 
     def position_health(self, **kwargs):
+        now = kwargs["now"]
         return {
             "data_ready": True,
+            "bar_time": now.replace(second=0, microsecond=0).isoformat(),
             "strong_failure": True,
             "reason": "market regime and position momentum both deteriorated",
             "candidate_failure_count": 3,
@@ -1031,9 +1033,21 @@ def test_thesis_failure_requires_two_cycles_before_exit():
             TEST_NOW + timedelta(seconds=20),
         )
     )
+    assert second == []
+    assert state.exit_states["SPY"]["thesis_failure_count"] == 1
 
-    assert len(second) == 1
-    assert second[0]["action"] == "submitted"
+    third = asyncio.run(
+        engine._exit_managed_positions(
+            account_payload,
+            client._positions,
+            [],
+            client._recent_orders,
+            TEST_NOW + timedelta(seconds=61),
+        )
+    )
+
+    assert len(third) == 1
+    assert third[0]["action"] == "submitted"
     assert client.sell_orders[-1]["symbol"] == "SPY"
     assert "-thesis-" in client.sell_orders[-1]["client_order_id"]
 
@@ -1085,3 +1099,49 @@ def test_standing_hardstop_does_not_block_discretionary_profit_exit():
     assert client._open_orders == []
     assert len(client.sell_orders) == 1
     assert "-target-" in client.sell_orders[0]["client_order_id"]
+
+
+def test_exit_state_reconstructs_peak_and_trough_from_bar_path():
+    engine = ExecutionEngine(
+        settings(
+            PROFIT_PROTECT_ACTIVATION_PCT="0.001",
+            PROFIT_PROTECT_RETAIN_FRACTION="0.50",
+            PROFIT_PROTECT_MIN_PCT="0.0003",
+        ),
+        FakeClient(),
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+    entry_time = TEST_NOW - timedelta(minutes=4)
+    bars = [
+        {
+            "t": (entry_time + timedelta(minutes=1)).isoformat(),
+            "o": "100.00",
+            "h": "100.30",
+            "l": "99.95",
+            "c": "100.10",
+            "v": "1000",
+            "vw": "100.10",
+        },
+        {
+            "t": (entry_time + timedelta(minutes=2)).isoformat(),
+            "o": "100.10",
+            "h": "100.20",
+            "l": "99.90",
+            "c": "100.02",
+            "v": "1000",
+            "vw": "100.02",
+        },
+    ]
+
+    state = engine._exit_state_for_position(
+        position("SPY", entry="100", current="100.02"),
+        bars=bars,
+        entry_time=entry_time,
+    )
+
+    assert Decimal(state["peak_return_pct"]) == Decimal("0.003")
+    assert Decimal(state["trough_return_pct"]) == Decimal("-0.001")
+    assert state["profit_protection_active"] is True
+    assert Decimal(state["protected_floor_pct"]) == Decimal("0.00150")
