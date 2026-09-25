@@ -17,6 +17,9 @@ class RuntimeState:
     last_day_pnl: str | None = None
     paused: bool = False
     entries_enabled: bool = True
+    startup_reconciled: bool = False
+    reconciliation_safe: bool = False
+    last_reconciliation: dict[str, Any] | None = None
     last_signal: dict[str, Any] | None = None
     last_scan: dict[str, Any] = field(default_factory=dict)
     decision_history: list[dict[str, Any]] = field(default_factory=list)
@@ -36,6 +39,17 @@ class RuntimeState:
 
     def mark_strategy(self) -> None:
         self.last_strategy_at = datetime.now(timezone.utc)
+
+    def set_reconciliation(
+        self,
+        result: dict[str, Any],
+        *,
+        startup: bool = False,
+    ) -> None:
+        self.last_reconciliation = result
+        self.reconciliation_safe = bool(result.get("safe_to_enter"))
+        if startup:
+            self.startup_reconciled = True
 
     def record_event(
         self,

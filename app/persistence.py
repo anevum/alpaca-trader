@@ -405,6 +405,258 @@ class TradingEventSink:
             },
         )
 
+    def _at_or_after_run_start(self, raw: Any) -> bool:
+        run_started_at = self.settings.trading_run_started_at
+        if run_started_at is None:
+            return True
+        if not raw:
+            return False
+        try:
+            stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if stamp.tzinfo is None:
+            return False
+        return stamp.astimezone(timezone.utc) >= run_started_at
+
+    def _build_reconciliation_events(
+        self,
+        *,
+        account: dict[str, Any],
+        positions: list[dict[str, Any]],
+        orders: list[dict[str, Any]],
+        fills: list[dict[str, Any]],
+        correlation_id: str | None,
+        observed_at: datetime,
+    ) -> list[dict[str, Any]]:
+        observed_utc = observed_at.astimezone(timezone.utc)
+        bot_orders = [
+            order
+            for order in orders
+            if str(order.get("client_order_id") or "").startswith("anevum-")
+            and self._at_or_after_run_start(order.get("submitted_at"))
+        ]
+        bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
+
+        events: list[dict[str, Any]] = []
+        for order in bot_orders:
+            broker_order_id = str(order.get("id") or "")
+            if not broker_order_id:
+                continue
+            status = str(order.get("status") or "unknown")
+            filled_qty = str(order.get("filled_qty") or "0")
+            updated = str(
+                order.get("updated_at")
+                or order.get("filled_at")
+                or order.get("submitted_at")
+                or ""
+            )
+            events.append(
+                self._event(
+                    event_type="broker_order",
+                    event_key=(
+                        f"{self.settings.trading_run_id}:order:{broker_order_id}:"
+                        f"{status}:{filled_qty}:{updated}"
+                    ),
+                    symbol=str(order.get("symbol") or "").upper(),
+                    correlation_id=correlation_id,
+                    occurred_at=(
+                        str(order.get("submitted_at"))
+                        if order.get("submitted_at")
+                        else None
+                    ),
+                    payload={"order": order},
+                )
+            )
+
+        bot_order_ids = {
+            str(order.get("id") or "")
+            for order in bot_orders
+            if order.get("id")
+        }
+        for activity in fills:
+            activity_id = str(activity.get("id") or "")
+            order_id = str(activity.get("order_id") or "")
+            if not activity_id or not order_id or order_id not in bot_order_ids:
+                continue
+            if not self._at_or_after_run_start(
+                activity.get("transaction_time") or activity.get("date")
+            ):
+                continue
+            events.append(
+                self._event(
+                    event_type="broker_fill",
+                    event_key=f"{self.settings.trading_run_id}:fill:{activity_id}",
+                    symbol=str(activity.get("symbol") or "").upper(),
+                    correlation_id=correlation_id,
+                    occurred_at=str(
+                        activity.get("transaction_time")
+                        or activity.get("date")
+                        or observed_utc.isoformat()
+                    ),
+                    payload={"activity": activity},
+                )
+            )
+
+        gross_exposure = sum(
+            abs(float(position.get("market_value") or 0))
+            for position in positions
+        )
+        unrealized_pnl = sum(
+            float(position.get("unrealized_pl") or 0)
+            for position in positions
+        )
+        last_equity = float(account.get("last_equity") or 0)
+        equity = float(account.get("equity") or 0)
+        drawdown_pct = (
+            max((last_equity - equity) / last_equity, 0.0)
+            if last_equity > 0
+            else 0.0
+        )
+        bucket = observed_utc.replace(second=0, microsecond=0).isoformat()
+        events.append(
+            self._event(
+                event_type="account_snapshot",
+                event_key=f"{self.settings.trading_run_id}:account:{bucket}",
+                correlation_id=correlation_id,
+                occurred_at=observed_utc.isoformat(),
+                payload={
+                    "equity": account.get("equity"),
+                    "last_equity": account.get("last_equity"),
+                    "cash": account.get("cash"),
+                    "buying_power": account.get("buying_power"),
+                    "realized_pnl": None,
+                    "unrealized_pnl": str(unrealized_pnl),
+                    "gross_exposure": str(gross_exposure),
+                    "net_exposure": str(gross_exposure),
+                    "drawdown_pct": str(drawdown_pct),
+                    "open_positions": len(positions),
+                    "positions": positions,
+                },
+            )
+        )
+        return events
+
+    async def sync_reconciliation(
+        self,
+        *,
+        account: dict[str, Any],
+        positions: list[dict[str, Any]],
+        orders: list[dict[str, Any]],
+        fills: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+        managed_symbols: list[str],
+        correlation_id: str | None,
+        observed_at: datetime,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            raise RuntimeError("canonical trading persistence is not configured")
+
+        events = self._build_reconciliation_events(
+            account=account,
+            positions=positions,
+            orders=orders,
+            fills=fills,
+            correlation_id=correlation_id,
+            observed_at=observed_at,
+        )
+        async with httpx.AsyncClient(timeout=8.0) as http:
+            if not await self._send_batch(http, events):
+                raise RuntimeError(self.last_error or "broker snapshot persistence failed")
+
+            base = self.settings.trading_ingest_url.rsplit("/", 1)[0]
+            response = await http.post(
+                f"{base}/trading-reconcile",
+                headers={
+                    "content-type": "application/json",
+                    "x-anevum-ingest-token": self.settings.trading_ingest_token,
+                },
+                json={
+                    "action": "reconcile",
+                    "reconcile": {
+                        "run_id": self.settings.trading_run_id,
+                        "strategy_version_id": self.settings.strategy_version_id,
+                        "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
+                        "managed_symbols": managed_symbols,
+                        "broker_positions": positions,
+                        "open_orders": open_orders,
+                    },
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                raise RuntimeError("reconciliation endpoint returned no result")
+            self.last_reconcile_at = observed_at.astimezone(timezone.utc)
+            self.last_error = None
+            return result
+
+    async def resolve_intent_not_found(
+        self,
+        *,
+        client_order_id: str,
+        correlation_id: str | None,
+        checked_at: datetime,
+    ) -> bool:
+        if not self.enabled:
+            return False
+        base = self.settings.trading_ingest_url.rsplit("/", 1)[0]
+        async with httpx.AsyncClient(timeout=8.0) as http:
+            response = await http.post(
+                f"{base}/trading-reconcile",
+                headers={
+                    "content-type": "application/json",
+                    "x-anevum-ingest-token": self.settings.trading_ingest_token,
+                },
+                json={
+                    "action": "resolve_intent",
+                    "intent": {
+                        "run_id": self.settings.trading_run_id,
+                        "client_order_id": client_order_id,
+                        "state": "broker_not_found",
+                        "checked_at": checked_at.astimezone(timezone.utc).isoformat(),
+                        "correlation_id": correlation_id,
+                    },
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return bool(payload.get("ok"))
+
+    async def persist_recovered_order(
+        self,
+        order: dict[str, Any],
+        *,
+        correlation_id: str | None,
+    ) -> bool:
+        broker_order_id = str(order.get("id") or "")
+        if not broker_order_id:
+            return False
+        status = str(order.get("status") or "unknown")
+        filled_qty = str(order.get("filled_qty") or "0")
+        updated = str(
+            order.get("updated_at")
+            or order.get("filled_at")
+            or order.get("submitted_at")
+            or ""
+        )
+        event = self._event(
+            event_type="broker_order",
+            event_key=(
+                f"{self.settings.trading_run_id}:order:{broker_order_id}:"
+                f"{status}:{filled_qty}:{updated}"
+            ),
+            symbol=str(order.get("symbol") or "").upper(),
+            correlation_id=correlation_id,
+            occurred_at=(
+                str(order.get("submitted_at")) if order.get("submitted_at") else None
+            ),
+            payload={"order": order, "recovered_by_client_order_id": True},
+        )
+        async with httpx.AsyncClient(timeout=8.0) as http:
+            return await self._send_batch(http, [event])
+
     async def _send_batch(
         self,
         http: httpx.AsyncClient,
