@@ -851,6 +851,28 @@ class ExecutionEngine:
                     signal.metadata["quality_components"] = ranking["components"]
                     signal.metadata["relative_volume_ratio"] = ranking["relative_volume_ratio"]
                     signal.metadata["trend_persistence"] = ranking["trend_persistence"]
+                    if Decimal(str(ranking["score"])) < self.settings.min_quality_score:
+                        gate_reason = (
+                            f"quality score {ranking['score']:.2f} below "
+                            f"MIN_QUALITY_SCORE {self.settings.min_quality_score}"
+                        )
+                        payload = self._signal_payload(signal)
+                        payload["action"] = "hold"
+                        payload["reason"] = gate_reason
+                        scan[signal.symbol] = payload
+                        self.state.record_event(
+                            kind="allocation",
+                            symbol=signal.symbol,
+                            action="hold",
+                            message=gate_reason,
+                            reason=gate_reason,
+                            at=now,
+                            payload={
+                                "quality_score": ranking["score"],
+                                "min_quality_score": str(self.settings.min_quality_score),
+                            },
+                        )
+                        continue
                     quality_signals.append(signal)
                     scan[signal.symbol] = self._signal_payload(signal)
                 else:
