@@ -149,16 +149,10 @@ def test_market_quality_accepts_fresh_tight_market():
 
 
 def test_dynamic_universe_keeps_bot_opened_position_managed_after_rotation():
-    s = settings(
-        DYNAMIC_UNIVERSE_ENABLED="true",
-        ALLOWED_SYMBOLS="SPY",
-    )
-    engine = ExecutionEngine(
-        s,
-        FakeClient(),
-        FakeMarketData(),
-        BuyStrategy(),
-        reconciled_state(),
+    engine = object.__new__(ExecutionEngine)
+    engine.settings = SimpleNamespace(
+        dynamic_universe_enabled=True,
+        allowed_symbols={"SPY"},
     )
     position = {"symbol": "AAPL", "qty": "0.25", "market_value": "50"}
     orders = [
