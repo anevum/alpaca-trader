@@ -65,11 +65,36 @@ class ExecutionEngine:
         ]
 
     @staticmethod
-    def _has_bot_exit_order(open_orders: list[dict[str, Any]], symbol: str) -> bool:
+    def _is_standing_protective_stop(order: dict[str, Any]) -> bool:
+        return "-hardstop-" in str(order.get("client_order_id", ""))
+
+    @classmethod
+    def _protective_stop_for_symbol(
+        cls,
+        open_orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> dict[str, Any] | None:
+        prefix = f"anevum-{symbol.lower()}-"
+        for order in open_orders:
+            if (
+                str(order.get("side", "")).lower() == "sell"
+                and str(order.get("client_order_id", "")).startswith(prefix)
+                and cls._is_standing_protective_stop(order)
+            ):
+                return order
+        return None
+
+    @classmethod
+    def _has_bot_exit_order(
+        cls,
+        open_orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> bool:
         prefix = f"anevum-{symbol.lower()}-"
         return any(
             str(order.get("side", "")).lower() == "sell"
             and str(order.get("client_order_id", "")).startswith(prefix)
+            and not cls._is_standing_protective_stop(order)
             for order in open_orders
         )
 
@@ -249,25 +274,123 @@ class ExecutionEngine:
         )
 
     @staticmethod
-    def _managed_price_exit(
+    def _price_for_order(value: Decimal) -> Decimal:
+        increment = Decimal("0.0001") if value < Decimal("1") else Decimal("0.01")
+        return value.quantize(increment, rounding=ROUND_DOWN)
+
+    def _prune_exit_states(self, positions: list[dict[str, Any]]) -> None:
+        active = {
+            str(position.get("symbol", "")).upper()
+            for position in positions
+            if Decimal(str(position.get("qty", "0") or "0")) > 0
+        }
+        for symbol in list(self.state.exit_states):
+            if symbol not in active:
+                del self.state.exit_states[symbol]
+
+    def _exit_state_for_position(
+        self,
         position: dict[str, Any],
-        stop_pct: Decimal,
-        target_pct: Decimal,
+    ) -> dict[str, Any]:
+        symbol = str(position.get("symbol", "")).upper()
+        entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
+        current_price = Decimal(str(position.get("current_price", "0") or "0"))
+        state = self.state.exit_states.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "risk_stop_pct": str(self.settings.stop_pct),
+                "peak_return_pct": "0",
+                "trough_return_pct": "0",
+                "protected_floor_pct": None,
+                "profit_protection_active": False,
+                "thesis_failure_count": 0,
+            },
+        )
+        if entry_price <= 0 or current_price <= 0:
+            return state
+
+        current_return = (current_price - entry_price) / entry_price
+        peak = max(
+            Decimal(str(state.get("peak_return_pct") or "0")),
+            current_return,
+        )
+        trough = min(
+            Decimal(str(state.get("trough_return_pct") or "0")),
+            current_return,
+        )
+        state["entry_price"] = str(entry_price)
+        state["current_price"] = str(current_price)
+        state["current_return_pct"] = str(current_return)
+        state["peak_return_pct"] = str(peak)
+        state["trough_return_pct"] = str(trough)
+
+        if peak >= self.settings.profit_protect_activation_pct:
+            floor = max(
+                self.settings.profit_protect_min_pct,
+                peak * self.settings.profit_protect_retain_fraction,
+            )
+            old_floor_raw = state.get("protected_floor_pct")
+            old_floor = (
+                Decimal(str(old_floor_raw))
+                if old_floor_raw not in {None, ""}
+                else Decimal("-1")
+            )
+            floor = max(floor, old_floor)
+            state["profit_protection_active"] = True
+            state["protected_floor_pct"] = str(floor)
+
+        risk_stop_pct = Decimal(
+            str(state.get("risk_stop_pct") or self.settings.stop_pct)
+        )
+        stop_floor_pct = -risk_stop_pct
+        if state.get("profit_protection_active"):
+            stop_floor_pct = max(
+                stop_floor_pct,
+                Decimal(str(state.get("protected_floor_pct") or "0")),
+            )
+        desired_stop = entry_price * (Decimal("1") + stop_floor_pct)
+        state["desired_stop_price"] = str(self._price_for_order(desired_stop))
+        return state
+
+    def _managed_price_exit(
+        self,
+        position: dict[str, Any],
     ) -> tuple[str, str] | None:
         entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
         current_price = Decimal(str(position.get("current_price", "0") or "0"))
         if entry_price <= 0 or current_price <= 0:
             return None
 
-        stop_price = entry_price * (Decimal("1") - stop_pct)
-        target_price = entry_price * (Decimal("1") + target_pct)
+        state = self._exit_state_for_position(position)
+        risk_stop_pct = Decimal(
+            str(state.get("risk_stop_pct") or self.settings.stop_pct)
+        )
+        hard_stop_price = entry_price * (Decimal("1") - risk_stop_pct)
+        target_price = entry_price * (Decimal("1") + self.settings.target_pct)
 
-        if current_price <= stop_price:
+        if current_price <= hard_stop_price:
             return (
                 "stop",
-                f"bot-managed stop loss triggered at {current_price} "
-                f"(entry {entry_price})",
+                f"software fallback stop triggered at {current_price} "
+                f"(entry {entry_price}, risk {risk_stop_pct:.4%})",
             )
+
+        if state.get("profit_protection_active"):
+            protected_floor_pct = Decimal(
+                str(state.get("protected_floor_pct") or "0")
+            )
+            protected_price = entry_price * (
+                Decimal("1") + protected_floor_pct
+            )
+            if current_price <= protected_price:
+                return (
+                    "protect",
+                    f"profit-protection floor triggered at {current_price} "
+                    f"(peak {Decimal(str(state.get('peak_return_pct') or '0')):.4%}, "
+                    f"floor {protected_floor_pct:.4%})",
+                )
+
         if current_price >= target_price:
             return (
                 "target",
