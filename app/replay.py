@@ -558,7 +558,9 @@ class ReplayEngine:
                     if reference <= 0:
                         continue
                     entry_fill = self._fill(reference, "buy", spread_bps, slippage_bps)
-                    qty = fractional_qty(notional, entry_fill)
+                    # Match live execution: quantity is derived from the signal
+                    # reference price, while the simulated fill determines cash cost.
+                    qty = fractional_qty(notional, reference)
                     if qty <= 0:
                         continue
                     cost = qty * entry_fill
