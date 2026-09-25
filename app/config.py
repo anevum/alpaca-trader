@@ -143,6 +143,9 @@ class Settings(BaseSettings):
     volatility_stop_multiplier: Decimal = Field(
         default=Decimal("2.0"), alias="VOLATILITY_STOP_MULTIPLIER"
     )
+    volatility_stop_lookback_bars: int = Field(
+        default=8, alias="VOLATILITY_STOP_LOOKBACK_BARS"
+    )
     max_dynamic_stop_pct: Decimal = Field(
         default=Decimal("0.006"), alias="MAX_DYNAMIC_STOP_PCT"
     )
@@ -463,6 +466,8 @@ class Settings(BaseSettings):
             raise ValueError("LOSS_STREAK_COOLDOWN_MINUTES must be between 0 and 120")
         if not Decimal("0") < self.volatility_stop_multiplier <= Decimal("10"):
             raise ValueError("VOLATILITY_STOP_MULTIPLIER must be between 0 and 10")
+        if not 3 <= self.volatility_stop_lookback_bars <= 60:
+            raise ValueError("VOLATILITY_STOP_LOOKBACK_BARS must be between 3 and 60")
         if not self.stop_pct <= self.max_dynamic_stop_pct < Decimal("0.05"):
             raise ValueError("MAX_DYNAMIC_STOP_PCT must be >= STOP_PCT and below 0.05")
         if not Decimal("0") < self.profit_protect_activation_pct < Decimal("0.05"):
