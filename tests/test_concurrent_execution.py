@@ -79,11 +79,14 @@ def reconciled_state():
 
 
 class FakeClient:
-    def __init__(self, positions=None, recent_orders=None):
+    def __init__(self, positions=None, recent_orders=None, open_orders=None):
         self._positions = list(positions or [])
         self._recent_orders = list(recent_orders or [])
+        self._open_orders = list(open_orders or [])
         self.buy_orders = []
         self.sell_orders = []
+        self.stop_orders = []
+        self.replaced_orders = []
 
     async def account(self):
         return {
@@ -102,7 +105,7 @@ class FakeClient:
         return list(self._positions)
 
     async def open_orders(self):
-        return []
+        return list(self._open_orders)
 
     async def recent_orders(self, limit=100):
         return list(self._recent_orders)
@@ -145,7 +148,38 @@ class FakeClient:
         self.sell_orders.append(order)
         return order
 
+    async def submit_stop_sell(self, symbol, qty, stop_price, client_order_id):
+        order = {
+            "id": f"stop-{symbol}-{len(self.stop_orders)+1}",
+            "client_order_id": client_order_id,
+            "symbol": symbol,
+            "side": "sell",
+            "qty": qty,
+            "type": "stop",
+            "status": "new",
+            "stop_price": stop_price,
+            "submitted_at": iso_now(),
+        }
+        self.stop_orders.append(order)
+        self._open_orders.append(order)
+        return order
+
+    async def replace_stop_order(self, order_id, stop_price):
+        for index, order in enumerate(self._open_orders):
+            if order.get("id") == order_id:
+                replaced = dict(order)
+                replaced["id"] = f"{order_id}-r{len(self.replaced_orders)+1}"
+                replaced["stop_price"] = stop_price
+                self._open_orders[index] = replaced
+                self.replaced_orders.append(replaced)
+                return replaced
+        raise RuntimeError("stop order not found")
+
     async def cancel_order(self, order_id):
+        self._open_orders = [
+            order for order in self._open_orders
+            if order.get("id") != order_id
+        ]
         return None
 
 
@@ -340,6 +374,7 @@ class FakeLedger:
         client_order_id,
         correlation_id,
         intended_at,
+        exit_metadata=None,
     ):
         if self.fail_entries:
             raise RuntimeError("persistence unavailable")
@@ -375,6 +410,7 @@ class FakeLedger:
                 "qty": qty,
                 "client_order_id": client_order_id,
                 "exit_reason": exit_reason,
+                "exit_metadata": exit_metadata or {},
             }
         )
         return {
