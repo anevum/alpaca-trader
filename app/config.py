@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     max_position_notional: Decimal = Field(default=Decimal("80.35"), alias="MAX_POSITION_NOTIONAL")
     max_daily_orders: int = Field(default=2, alias="MAX_DAILY_ORDERS")
     max_daily_loss: Decimal = Field(default=Decimal("1.00"), alias="MAX_DAILY_LOSS")
+    max_daily_loss_pct: Decimal = Field(
+        default=Decimal("0.01"), alias="MAX_DAILY_LOSS_PCT"
+    )
     max_concurrent_positions: int = Field(default=1, alias="MAX_CONCURRENT_POSITIONS")
     max_new_entries_per_cycle: int = Field(default=1, alias="MAX_NEW_ENTRIES_PER_CYCLE")
     max_total_position_notional: Decimal = Field(
@@ -365,8 +368,10 @@ class Settings(BaseSettings):
             raise ValueError("MAX_POSITION_NOTIONAL cannot be below ORDER_NOTIONAL")
         if self.max_daily_orders < 0:
             raise ValueError("MAX_DAILY_ORDERS cannot be negative")
-        if self.max_daily_loss <= 0:
-            raise ValueError("MAX_DAILY_LOSS must be positive")
+        if self.max_daily_loss < 0:
+            raise ValueError("MAX_DAILY_LOSS cannot be negative")
+        if not Decimal("0") < self.max_daily_loss_pct <= Decimal("0.10"):
+            raise ValueError("MAX_DAILY_LOSS_PCT must be between 0 and 0.10")
         if self.portfolio_limit_mode not in {"count", "risk"}:
             raise ValueError("PORTFOLIO_LIMIT_MODE must be count or risk")
         if self.portfolio_limit_mode == "count":
@@ -383,7 +388,12 @@ class Settings(BaseSettings):
                 raise ValueError("MAX_NEW_ENTRIES_PER_CYCLE cannot be negative")
             if self.sizing_mode != "equity_risk":
                 raise ValueError("PORTFOLIO_LIMIT_MODE=risk requires SIZING_MODE=equity_risk")
-        if self.max_total_position_notional < self.order_notional:
+        if self.max_total_position_notional < 0:
+            raise ValueError("MAX_TOTAL_POSITION_NOTIONAL cannot be negative")
+        if (
+            self.sizing_mode != "equity_risk"
+            and self.max_total_position_notional < self.order_notional
+        ):
             raise ValueError(
                 "MAX_TOTAL_POSITION_NOTIONAL cannot be below ORDER_NOTIONAL"
             )
