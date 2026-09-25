@@ -1880,6 +1880,60 @@ class ExecutionEngine:
                     payload={"client_order_id": _client_order_id},
                 )
 
+            effective_stop_pct = Decimal(
+                str(
+                    (signal.metadata or {}).get(
+                        "effective_stop_pct",
+                        self.settings.stop_pct,
+                    )
+                )
+            )
+            self.state.exit_states[symbol] = {
+                "symbol": symbol,
+                "risk_stop_pct": str(effective_stop_pct),
+                "peak_return_pct": "0",
+                "trough_return_pct": "0",
+                "protected_floor_pct": None,
+                "profit_protection_active": False,
+                "thesis_failure_count": 0,
+                "entry_client_order_id": _client_order_id,
+            }
+
+            protection_result: dict[str, Any] | None = None
+            filled_qty = Decimal(str(result.get("filled_qty") or "0"))
+            filled_price = Decimal(str(result.get("filled_avg_price") or "0"))
+            if (
+                self.settings.broker_protective_stop_enabled
+                and filled_qty > 0
+                and filled_price > 0
+            ):
+                synthetic_position = {
+                    "symbol": symbol,
+                    "qty": str(filled_qty),
+                    "avg_entry_price": str(filled_price),
+                    "current_price": str(filled_price),
+                }
+                try:
+                    protection_result = await self._ensure_protective_stop(
+                        synthetic_position,
+                        [],
+                        now,
+                    )
+                except Exception as exc:
+                    protection_result = {
+                        "action": "error",
+                        "symbol": symbol,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                    self.state.record_event(
+                        kind="protection",
+                        symbol=symbol,
+                        action="error",
+                        message="immediate post-fill protective stop failed",
+                        reason=str(exc),
+                        at=now,
+                    )
+
             order_payload = {
                 "id": result.get("id"),
                 "client_order_id": result.get("client_order_id"),
@@ -1891,7 +1945,9 @@ class ExecutionEngine:
                 "submitted_at": result.get("submitted_at"),
                 "stop_price": str(signal.stop_price),
                 "take_profit_price": str(signal.take_profit_price),
-                "exit_management": "bot",
+                "effective_stop_pct": str(effective_stop_pct),
+                "exit_management": "exit_engine_v2",
+                "protection": protection_result,
             }
             submitted_orders.append(order_payload)
             if self.ledger is not None:
@@ -1918,7 +1974,7 @@ class ExecutionEngine:
                 action="buy",
                 message=(
                     "fractional-compatible market entry submitted; "
-                    "bot-managed stop/target/time exits active"
+                    "Exit Engine v2 protection active"
                 ),
                 at=now,
             )
