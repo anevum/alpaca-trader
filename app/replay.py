@@ -350,7 +350,7 @@ class ReplayEngine:
                 (
                     sum(pnls, Decimal("0")) / Decimal(len(pnls))
                     if pnls else Decimal("0")
-                ).quantize(CENT)
+                ).quantize(Decimal("0.0001"))
             ),
             "max_drawdown": str(max_drawdown.quantize(CENT)),
             "max_drawdown_pct": round(
@@ -361,6 +361,7 @@ class ReplayEngine:
             "entries": counters["entries"],
             "correlation_blocks": counters["correlation_blocks"],
             "risk_blocks": counters["risk_blocks"],
+            "quality_blocks": counters["quality_blocks"],
             "exit_reasons": dict(Counter(str(trade["exit_reason"]) for trade in trades)),
             "by_symbol": by_symbol,
         }
@@ -511,6 +512,9 @@ class ReplayEngine:
                     signal.metadata["quality_components"] = ranking["components"]
                     signal.metadata["relative_volume_ratio"] = ranking["relative_volume_ratio"]
                     signal.metadata["trend_persistence"] = ranking["trend_persistence"]
+                    if d(ranking["score"]) < self.settings.min_quality_score:
+                        counters["quality_blocks"] += 1
+                        continue
                     buy_signals.append(signal)
                     counters["signals_qualified"] += 1
 
