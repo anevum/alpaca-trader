@@ -12,6 +12,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .risk import validate_buy, validate_sell_to_flat
+from .sizing import calculate_entry_notional, sizing_snapshot
 from .state import RuntimeState
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
 
@@ -970,6 +971,28 @@ class ExecutionEngine:
                         continue
 
             simulated_account["cash"] = str(simulated_cash)
+            entry_notional = calculate_entry_notional(
+                self.settings,
+                simulated_account,
+                simulated_positions,
+            )
+            if entry_notional <= 0:
+                skipped.append(
+                    {
+                        "symbol": symbol,
+                        "reason": "capital allocator produced no eligible notional",
+                    }
+                )
+                continue
+
+            signal.notional = entry_notional
+            signal.metadata = dict(signal.metadata or {})
+            signal.metadata["sizing"] = sizing_snapshot(
+                self.settings,
+                simulated_account,
+                simulated_positions,
+            )
+
             risk = validate_buy(
                 self.settings,
                 symbol,
@@ -1004,6 +1027,8 @@ class ExecutionEngine:
                 continue
 
             planned.append((signal, qty))
+            if len(planned) == 1:
+                self.state.last_signal = self._signal_payload(signal)
             simulated_cash -= signal.notional
             simulated_positions.append(
                 {
