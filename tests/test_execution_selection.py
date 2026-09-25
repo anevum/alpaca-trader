@@ -160,7 +160,7 @@ def test_dynamic_universe_keeps_bot_opened_position_managed_after_rotation():
         {
             "side": "buy",
             "symbol": "AAPL",
-            "client_order_id": "anevum-aapl-entry-123",
+            "client_order_id": "anevum-aapl-buy-123",
             "status": "filled",
             "filled_at": now.isoformat(),
             "submitted_at": now.isoformat(),
