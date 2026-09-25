@@ -226,7 +226,12 @@ async def command_snapshot() -> dict:
         "risk": {
             "max_daily_orders": settings.max_daily_orders,
             "entry_orders_today": entry_count,
-            "entries_remaining": max(settings.max_daily_orders - entry_count, 0),
+            "entries_remaining": (
+                None
+                if settings.portfolio_limit_mode == "risk"
+                and settings.max_daily_orders == 0
+                else max(settings.max_daily_orders - entry_count, 0)
+            ),
             "max_daily_loss": str(settings.max_daily_loss),
             "max_order_notional": str(settings.max_order_notional),
             "max_position_notional": str(settings.max_position_notional),
@@ -237,6 +242,9 @@ async def command_snapshot() -> dict:
             "risk_per_trade_pct": str(settings.risk_per_trade_pct),
             "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
             "min_order_notional": str(settings.min_order_notional),
+            "portfolio_limit_mode": settings.portfolio_limit_mode,
+            "max_position_gross_pct": str(settings.max_position_gross_pct),
+            "max_portfolio_stop_risk_pct": str(settings.max_portfolio_stop_risk_pct),
         },
         "allocator": allocator,
         "scanner": runtime_state.last_scan,
@@ -477,6 +485,10 @@ async def lifespan(app: FastAPI):
             "max_concurrent_positions": settings.max_concurrent_positions,
             "max_new_entries_per_cycle": settings.max_new_entries_per_cycle,
             "max_total_position_notional": str(settings.max_total_position_notional),
+            "portfolio_limit_mode": settings.portfolio_limit_mode,
+            "max_position_gross_pct": str(settings.max_position_gross_pct),
+            "max_portfolio_stop_risk_pct": str(settings.max_portfolio_stop_risk_pct),
+            "market_data_batch_size": settings.market_data_batch_size,
             "max_bar_age_seconds": settings.max_bar_age_seconds,
             "max_spread_pct": str(settings.max_spread_pct),
             "min_quality_score": str(settings.min_quality_score),
