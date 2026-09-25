@@ -243,6 +243,7 @@ class TradingEventSink:
         exit_reason: str,
         correlation_id: str | None,
         intended_at: datetime,
+        exit_metadata: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         intent_id = str(uuid4())
         exit_id = str(uuid4())
@@ -264,6 +265,7 @@ class TradingEventSink:
                     "client_order_id": client_order_id,
                     "exit_id": exit_id,
                     "exit_reason": exit_reason,
+                    "exit_metadata": exit_metadata or {},
                 },
             }
         }
