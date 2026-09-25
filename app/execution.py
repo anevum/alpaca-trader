@@ -1323,7 +1323,19 @@ class ExecutionEngine:
         recent_orders = await self.client.recent_orders(limit=100)
         now = datetime.now(NY)
 
+        self._prune_exit_states(positions)
         managed_positions = self._managed_positions(positions, recent_orders)
+        protection_results = await self._ensure_protective_stops(
+            managed_positions,
+            open_orders,
+            now,
+        )
+        if any(
+            result.get("action") in {"submitted", "replaced", "recovered"}
+            for result in protection_results
+        ):
+            open_orders = await self.client.open_orders()
+
         exit_results = await self._exit_managed_positions(
             account,
             managed_positions,
