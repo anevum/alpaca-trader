@@ -71,7 +71,7 @@ def test_aggregate_prefers_sampled_consistent_variant():
 def test_strategy_004_gate_requires_history_and_forward_shadow():
     rows = [
         {
-            "variant": "strategy_004_vwap_edge",
+            "variant": "strategy_004_followthrough",
             "description": "",
             "parameters": {},
             "eligible_for_ranking": True,
@@ -108,7 +108,7 @@ def test_strategy_004_gate_requires_history_and_forward_shadow():
 def test_strategy_004_gate_rejects_negative_expectancy():
     rows = [
         {
-            "variant": "strategy_004_vwap_edge",
+            "variant": "strategy_004_followthrough",
             "description": "",
             "parameters": {},
             "eligible_for_ranking": True,
