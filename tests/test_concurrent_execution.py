@@ -374,6 +374,16 @@ class FakeLedger:
         self.broker_orders.append((order, metadata))
 
 
+class AmbiguousLostClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.submit_attempts = 0
+
+    async def submit_market_buy(self, symbol, qty, client_order_id):
+        self.submit_attempts += 1
+        raise RuntimeError("simulated unknown broker submission outcome")
+
+
 class AmbiguousRecoveredClient(FakeClient):
     def __init__(self):
         super().__init__()
@@ -462,6 +472,27 @@ def test_ambiguous_submission_recovers_by_client_order_id_without_resubmit():
         order["id"] == "recovered-SPY"
         for order, _metadata in ledger.broker_orders
     )
+
+
+def test_ambiguous_submission_blocks_future_entries_when_not_recoverable():
+    client = AmbiguousLostClient()
+    ledger = FakeLedger()
+    state = reconciled_state()
+    engine = ExecutionEngine(
+        settings(MAX_NEW_ENTRIES_PER_CYCLE="1"),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        state,
+        ledger=ledger,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "error"
+    assert client.submit_attempts == 1
+    assert state.reconciliation_safe is False
+    assert state.last_reconciliation["reason"] == "ambiguous broker submission"
 
 
 def test_new_entry_fails_closed_when_durable_intent_cannot_be_written():
