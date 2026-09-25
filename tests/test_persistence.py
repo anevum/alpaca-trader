@@ -338,3 +338,32 @@ def test_replaced_hardstop_inherits_bot_ownership_and_protective_semantics():
     assert [event["payload"]["activity"]["id"] for event in broker_fills] == [
         "replacement-fill"
     ]
+
+
+
+def test_position_metrics_are_minute_bucketed_and_include_excursions():
+    sink = CapturingSink()
+    observed_at = datetime(2026, 9, 25, 18, 10, 15, tzinfo=timezone.utc)
+
+    sink.record_position_metrics(
+        symbol="SOXL",
+        exit_state={
+            "entry_price": "152.382",
+            "current_price": "152.57",
+            "current_return_pct": "0.0012",
+            "peak_return_pct": "0.00268",
+            "trough_return_pct": "-0.00093",
+            "entry_client_order_id": "anevum-soxl-buy-live-abc",
+        },
+        correlation_id="cycle-metrics",
+        observed_at=observed_at,
+    )
+
+    event = sink.events[-1]
+    assert event["event_type"] == "position_metrics"
+    assert event["event_key"].endswith(
+        "position-metrics:SOXL:2026-09-25T18:10:00+00:00"
+    )
+    assert event["payload"]["max_favorable_excursion"] == "0.00268"
+    assert event["payload"]["max_adverse_excursion"] == "-0.00093"
+    assert event["payload"]["entry_client_order_id"] == "anevum-soxl-buy-live-abc"
