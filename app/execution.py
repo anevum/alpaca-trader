@@ -300,6 +300,9 @@ class ExecutionEngine:
     def _exit_state_for_position(
         self,
         position: dict[str, Any],
+        *,
+        bars: list[dict[str, Any]] | None = None,
+        entry_time: datetime | None = None,
     ) -> dict[str, Any]:
         symbol = str(position.get("symbol", "")).upper()
         entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
@@ -320,19 +323,41 @@ class ExecutionEngine:
             return state
 
         current_return = (current_price - entry_price) / entry_price
+        observed_peak = current_return
+        observed_trough = current_return
+        if bars and entry_time is not None:
+            for bar in bars:
+                stamp = self._timestamp(bar.get("t"))
+                if stamp is None or stamp < entry_time:
+                    continue
+                high = Decimal(str(bar.get("h", "0") or "0"))
+                low = Decimal(str(bar.get("l", "0") or "0"))
+                if high > 0:
+                    observed_peak = max(
+                        observed_peak,
+                        (high - entry_price) / entry_price,
+                    )
+                if low > 0:
+                    observed_trough = min(
+                        observed_trough,
+                        (low - entry_price) / entry_price,
+                    )
+
         peak = max(
             Decimal(str(state.get("peak_return_pct") or "0")),
-            current_return,
+            observed_peak,
         )
         trough = min(
             Decimal(str(state.get("trough_return_pct") or "0")),
-            current_return,
+            observed_trough,
         )
         state["entry_price"] = str(entry_price)
         state["current_price"] = str(current_price)
         state["current_return_pct"] = str(current_return)
         state["peak_return_pct"] = str(peak)
         state["trough_return_pct"] = str(trough)
+        state["observed_peak_return_pct"] = str(observed_peak)
+        state["observed_trough_return_pct"] = str(observed_trough)
 
         if peak >= self.settings.profit_protect_activation_pct:
             floor = max(
