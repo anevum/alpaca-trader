@@ -68,3 +68,40 @@ def test_cash_and_hard_caps_still_bind_dynamic_sizing():
 def test_fixed_mode_preserves_legacy_notional():
     s = settings(SIZING_MODE="fixed", ORDER_NOTIONAL="20")
     assert calculate_entry_notional(s, account(), []) == Decimal("20")
+
+
+def test_risk_mode_ignores_fixed_position_slots():
+    s = settings(
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_POSITION_GROSS_PCT="0.25",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+    )
+    positions = [
+        {
+            "symbol": f"S{i}",
+            "qty": "1",
+            "market_value": "5",
+        }
+        for i in range(7)
+    ]
+    assert calculate_entry_notional(s, account(), positions) == Decimal("25.00")
+
+
+def test_risk_mode_uses_remaining_gross_capacity_for_last_position():
+    s = settings(
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_POSITION_GROSS_PCT="0.25",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+    )
+    positions = [
+        {"symbol": "A", "qty": "1", "market_value": "25"},
+        {"symbol": "B", "qty": "1", "market_value": "25"},
+        {"symbol": "C", "qty": "1", "market_value": "25"},
+    ]
+    assert calculate_entry_notional(s, account(), positions) == Decimal("5.00")
