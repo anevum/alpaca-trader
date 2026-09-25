@@ -25,7 +25,14 @@ class AlpacaClient:
             "Content-Type": "application/json",
         }
 
-    async def _request(self, method: str, path: str, **kwargs) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        allow_404: bool = False,
+        **kwargs,
+    ) -> Any:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -35,6 +42,8 @@ class AlpacaClient:
                 headers=self.headers,
                 **kwargs,
             )
+            if allow_404 and response.status_code == 404:
+                return None
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
@@ -94,6 +103,17 @@ class AlpacaClient:
             "GET",
             "/v2/account/activities/FILL",
             params=params,
+        )
+
+    async def order_by_client_order_id(
+        self,
+        client_order_id: str,
+    ) -> dict[str, Any] | None:
+        return await self._request(
+            "GET",
+            "/v2/orders:by_client_order_id",
+            allow_404=True,
+            params={"client_order_id": client_order_id},
         )
 
     async def submit_market_buy(
