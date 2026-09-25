@@ -262,20 +262,28 @@ async def reconcile_broker_state(account: dict | None = None) -> None:
     now = datetime.now(NY)
     if settings.scan_only or not event_sink.should_reconcile(now):
         return
-    account = account or await client.account()
-    positions, recent_orders, fills = await asyncio.gather(
-        client.positions(),
-        client.recent_orders(limit=100),
-        client.fill_activities(date=now.date().isoformat(), limit=100),
-    )
-    event_sink.record_reconciliation(
-        account=account,
-        positions=positions,
-        orders=recent_orders,
-        fills=fills,
-        correlation_id=runtime_state.current_correlation_id,
-        observed_at=now,
-    )
+    try:
+        account = account or await client.account()
+        positions, recent_orders, fills = await asyncio.gather(
+            client.positions(),
+            client.recent_orders(limit=100),
+            client.fill_activities(date=now.date().isoformat(), limit=100),
+        )
+        event_sink.record_reconciliation(
+            account=account,
+            positions=positions,
+            orders=recent_orders,
+            fills=fills,
+            correlation_id=runtime_state.current_correlation_id,
+            observed_at=now,
+        )
+    except Exception as exc:
+        event_sink.last_error = f"reconciliation {type(exc).__name__}: {exc}"
+        print(
+            "LEDGER_RECONCILE_ERROR",
+            {"error": event_sink.last_error},
+            flush=True,
+        )
 
 
 async def monitor_loop():
@@ -289,7 +297,6 @@ async def monitor_loop():
                     await scanner.scan_once()
                 else:
                     account = await refresh_account_state()
-                    await reconcile_broker_state(account)
                     if (
                         settings.execution_enabled
                         and settings.bot_armed
@@ -306,6 +313,7 @@ async def monitor_loop():
                             },
                             flush=True,
                         )
+                    await reconcile_broker_state(account)
             else:
                 runtime_state.funding_ready = False
                 runtime_state.last_error = "credentials not configured"
