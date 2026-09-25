@@ -126,3 +126,24 @@ Never commit Alpaca keys or the administrator token to GitHub. Configure them on
 ## Deployment
 
 The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader`.
+
+
+## Durable canonical trading ledger
+
+Production trading telemetry is written through the authenticated `trading-ingest` backend into ANEVUM's private Supabase schema.
+
+The execution path records:
+
+`signal -> order intent -> broker order -> fill -> position -> exit -> account snapshot`
+
+Safety behavior:
+
+- New BUY entries fail closed if the durable order intent cannot be acknowledged.
+- Protective SELL exits fail open if persistence is unavailable; storage must never trap an open position.
+- Broker reconciliation uses Alpaca orders, positions, account state, and `FILL` account activities.
+- Reconciliation is idempotent and replays bot orders chronologically.
+- `TRADING_RUN_STARTED_AT` is a fixed run boundary and must not change across Railway restarts. Reconciliation ignores orders/fills older than that timestamp.
+- `TRADING_INGEST_TOKEN` is backend-only and must never be exposed to browser code.
+- Ledger reconciliation does not modify strategy signals, sizing, or risk rules.
+
+Required persistence variables are documented in `.env.example`.
