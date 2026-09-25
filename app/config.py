@@ -379,14 +379,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CORRELATION_MIN_OBSERVATIONS must be at least 3 and below CORRELATION_LOOKBACK_BARS"
             )
-        if not self.scan_symbols:
+        if not self.scan_symbols and not self.dynamic_universe_enabled:
             raise ValueError("SCAN_SYMBOLS/STRATEGY_SYMBOL cannot both be empty")
-        missing = [symbol for symbol in self.scan_symbols if symbol not in self.allowed_symbols]
-        if missing:
-            raise ValueError(
-                "Every SCAN_SYMBOLS symbol must also be in ALLOWED_SYMBOLS: "
-                + ",".join(missing)
-            )
+        if not self.dynamic_universe_enabled:
+            missing = [
+                symbol for symbol in self.scan_symbols
+                if symbol not in self.allowed_symbols
+            ]
+            if missing:
+                raise ValueError(
+                    "Every SCAN_SYMBOLS symbol must also be in ALLOWED_SYMBOLS: "
+                    + ",".join(missing)
+                )
         if not self.confirmation_symbols:
             raise ValueError("CONFIRMATION_SYMBOLS cannot be empty")
         if not 1 <= self.min_confirmations <= len(self.confirmation_symbols):
