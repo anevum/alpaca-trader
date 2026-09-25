@@ -373,6 +373,7 @@ async def reconcile_broker_state(
             ),
             correlation_id=runtime_state.current_correlation_id,
             observed_at=now,
+            position_metrics=runtime_state.exit_states,
         )
 
         unresolved = list(result.get("unresolved_intents") or [])
@@ -435,6 +436,7 @@ async def reconcile_broker_state(
             ),
                     correlation_id=runtime_state.current_correlation_id,
                     observed_at=now,
+                    position_metrics=runtime_state.exit_states,
                 )
 
         runtime_state.set_reconciliation(result, startup=startup)
