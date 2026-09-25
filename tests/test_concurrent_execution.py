@@ -52,6 +52,14 @@ def iso_now(offset_seconds=0):
     return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).isoformat()
 
 
+def reconciled_state():
+    state = RuntimeState()
+    state.startup_reconciled = True
+    state.reconciliation_safe = True
+    state.last_reconciliation = {"safe_to_enter": True}
+    return state
+
+
 class FakeClient:
     def __init__(self, positions=None, recent_orders=None):
         self._positions = list(positions or [])
@@ -88,6 +96,9 @@ class FakeClient:
             "tradable": True,
             "fractionable": True,
         }
+
+    async def order_by_client_order_id(self, client_order_id):
+        return None
 
     async def submit_market_buy(self, symbol, qty, client_order_id):
         order = {
@@ -221,7 +232,7 @@ def test_engine_can_submit_two_entries_in_one_cycle():
         client,
         market,
         BuyStrategy(),
-        RuntimeState(),
+        reconciled_state(),
     )
 
     result = asyncio.run(engine.run_once())
@@ -241,7 +252,7 @@ def test_existing_managed_position_does_not_block_different_symbol_entry():
         client,
         FakeMarketData(),
         BuyStrategy(),
-        RuntimeState(),
+        reconciled_state(),
     )
 
     result = asyncio.run(engine.run_once())
@@ -283,7 +294,7 @@ def test_cooling_top_candidate_falls_through_to_next_symbol():
         client,
         FakeMarketData(),
         BuyStrategy(),
-        RuntimeState(),
+        reconciled_state(),
     )
 
     result = asyncio.run(engine.run_once())
@@ -355,8 +366,102 @@ class FakeLedger:
             "client_order_id": client_order_id,
         }
 
+    async def persist_recovered_order(self, order, **metadata):
+        self.broker_orders.append((order, metadata))
+        return True
+
     def record_broker_order(self, order, **metadata):
         self.broker_orders.append((order, metadata))
+
+
+class AmbiguousRecoveredClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.submit_attempts = 0
+        self.recovered = {}
+
+    async def submit_market_buy(self, symbol, qty, client_order_id):
+        self.submit_attempts += 1
+        order = {
+            "id": f"recovered-{symbol}",
+            "client_order_id": client_order_id,
+            "symbol": symbol,
+            "side": "buy",
+            "qty": qty,
+            "status": "accepted",
+            "order_class": "",
+            "submitted_at": iso_now(),
+        }
+        self.recovered[client_order_id] = order
+        raise RuntimeError("simulated response loss after broker acceptance")
+
+    async def order_by_client_order_id(self, client_order_id):
+        return self.recovered.get(client_order_id)
+
+
+def test_startup_reconciliation_blocks_new_entries():
+    client = FakeClient()
+    engine = ExecutionEngine(
+        settings(MAX_NEW_ENTRIES_PER_CYCLE="1"),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        RuntimeState(),
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "blocked"
+    assert "startup reconciliation" in result["reason"]
+    assert client.buy_orders == []
+
+
+def test_reconciliation_mismatch_blocks_new_entries():
+    client = FakeClient()
+    state = RuntimeState()
+    state.startup_reconciled = True
+    state.reconciliation_safe = False
+    state.last_reconciliation = {
+        "safe_to_enter": False,
+        "orphan_broker_positions": [{"symbol": "SPY", "qty": "0.2"}],
+    }
+    engine = ExecutionEngine(
+        settings(MAX_NEW_ENTRIES_PER_CYCLE="1"),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        state,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "blocked"
+    assert "reconciliation" in result["reason"]
+    assert result["reconciliation"]["orphan_broker_positions"][0]["symbol"] == "SPY"
+    assert client.buy_orders == []
+
+
+def test_ambiguous_submission_recovers_by_client_order_id_without_resubmit():
+    client = AmbiguousRecoveredClient()
+    ledger = FakeLedger()
+    engine = ExecutionEngine(
+        settings(MAX_NEW_ENTRIES_PER_CYCLE="1"),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+        ledger=ledger,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "submitted"
+    assert result["symbol"] == "SPY"
+    assert client.submit_attempts == 1
+    assert any(
+        order["id"] == "recovered-SPY"
+        for order, _metadata in ledger.broker_orders
+    )
 
 
 def test_new_entry_fails_closed_when_durable_intent_cannot_be_written():
@@ -367,7 +472,7 @@ def test_new_entry_fails_closed_when_durable_intent_cannot_be_written():
         client,
         FakeMarketData(),
         BuyStrategy(),
-        RuntimeState(),
+        reconciled_state(),
         ledger=ledger,
     )
 
