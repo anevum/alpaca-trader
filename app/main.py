@@ -16,6 +16,7 @@ from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
+from .sizing import sizing_snapshot
 from .state import runtime_state
 from .scanner import ReadOnlyScanner
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
@@ -161,6 +162,7 @@ async def command_snapshot() -> dict:
     entry_count = engine._entry_orders_today(recent_orders)
     equity = Decimal(str(account.get("equity", "0")))
     last_equity = Decimal(str(account.get("last_equity", "0")))
+    allocator = sizing_snapshot(settings, account, positions)
     return {
         "observed_at": runtime_state.last_poll_at,
         "mode": settings.trading_mode,
@@ -227,7 +229,12 @@ async def command_snapshot() -> dict:
             "max_concurrent_positions": settings.max_concurrent_positions,
             "max_new_entries_per_cycle": settings.max_new_entries_per_cycle,
             "max_total_position_notional": str(settings.max_total_position_notional),
+            "sizing_mode": settings.sizing_mode,
+            "risk_per_trade_pct": str(settings.risk_per_trade_pct),
+            "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
+            "min_order_notional": str(settings.min_order_notional),
         },
+        "allocator": allocator,
         "scanner": runtime_state.last_scan,
         "history": runtime_state.decision_history,
         "positions": [public_position(position) for position in positions],
@@ -595,6 +602,10 @@ async def status(authorization: str | None = Header(default=None)):
             "max_total_position_notional": str(settings.max_total_position_notional),
             "max_daily_orders": settings.max_daily_orders,
             "max_daily_loss": str(settings.max_daily_loss),
+            "sizing_mode": settings.sizing_mode,
+            "risk_per_trade_pct": str(settings.risk_per_trade_pct),
+            "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
+            "min_order_notional": str(settings.min_order_notional),
         },
         "persistence": event_sink.status(),
         "runtime": {
