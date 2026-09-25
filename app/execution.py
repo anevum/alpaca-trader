@@ -1094,39 +1094,159 @@ class ExecutionEngine:
         recent_orders: list[dict[str, Any]],
         now: datetime,
     ) -> list[dict[str, Any]]:
-        exit_specs: list[tuple[dict[str, Any], str, str]] = []
+        exit_specs: list[tuple[dict[str, Any], str, str, dict[str, Any]]] = []
+
+        health_bars: dict[str, list[dict[str, Any]]] = {}
+        if (
+            self.settings.thesis_exit_enabled
+            and managed_positions
+            and isinstance(self.strategy, RollingMomentumVwapStrategy)
+        ):
+            health_symbols = {
+                str(position.get("symbol", "")).upper()
+                for position in managed_positions
+                if str(position.get("symbol", "")).strip()
+            }
+            health_symbols.update(self.settings.confirmation_symbols)
+            try:
+                health_bars = await self.market_data.bars_many(
+                    sorted(health_symbols)
+                )
+            except Exception as exc:
+                self.state.record_event(
+                    kind="exit_health",
+                    action="warning",
+                    message="position-health market data unavailable",
+                    reason=f"{type(exc).__name__}: {exc}",
+                    at=now,
+                )
 
         for position in managed_positions:
             symbol = str(position.get("symbol", "")).upper()
             if self._has_bot_exit_order(open_orders, symbol):
                 continue
 
+            exit_state = self._exit_state_for_position(position)
+            if (
+                exit_state.get("profit_protection_active")
+                and not exit_state.get("profit_activation_emitted")
+            ):
+                exit_state["profit_activation_emitted"] = True
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="activated",
+                    message=(
+                        "profit protection activated at "
+                        f"{Decimal(str(exit_state.get('peak_return_pct') or '0')):.4%}"
+                    ),
+                    at=now,
+                    payload={"exit_state": dict(exit_state)},
+                )
+
             if now.time() >= self.settings.force_flat_time:
                 exit_specs.append(
-                    (position, "eod", "forced end-of-day flatten")
+                    (
+                        position,
+                        "eod",
+                        "forced end-of-day flatten",
+                        dict(exit_state),
+                    )
                 )
                 continue
 
-            price_exit = self._managed_price_exit(
-                position,
-                self.settings.stop_pct,
-                self.settings.target_pct,
-            )
+            price_exit = self._managed_price_exit(position)
             if price_exit is not None:
                 action_tag, exit_reason = price_exit
-                exit_specs.append((position, action_tag, exit_reason))
+                exit_specs.append(
+                    (position, action_tag, exit_reason, dict(exit_state))
+                )
                 continue
+
+            if (
+                self.settings.thesis_exit_enabled
+                and isinstance(self.strategy, RollingMomentumVwapStrategy)
+                and health_bars
+            ):
+                confirmation_bars = {
+                    confirmation_symbol: health_bars.get(
+                        confirmation_symbol,
+                        [],
+                    )
+                    for confirmation_symbol in self.settings.confirmation_symbols
+                }
+                health = self.strategy.position_health(
+                    bars=health_bars.get(symbol, []),
+                    confirmation_bars=confirmation_bars,
+                    symbol=symbol,
+                    now=now,
+                )
+                exit_state["position_health"] = health
+                current_return = Decimal(
+                    str(exit_state.get("current_return_pct") or "0")
+                )
+                prior_failures = int(
+                    exit_state.get("thesis_failure_count") or 0
+                )
+                thesis_failure = (
+                    bool(health.get("strong_failure"))
+                    and current_return
+                    <= self.settings.thesis_exit_max_return_pct
+                )
+                if thesis_failure:
+                    exit_state["thesis_failure_count"] = prior_failures + 1
+                else:
+                    exit_state["thesis_failure_count"] = 0
+
+                if (
+                    thesis_failure
+                    and int(exit_state["thesis_failure_count"])
+                    != prior_failures
+                ):
+                    self.state.record_event(
+                        kind="exit_health",
+                        symbol=symbol,
+                        action="failure",
+                        message=(
+                            "thesis deterioration observed "
+                            f"({exit_state['thesis_failure_count']}/"
+                            f"{self.settings.thesis_failure_cycles})"
+                        ),
+                        reason=str(health.get("reason") or ""),
+                        at=now,
+                        payload={"exit_state": dict(exit_state)},
+                    )
+
+                if (
+                    int(exit_state.get("thesis_failure_count") or 0)
+                    >= self.settings.thesis_failure_cycles
+                ):
+                    exit_specs.append(
+                        (
+                            position,
+                            "thesis",
+                            (
+                                "position thesis failed for "
+                                f"{self.settings.thesis_failure_cycles} "
+                                "consecutive evaluations"
+                            ),
+                            dict(exit_state),
+                        )
+                    )
+                    continue
 
             if self.settings.max_hold_minutes > 0:
                 entry_time = self._latest_bot_buy_today(recent_orders, symbol)
                 if entry_time is not None:
                     held_minutes = (now - entry_time).total_seconds() / 60
+                    exit_state["held_minutes"] = held_minutes
                     if held_minutes >= self.settings.max_hold_minutes:
                         exit_specs.append(
                             (
                                 position,
                                 "time",
                                 f"max hold {self.settings.max_hold_minutes} minutes",
+                                dict(exit_state),
                             )
                         )
 
@@ -1142,14 +1262,18 @@ class ExecutionEngine:
                     open_orders=open_orders,
                     exit_reason=reason,
                     action_tag=tag,
+                    exit_metadata=metadata,
                 )
-                for position, tag, reason in exit_specs
+                for position, tag, reason, metadata in exit_specs
             ],
             return_exceptions=True,
         )
 
         normalized: list[dict[str, Any]] = []
-        for (position, _tag, reason), result in zip(exit_specs, results):
+        for (position, _tag, reason, metadata), result in zip(
+            exit_specs,
+            results,
+        ):
             symbol = str(position.get("symbol", "")).upper()
             if isinstance(result, Exception):
                 normalized.append(
@@ -1165,6 +1289,7 @@ class ExecutionEngine:
                     action="error",
                     message=f"exit failed: {reason}",
                     reason=str(result),
+                    payload={"exit_state": metadata},
                 )
             else:
                 normalized.append(result)
