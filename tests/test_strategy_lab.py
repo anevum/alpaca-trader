@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from app.config import Settings
+from app.strategy_004 import strategy_004_entry_gate
 from app.strategy_lab import (
     DEFAULT_VARIANTS,
     StrategyTournament,
@@ -121,4 +122,16 @@ def test_default_tournament_has_control_and_research_variants():
     names = [variant.name for variant in tournament.variants]
 
     assert names[0] == "production"
-    assert {"fast_2_6", "balanced_4_10", "selective_3_10", "slow_5_15"} <= set(names)
+    assert {
+        "strategy_004_entry_shape",
+        "fast_2_6",
+        "balanced_4_10",
+        "selective_3_10",
+        "slow_5_15",
+    } <= set(names)
+
+    strategy_004 = next(
+        variant for variant in tournament.variants
+        if variant.name == "strategy_004_entry_shape"
+    )
+    assert strategy_004.entry_gate is strategy_004_entry_gate
