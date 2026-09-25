@@ -77,14 +77,26 @@ DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
     StrategyVariant(
         name="strategy_004_vwap_edge",
         description=(
-            "September 25 research candidate: keep the production trend model "
-            "but demand a materially stronger 0.65%-0.80% VWAP edge and at "
-            "least two independent confirmations."
+            "Candidate A (rejected in pre-September-25 fixed-universe "
+            "validation): stronger 0.65%-0.80% VWAP edge with two "
+            "independent confirmations. Retained for reproducibility."
         ),
         overrides={
             "min_vwap_edge_pct": Decimal("0.0065"),
             "max_vwap_extension_pct": Decimal("0.0080"),
             "min_confirmations": 2,
+            "min_quality_score": Decimal("80"),
+        },
+    ),
+    StrategyVariant(
+        name="strategy_004_followthrough",
+        description=(
+            "Candidate B: preserve the production thresholds but require the "
+            "core momentum/VWAP/trend setup to remain valid for two "
+            "consecutive completed bars before entry."
+        ),
+        overrides={
+            "signal_persistence_bars": 2,
             "min_quality_score": Decimal("80"),
         },
     ),
@@ -108,6 +120,7 @@ def build_strategy(settings: Settings):
             regime_min_confirmations=settings.regime_min_confirmations,
             regime_min_return_pct=settings.regime_min_return_pct,
             max_vwap_extension_pct=settings.max_vwap_extension_pct,
+            signal_persistence_bars=settings.signal_persistence_bars,
             volatility_stop_enabled=settings.volatility_stop_enabled,
             volatility_stop_multiplier=settings.volatility_stop_multiplier,
             volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
@@ -228,6 +241,7 @@ class StrategyTournament:
                         "min_momentum_pct": str(settings.min_momentum_pct),
                         "min_vwap_edge_pct": str(settings.min_vwap_edge_pct),
                         "max_vwap_extension_pct": str(settings.max_vwap_extension_pct),
+                        "signal_persistence_bars": settings.signal_persistence_bars,
                         "min_confirmations": settings.min_confirmations,
                         "min_quality_score": str(settings.min_quality_score),
                         "stop_pct": str(settings.stop_pct),
