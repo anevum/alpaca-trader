@@ -502,7 +502,10 @@ class TradingEventSink:
                         if order.get("submitted_at")
                         else None
                     ),
-                    payload={"order": order},
+                    payload={
+                        "order": order,
+                        "exit_reason": self._inferred_exit_reason(order),
+                    },
                 )
             )
 
