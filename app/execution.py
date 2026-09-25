@@ -16,6 +16,7 @@ from .risk import validate_buy, validate_sell_to_flat
 from .sizing import calculate_entry_notional, sizing_snapshot
 from .state import RuntimeState
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
+from .universe import DynamicUniverse
 
 
 NY = ZoneInfo("America/New_York")
@@ -30,6 +31,7 @@ class ExecutionEngine:
         strategy: OpeningRangeVwapStrategy | RollingMomentumVwapStrategy,
         state: RuntimeState,
         ledger: TradingEventSink | None = None,
+        universe: DynamicUniverse | None = None,
     ):
         self.settings = settings
         self.client = client
@@ -37,6 +39,7 @@ class ExecutionEngine:
         self.strategy = strategy
         self.state = state
         self.ledger = ledger
+        self.universe = universe
 
     @staticmethod
     def _position_for_symbol(
@@ -358,7 +361,10 @@ class ExecutionEngine:
             position
             for position in positions
             if Decimal(str(position.get("qty", "0") or "0")) > 0
-            and str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
+            and (
+                self.settings.dynamic_universe_enabled
+                or str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
+            )
             and self._bot_bought_symbol_today(
                 recent_orders,
                 str(position.get("symbol", "")).upper(),
@@ -800,10 +806,20 @@ class ExecutionEngine:
             for position in positions
             if str(position.get("symbol", "")).strip()
         ]
+        if self.universe is not None:
+            entry_symbols = list(
+                await self.universe.active_symbols(
+                    position_symbols=position_symbols,
+                    now=now,
+                )
+            )
+        else:
+            entry_symbols = list(self.settings.scan_symbols)
+
         symbols = list(
             dict.fromkeys(
                 [
-                    *self.settings.scan_symbols,
+                    *entry_symbols,
                     *self.settings.confirmation_symbols,
                     *position_symbols,
                 ]
@@ -813,7 +829,7 @@ class ExecutionEngine:
 
         buy_signals: list[Signal] = []
         scan: dict[str, Any] = {}
-        for symbol in self.settings.scan_symbols:
+        for symbol in entry_symbols:
             has_position = self._position_for_symbol(positions, symbol) is not None
             signal = self.strategy.evaluate(
                 bars=market_bars.get(symbol, []),
@@ -903,7 +919,7 @@ class ExecutionEngine:
             "LIVE_SCAN_CYCLE",
             {
                 "at": now.isoformat(),
-                "symbols": len(self.settings.scan_symbols),
+                "symbols": len(entry_symbols),
                 "ready": [signal.symbol for signal in buy_signals],
                 "open_positions": [
                     str(position.get("symbol", "")).upper()
@@ -920,7 +936,7 @@ class ExecutionEngine:
                 "action": "hold",
                 "symbol": "",
                 "reason": (
-                    f"scanner watching {len(self.settings.scan_symbols)} symbols; "
+                    f"scanner watching {len(entry_symbols)} symbols; "
                     "no qualified entries"
                 ),
                 "metadata": {},
@@ -1084,6 +1100,7 @@ class ExecutionEngine:
                 simulated_account,
                 simulated_positions,
                 entry_count + len(planned),
+                entry_symbols=set(entry_symbols),
             )
             if not risk.allowed:
                 skipped.append({"symbol": symbol, "reason": risk.reason})
