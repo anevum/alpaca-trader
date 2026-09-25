@@ -572,11 +572,21 @@ class ExecutionEngine:
         state = self._exit_state_for_position(position)
         desired_stop = Decimal(str(state.get("desired_stop_price") or "0"))
         entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
-        if desired_stop <= 0 or entry_price <= 0:
+        current_price = Decimal(str(position.get("current_price", "0") or "0"))
+        if desired_stop <= 0 or entry_price <= 0 or current_price <= 0:
             return {
                 "action": "hold",
                 "symbol": symbol,
                 "reason": "protective stop price unavailable",
+            }
+        if current_price <= desired_stop:
+            return {
+                "action": "hold",
+                "symbol": symbol,
+                "reason": (
+                    "current price is at or below desired protection; "
+                    "software exit will handle"
+                ),
             }
 
         pending_id = str(
