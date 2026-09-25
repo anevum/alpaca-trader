@@ -211,7 +211,35 @@ class ExecutionEngine:
         if limit <= 0 or cooldown <= 0:
             return True, "", {"streak": 0, "cooldown_minutes": cooldown}
 
-        exits: list[tuple[datetime, str]] = []
+        def filled_stamp(order: dict[str, Any]) -> datetime | None:
+            raw = order.get("filled_at")
+            if not raw:
+                return None
+            try:
+                return datetime.fromisoformat(
+                    str(raw).replace("Z", "+00:00")
+                ).astimezone(NY)
+            except ValueError:
+                return None
+
+        buy_fills: dict[str, list[tuple[datetime, Decimal]]] = {}
+        for order in orders:
+            if str(order.get("side", "")).lower() != "buy":
+                continue
+            client_order_id = str(order.get("client_order_id", ""))
+            if not client_order_id.startswith("anevum-"):
+                continue
+            stamp = filled_stamp(order)
+            price = Decimal(str(order.get("filled_avg_price") or "0"))
+            if stamp is None or price <= 0 or stamp.date() != now.date():
+                continue
+            symbol = str(order.get("symbol", "")).upper()
+            buy_fills.setdefault(symbol, []).append((stamp, price))
+
+        for fills in buy_fills.values():
+            fills.sort(key=lambda item: item[0])
+
+        exits: list[tuple[datetime, str, bool]] = []
         for order in orders:
             if str(order.get("side", "")).lower() != "sell":
                 continue
@@ -224,27 +252,39 @@ class ExecutionEngine:
                 status == "filled" and filled_qty > 0
             ):
                 continue
-            raw_stamp = order.get("filled_at")
-            if not raw_stamp:
+            stamp = filled_stamp(order)
+            if stamp is None or stamp.date() != now.date():
                 continue
-            try:
-                stamp = datetime.fromisoformat(
-                    str(raw_stamp).replace("Z", "+00:00")
-                ).astimezone(NY)
-            except ValueError:
-                continue
-            if stamp.date() != now.date():
-                continue
-            exits.append((stamp, client_order_id))
+
+            stop_like = (
+                "-stop-" in client_order_id
+                or "-hardstop-" in client_order_id
+            )
+            is_loss = stop_like
+            if stop_like:
+                symbol = str(order.get("symbol", "")).upper()
+                exit_price = Decimal(
+                    str(order.get("filled_avg_price") or "0")
+                )
+                prior_buys = [
+                    item for item in buy_fills.get(symbol, [])
+                    if item[0] <= stamp
+                ]
+                if exit_price > 0 and prior_buys:
+                    entry_price = prior_buys[-1][1]
+                    is_loss = exit_price < entry_price
+
+            exits.append((stamp, client_order_id, is_loss))
 
         exits.sort(key=lambda item: item[0], reverse=True)
         streak = 0
         latest_stop: datetime | None = None
-        for stamp, client_order_id in exits:
-            if (
-                "-stop-" not in client_order_id
-                and "-hardstop-" not in client_order_id
-            ):
+        for stamp, client_order_id, is_loss in exits:
+            stop_like = (
+                "-stop-" in client_order_id
+                or "-hardstop-" in client_order_id
+            )
+            if not stop_like or not is_loss:
                 break
             streak += 1
             if latest_stop is None:
@@ -381,7 +421,10 @@ class ExecutionEngine:
             str(state.get("risk_stop_pct") or self.settings.stop_pct)
         )
         stop_floor_pct = -risk_stop_pct
-        if state.get("profit_protection_active"):
+        if (
+            self.settings.profit_protect_enabled
+            and state.get("profit_protection_active")
+        ):
             stop_floor_pct = max(
                 stop_floor_pct,
                 Decimal(str(state.get("protected_floor_pct") or "0")),
@@ -1429,6 +1472,7 @@ class ExecutionEngine:
         exit_monitoring_bars: dict[str, list[dict[str, Any]]] = {}
         if managed_positions and (
             self.settings.broker_protective_stop_enabled
+            or self.settings.profit_protect_enabled
             or self.settings.thesis_exit_enabled
         ):
             monitoring_symbols = {

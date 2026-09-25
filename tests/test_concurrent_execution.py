@@ -1148,3 +1148,87 @@ def test_exit_state_reconstructs_peak_and_trough_from_bar_path():
     assert Decimal(state["trough_return_pct"]) == Decimal("-0.001")
     assert state["profit_protection_active"] is True
     assert Decimal(state["protected_floor_pct"]) == Decimal("0.00150")
+
+
+def test_profitable_hardstop_does_not_count_as_loss_streak():
+    orders = [
+        {
+            "symbol": "SPY",
+            "side": "buy",
+            "client_order_id": "anevum-spy-buy-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "100.00",
+            "submitted_at": iso_now(-240),
+            "filled_at": iso_now(-239),
+        },
+        {
+            "symbol": "SPY",
+            "side": "sell",
+            "client_order_id": "anevum-spy-hardstop-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "100.15",
+            "stop_price": "100.10",
+            "submitted_at": iso_now(-61),
+            "filled_at": iso_now(-60),
+        },
+    ]
+    engine = ExecutionEngine(
+        settings(
+            LOSS_STREAK_LIMIT="1",
+            LOSS_STREAK_COOLDOWN_MINUTES="10",
+        ),
+        FakeClient(recent_orders=orders),
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    allowed, reason, detail = engine._loss_streak_gate(orders, TEST_NOW)
+
+    assert allowed is True
+    assert reason == ""
+    assert detail["streak"] == 0
+
+
+def test_losing_hardstop_counts_as_loss_streak():
+    orders = [
+        {
+            "symbol": "SPY",
+            "side": "buy",
+            "client_order_id": "anevum-spy-buy-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "100.00",
+            "submitted_at": iso_now(-240),
+            "filled_at": iso_now(-239),
+        },
+        {
+            "symbol": "SPY",
+            "side": "sell",
+            "client_order_id": "anevum-spy-hardstop-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "99.65",
+            "stop_price": "99.65",
+            "submitted_at": iso_now(-61),
+            "filled_at": iso_now(-60),
+        },
+    ]
+    engine = ExecutionEngine(
+        settings(
+            LOSS_STREAK_LIMIT="1",
+            LOSS_STREAK_COOLDOWN_MINUTES="10",
+        ),
+        FakeClient(recent_orders=orders),
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    allowed, reason, detail = engine._loss_streak_gate(orders, TEST_NOW)
+
+    assert allowed is False
+    assert "loss-streak cooldown active" in reason
+    assert detail["streak"] == 1
