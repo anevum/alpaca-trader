@@ -827,17 +827,27 @@ class TradingEventSink:
         http: httpx.AsyncClient,
         events: list[dict[str, Any]],
     ) -> bool:
+        if not events:
+            return True
+
         try:
-            response = await http.post(
-                self.settings.trading_ingest_url,
-                headers={
-                    "content-type": "application/json",
-                    "x-anevum-ingest-token": self.settings.trading_ingest_token,
-                },
-                json={"events": events},
-            )
-            response.raise_for_status()
-            self.sent_count += len(events)
+            # The trading-ingest Edge Function accepts at most 100 events per
+            # request. Reconciliation can legitimately exceed that once a run
+            # has accumulated enough broker orders and fills, so keep the
+            # transport bounded while preserving idempotent event keys.
+            for start in range(0, len(events), 100):
+                chunk = events[start : start + 100]
+                response = await http.post(
+                    self.settings.trading_ingest_url,
+                    headers={
+                        "content-type": "application/json",
+                        "x-anevum-ingest-token": self.settings.trading_ingest_token,
+                    },
+                    json={"events": chunk},
+                )
+                response.raise_for_status()
+                self.sent_count += len(chunk)
+
             self.last_sent_at = datetime.now(timezone.utc)
             self.last_error = None
             return True
