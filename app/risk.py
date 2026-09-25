@@ -92,7 +92,7 @@ def validate_buy(
         if d(position.get("qty")) > 0
     ]
     if (
-        settings.portfolio_limit_mode == "count"
+        settings.max_concurrent_positions > 0
         and len(long_positions) >= settings.max_concurrent_positions
     ):
         return RiskDecision(False, "maximum concurrent-position limit reached")
@@ -129,7 +129,11 @@ def validate_buy(
         )
         if risk_limit <= 0 or projected_stop_risk > risk_limit:
             return RiskDecision(False, "order exceeds MAX_PORTFOLIO_STOP_RISK_PCT")
-    elif entry_orders_today >= settings.max_daily_orders:
+
+    if (
+        settings.max_daily_orders > 0
+        and entry_orders_today >= settings.max_daily_orders
+    ):
         return RiskDecision(False, "daily entry-order limit reached")
 
     cash = d(account.get("cash"))
