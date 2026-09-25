@@ -384,6 +384,41 @@ class AmbiguousLostClient(FakeClient):
         raise RuntimeError("simulated unknown broker submission outcome")
 
 
+class AmbiguousLostSellClient(FakeClient):
+    def __init__(self, positions=None, recent_orders=None):
+        super().__init__(positions=positions, recent_orders=recent_orders)
+        self.sell_attempts = 0
+
+    async def submit_market_sell(self, symbol, qty, client_order_id):
+        self.sell_attempts += 1
+        raise RuntimeError("simulated unknown protective sell outcome")
+
+
+class AmbiguousRecoveredSellClient(FakeClient):
+    def __init__(self, positions=None, recent_orders=None):
+        super().__init__(positions=positions, recent_orders=recent_orders)
+        self.sell_attempts = 0
+        self.recovered = {}
+
+    async def submit_market_sell(self, symbol, qty, client_order_id):
+        self.sell_attempts += 1
+        order = {
+            "id": f"recovered-sell-{symbol}",
+            "client_order_id": client_order_id,
+            "symbol": symbol,
+            "side": "sell",
+            "qty": qty,
+            "status": "accepted",
+            "order_class": "",
+            "submitted_at": iso_now(),
+        }
+        self.recovered[client_order_id] = order
+        raise RuntimeError("simulated response loss after protective sell acceptance")
+
+    async def order_by_client_order_id(self, client_order_id):
+        return self.recovered.get(client_order_id)
+
+
 class AmbiguousRecoveredClient(FakeClient):
     def __init__(self):
         super().__init__()
@@ -493,6 +528,58 @@ def test_ambiguous_submission_blocks_future_entries_when_not_recoverable():
     assert client.submit_attempts == 1
     assert state.reconciliation_safe is False
     assert state.last_reconciliation["reason"] == "ambiguous broker submission"
+
+
+def test_ambiguous_protective_sell_recovers_without_resubmit():
+    client = AmbiguousRecoveredSellClient(
+        positions=[position("SPY", current="100.60")],
+        recent_orders=[bot_buy("SPY")],
+    )
+    ledger = FakeLedger()
+    state = reconciled_state()
+    engine = ExecutionEngine(
+        settings(),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        state,
+        ledger=ledger,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "submitted"
+    assert client.sell_attempts == 1
+    assert any(
+        order["id"] == "recovered-sell-SPY"
+        and metadata.get("exit_reason")
+        for order, metadata in ledger.broker_orders
+    )
+
+
+def test_ambiguous_protective_sell_suppresses_duplicate_retry():
+    client = AmbiguousLostSellClient(
+        positions=[position("SPY", current="100.60")],
+        recent_orders=[bot_buy("SPY")],
+    )
+    ledger = FakeLedger()
+    state = reconciled_state()
+    engine = ExecutionEngine(
+        settings(),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        state,
+        ledger=ledger,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "hold"
+    assert client.sell_attempts == 1
+    assert state.reconciliation_safe is False
+    assert state.last_reconciliation["reason"] == "ambiguous protective exit submission"
+    assert "reconciliation required" in result["results"][0]["reason"]
 
 
 def test_new_entry_fails_closed_when_durable_intent_cannot_be_written():

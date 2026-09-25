@@ -629,6 +629,10 @@ class TradingEventSink:
         order: dict[str, Any],
         *,
         correlation_id: str | None,
+        intent_id: str | None = None,
+        position_id: str | None = None,
+        exit_id: str | None = None,
+        exit_reason: str | None = None,
     ) -> bool:
         broker_order_id = str(order.get("id") or "")
         if not broker_order_id:
@@ -652,7 +656,14 @@ class TradingEventSink:
             occurred_at=(
                 str(order.get("submitted_at")) if order.get("submitted_at") else None
             ),
-            payload={"order": order, "recovered_by_client_order_id": True},
+            payload={
+                "order": order,
+                "intent_id": intent_id,
+                "position_id": position_id,
+                "exit_id": exit_id,
+                "exit_reason": exit_reason,
+                "recovered_by_client_order_id": True,
+            },
         )
         async with httpx.AsyncClient(timeout=8.0) as http:
             return await self._send_batch(http, [event])

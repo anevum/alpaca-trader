@@ -439,11 +439,99 @@ class ExecutionEngine:
                     reason=f"{type(exc).__name__}: {exc}",
                 )
 
-        order = await self.client.submit_market_sell(
-            symbol=symbol,
-            qty=str(position.get("qty")),
-            client_order_id=client_order_id,
-        )
+        try:
+            order = await self.client.submit_market_sell(
+                symbol=symbol,
+                qty=str(position.get("qty")),
+                client_order_id=client_order_id,
+            )
+        except Exception as exc:
+            recovered = None
+            for attempt in range(3):
+                try:
+                    recovered = await self.client.order_by_client_order_id(
+                        client_order_id
+                    )
+                except Exception:
+                    recovered = None
+                if recovered is not None:
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+
+            if recovered is None:
+                self.state.reconciliation_safe = False
+                self.state.last_reconciliation = {
+                    "safe_to_enter": False,
+                    "reason": "ambiguous protective exit submission",
+                    "client_order_id": client_order_id,
+                    "symbol": symbol,
+                }
+                self.state.record_event(
+                    kind="execution",
+                    symbol=symbol,
+                    action="warning",
+                    message=(
+                        "protective exit outcome ambiguous; duplicate sell "
+                        "suppressed pending reconciliation"
+                    ),
+                    reason=f"{type(exc).__name__}: {exc}",
+                    payload={
+                        "client_order_id": client_order_id,
+                        "exit_reason": exit_reason,
+                    },
+                )
+                return {
+                    "action": "hold",
+                    "symbol": symbol,
+                    "reason": (
+                        "protective exit submission outcome ambiguous; "
+                        "reconciliation required before retry"
+                    ),
+                }
+
+            order = recovered
+            if self.ledger is not None:
+                try:
+                    persisted = await self.ledger.persist_recovered_order(
+                        recovered,
+                        intent_id=(exit_refs or {}).get("intent_id"),
+                        exit_id=(exit_refs or {}).get("exit_id"),
+                        exit_reason=exit_reason,
+                        correlation_id=self.state.current_correlation_id,
+                    )
+                    if not persisted:
+                        self.state.record_event(
+                            kind="persistence",
+                            symbol=symbol,
+                            action="warning",
+                            message=(
+                                "protective exit recovered by client ID but "
+                                "synchronous persistence failed"
+                            ),
+                            reason=exit_reason,
+                        )
+                except Exception as persist_exc:
+                    self.state.record_event(
+                        kind="persistence",
+                        symbol=symbol,
+                        action="warning",
+                        message=(
+                            "protective exit recovered by client ID but "
+                            "persistence raised an exception"
+                        ),
+                        reason=f"{type(persist_exc).__name__}: {persist_exc}",
+                    )
+
+            self.state.record_event(
+                kind="execution",
+                symbol=symbol,
+                action="recovered",
+                message="ambiguous protective exit recovered by client order ID",
+                reason=exit_reason,
+                payload={"client_order_id": client_order_id},
+            )
+
         if self.ledger is not None:
             try:
                 self.ledger.record_broker_order(
