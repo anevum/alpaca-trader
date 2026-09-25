@@ -421,14 +421,23 @@ class ExecutionEngine:
         client_order_id = self._client_order_id(symbol, action_tag)
         exit_refs: dict[str, str] | None = None
         if self.ledger is not None:
-            exit_refs = self.ledger.persist_exit_intent(
-                symbol=symbol,
-                qty=str(position.get("qty")),
-                client_order_id=client_order_id,
-                exit_reason=exit_reason,
-                correlation_id=self.state.current_correlation_id,
-                intended_at=datetime.now(NY),
-            )
+            try:
+                exit_refs = self.ledger.persist_exit_intent(
+                    symbol=symbol,
+                    qty=str(position.get("qty")),
+                    client_order_id=client_order_id,
+                    exit_reason=exit_reason,
+                    correlation_id=self.state.current_correlation_id,
+                    intended_at=datetime.now(NY),
+                )
+            except Exception as exc:
+                self.state.record_event(
+                    kind="persistence",
+                    symbol=symbol,
+                    action="warning",
+                    message="exit persistence failed open; protective sell continues",
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
 
         order = await self.client.submit_market_sell(
             symbol=symbol,
@@ -436,13 +445,22 @@ class ExecutionEngine:
             client_order_id=client_order_id,
         )
         if self.ledger is not None:
-            self.ledger.record_broker_order(
-                order,
-                intent_id=(exit_refs or {}).get("intent_id"),
-                exit_id=(exit_refs or {}).get("exit_id"),
-                exit_reason=exit_reason,
-                correlation_id=self.state.current_correlation_id,
-            )
+            try:
+                self.ledger.record_broker_order(
+                    order,
+                    intent_id=(exit_refs or {}).get("intent_id"),
+                    exit_id=(exit_refs or {}).get("exit_id"),
+                    exit_reason=exit_reason,
+                    correlation_id=self.state.current_correlation_id,
+                )
+            except Exception as exc:
+                self.state.record_event(
+                    kind="persistence",
+                    symbol=symbol,
+                    action="warning",
+                    message="sell submitted but broker-order persistence failed",
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
         order_payload = {
             "id": order.get("id"),
             "client_order_id": order.get("client_order_id"),
@@ -903,13 +921,24 @@ class ExecutionEngine:
             client_order_id = self._client_order_id(signal.symbol, "buy")
             ledger_refs: dict[str, str] | None = None
             if self.ledger is not None:
-                ledger_refs = await self.ledger.persist_entry_intent(
-                    signal=signal,
-                    qty=str(qty),
-                    client_order_id=client_order_id,
-                    correlation_id=self.state.current_correlation_id,
-                    intended_at=now,
-                )
+                try:
+                    ledger_refs = await self.ledger.persist_entry_intent(
+                        signal=signal,
+                        qty=str(qty),
+                        client_order_id=client_order_id,
+                        correlation_id=self.state.current_correlation_id,
+                        intended_at=now,
+                    )
+                except Exception as exc:
+                    ledger_refs = None
+                    self.state.record_event(
+                        kind="persistence",
+                        symbol=signal.symbol.upper(),
+                        action="error",
+                        message="entry intent persistence raised an exception",
+                        reason=f"{type(exc).__name__}: {exc}",
+                        at=now,
+                    )
                 if ledger_refs is None:
                     errors.append(
                         {
@@ -986,12 +1015,22 @@ class ExecutionEngine:
             }
             submitted_orders.append(order_payload)
             if self.ledger is not None:
-                self.ledger.record_broker_order(
-                    result,
-                    intent_id=(ledger_refs or {}).get("intent_id"),
-                    position_id=(ledger_refs or {}).get("position_id"),
-                    correlation_id=self.state.current_correlation_id,
-                )
+                try:
+                    self.ledger.record_broker_order(
+                        result,
+                        intent_id=(ledger_refs or {}).get("intent_id"),
+                        position_id=(ledger_refs or {}).get("position_id"),
+                        correlation_id=self.state.current_correlation_id,
+                    )
+                except Exception as exc:
+                    self.state.record_event(
+                        kind="persistence",
+                        symbol=symbol,
+                        action="warning",
+                        message="buy submitted but broker-order persistence failed",
+                        reason=f"{type(exc).__name__}: {exc}",
+                        at=now,
+                    )
             self.state.last_order = order_payload
             self.state.record_event(
                 kind="execution",
