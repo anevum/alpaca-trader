@@ -1,5 +1,8 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+
+import pytest
+import app.execution as execution_module
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -10,6 +13,19 @@ from app.strategy import Signal
 
 
 NY = ZoneInfo("America/New_York")
+TEST_NOW = datetime.now(NY).replace(hour=13, minute=37, second=10, microsecond=0)
+
+
+@pytest.fixture(autouse=True)
+def fixed_execution_clock(monkeypatch):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return TEST_NOW.replace(tzinfo=None)
+            return TEST_NOW.astimezone(tz)
+
+    monkeypatch.setattr(execution_module, "datetime", FixedDateTime)
 
 
 def settings(**overrides):
@@ -49,7 +65,9 @@ def settings(**overrides):
 
 
 def iso_now(offset_seconds=0):
-    return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).isoformat()
+    return (
+        TEST_NOW.astimezone(timezone.utc) + timedelta(seconds=offset_seconds)
+    ).isoformat()
 
 
 def reconciled_state():
@@ -136,8 +154,7 @@ class FakeMarketData:
         self.bar_calls = 0
 
     def _bar(self):
-        now = datetime.now(NY)
-        stamp = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        stamp = TEST_NOW.replace(second=0, microsecond=0) - timedelta(minutes=1)
         return {
             "t": stamp.isoformat(),
             "o": "100",
@@ -153,7 +170,7 @@ class FakeMarketData:
         return {symbol: [self._bar()] for symbol in symbols}
 
     async def latest_quotes_many(self, symbols):
-        now = datetime.now(NY).isoformat()
+        now = TEST_NOW.isoformat()
         return {
             symbol: {"bp": "100.00", "ap": "100.05", "t": now}
             for symbol in symbols
@@ -659,7 +676,7 @@ def test_equity_risk_allocator_compounds_and_uses_gross_capacity():
 
 class CorrelatedMarketData(FakeMarketData):
     def _bars(self, scale=1):
-        now = datetime.now(NY).replace(second=0, microsecond=0)
+        now = TEST_NOW.replace(second=0, microsecond=0)
         closes = [
             Decimal("100.00"), Decimal("100.08"), Decimal("100.05"),
             Decimal("100.16"), Decimal("100.12"), Decimal("100.25"),
