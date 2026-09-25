@@ -786,6 +786,7 @@ class ExecutionEngine:
         *,
         exit_reason: str = "forced end-of-day flatten",
         action_tag: str = "eod",
+        exit_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._has_bot_exit_order(open_orders, symbol):
             return {
@@ -844,6 +845,7 @@ class ExecutionEngine:
                     exit_reason=exit_reason,
                     correlation_id=self.state.current_correlation_id,
                     intended_at=datetime.now(NY),
+                    exit_metadata=exit_metadata,
                 )
             except Exception as exc:
                 self.state.record_event(
@@ -973,6 +975,7 @@ class ExecutionEngine:
             "status": order.get("status"),
             "submitted_at": order.get("submitted_at"),
             "reason": exit_reason,
+            "exit_metadata": exit_metadata or {},
         }
         self.state.last_order = order_payload
         self.state.record_event(
@@ -980,6 +983,7 @@ class ExecutionEngine:
             symbol=symbol,
             action="sell",
             message=f"{exit_reason} order submitted",
+            payload={"exit_state": exit_metadata or {}},
         )
         return {
             "action": "submitted",
