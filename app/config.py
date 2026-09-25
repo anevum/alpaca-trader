@@ -149,6 +149,9 @@ class Settings(BaseSettings):
     max_dynamic_stop_pct: Decimal = Field(
         default=Decimal("0.006"), alias="MAX_DYNAMIC_STOP_PCT"
     )
+    profit_protect_enabled: bool = Field(
+        default=False, alias="PROFIT_PROTECT_ENABLED"
+    )
     profit_protect_activation_pct: Decimal = Field(
         default=Decimal("0.001"), alias="PROFIT_PROTECT_ACTIVATION_PCT"
     )
