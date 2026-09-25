@@ -294,3 +294,110 @@ def test_cooling_top_candidate_falls_through_to_next_symbol():
         item["symbol"] == "SPY" and "cooldown" in item["reason"]
         for item in result["skipped"]
     )
+
+
+class FakeLedger:
+    def __init__(self, *, fail_entries=False, fail_exits=False):
+        self.fail_entries = fail_entries
+        self.fail_exits = fail_exits
+        self.entry_intents = []
+        self.exit_intents = []
+        self.broker_orders = []
+
+    async def persist_entry_intent(
+        self,
+        *,
+        signal,
+        qty,
+        client_order_id,
+        correlation_id,
+        intended_at,
+    ):
+        if self.fail_entries:
+            raise RuntimeError("persistence unavailable")
+        self.entry_intents.append(
+            {
+                "symbol": signal.symbol,
+                "qty": qty,
+                "client_order_id": client_order_id,
+            }
+        )
+        return {
+            "signal_id": "00000000-0000-4000-8000-000000000201",
+            "intent_id": "00000000-0000-4000-8000-000000000202",
+            "position_id": "00000000-0000-4000-8000-000000000203",
+            "client_order_id": client_order_id,
+        }
+
+    def persist_exit_intent(
+        self,
+        *,
+        symbol,
+        qty,
+        client_order_id,
+        exit_reason,
+        correlation_id,
+        intended_at,
+    ):
+        if self.fail_exits:
+            raise RuntimeError("persistence unavailable")
+        self.exit_intents.append(
+            {
+                "symbol": symbol,
+                "qty": qty,
+                "client_order_id": client_order_id,
+                "exit_reason": exit_reason,
+            }
+        )
+        return {
+            "intent_id": "00000000-0000-4000-8000-000000000204",
+            "exit_id": "00000000-0000-4000-8000-000000000205",
+            "client_order_id": client_order_id,
+        }
+
+    def record_broker_order(self, order, **metadata):
+        self.broker_orders.append((order, metadata))
+
+
+def test_new_entry_fails_closed_when_durable_intent_cannot_be_written():
+    client = FakeClient()
+    ledger = FakeLedger(fail_entries=True)
+    engine = ExecutionEngine(
+        settings(),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        RuntimeState(),
+        ledger=ledger,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "blocked"
+    assert client.buy_orders == []
+    assert all(
+        item["reason"] == "durable entry intent persistence unavailable"
+        for item in result["errors"]
+    )
+
+
+def test_protective_exit_fails_open_when_persistence_is_unavailable():
+    client = FakeClient(
+        positions=[position("SPY", current="100.60")],
+        recent_orders=[bot_buy("SPY")],
+    )
+    ledger = FakeLedger(fail_exits=True)
+    engine = ExecutionEngine(
+        settings(),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        RuntimeState(),
+        ledger=ledger,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "submitted"
+    assert [order["symbol"] for order in client.sell_orders] == ["SPY"]
+    assert client.buy_orders == []

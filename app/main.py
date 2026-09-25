@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import hmac
 from contextlib import asynccontextmanager
+from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
@@ -45,10 +47,18 @@ else:
         entry_cutoff=settings.entry_cutoff,
         confirmation_symbols=settings.confirmation_symbols,
     )
-engine = ExecutionEngine(settings, client, market_data, strategy, runtime_state)
-scanner = ReadOnlyScanner(settings, client, market_data, strategy, runtime_state)
 event_sink = TradingEventSink(settings)
+engine = ExecutionEngine(
+    settings,
+    client,
+    market_data,
+    strategy,
+    runtime_state,
+    ledger=event_sink,
+)
+scanner = ReadOnlyScanner(settings, client, market_data, strategy, runtime_state)
 _stop = asyncio.Event()
+NY = ZoneInfo("America/New_York")
 
 
 def emit_runtime_event(event: dict) -> None:
@@ -232,7 +242,7 @@ def _ready_symbols() -> list[str]:
     ]
 
 
-async def refresh_account_state() -> None:
+async def refresh_account_state() -> dict:
     runtime_state.mark_poll()
     account = await client.account()
     cash = Decimal(str(account.get("cash", "0")))
@@ -245,6 +255,35 @@ async def refresh_account_state() -> None:
     runtime_state.last_day_pnl = str(equity - last_equity)
     runtime_state.funding_ready = cash >= settings.min_ready_cash
     runtime_state.last_error = None
+    return account
+
+
+async def reconcile_broker_state(account: dict | None = None) -> None:
+    now = datetime.now(NY)
+    if settings.scan_only or not event_sink.should_reconcile(now):
+        return
+    try:
+        account = account or await client.account()
+        positions, recent_orders, fills = await asyncio.gather(
+            client.positions(),
+            client.recent_orders(limit=100),
+            client.fill_activities(date=now.date().isoformat(), limit=100),
+        )
+        event_sink.record_reconciliation(
+            account=account,
+            positions=positions,
+            orders=recent_orders,
+            fills=fills,
+            correlation_id=runtime_state.current_correlation_id,
+            observed_at=now,
+        )
+    except Exception as exc:
+        event_sink.last_error = f"reconciliation {type(exc).__name__}: {exc}"
+        print(
+            "LEDGER_RECONCILE_ERROR",
+            {"error": event_sink.last_error},
+            flush=True,
+        )
 
 
 async def monitor_loop():
@@ -257,7 +296,7 @@ async def monitor_loop():
                     runtime_state.funding_ready = False
                     await scanner.scan_once()
                 else:
-                    await refresh_account_state()
+                    account = await refresh_account_state()
                     if (
                         settings.execution_enabled
                         and settings.bot_armed
@@ -274,6 +313,7 @@ async def monitor_loop():
                             },
                             flush=True,
                         )
+                    await reconcile_broker_state(account)
             else:
                 runtime_state.funding_ready = False
                 runtime_state.last_error = "credentials not configured"

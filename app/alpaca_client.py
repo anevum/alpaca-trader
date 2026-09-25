@@ -78,6 +78,24 @@ class AlpacaClient:
             },
         )
 
+    async def fill_activities(
+        self,
+        *,
+        date: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "direction": "desc",
+            "page_size": min(max(limit, 1), 100),
+        }
+        if date:
+            params["date"] = date
+        return await self._request(
+            "GET",
+            "/v2/account/activities/FILL",
+            params=params,
+        )
+
     async def submit_market_buy(
         self,
         symbol: str,

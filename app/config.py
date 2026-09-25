@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import datetime, time, timezone
 from decimal import Decimal
 from functools import lru_cache
 
@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     trading_ingest_token: str = Field(default="", alias="TRADING_INGEST_TOKEN")
     trading_run_id: str = Field(default="", alias="TRADING_RUN_ID")
     strategy_version_id: str = Field(default="", alias="STRATEGY_VERSION_ID")
+    trading_run_started_at_raw: str = Field(default="", alias="TRADING_RUN_STARTED_AT")
+    ledger_reconcile_seconds: int = Field(default=60, alias="LEDGER_RECONCILE_SECONDS")
 
     min_ready_cash: Decimal = Field(default=Decimal("10.00"), alias="MIN_READY_CASH")
     max_order_notional: Decimal = Field(default=Decimal("80.35"), alias="MAX_ORDER_NOTIONAL")
@@ -148,6 +150,16 @@ class Settings(BaseSettings):
         )
 
     @property
+    def trading_run_started_at(self) -> datetime | None:
+        raw = self.trading_run_started_at_raw.strip()
+        if not raw:
+            return None
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            raise ValueError("TRADING_RUN_STARTED_AT must include a timezone")
+        return stamp.astimezone(timezone.utc)
+
+    @property
     def paper_execution_authorized(self) -> bool:
         return self.trading_mode == "paper" and self.execution_enabled and self.bot_armed
 
@@ -175,6 +187,19 @@ class Settings(BaseSettings):
             raise ValueError("DATA_FEED must be iex, sip, or delayed_sip")
         if self.poll_seconds < 15:
             raise ValueError("POLL_SECONDS must be at least 15")
+        if not 30 <= self.ledger_reconcile_seconds <= 300:
+            raise ValueError("LEDGER_RECONCILE_SECONDS must be between 30 and 300")
+        if self.persistence_configured:
+            if not self.trading_run_started_at_raw.strip():
+                raise ValueError(
+                    "TRADING_RUN_STARTED_AT is required when persistence is configured"
+                )
+            try:
+                _ = self.trading_run_started_at
+            except ValueError as exc:
+                raise ValueError(
+                    "TRADING_RUN_STARTED_AT must be an ISO-8601 timestamp with timezone"
+                ) from exc
         if self.bar_timeframe != "1Min":
             raise ValueError("BAR_TIMEFRAME must be 1Min for the opening-range strategy")
         if self.lookback_bars < 50:
