@@ -372,6 +372,7 @@ async def reconcile_broker_state(
         if startup:
             runtime_state.startup_reconciled = True
         event_sink.last_error = f"reconciliation {type(exc).__name__}: {exc}"
+        runtime_state.last_error = event_sink.last_error
         runtime_state.last_reconciliation = {
             "safe_to_enter": False,
             "error": event_sink.last_error,
@@ -505,7 +506,7 @@ async def lifespan(app: FastAPI):
     await event_sink.stop()
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="Alpaca Trading Bot", version="0.8.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -650,6 +651,8 @@ async def run_once(authorization: str | None = Header(default=None)):
     try:
         if settings.scan_only:
             return await scanner.scan_once()
+        account = await refresh_account_state()
+        await reconcile_broker_state(account, force=True)
         return await engine.run_once()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
