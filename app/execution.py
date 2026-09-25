@@ -235,7 +235,10 @@ class ExecutionEngine:
         streak = 0
         latest_stop: datetime | None = None
         for stamp, client_order_id in exits:
-            if "-stop-" not in client_order_id:
+            if (
+                "-stop-" not in client_order_id
+                and "-hardstop-" not in client_order_id
+            ):
                 break
             streak += 1
             if latest_stop is None:
