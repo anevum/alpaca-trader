@@ -1649,10 +1649,19 @@ class ExecutionEngine:
                         continue
 
             simulated_account["cash"] = str(simulated_cash)
+            effective_stop_pct = Decimal(
+                str(
+                    (signal.metadata or {}).get(
+                        "effective_stop_pct",
+                        self.settings.stop_pct,
+                    )
+                )
+            )
             entry_notional = calculate_entry_notional(
                 self.settings,
                 simulated_account,
                 simulated_positions,
+                stop_pct_override=effective_stop_pct,
             )
             if entry_notional <= 0:
                 skipped.append(
@@ -1669,6 +1678,7 @@ class ExecutionEngine:
                 self.settings,
                 simulated_account,
                 simulated_positions,
+                stop_pct_override=effective_stop_pct,
             )
 
             risk = validate_buy(
@@ -1679,6 +1689,7 @@ class ExecutionEngine:
                 simulated_positions,
                 entry_count + len(planned),
                 entry_symbols=set(entry_symbols),
+                stop_pct_override=effective_stop_pct,
             )
             if not risk.allowed:
                 skipped.append({"symbol": symbol, "reason": risk.reason})
@@ -1714,6 +1725,7 @@ class ExecutionEngine:
                     "symbol": symbol,
                     "qty": str(qty),
                     "market_value": str(signal.notional),
+                    "risk_stop_pct": str(effective_stop_pct),
                 }
             )
 
