@@ -214,3 +214,47 @@ def test_unfilled_hardstop_is_not_projected_but_filled_hardstop_is():
         broker_events[0]["payload"]["exit_reason"]
         == "broker protective stop filled"
     )
+
+
+def test_managed_symbols_include_owned_dynamic_universe_orders_and_fills():
+    sink = CapturingSink()
+    sink.settings.allowed_symbols = {"SPY"}
+    orders = [
+        {
+            "id": "smci-buy",
+            "client_order_id": "anevum-smci-buy-abc",
+            "symbol": "SMCI",
+        },
+        {
+            "id": "manual-order",
+            "client_order_id": "manual-qqq",
+            "symbol": "QQQ",
+        },
+    ]
+    fills = [
+        {
+            "id": "fill-smci",
+            "order_id": "smci-buy",
+            "symbol": "SMCI",
+        },
+        {
+            "id": "fill-manual",
+            "order_id": "manual-order",
+            "symbol": "QQQ",
+        },
+    ]
+    open_orders = [
+        {
+            "id": "tqqq-stop",
+            "client_order_id": "anevum-tqqq-hardstop-abc",
+            "symbol": "TQQQ",
+        }
+    ]
+
+    managed = sink.managed_symbols_from_snapshot(
+        orders=orders,
+        fills=fills,
+        open_orders=open_orders,
+    )
+
+    assert managed == ["SMCI", "SPY", "TQQQ"]
