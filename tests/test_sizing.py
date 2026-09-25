@@ -1,7 +1,12 @@
 from decimal import Decimal
 
 from app.config import Settings
-from app.sizing import calculate_entry_notional, effective_gross_limit
+from app.sizing import (
+    calculate_entry_notional,
+    effective_daily_loss_limit,
+    effective_gross_limit,
+    sizing_snapshot,
+)
 
 
 def settings(**overrides):
@@ -132,3 +137,36 @@ def test_wider_effective_stop_reduces_risk_sized_notional():
     assert base == Decimal("28.57")
     assert wider == Decimal("16.66")
     assert wider < base
+
+
+def test_zero_hard_gross_cap_uses_equity_percentage_only():
+    s = settings(
+        MAX_TOTAL_POSITION_NOTIONAL="0",
+        MAX_GROSS_EXPOSURE_PCT="0.80",
+    )
+    assert effective_gross_limit(s, account("500")) == Decimal("400.00")
+
+
+def test_daily_loss_limit_can_scale_only_with_equity():
+    s = settings(
+        MAX_DAILY_LOSS="0",
+        MAX_DAILY_LOSS_PCT="0.01",
+    )
+    assert effective_daily_loss_limit(s, account("100")) == Decimal("1.00")
+    assert effective_daily_loss_limit(s, account("250")) == Decimal("2.50")
+
+
+def test_sizing_snapshot_explains_cash_blocker():
+    s = settings(
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_TOTAL_POSITION_NOTIONAL="0",
+        MAX_GROSS_EXPOSURE_PCT="0.80",
+        MAX_POSITION_GROSS_PCT="0.25",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+    )
+    snapshot = sizing_snapshot(s, account("100", "0"), [])
+    assert snapshot["recommended_notional"] == "0"
+    assert snapshot["primary_blocker"] == "cash_exhausted"
