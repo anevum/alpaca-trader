@@ -523,6 +523,7 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         strong_failure = (not regime_ok) and candidate_failure_count >= 2
         return {
             "data_ready": True,
+            "bar_time": self._timestamp(session[-1]).isoformat(),
             "strong_failure": strong_failure,
             "reason": (
                 "market regime and position momentum both deteriorated"
