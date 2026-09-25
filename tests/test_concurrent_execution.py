@@ -789,3 +789,39 @@ def test_portfolio_risk_mode_submits_without_fixed_count_caps():
         for order in client.buy_orders
     ]
     assert notionals == [Decimal("25.00"), Decimal("25.00")]
+
+
+def test_consecutive_stop_exits_trigger_temporary_entry_cooldown():
+    recent_orders = [
+        {
+            "symbol": "SPY",
+            "side": "sell",
+            "client_order_id": "anevum-spy-stop-old",
+            "submitted_at": iso_now(-181),
+            "filled_at": iso_now(-180),
+        },
+        {
+            "symbol": "QQQ",
+            "side": "sell",
+            "client_order_id": "anevum-qqq-stop-new",
+            "submitted_at": iso_now(-61),
+            "filled_at": iso_now(-60),
+        },
+    ]
+    client = FakeClient(recent_orders=recent_orders)
+    engine = ExecutionEngine(
+        settings(
+            LOSS_STREAK_LIMIT="2",
+            LOSS_STREAK_COOLDOWN_MINUTES="10",
+        ),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "hold"
+    assert "loss-streak cooldown active" in result["reason"]
+    assert client.buy_orders == []

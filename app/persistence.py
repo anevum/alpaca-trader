@@ -33,6 +33,15 @@ class TradingEventSink:
             and self.settings.strategy_version_id
         )
 
+    def _owns_broker_order(self, order: dict[str, Any]) -> bool:
+        client_order_id = str(order.get("client_order_id") or "")
+        if not client_order_id.startswith("anevum-"):
+            return False
+        owner_tag = str(getattr(self.settings, "order_owner_tag", "") or "")
+        if not owner_tag:
+            return True
+        return f"-{owner_tag}-" in client_order_id
+
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -335,7 +344,7 @@ class TradingEventSink:
         bot_orders = [
             order
             for order in orders
-            if str(order.get("client_order_id") or "").startswith("anevum-")
+            if self._owns_broker_order(order)
             and at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
@@ -433,7 +442,7 @@ class TradingEventSink:
         bot_orders = [
             order
             for order in orders
-            if str(order.get("client_order_id") or "").startswith("anevum-")
+            if self._owns_broker_order(order)
             and self._at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))

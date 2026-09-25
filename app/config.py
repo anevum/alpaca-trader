@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, time, timezone
 from decimal import Decimal
 from functools import lru_cache
@@ -120,6 +121,18 @@ class Settings(BaseSettings):
     strategy_symbol: str = Field(default="SPY", alias="STRATEGY_SYMBOL")
     confirmation_symbols_raw: str = Field(default="QQQ,SMH", alias="CONFIRMATION_SYMBOLS")
     min_confirmations: int = Field(default=1, alias="MIN_CONFIRMATIONS")
+    regime_window: int = Field(default=5, alias="REGIME_WINDOW")
+    regime_min_confirmations: int = Field(default=1, alias="REGIME_MIN_CONFIRMATIONS")
+    regime_min_return_pct: Decimal = Field(
+        default=Decimal("0"), alias="REGIME_MIN_RETURN_PCT"
+    )
+    max_vwap_extension_pct: Decimal = Field(
+        default=Decimal("0.008"), alias="MAX_VWAP_EXTENSION_PCT"
+    )
+    loss_streak_limit: int = Field(default=2, alias="LOSS_STREAK_LIMIT")
+    loss_streak_cooldown_minutes: int = Field(
+        default=10, alias="LOSS_STREAK_COOLDOWN_MINUTES"
+    )
 
     order_notional: Decimal = Field(default=Decimal("80.00"), alias="ORDER_NOTIONAL")
     opening_range_minutes: int = Field(default=5, alias="OPENING_RANGE_MINUTES")
@@ -229,6 +242,11 @@ class Settings(BaseSettings):
         if stamp.tzinfo is None:
             raise ValueError("TRADING_RUN_STARTED_AT must include a timezone")
         return stamp.astimezone(timezone.utc)
+
+    @property
+    def order_owner_tag(self) -> str:
+        source = (self.trading_run_id or self.strategy_version_id or "anevum").encode()
+        return hashlib.sha256(source).hexdigest()[:8]
 
     @property
     def paper_execution_authorized(self) -> bool:
@@ -395,6 +413,20 @@ class Settings(BaseSettings):
             raise ValueError("CONFIRMATION_SYMBOLS cannot be empty")
         if not 1 <= self.min_confirmations <= len(self.confirmation_symbols):
             raise ValueError("MIN_CONFIRMATIONS must be between 1 and the number of confirmation symbols")
+        if not 3 <= self.regime_window <= 30:
+            raise ValueError("REGIME_WINDOW must be between 3 and 30")
+        if not 1 <= self.regime_min_confirmations <= len(self.confirmation_symbols):
+            raise ValueError(
+                "REGIME_MIN_CONFIRMATIONS must be between 1 and the number of confirmation symbols"
+            )
+        if not Decimal("-0.02") <= self.regime_min_return_pct <= Decimal("0.02"):
+            raise ValueError("REGIME_MIN_RETURN_PCT must be between -0.02 and 0.02")
+        if not Decimal("0") < self.max_vwap_extension_pct < Decimal("0.05"):
+            raise ValueError("MAX_VWAP_EXTENSION_PCT must be between 0 and 0.05")
+        if not 0 <= self.loss_streak_limit <= 10:
+            raise ValueError("LOSS_STREAK_LIMIT must be between 0 and 10")
+        if not 0 <= self.loss_streak_cooldown_minutes <= 120:
+            raise ValueError("LOSS_STREAK_COOLDOWN_MINUTES must be between 0 and 120")
         if not 0 <= self.max_hold_minutes <= 390:
             raise ValueError("MAX_HOLD_MINUTES must be between 0 and 390")
         if not 0 <= self.reentry_cooldown_minutes <= 60:

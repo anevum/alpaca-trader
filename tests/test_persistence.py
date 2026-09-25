@@ -100,3 +100,61 @@ def test_reconciliation_replays_bot_orders_oldest_first_and_filters_fills():
     ]
     assert [event["payload"]["activity"]["id"] for event in fill_events] == ["fill-buy"]
     assert any(event["event_type"] == "account_snapshot" for event in sink.events)
+
+
+def test_reconciliation_only_projects_orders_owned_by_runtime_tag():
+    sink = CapturingSink()
+    sink.settings.order_owner_tag = "live1234"
+    observed_at = datetime(2026, 9, 24, 20, 0, tzinfo=timezone.utc)
+    orders = [
+        {
+            "id": "live-order",
+            "client_order_id": "anevum-spy-buy-live1234-abc",
+            "submitted_at": "2026-09-24T14:00:00Z",
+        },
+        {
+            "id": "shadow-order",
+            "client_order_id": "anevum-qqq-buy-shadow99-def",
+            "submitted_at": "2026-09-24T14:01:00Z",
+        },
+    ]
+    fills = [
+        {
+            "id": "fill-live",
+            "order_id": "live-order",
+            "symbol": "SPY",
+            "side": "buy",
+            "qty": "0.2",
+            "price": "100",
+            "transaction_time": "2026-09-24T14:00:01Z",
+        },
+        {
+            "id": "fill-shadow",
+            "order_id": "shadow-order",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": "0.2",
+            "price": "100",
+            "transaction_time": "2026-09-24T14:01:01Z",
+        },
+    ]
+
+    sink.record_reconciliation(
+        account={
+            "equity": "100",
+            "last_equity": "100",
+            "cash": "100",
+            "buying_power": "100",
+        },
+        positions=[],
+        orders=orders,
+        fills=fills,
+        correlation_id="cycle-owned",
+        observed_at=observed_at,
+    )
+
+    assert sink.order_ids == ["live-order"]
+    fill_events = [
+        event for event in sink.events if event["event_type"] == "broker_fill"
+    ]
+    assert [event["payload"]["activity"]["id"] for event in fill_events] == ["fill-live"]

@@ -82,7 +82,7 @@ def test_rolling_momentum_generates_entry_with_one_confirmation():
         now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
     )
     assert signal.action == "buy"
-    assert signal.reason == "rolling momentum above VWAP with required confirmation"
+    assert signal.reason == "rolling momentum above VWAP with constructive market regime"
     assert signal.metadata["confirmation_passes"] == 1
     assert signal.metadata["checks"]["fast_above_slow"] is True
     assert signal.metadata["checks"]["momentum_ok"] is True
@@ -159,3 +159,55 @@ def test_entry_window_extends_into_afternoon_but_still_has_cutoff():
     )
     assert signal.action == "hold"
     assert signal.reason == "entry window closed"
+
+
+def test_deteriorating_market_regime_blocks_otherwise_valid_entry():
+    s = strategy()
+    candidate = rising_bars(100)
+    qqq = rising_bars(200)
+    smh = rising_bars(300)
+    for rows in (qqq, smh):
+        rows[-1]["c"] = str(Decimal(rows[-6]["c"]) - Decimal("0.50"))
+        rows[-1]["l"] = str(Decimal(rows[-1]["c"]) - Decimal("0.05"))
+        rows[-1]["vw"] = rows[-1]["c"]
+
+    signal = s.evaluate(
+        bars=candidate,
+        confirmation_bars={"QQQ": qqq, "SMH": smh},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+
+    assert signal.action == "hold"
+    assert signal.reason in {
+        "not enough market confirmations passed",
+        "market regime is not constructive",
+    }
+
+
+def test_excessive_vwap_extension_blocks_chasing_entry():
+    s = RollingMomentumVwapStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("0.0005"),
+        min_vwap_edge_pct=Decimal("0"),
+        stop_pct=Decimal("0.0035"),
+        target_pct=Decimal("0.005"),
+        entry_start=datetime.strptime("09:31", "%H:%M").time(),
+        entry_cutoff=datetime.strptime("15:30", "%H:%M").time(),
+        confirmation_symbols=("QQQ", "SMH"),
+        min_confirmations=1,
+        max_vwap_extension_pct=Decimal("0.001"),
+    )
+    signal = s.evaluate(
+        bars=rising_bars(100),
+        confirmation_bars={"QQQ": rising_bars(200), "SMH": rising_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+    assert signal.action == "hold"
+    assert signal.reason == "price is too extended above session VWAP"

@@ -367,6 +367,10 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         entry_cutoff: time,
         confirmation_symbols: tuple[str, ...],
         min_confirmations: int,
+        regime_window: int = 5,
+        regime_min_confirmations: int = 1,
+        regime_min_return_pct: Decimal = Decimal("0"),
+        max_vwap_extension_pct: Decimal = Decimal("0.008"),
     ):
         super().__init__(
             opening_range_minutes=1,
@@ -383,6 +387,52 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         self.min_momentum_pct = min_momentum_pct
         self.min_vwap_edge_pct = min_vwap_edge_pct
         self.min_confirmations = min_confirmations
+        self.regime_window = regime_window
+        self.regime_min_confirmations = regime_min_confirmations
+        self.regime_min_return_pct = regime_min_return_pct
+        self.max_vwap_extension_pct = max_vwap_extension_pct
+
+    def _regime_ok(
+        self,
+        bars: list[dict[str, Any]],
+        now: datetime,
+    ) -> tuple[bool, str, dict[str, str]]:
+        session = self._completed_session_bars(bars, now)
+        needed = self.regime_window + 1
+        if len(session) < needed:
+            return False, "not enough completed bars for regime check", {}
+
+        closes = [self._d(bar["c"]) for bar in session]
+        current_close = closes[-1]
+        anchor_close = closes[-needed]
+        recent_mean = self._mean(closes[-self.regime_window:])
+        session_vwap = self._vwap(session)
+        window_return_pct = (
+            (current_close - anchor_close) / anchor_close
+            if anchor_close > 0
+            else Decimal("0")
+        )
+        above_recent_mean = current_close >= recent_mean
+        above_vwap = current_close >= session_vwap
+        return_ok = window_return_pct >= self.regime_min_return_pct
+        ok = above_recent_mean and above_vwap and return_ok
+        details = {
+            "close": str(current_close),
+            "anchor_close": str(anchor_close),
+            "recent_mean": str(recent_mean),
+            "session_vwap": str(session_vwap),
+            "window_return_pct": str(window_return_pct),
+        }
+        if ok:
+            return True, "regime constructive", details
+        failed: list[str] = []
+        if not above_recent_mean:
+            failed.append("below recent mean")
+        if not above_vwap:
+            failed.append("below VWAP")
+        if not return_ok:
+            failed.append("window return below threshold")
+        return False, ", ".join(failed), details
 
     @staticmethod
     def _mean(values: list[Decimal]) -> Decimal:
@@ -444,6 +494,7 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         rising = current_close > previous_close
         momentum_ok = momentum_pct >= self.min_momentum_pct
         vwap_ok = current_close > session_vwap and vwap_edge_pct >= self.min_vwap_edge_pct
+        vwap_extension_ok = vwap_edge_pct <= self.max_vwap_extension_pct
 
         metadata: dict[str, Any] = {
             "bar_time": self._timestamp(session[-1]).isoformat(),
@@ -459,12 +510,17 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
                 "rising": rising,
                 "momentum_ok": momentum_ok,
                 "vwap_ok": vwap_ok,
+                "vwap_extension_ok": vwap_extension_ok,
                 "confirmations_ok": False,
+                "regime_ok": False,
             },
             "confirmations": {},
+            "regime_confirmations": {},
+            "max_vwap_extension_pct": str(self.max_vwap_extension_pct),
         }
 
         confirmation_passes = 0
+        regime_passes = 0
         independent_confirmations = 0
         for confirmation_symbol in self.confirmation_symbols:
             confirmation_symbol = confirmation_symbol.upper()
@@ -486,14 +542,34 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
             }
             if ok:
                 confirmation_passes += 1
+            regime_ok, regime_reason, regime_details = self._regime_ok(
+                confirmation_bars.get(confirmation_symbol, []),
+                now,
+            )
+            metadata["regime_confirmations"][confirmation_symbol] = {
+                "ok": regime_ok,
+                "reason": regime_reason,
+                **regime_details,
+            }
+            if regime_ok:
+                regime_passes += 1
 
         confirmations_ok = (
             independent_confirmations >= self.min_confirmations
             and confirmation_passes >= self.min_confirmations
         )
+        regime_ok = (
+            independent_confirmations >= self.regime_min_confirmations
+            and regime_passes >= self.regime_min_confirmations
+        )
         metadata["checks"]["confirmations_ok"] = confirmations_ok
+        metadata["checks"]["regime_ok"] = regime_ok
         metadata["confirmation_passes"] = confirmation_passes
         metadata["min_confirmations"] = self.min_confirmations
+        metadata["regime_passes"] = regime_passes
+        metadata["regime_min_confirmations"] = self.regime_min_confirmations
+        metadata["regime_window"] = self.regime_window
+        metadata["regime_min_return_pct"] = str(self.regime_min_return_pct)
 
         if not fast_above_slow:
             return Signal(
@@ -523,11 +599,25 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
                 reason="price does not have required VWAP edge",
                 metadata=metadata,
             )
+        if not vwap_extension_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="price is too extended above session VWAP",
+                metadata=metadata,
+            )
         if not confirmations_ok:
             return Signal(
                 action="hold",
                 symbol=symbol,
                 reason="not enough market confirmations passed",
+                metadata=metadata,
+            )
+        if not regime_ok:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="market regime is not constructive",
                 metadata=metadata,
             )
 
@@ -545,6 +635,6 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
             reference_price=current_close,
             stop_price=stop_price,
             take_profit_price=take_profit_price,
-            reason="rolling momentum above VWAP with required confirmation",
+            reason="rolling momentum above VWAP with constructive market regime",
             metadata=metadata,
         )
