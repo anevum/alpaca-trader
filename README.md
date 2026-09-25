@@ -128,6 +128,14 @@ Administrator bearer token required:
 
 Never commit Alpaca keys or the administrator token to GitHub. Configure them only in Railway.
 
+## Replay laboratory
+
+The replay CLI runs the current production strategy and allocator against historical one-minute Alpaca bars without importing any broker-order submission path. A single run is limited to 21 calendar days.
+
+The simulator reproduces the current strategy gates, quality ranking, correlation filter, concurrent-position cap, daily entry limit, equity-based sizing, daily-loss breaker, re-entry cooldown, stop/target/time exits, and end-of-session flattening. Historical bar data does not contain historical bid/ask quotes, so the caller supplies explicit spread and per-side slippage assumptions. If one historical one-minute bar touches both stop and target, replay resolves the bar stop-first because intrabar ordering is unknown.
+
+Replay output includes trade-level results, an equity curve, win rate, profit factor, expectancy per trade, maximum drawdown, per-symbol results, correlation/risk block counts, and the assumptions used. Replay results are research evidence, not a forecast of future returns.\n\nRun it with:\n\n```bash\npython scripts/replay.py --start 2026-09-01 --end 2026-09-18 --initial-equity 100 --spread-bps 5 --slippage-bps 2 --output replay.json\n```\n\nThe CLI imports market-data and strategy modules only. It does not import the broker client or execution engine.
+
 ## Deployment
 
 The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader`.
