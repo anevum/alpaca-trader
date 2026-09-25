@@ -803,6 +803,27 @@ class ExecutionEngine:
         )
         self.state.last_signal = self._signal_payload(ranked[0])
 
+        if not self.state.startup_reconciled:
+            self.state.last_decision = (
+                "qualified entries blocked until startup reconciliation completes"
+            )
+            return {
+                "action": "blocked",
+                "reason": self.state.last_decision,
+                "qualified_symbols": [signal.symbol for signal in ranked],
+            }
+
+        if not self.state.reconciliation_safe:
+            self.state.last_decision = (
+                "qualified entries blocked by broker/canonical reconciliation"
+            )
+            return {
+                "action": "blocked",
+                "reason": self.state.last_decision,
+                "qualified_symbols": [signal.symbol for signal in ranked],
+                "reconciliation": self.state.last_reconciliation,
+            }
+
         if not self.state.entries_enabled:
             self.state.last_decision = (
                 "qualified entries blocked because new entries are disabled"
@@ -984,21 +1005,76 @@ class ExecutionEngine:
         ):
             symbol = signal.symbol.upper()
             if isinstance(result, Exception):
-                errors.append(
-                    {
+                recovered = None
+                for attempt in range(3):
+                    try:
+                        recovered = await self.client.order_by_client_order_id(
+                            _client_order_id
+                        )
+                    except Exception:
+                        recovered = None
+                    if recovered is not None:
+                        break
+                    if attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+
+                if recovered is None:
+                    self.state.reconciliation_safe = False
+                    self.state.last_reconciliation = {
+                        "safe_to_enter": False,
+                        "reason": "ambiguous broker submission",
+                        "client_order_id": _client_order_id,
                         "symbol": symbol,
-                        "reason": f"{type(result).__name__}: {result}",
                     }
-                )
+                    errors.append(
+                        {
+                            "symbol": symbol,
+                            "reason": (
+                                f"{type(result).__name__}: {result}; "
+                                "broker submission remains ambiguous"
+                            ),
+                        }
+                    )
+                    self.state.record_event(
+                        kind="execution",
+                        symbol=symbol,
+                        action="blocked",
+                        message=(
+                            "entry submission result ambiguous; "
+                            "future entries blocked pending reconciliation"
+                        ),
+                        reason=str(result),
+                        at=now,
+                        payload={"client_order_id": _client_order_id},
+                    )
+                    continue
+
+                result = recovered
+                if self.ledger is not None:
+                    persisted = await self.ledger.persist_recovered_order(
+                        recovered,
+                        correlation_id=self.state.current_correlation_id,
+                    )
+                    if not persisted:
+                        self.state.reconciliation_safe = False
+                        errors.append(
+                            {
+                                "symbol": symbol,
+                                "reason": (
+                                    "broker order recovered by client ID but "
+                                    "durable persistence failed"
+                                ),
+                            }
+                        )
+                        continue
                 self.state.record_event(
                     kind="execution",
                     symbol=symbol,
-                    action="error",
-                    message="market entry submission failed",
-                    reason=str(result),
+                    action="recovered",
+                    message="ambiguous entry recovered by client order ID",
                     at=now,
+                    payload={"client_order_id": _client_order_id},
                 )
-                continue
 
             order_payload = {
                 "id": result.get("id"),
