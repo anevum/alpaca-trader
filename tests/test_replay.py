@@ -135,3 +135,28 @@ def test_replay_rejects_empty_history():
         assert "regular-session" in str(exc)
     else:
         raise AssertionError("expected empty history to be rejected")
+
+
+def test_replay_enforces_live_quality_threshold():
+    engine = ReplayEngine(
+        settings(MIN_QUALITY_SCORE="100"),
+        AlwaysBuy(),
+    )
+    data = {
+        "SPY": [bar(30), bar(31), bar(32)],
+        "QQQ": [
+            bar(30, close="50"),
+            bar(31, close="50"),
+            bar(32, close="50"),
+        ],
+    }
+
+    result = engine.run(
+        data,
+        initial_equity=Decimal("100"),
+        spread_bps=Decimal("0"),
+        slippage_bps=Decimal("0"),
+    )
+
+    assert result["summary"]["trades"] == 0
+    assert result["summary"]["quality_blocks"] > 0
