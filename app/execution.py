@@ -169,10 +169,75 @@ class ExecutionEngine:
                 latest = stamp
         return latest
 
-    @staticmethod
-    def _client_order_id(symbol: str, action: str) -> str:
-        suffix = uuid4().hex[:20]
-        return f"anevum-{symbol.lower()}-{action}-{suffix}"
+    def _client_order_id(self, symbol: str, action: str) -> str:
+        suffix = uuid4().hex[:12]
+        return (
+            f"anevum-{symbol.lower()}-{action}-"
+            f"{self.settings.order_owner_tag}-{suffix}"
+        )
+
+    def _loss_streak_gate(
+        self,
+        orders: list[dict[str, Any]],
+        now: datetime,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        limit = self.settings.loss_streak_limit
+        cooldown = self.settings.loss_streak_cooldown_minutes
+        if limit <= 0 or cooldown <= 0:
+            return True, "", {"streak": 0, "cooldown_minutes": cooldown}
+
+        exits: list[tuple[datetime, str]] = []
+        for order in orders:
+            if str(order.get("side", "")).lower() != "sell":
+                continue
+            client_order_id = str(order.get("client_order_id", ""))
+            if not client_order_id.startswith("anevum-"):
+                continue
+            raw_stamp = order.get("filled_at") or order.get("submitted_at")
+            if not raw_stamp:
+                continue
+            try:
+                stamp = datetime.fromisoformat(
+                    str(raw_stamp).replace("Z", "+00:00")
+                ).astimezone(NY)
+            except ValueError:
+                continue
+            if stamp.date() != now.date():
+                continue
+            exits.append((stamp, client_order_id))
+
+        exits.sort(key=lambda item: item[0], reverse=True)
+        streak = 0
+        latest_stop: datetime | None = None
+        for stamp, client_order_id in exits:
+            if "-stop-" not in client_order_id:
+                break
+            streak += 1
+            if latest_stop is None:
+                latest_stop = stamp
+
+        detail = {
+            "streak": streak,
+            "limit": limit,
+            "cooldown_minutes": cooldown,
+            "latest_stop_at": latest_stop.isoformat() if latest_stop else None,
+        }
+        if streak < limit or latest_stop is None:
+            return True, "", detail
+
+        minutes_since_stop = (now - latest_stop).total_seconds() / 60
+        detail["minutes_since_stop"] = minutes_since_stop
+        if minutes_since_stop >= cooldown:
+            return True, "", detail
+
+        return (
+            False,
+            (
+                f"loss-streak cooldown active after {streak} consecutive stop exits "
+                f"({minutes_since_stop:.1f}/{cooldown} min)"
+            ),
+            detail,
+        )
 
     @staticmethod
     def _fractional_qty(notional: Decimal, reference_price: Decimal) -> Decimal:
@@ -950,6 +1015,27 @@ class ExecutionEngine:
             reverse=True,
         )
         self.state.last_signal = self._signal_payload(ranked[0])
+
+        loss_gate_ok, loss_gate_reason, loss_gate_detail = self._loss_streak_gate(
+            recent_orders,
+            now,
+        )
+        if not loss_gate_ok:
+            self.state.last_decision = loss_gate_reason
+            self.state.record_event(
+                kind="risk",
+                action="hold",
+                message=loss_gate_reason,
+                reason=loss_gate_reason,
+                at=now,
+                payload={"loss_streak": loss_gate_detail},
+            )
+            return {
+                "action": "hold",
+                "reason": loss_gate_reason,
+                "qualified_symbols": [signal.symbol for signal in ranked],
+                "loss_streak": loss_gate_detail,
+            }
 
         if not self.state.startup_reconciled:
             self.state.last_decision = (
