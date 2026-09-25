@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+
 from app.config import Settings
 from app.risk import validate_buy, validate_sell_to_flat
 
@@ -323,3 +325,38 @@ def test_risk_mode_nonzero_daily_order_cap_is_enforced():
     )
     assert not result.allowed
     assert "daily entry-order limit" in result.reason
+
+
+def test_live_persistent_runtime_requires_live_strategy_identity():
+    with pytest.raises(
+        ValueError,
+        match="STRATEGY_VERSION_ID prefixed LIVE-",
+    ):
+        settings(
+            TRADING_MODE="live",
+            EXECUTION_ENABLED="true",
+            LIVE_TRADING="true",
+            I_ACKNOWLEDGE_LIVE_TRADING="YES",
+            BOT_ARMED="true",
+            TRADING_INGEST_URL="https://example.invalid/functions/v1/trading-ingest",
+            TRADING_INGEST_TOKEN="x" * 32,
+            TRADING_RUN_ID="00000000-0000-4000-8000-000000000001",
+            TRADING_RUN_STARTED_AT="2026-09-25T13:30:00Z",
+            STRATEGY_VERSION_ID="SHADOW-WRONG-ID",
+        )
+
+
+def test_live_persistent_runtime_accepts_live_strategy_identity():
+    s = settings(
+        TRADING_MODE="live",
+        EXECUTION_ENABLED="true",
+        LIVE_TRADING="true",
+        I_ACKNOWLEDGE_LIVE_TRADING="YES",
+        BOT_ARMED="true",
+        TRADING_INGEST_URL="https://example.invalid/functions/v1/trading-ingest",
+        TRADING_INGEST_TOKEN="x" * 32,
+        TRADING_RUN_ID="00000000-0000-4000-8000-000000000001",
+        TRADING_RUN_STARTED_AT="2026-09-25T13:30:00Z",
+        STRATEGY_VERSION_ID="LIVE-2026-09-25-004",
+    )
+    assert s.persistence_environment == "live"
