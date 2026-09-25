@@ -19,6 +19,8 @@ The service runs guarded long-only intraday scanners for a configured universe o
 - require a configurable minimum opportunity-quality score before a qualified signal can enter the allocation queue;
 - in portfolio-risk mode, remove fixed daily-trade and concurrent-position quotas; capital, cash, gross exposure, per-position equity exposure, portfolio stop-risk, quality, and correlation determine how many trades/positions are allowed;
 - batch REST market-data requests so configured scan universes can exceed 30 symbols without relying on one WebSocket subscription per symbol;
+- optionally discover active tradable/fractionable U.S. equities from Alpaca, build a daily liquid/volatile candidate pool, and rotate the intraday active scan set on a configurable refresh interval;
+- authorize entries only from the current dynamic-universe snapshot while continuing to manage bot-opened positions after a symbol rotates out;
 - reject a lower-ranked candidate when its recent aligned one-minute returns are too positively correlated with an already-open or already-planned position;
 - avoid averaging down and shorting;
 - manage per-position stop, target, time, and end-of-day exits independently; current fractional exits are bot-managed rather than broker-resident bracket legs;

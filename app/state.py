@@ -26,10 +26,33 @@ class RuntimeState:
     last_decision: str | None = None
     last_order: dict[str, Any] | None = None
     current_correlation_id: str | None = None
+    universe_active_symbols: list[str] = field(default_factory=list)
+    universe_candidate_count: int = 0
+    universe_eligible_count: int = 0
+    universe_updated_at: datetime | None = None
+    universe_source: str = "static"
+    universe_error: str | None = None
     event_emitter: Any = field(default=None, repr=False)
 
     def set_event_emitter(self, emitter: Any) -> None:
         self.event_emitter = emitter
+
+    def set_universe(
+        self,
+        *,
+        symbols: list[str],
+        candidate_count: int,
+        eligible_count: int,
+        source: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.universe_active_symbols = list(symbols)
+        self.universe_candidate_count = candidate_count
+        self.universe_eligible_count = eligible_count
+        self.universe_source = source
+        self.universe_updated_at = at or datetime.now(timezone.utc)
+        self.universe_error = error
 
     def begin_cycle(self, correlation_id: str) -> None:
         self.current_correlation_id = correlation_id

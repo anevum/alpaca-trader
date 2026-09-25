@@ -36,10 +36,19 @@ def _execution_gate(
     symbol: str,
     *,
     require_scan: bool = True,
+    entry_symbols: set[str] | None = None,
 ) -> RiskDecision | None:
     symbol = symbol.upper()
     if not settings.execution_authorized:
         return RiskDecision(False, "execution is not authorized")
+    if settings.dynamic_universe_enabled:
+        if require_scan:
+            if not entry_symbols:
+                return RiskDecision(False, "dynamic entry universe is unavailable")
+            if symbol not in entry_symbols:
+                return RiskDecision(False, f"{symbol} is not in active dynamic universe")
+        return None
+
     if not settings.allowed_symbols:
         return RiskDecision(False, "no symbols are allowlisted")
     if symbol not in settings.allowed_symbols:
@@ -56,8 +65,16 @@ def validate_buy(
     account: dict[str, Any],
     positions: list[dict[str, Any]],
     entry_orders_today: int,
+    entry_symbols: set[str] | None = None,
 ) -> RiskDecision:
-    blocked = _execution_gate(settings, symbol) or _account_can_trade(account)
+    blocked = (
+        _execution_gate(
+            settings,
+            symbol,
+            entry_symbols=entry_symbols,
+        )
+        or _account_can_trade(account)
+    )
     if blocked:
         return blocked
 

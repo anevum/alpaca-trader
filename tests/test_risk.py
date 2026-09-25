@@ -209,3 +209,60 @@ def test_risk_mode_blocks_projected_portfolio_stop_risk():
     )
     assert not result.allowed
     assert "MAX_PORTFOLIO_STOP_RISK_PCT" in result.reason
+
+
+def test_dynamic_universe_authorizes_active_symbol_not_in_static_allowlist():
+    s = settings(
+        DYNAMIC_UNIVERSE_ENABLED="true",
+        SIZING_MODE="equity_risk",
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_ORDER_NOTIONAL="100",
+        MAX_POSITION_NOTIONAL="100",
+        MAX_TOTAL_POSITION_NOTIONAL="100",
+        MAX_GROSS_EXPOSURE_PCT="0.80",
+        MAX_POSITION_GROSS_PCT="0.25",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+        STOP_PCT="0.0035",
+    )
+    result = validate_buy(
+        s,
+        "AAPL",
+        Decimal("20"),
+        {"cash": "100", "equity": "100", "last_equity": "100"},
+        [],
+        0,
+        entry_symbols={"AAPL", "MSFT"},
+    )
+    assert result.allowed
+
+
+def test_dynamic_universe_rejects_symbol_outside_current_snapshot():
+    s = settings(
+        DYNAMIC_UNIVERSE_ENABLED="true",
+        SIZING_MODE="equity_risk",
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_ORDER_NOTIONAL="100",
+        MAX_POSITION_NOTIONAL="100",
+        MAX_TOTAL_POSITION_NOTIONAL="100",
+        MAX_GROSS_EXPOSURE_PCT="0.80",
+        MAX_POSITION_GROSS_PCT="0.25",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+        STOP_PCT="0.0035",
+    )
+    result = validate_buy(
+        s,
+        "TSLA",
+        Decimal("20"),
+        {"cash": "100", "equity": "100", "last_equity": "100"},
+        [],
+        0,
+        entry_symbols={"AAPL", "MSFT"},
+    )
+    assert not result.allowed
+    assert "active dynamic universe" in result.reason

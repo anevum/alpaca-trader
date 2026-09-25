@@ -20,6 +20,7 @@ from .sizing import sizing_snapshot
 from .state import runtime_state
 from .scanner import ReadOnlyScanner
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
+from .universe import DynamicUniverse
 
 settings = get_settings()
 client = AlpacaClient(settings)
@@ -49,6 +50,7 @@ else:
         confirmation_symbols=settings.confirmation_symbols,
     )
 event_sink = TradingEventSink(settings)
+universe = DynamicUniverse(settings, client, market_data, runtime_state)
 engine = ExecutionEngine(
     settings,
     client,
@@ -56,8 +58,16 @@ engine = ExecutionEngine(
     strategy,
     runtime_state,
     ledger=event_sink,
+    universe=universe,
 )
-scanner = ReadOnlyScanner(settings, client, market_data, strategy, runtime_state)
+scanner = ReadOnlyScanner(
+    settings,
+    client,
+    market_data,
+    strategy,
+    runtime_state,
+    universe=universe,
+)
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
 
@@ -247,6 +257,16 @@ async def command_snapshot() -> dict:
             "max_portfolio_stop_risk_pct": str(settings.max_portfolio_stop_risk_pct),
         },
         "allocator": allocator,
+        "universe": {
+            "enabled": settings.dynamic_universe_enabled,
+            "source": runtime_state.universe_source,
+            "active_count": len(runtime_state.universe_active_symbols),
+            "candidate_count": runtime_state.universe_candidate_count,
+            "eligible_count": runtime_state.universe_eligible_count,
+            "updated_at": runtime_state.universe_updated_at,
+            "error": runtime_state.universe_error,
+            "active_symbols": runtime_state.universe_active_symbols,
+        },
         "scanner": runtime_state.last_scan,
         "history": runtime_state.decision_history,
         "positions": [public_position(position) for position in positions],
@@ -489,6 +509,11 @@ async def lifespan(app: FastAPI):
             "max_position_gross_pct": str(settings.max_position_gross_pct),
             "max_portfolio_stop_risk_pct": str(settings.max_portfolio_stop_risk_pct),
             "market_data_batch_size": settings.market_data_batch_size,
+            "dynamic_universe_enabled": settings.dynamic_universe_enabled,
+            "universe_size": settings.universe_size,
+            "universe_candidate_pool_size": settings.universe_candidate_pool_size,
+            "universe_refresh_seconds": settings.universe_refresh_seconds,
+            "universe_daily_lookback": settings.universe_daily_lookback,
             "max_bar_age_seconds": settings.max_bar_age_seconds,
             "max_spread_pct": str(settings.max_spread_pct),
             "min_quality_score": str(settings.min_quality_score),

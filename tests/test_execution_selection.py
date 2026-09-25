@@ -146,3 +146,27 @@ def test_market_quality_accepts_fresh_tight_market():
     assert ok
     assert reason == "market quality checks passed"
     assert details["fresh_confirmation_passes"] == 1
+
+
+def test_dynamic_universe_keeps_bot_opened_position_managed_after_rotation():
+    engine = object.__new__(ExecutionEngine)
+    engine.settings = SimpleNamespace(
+        dynamic_universe_enabled=True,
+        allowed_symbols={"SPY"},
+    )
+    position = {"symbol": "AAPL", "qty": "0.25", "market_value": "50"}
+    now = datetime.now(NY)
+    orders = [
+        {
+            "side": "buy",
+            "symbol": "AAPL",
+            "client_order_id": "anevum-aapl-buy-123",
+            "status": "filled",
+            "filled_at": now.isoformat(),
+            "submitted_at": now.isoformat(),
+        }
+    ]
+
+    managed = engine._managed_positions([position], orders)
+
+    assert managed == [position]

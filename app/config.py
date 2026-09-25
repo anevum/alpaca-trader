@@ -81,6 +81,37 @@ class Settings(BaseSettings):
 
     allowed_symbols_raw: str = Field(default="SPY", alias="ALLOWED_SYMBOLS")
     scan_symbols_raw: str = Field(default="", alias="SCAN_SYMBOLS")
+    dynamic_universe_enabled: bool = Field(
+        default=False, alias="DYNAMIC_UNIVERSE_ENABLED"
+    )
+    universe_size: int = Field(default=100, alias="UNIVERSE_SIZE")
+    universe_candidate_pool_size: int = Field(
+        default=300, alias="UNIVERSE_CANDIDATE_POOL_SIZE"
+    )
+    universe_refresh_seconds: int = Field(
+        default=300, alias="UNIVERSE_REFRESH_SECONDS"
+    )
+    universe_daily_lookback: int = Field(
+        default=5, alias="UNIVERSE_DAILY_LOOKBACK"
+    )
+    universe_data_batch_size: int = Field(
+        default=50, alias="UNIVERSE_DATA_BATCH_SIZE"
+    )
+    universe_min_price: Decimal = Field(
+        default=Decimal("2.00"), alias="UNIVERSE_MIN_PRICE"
+    )
+    universe_min_avg_volume: Decimal = Field(
+        default=Decimal("10000"), alias="UNIVERSE_MIN_AVG_VOLUME"
+    )
+    universe_min_avg_dollar_volume: Decimal = Field(
+        default=Decimal("500000"), alias="UNIVERSE_MIN_AVG_DOLLAR_VOLUME"
+    )
+    universe_exchanges_raw: str = Field(
+        default="NASDAQ,NYSE,ARCA,AMEX,BATS", alias="UNIVERSE_EXCHANGES"
+    )
+    universe_always_include_raw: str = Field(
+        default="SPY,QQQ,SMH", alias="UNIVERSE_ALWAYS_INCLUDE"
+    )
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
     fast_window: int = Field(default=3, alias="FAST_WINDOW")
     slow_window: int = Field(default=8, alias="SLOW_WINDOW")
@@ -155,6 +186,14 @@ class Settings(BaseSettings):
     @property
     def confirmation_symbols(self) -> tuple[str, ...]:
         return parse_csv(self.confirmation_symbols_raw)
+
+    @property
+    def universe_exchanges(self) -> set[str]:
+        return set(parse_csv(self.universe_exchanges_raw))
+
+    @property
+    def universe_always_include(self) -> tuple[str, ...]:
+        return parse_csv(self.universe_always_include_raw)
 
     @property
     def entry_start(self) -> time:
@@ -308,6 +347,26 @@ class Settings(BaseSettings):
             raise ValueError("MAX_BAR_AGE_SECONDS must be between 30 and 600")
         if not 1 <= self.market_data_batch_size <= 100:
             raise ValueError("MARKET_DATA_BATCH_SIZE must be between 1 and 100")
+        if not 10 <= self.universe_size <= 1000:
+            raise ValueError("UNIVERSE_SIZE must be between 10 and 1000")
+        if not self.universe_size <= self.universe_candidate_pool_size <= 5000:
+            raise ValueError(
+                "UNIVERSE_CANDIDATE_POOL_SIZE must be between UNIVERSE_SIZE and 5000"
+            )
+        if not 60 <= self.universe_refresh_seconds <= 3600:
+            raise ValueError("UNIVERSE_REFRESH_SECONDS must be between 60 and 3600")
+        if not 2 <= self.universe_daily_lookback <= 20:
+            raise ValueError("UNIVERSE_DAILY_LOOKBACK must be between 2 and 20")
+        if not 1 <= self.universe_data_batch_size <= 100:
+            raise ValueError("UNIVERSE_DATA_BATCH_SIZE must be between 1 and 100")
+        if self.universe_min_price <= 0:
+            raise ValueError("UNIVERSE_MIN_PRICE must be positive")
+        if self.universe_min_avg_volume < 0:
+            raise ValueError("UNIVERSE_MIN_AVG_VOLUME cannot be negative")
+        if self.universe_min_avg_dollar_volume < 0:
+            raise ValueError("UNIVERSE_MIN_AVG_DOLLAR_VOLUME cannot be negative")
+        if self.dynamic_universe_enabled and not self.universe_exchanges:
+            raise ValueError("UNIVERSE_EXCHANGES cannot be empty in dynamic mode")
         if not Decimal("0") < self.max_spread_pct < Decimal("0.05"):
             raise ValueError("MAX_SPREAD_PCT must be between 0 and 0.05")
         if not Decimal("0") <= self.min_quality_score <= Decimal("100"):
@@ -320,14 +379,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CORRELATION_MIN_OBSERVATIONS must be at least 3 and below CORRELATION_LOOKBACK_BARS"
             )
-        if not self.scan_symbols:
+        if not self.scan_symbols and not self.dynamic_universe_enabled:
             raise ValueError("SCAN_SYMBOLS/STRATEGY_SYMBOL cannot both be empty")
-        missing = [symbol for symbol in self.scan_symbols if symbol not in self.allowed_symbols]
-        if missing:
-            raise ValueError(
-                "Every SCAN_SYMBOLS symbol must also be in ALLOWED_SYMBOLS: "
-                + ",".join(missing)
-            )
+        if not self.dynamic_universe_enabled:
+            missing = [
+                symbol for symbol in self.scan_symbols
+                if symbol not in self.allowed_symbols
+            ]
+            if missing:
+                raise ValueError(
+                    "Every SCAN_SYMBOLS symbol must also be in ALLOWED_SYMBOLS: "
+                    + ",".join(missing)
+                )
         if not self.confirmation_symbols:
             raise ValueError("CONFIRMATION_SYMBOLS cannot be empty")
         if not 1 <= self.min_confirmations <= len(self.confirmation_symbols):

@@ -68,6 +68,19 @@ class AlpacaClient:
     async def asset(self, symbol: str) -> dict[str, Any]:
         return await self._request("GET", f"/v2/assets/{symbol.upper()}")
 
+    async def assets(
+        self,
+        *,
+        status: str = "active",
+        asset_class: str = "us_equity",
+    ) -> list[dict[str, Any]]:
+        result = await self._request(
+            "GET",
+            "/v2/assets",
+            params={"status": status, "asset_class": asset_class},
+        )
+        return result if isinstance(result, list) else []
+
     async def open_orders(self) -> list[dict[str, Any]]:
         return await self._request(
             "GET",

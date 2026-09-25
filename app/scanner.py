@@ -8,6 +8,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .state import RuntimeState
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
+from .universe import DynamicUniverse
 
 
 NY = ZoneInfo("America/New_York")
@@ -28,12 +29,14 @@ class ReadOnlyScanner:
         market_data: MarketDataClient,
         strategy: OpeningRangeVwapStrategy | RollingMomentumVwapStrategy,
         state: RuntimeState,
+        universe: DynamicUniverse | None = None,
     ):
         self.settings = settings
         self.clock_client = clock_client
         self.market_data = market_data
         self.strategy = strategy
         self.state = state
+        self.universe = universe
 
     @staticmethod
     def _signal_payload(signal: Signal) -> dict[str, Any]:
@@ -61,16 +64,20 @@ class ReadOnlyScanner:
             return {"action": "hold", "reason": self.state.last_decision}
 
         now = datetime.now(NY)
+        if self.universe is not None:
+            entry_symbols = list(await self.universe.active_symbols(now=now))
+        else:
+            entry_symbols = list(self.settings.scan_symbols)
         symbols = list(
             dict.fromkeys(
-                [*self.settings.scan_symbols, *self.settings.confirmation_symbols]
+                [*entry_symbols, *self.settings.confirmation_symbols]
             )
         )
         market_bars = await self.market_data.bars_many(symbols)
 
         buy_signals: list[Signal] = []
         scan: dict[str, Any] = {}
-        for symbol in self.settings.scan_symbols:
+        for symbol in entry_symbols:
             signal = self.strategy.evaluate(
                 bars=market_bars.get(symbol, []),
                 confirmation_bars={
@@ -91,7 +98,7 @@ class ReadOnlyScanner:
             "SAFE_SCAN_CYCLE",
             {
                 "at": now.isoformat(),
-                "symbols": len(self.settings.scan_symbols),
+                "symbols": len(entry_symbols),
                 "ready": [signal.symbol for signal in buy_signals],
             },
             flush=True,
@@ -102,7 +109,7 @@ class ReadOnlyScanner:
                 "action": "hold",
                 "symbol": "",
                 "reason": (
-                    f"scan-only watching {len(self.settings.scan_symbols)} symbols; "
+                    f"scan-only watching {len(entry_symbols)} symbols; "
                     "no qualified entries"
                 ),
                 "metadata": {},
