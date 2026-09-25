@@ -366,7 +366,11 @@ async def reconcile_broker_state(
             orders=recent_orders,
             fills=fills,
             open_orders=open_orders,
-            managed_symbols=sorted(settings.allowed_symbols),
+            managed_symbols=event_sink.managed_symbols_from_snapshot(
+                orders=recent_orders,
+                fills=fills,
+                open_orders=open_orders,
+            ),
             correlation_id=runtime_state.current_correlation_id,
             observed_at=now,
         )
@@ -424,7 +428,11 @@ async def reconcile_broker_state(
                     orders=recent_orders,
                     fills=fills,
                     open_orders=open_orders,
-                    managed_symbols=sorted(settings.allowed_symbols),
+                    managed_symbols=event_sink.managed_symbols_from_snapshot(
+                orders=recent_orders,
+                fills=fills,
+                open_orders=open_orders,
+            ),
                     correlation_id=runtime_state.current_correlation_id,
                     observed_at=now,
                 )
