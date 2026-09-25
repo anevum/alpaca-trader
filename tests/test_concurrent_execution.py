@@ -710,3 +710,30 @@ def test_allocator_blocks_second_highly_correlated_candidate():
         for item in result["skipped"]
     )
     assert state.last_scan["SPY"]["metadata"]["quality_score"] > state.last_scan["QQQ"]["metadata"]["quality_score"]
+
+
+def test_quality_gate_rejects_subthreshold_signal_before_execution():
+    client = FakeClient()
+    state = reconciled_state()
+    engine = ExecutionEngine(
+        settings(
+            MIN_QUALITY_SCORE="100",
+            MAX_DAILY_ORDERS="4",
+        ),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        state,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "hold"
+    assert client.buy_orders == []
+    quality_holds = [
+        payload
+        for payload in state.last_scan.values()
+        if "quality score" in str(payload.get("reason", ""))
+    ]
+    assert quality_holds
+    assert all(payload["metadata"]["quality_score"] < 100 for payload in quality_holds)
