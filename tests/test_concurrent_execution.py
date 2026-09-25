@@ -1002,9 +1002,16 @@ def test_thesis_failure_requires_two_cycles_before_exit():
         state,
     )
 
+    account_payload = {
+        "cash": "100",
+        "equity": "100",
+        "last_equity": "100",
+        "trading_blocked": False,
+        "account_blocked": False,
+    }
     first = asyncio.run(
         engine._exit_managed_positions(
-            client._positions,
+            account_payload,
             client._positions,
             [],
             client._recent_orders,
@@ -1016,7 +1023,7 @@ def test_thesis_failure_requires_two_cycles_before_exit():
 
     second = asyncio.run(
         engine._exit_managed_positions(
-            client._positions,
+            account_payload,
             client._positions,
             [],
             client._recent_orders,
@@ -1055,9 +1062,16 @@ def test_standing_hardstop_does_not_block_discretionary_profit_exit():
         reconciled_state(),
     )
 
+    account_payload = {
+        "cash": "100",
+        "equity": "100",
+        "last_equity": "100",
+        "trading_blocked": False,
+        "account_blocked": False,
+    }
     result = asyncio.run(
         engine._exit_managed_positions(
-            client._positions,
+            account_payload,
             client._positions,
             [hardstop],
             client._recent_orders,
