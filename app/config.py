@@ -468,8 +468,15 @@ class Settings(BaseSettings):
             raise ValueError("VOLATILITY_STOP_MULTIPLIER must be between 0 and 10")
         if not 3 <= self.volatility_stop_lookback_bars <= 60:
             raise ValueError("VOLATILITY_STOP_LOOKBACK_BARS must be between 3 and 60")
-        if not self.stop_pct <= self.max_dynamic_stop_pct < Decimal("0.05"):
-            raise ValueError("MAX_DYNAMIC_STOP_PCT must be >= STOP_PCT and below 0.05")
+        if not Decimal("0") < self.max_dynamic_stop_pct < Decimal("0.05"):
+            raise ValueError("MAX_DYNAMIC_STOP_PCT must be between 0 and 0.05")
+        if (
+            self.volatility_stop_enabled
+            and self.max_dynamic_stop_pct < self.stop_pct
+        ):
+            raise ValueError(
+                "MAX_DYNAMIC_STOP_PCT must be >= STOP_PCT when volatility stops are enabled"
+            )
         if not Decimal("0") < self.profit_protect_activation_pct < Decimal("0.05"):
             raise ValueError("PROFIT_PROTECT_ACTIVATION_PCT must be between 0 and 0.05")
         if not Decimal("0") < self.profit_protect_retain_fraction <= Decimal("1"):
