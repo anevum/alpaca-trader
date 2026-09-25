@@ -155,14 +155,15 @@ def test_dynamic_universe_keeps_bot_opened_position_managed_after_rotation():
         allowed_symbols={"SPY"},
     )
     position = {"symbol": "AAPL", "qty": "0.25", "market_value": "50"}
+    now = datetime.now(NY)
     orders = [
         {
             "side": "buy",
             "symbol": "AAPL",
             "client_order_id": "anevum-aapl-entry-123",
             "status": "filled",
-            "filled_at": TEST_NOW.isoformat(),
-            "submitted_at": TEST_NOW.isoformat(),
+            "filled_at": now.isoformat(),
+            "submitted_at": now.isoformat(),
         }
     ]
 
