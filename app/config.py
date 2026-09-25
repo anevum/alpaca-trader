@@ -129,6 +129,9 @@ class Settings(BaseSettings):
     max_vwap_extension_pct: Decimal = Field(
         default=Decimal("0.008"), alias="MAX_VWAP_EXTENSION_PCT"
     )
+    signal_persistence_bars: int = Field(
+        default=1, alias="SIGNAL_PERSISTENCE_BARS"
+    )
     loss_streak_limit: int = Field(default=2, alias="LOSS_STREAK_LIMIT")
     loss_streak_cooldown_minutes: int = Field(
         default=10, alias="LOSS_STREAK_COOLDOWN_MINUTES"
@@ -353,6 +356,8 @@ class Settings(BaseSettings):
             raise ValueError("MIN_MOMENTUM_PCT must be between 0 and 0.05")
         if not Decimal("0") <= self.min_vwap_edge_pct < Decimal("0.05"):
             raise ValueError("MIN_VWAP_EDGE_PCT must be between 0 and 0.05")
+        if not 1 <= self.signal_persistence_bars <= 5:
+            raise ValueError("SIGNAL_PERSISTENCE_BARS must be between 1 and 5")
         if self.lookback_days < 1:
             raise ValueError("LOOKBACK_DAYS must be positive")
         if not 1 <= self.opening_range_minutes <= 30:
