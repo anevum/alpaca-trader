@@ -401,6 +401,7 @@ class FakeLedger:
         exit_reason,
         correlation_id,
         intended_at,
+        exit_metadata=None,
     ):
         if self.fail_exits:
             raise RuntimeError("persistence unavailable")
