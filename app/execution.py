@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .alpaca_client import AlpacaClient
 from .config import Settings
 from .market_data import MarketDataClient
+from .persistence import TradingEventSink
 from .risk import validate_buy, validate_sell_to_flat
 from .state import RuntimeState
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
@@ -26,12 +27,14 @@ class ExecutionEngine:
         market_data: MarketDataClient,
         strategy: OpeningRangeVwapStrategy | RollingMomentumVwapStrategy,
         state: RuntimeState,
+        ledger: TradingEventSink | None = None,
     ):
         self.settings = settings
         self.client = client
         self.market_data = market_data
         self.strategy = strategy
         self.state = state
+        self.ledger = ledger
 
     @staticmethod
     def _position_for_symbol(
@@ -415,11 +418,31 @@ class ExecutionEngine:
                 "reason": risk.reason,
             }
 
+        client_order_id = self._client_order_id(symbol, action_tag)
+        exit_refs: dict[str, str] | None = None
+        if self.ledger is not None:
+            exit_refs = self.ledger.persist_exit_intent(
+                symbol=symbol,
+                qty=str(position.get("qty")),
+                client_order_id=client_order_id,
+                exit_reason=exit_reason,
+                correlation_id=self.state.current_correlation_id,
+                intended_at=datetime.now(NY),
+            )
+
         order = await self.client.submit_market_sell(
             symbol=symbol,
             qty=str(position.get("qty")),
-            client_order_id=self._client_order_id(symbol, action_tag),
+            client_order_id=client_order_id,
         )
+        if self.ledger is not None:
+            self.ledger.record_broker_order(
+                order,
+                intent_id=(exit_refs or {}).get("intent_id"),
+                exit_id=(exit_refs or {}).get("exit_id"),
+                exit_reason=exit_reason,
+                correlation_id=self.state.current_correlation_id,
+            )
         order_payload = {
             "id": order.get("id"),
             "client_order_id": order.get("client_order_id"),
@@ -874,21 +897,62 @@ class ExecutionEngine:
                 "skipped": skipped,
             }
 
+        prepared: list[tuple[Signal, Decimal, str, dict[str, str] | None]] = []
+        errors: list[dict[str, str]] = []
+        for signal, qty in planned:
+            client_order_id = self._client_order_id(signal.symbol, "buy")
+            ledger_refs: dict[str, str] | None = None
+            if self.ledger is not None:
+                ledger_refs = await self.ledger.persist_entry_intent(
+                    signal=signal,
+                    qty=str(qty),
+                    client_order_id=client_order_id,
+                    correlation_id=self.state.current_correlation_id,
+                    intended_at=now,
+                )
+                if ledger_refs is None:
+                    errors.append(
+                        {
+                            "symbol": signal.symbol.upper(),
+                            "reason": "durable entry intent persistence unavailable",
+                        }
+                    )
+                    self.state.record_event(
+                        kind="persistence",
+                        symbol=signal.symbol.upper(),
+                        action="blocked",
+                        message="entry blocked because durable intent was not acknowledged",
+                        at=now,
+                    )
+                    continue
+            prepared.append((signal, qty, client_order_id, ledger_refs))
+
+        if not prepared:
+            self.state.last_decision = "all planned entries blocked before broker submission"
+            return {
+                "action": "blocked",
+                "reason": self.state.last_decision,
+                "errors": errors,
+                "skipped": skipped,
+            }
+
         order_results = await asyncio.gather(
             *[
                 self.client.submit_market_buy(
                     symbol=signal.symbol,
                     qty=str(qty),
-                    client_order_id=self._client_order_id(signal.symbol, "buy"),
+                    client_order_id=client_order_id,
                 )
-                for signal, qty in planned
+                for signal, qty, client_order_id, _ledger_refs in prepared
             ],
             return_exceptions=True,
         )
 
         submitted_orders: list[dict[str, Any]] = []
-        errors: list[dict[str, str]] = []
-        for (signal, _qty), result in zip(planned, order_results):
+        for (signal, _qty, _client_order_id, ledger_refs), result in zip(
+            prepared,
+            order_results,
+        ):
             symbol = signal.symbol.upper()
             if isinstance(result, Exception):
                 errors.append(
@@ -921,6 +985,13 @@ class ExecutionEngine:
                 "exit_management": "bot",
             }
             submitted_orders.append(order_payload)
+            if self.ledger is not None:
+                self.ledger.record_broker_order(
+                    result,
+                    intent_id=(ledger_refs or {}).get("intent_id"),
+                    position_id=(ledger_refs or {}).get("position_id"),
+                    correlation_id=self.state.current_correlation_id,
+                )
             self.state.last_order = order_payload
             self.state.record_event(
                 kind="execution",
