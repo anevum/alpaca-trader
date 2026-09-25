@@ -289,6 +289,12 @@ class Settings(BaseSettings):
         return hashlib.sha256(source).hexdigest()[:8]
 
     @property
+    def persistence_environment(self) -> str:
+        if self.scan_only:
+            return "shadow"
+        return self.trading_mode
+
+    @property
     def paper_execution_authorized(self) -> bool:
         return self.trading_mode == "paper" and self.execution_enabled and self.bot_armed
 
@@ -329,6 +335,14 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "TRADING_RUN_STARTED_AT must be an ISO-8601 timestamp with timezone"
                 ) from exc
+            if (
+                self.trading_mode == "live"
+                and not self.scan_only
+                and not self.strategy_version_id.upper().startswith("LIVE-")
+            ):
+                raise ValueError(
+                    "live execution runtime requires STRATEGY_VERSION_ID prefixed LIVE-"
+                )
         if self.bar_timeframe != "1Min":
             raise ValueError("BAR_TIMEFRAME must be 1Min for the opening-range strategy")
         if self.lookback_bars < 50:
