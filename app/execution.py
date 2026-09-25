@@ -1263,6 +1263,13 @@ class ExecutionEngine:
                 bars=health_bars.get(symbol, []),
                 entry_time=entry_time,
             )
+            if self.ledger is not None:
+                self.ledger.record_position_metrics(
+                    symbol=symbol,
+                    exit_state=exit_state,
+                    correlation_id=self.state.current_correlation_id,
+                    observed_at=now,
+                )
             if (
                 exit_state.get("profit_protection_active")
                 and not exit_state.get("profit_activation_emitted")
