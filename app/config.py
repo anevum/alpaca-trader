@@ -41,6 +41,11 @@ class Settings(BaseSettings):
 
     admin_token: str = Field(default="", alias="ADMIN_TOKEN")
 
+    trading_ingest_url: str = Field(default="", alias="TRADING_INGEST_URL")
+    trading_ingest_token: str = Field(default="", alias="TRADING_INGEST_TOKEN")
+    trading_run_id: str = Field(default="", alias="TRADING_RUN_ID")
+    strategy_version_id: str = Field(default="", alias="STRATEGY_VERSION_ID")
+
     min_ready_cash: Decimal = Field(default=Decimal("10.00"), alias="MIN_READY_CASH")
     max_order_notional: Decimal = Field(default=Decimal("80.35"), alias="MAX_ORDER_NOTIONAL")
     max_position_notional: Decimal = Field(default=Decimal("80.35"), alias="MAX_POSITION_NOTIONAL")
@@ -132,6 +137,15 @@ class Settings(BaseSettings):
     @property
     def credentials_configured(self) -> bool:
         return bool(self.alpaca_api_key and self.alpaca_api_secret)
+
+    @property
+    def persistence_configured(self) -> bool:
+        return bool(
+            self.trading_ingest_url
+            and self.trading_ingest_token
+            and self.trading_run_id
+            and self.strategy_version_id
+        )
 
     @property
     def paper_execution_authorized(self) -> bool:
