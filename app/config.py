@@ -71,6 +71,14 @@ class Settings(BaseSettings):
         default=Decimal("1.00"), alias="MIN_ORDER_NOTIONAL"
     )
 
+    portfolio_limit_mode: str = Field(default="count", alias="PORTFOLIO_LIMIT_MODE")
+    max_position_gross_pct: Decimal = Field(
+        default=Decimal("0.25"), alias="MAX_POSITION_GROSS_PCT"
+    )
+    max_portfolio_stop_risk_pct: Decimal = Field(
+        default=Decimal("0.01"), alias="MAX_PORTFOLIO_STOP_RISK_PCT"
+    )
+
     allowed_symbols_raw: str = Field(default="SPY", alias="ALLOWED_SYMBOLS")
     scan_symbols_raw: str = Field(default="", alias="SCAN_SYMBOLS")
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
@@ -104,6 +112,7 @@ class Settings(BaseSettings):
     data_feed: str = Field(default="iex", alias="DATA_FEED")
     poll_seconds: int = Field(default=15, alias="POLL_SECONDS")
     max_bar_age_seconds: int = Field(default=90, alias="MAX_BAR_AGE_SECONDS")
+    market_data_batch_size: int = Field(default=25, alias="MARKET_DATA_BATCH_SIZE")
     max_spread_pct: Decimal = Field(default=Decimal("0.002"), alias="MAX_SPREAD_PCT")
     min_quality_score: Decimal = Field(default=Decimal("0"), alias="MIN_QUALITY_SCORE")
 
@@ -261,12 +270,22 @@ class Settings(BaseSettings):
             raise ValueError("MAX_DAILY_ORDERS cannot be negative")
         if self.max_daily_loss <= 0:
             raise ValueError("MAX_DAILY_LOSS must be positive")
-        if not 1 <= self.max_concurrent_positions <= 10:
-            raise ValueError("MAX_CONCURRENT_POSITIONS must be between 1 and 10")
-        if not 1 <= self.max_new_entries_per_cycle <= self.max_concurrent_positions:
-            raise ValueError(
-                "MAX_NEW_ENTRIES_PER_CYCLE must be between 1 and MAX_CONCURRENT_POSITIONS"
-            )
+        if self.portfolio_limit_mode not in {"count", "risk"}:
+            raise ValueError("PORTFOLIO_LIMIT_MODE must be count or risk")
+        if self.portfolio_limit_mode == "count":
+            if not 1 <= self.max_concurrent_positions <= 100:
+                raise ValueError("MAX_CONCURRENT_POSITIONS must be between 1 and 100")
+            if not 1 <= self.max_new_entries_per_cycle <= self.max_concurrent_positions:
+                raise ValueError(
+                    "MAX_NEW_ENTRIES_PER_CYCLE must be between 1 and MAX_CONCURRENT_POSITIONS"
+                )
+        else:
+            if self.max_concurrent_positions < 0:
+                raise ValueError("MAX_CONCURRENT_POSITIONS cannot be negative")
+            if self.max_new_entries_per_cycle < 0:
+                raise ValueError("MAX_NEW_ENTRIES_PER_CYCLE cannot be negative")
+            if self.sizing_mode != "equity_risk":
+                raise ValueError("PORTFOLIO_LIMIT_MODE=risk requires SIZING_MODE=equity_risk")
         if self.max_total_position_notional < self.order_notional:
             raise ValueError(
                 "MAX_TOTAL_POSITION_NOTIONAL cannot be below ORDER_NOTIONAL"
@@ -281,8 +300,14 @@ class Settings(BaseSettings):
             raise ValueError("MIN_ORDER_NOTIONAL must be positive")
         if self.min_order_notional > self.max_order_notional:
             raise ValueError("MIN_ORDER_NOTIONAL cannot exceed MAX_ORDER_NOTIONAL")
+        if not Decimal("0") < self.max_position_gross_pct <= Decimal("1"):
+            raise ValueError("MAX_POSITION_GROSS_PCT must be between 0 and 1")
+        if not Decimal("0") < self.max_portfolio_stop_risk_pct <= Decimal("0.10"):
+            raise ValueError("MAX_PORTFOLIO_STOP_RISK_PCT must be between 0 and 0.10")
         if not 30 <= self.max_bar_age_seconds <= 600:
             raise ValueError("MAX_BAR_AGE_SECONDS must be between 30 and 600")
+        if not 1 <= self.market_data_batch_size <= 100:
+            raise ValueError("MARKET_DATA_BATCH_SIZE must be between 1 and 100")
         if not Decimal("0") < self.max_spread_pct < Decimal("0.05"):
             raise ValueError("MAX_SPREAD_PCT must be between 0 and 0.05")
         if not Decimal("0") <= self.min_quality_score <= Decimal("100"):
@@ -297,8 +322,6 @@ class Settings(BaseSettings):
             )
         if not self.scan_symbols:
             raise ValueError("SCAN_SYMBOLS/STRATEGY_SYMBOL cannot both be empty")
-        if len(self.scan_symbols) > 30:
-            raise ValueError("SCAN_SYMBOLS supports at most 30 symbols")
         missing = [symbol for symbol in self.scan_symbols if symbol not in self.allowed_symbols]
         if missing:
             raise ValueError(

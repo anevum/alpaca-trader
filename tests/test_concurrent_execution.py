@@ -754,3 +754,38 @@ def test_quality_gate_rejects_subthreshold_signal_before_execution():
     ]
     assert quality_holds
     assert all(payload["metadata"]["quality_score"] < 100 for payload in quality_holds)
+
+
+def test_portfolio_risk_mode_submits_without_fixed_count_caps():
+    client = FakeClient()
+    engine = ExecutionEngine(
+        settings(
+            SIZING_MODE="equity_risk",
+            PORTFOLIO_LIMIT_MODE="risk",
+            MAX_CONCURRENT_POSITIONS="0",
+            MAX_NEW_ENTRIES_PER_CYCLE="0",
+            MAX_DAILY_ORDERS="0",
+            RISK_PER_TRADE_PCT="0.001",
+            MAX_GROSS_EXPOSURE_PCT="0.80",
+            MAX_POSITION_GROSS_PCT="0.25",
+            MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+            MIN_ORDER_NOTIONAL="1",
+            MAX_ORDER_NOTIONAL="80.35",
+            MAX_POSITION_NOTIONAL="80.35",
+            MAX_TOTAL_POSITION_NOTIONAL="250",
+        ),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "submitted"
+    assert len(client.buy_orders) == 2
+    notionals = [
+        (Decimal(order["qty"]) * Decimal("100")).quantize(Decimal("0.01"))
+        for order in client.buy_orders
+    ]
+    assert notionals == [Decimal("25.00"), Decimal("25.00")]

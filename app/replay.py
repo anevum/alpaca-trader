@@ -153,7 +153,11 @@ class ReplayEngine:
             for item in position_payloads
         ):
             return False, "position is already open"
-        if len([item for item in position_payloads if d(item.get("qty")) > 0]) >= self.settings.max_concurrent_positions:
+        if (
+            self.settings.portfolio_limit_mode == "count"
+            and len([item for item in position_payloads if d(item.get("qty")) > 0])
+            >= self.settings.max_concurrent_positions
+        ):
             return False, "maximum concurrent-position limit reached"
         if notional <= 0:
             return False, "order notional must be positive"
@@ -172,7 +176,10 @@ class ReplayEngine:
             gross_limit = effective_gross_limit(self.settings, account)
             if gross_limit <= 0 or current_exposure + notional > gross_limit:
                 return False, "order exceeds MAX_GROSS_EXPOSURE_PCT"
-        if entry_orders_today >= self.settings.max_daily_orders:
+        if (
+            self.settings.portfolio_limit_mode == "count"
+            and entry_orders_today >= self.settings.max_daily_orders
+        ):
             return False, "daily entry-order limit reached"
         if d(account.get("cash")) < notional:
             return False, "insufficient cash"
@@ -462,7 +469,10 @@ class ReplayEngine:
                     continue
                 if not (self.settings.entry_start <= now.time() <= self.settings.entry_cutoff):
                     continue
-                if entries_today >= self.settings.max_daily_orders:
+                if (
+                    self.settings.portfolio_limit_mode == "count"
+                    and entries_today >= self.settings.max_daily_orders
+                ):
                     continue
 
                 buy_signals: list[Signal] = []
@@ -511,9 +521,15 @@ class ReplayEngine:
                 )
                 planned = 0
                 for signal in ranked:
-                    if planned >= self.settings.max_new_entries_per_cycle:
+                    if (
+                        self.settings.portfolio_limit_mode == "count"
+                        and planned >= self.settings.max_new_entries_per_cycle
+                    ):
                         break
-                    if len(positions) >= self.settings.max_concurrent_positions:
+                    if (
+                        self.settings.portfolio_limit_mode == "count"
+                        and len(positions) >= self.settings.max_concurrent_positions
+                    ):
                         break
 
                     symbol = signal.symbol.upper()

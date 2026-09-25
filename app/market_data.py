@@ -16,6 +16,16 @@ class MarketDataClient:
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    def _batches(self, symbols: list[str]) -> list[list[str]]:
+        normalized = list(
+            dict.fromkeys(s.strip().upper() for s in symbols if s.strip())
+        )
+        size = self.settings.market_data_batch_size
+        return [
+            normalized[index:index + size]
+            for index in range(0, len(normalized), size)
+        ]
+
     @property
     def headers(self) -> dict[str, str]:
         return {
@@ -30,47 +40,48 @@ class MarketDataClient:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
 
-        normalized = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
-        if not normalized:
+        batches = self._batches(symbols)
+        if not batches:
             return {}
 
         now_ny = datetime.now(NY)
         session_start_ny = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
         start = session_start_ny.astimezone(timezone.utc)
         end = datetime.now(timezone.utc)
-
-        params = {
-            "symbols": ",".join(normalized),
-            "timeframe": self.settings.bar_timeframe,
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-            "limit": 10000,
-            "sort": "asc",
-            "feed": self.settings.data_feed,
+        output: dict[str, list[dict[str, Any]]] = {
+            symbol: [] for batch in batches for symbol in batch
         }
 
-        output: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in normalized}
-        page_token: str | None = None
-
         async with httpx.AsyncClient(timeout=20.0) as client:
-            for _ in range(5):
-                request_params = dict(params)
-                if page_token:
-                    request_params["page_token"] = page_token
-                response = await client.get(
-                    f"{self.settings.data_base_url}/v2/stocks/bars",
-                    headers=self.headers,
-                    params=request_params,
-                )
-                response.raise_for_status()
-                data = response.json()
-                for symbol, bars in (data.get("bars") or {}).items():
-                    output.setdefault(symbol.upper(), []).extend(bars or [])
-                page_token = data.get("next_page_token")
-                if not page_token:
-                    break
-            else:
-                raise RuntimeError("market-data pagination exceeded safety limit")
+            for batch in batches:
+                params = {
+                    "symbols": ",".join(batch),
+                    "timeframe": self.settings.bar_timeframe,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "limit": 10000,
+                    "sort": "asc",
+                    "feed": self.settings.data_feed,
+                }
+                page_token: str | None = None
+                for _ in range(5):
+                    request_params = dict(params)
+                    if page_token:
+                        request_params["page_token"] = page_token
+                    response = await client.get(
+                        f"{self.settings.data_base_url}/v2/stocks/bars",
+                        headers=self.headers,
+                        params=request_params,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    for symbol, bars in (data.get("bars") or {}).items():
+                        output.setdefault(symbol.upper(), []).extend(bars or [])
+                    page_token = data.get("next_page_token")
+                    if not page_token:
+                        break
+                else:
+                    raise RuntimeError("market-data pagination exceeded safety limit")
 
         return output
 
@@ -88,43 +99,48 @@ class MarketDataClient:
         if end <= start:
             raise ValueError("historical bar end must be after start")
 
-        normalized = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
-        if not normalized:
+        batches = self._batches(symbols)
+        if not batches:
             return {}
 
-        params = {
-            "symbols": ",".join(normalized),
-            "timeframe": self.settings.bar_timeframe,
-            "start": start.astimezone(timezone.utc).isoformat(),
-            "end": end.astimezone(timezone.utc).isoformat(),
-            "limit": 10000,
-            "sort": "asc",
-            "feed": self.settings.data_feed,
+        output: dict[str, list[dict[str, Any]]] = {
+            symbol: [] for batch in batches for symbol in batch
         }
-        output: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in normalized}
-        page_token: str | None = None
-
         async with httpx.AsyncClient(timeout=30.0) as client:
-            for _ in range(50):
-                request_params = dict(params)
-                if page_token:
-                    request_params["page_token"] = page_token
-                response = await client.get(
-                    f"{self.settings.data_base_url}/v2/stocks/bars",
-                    headers=self.headers,
-                    params=request_params,
-                )
-                response.raise_for_status()
-                data = response.json()
-                for symbol, bars in (data.get("bars") or {}).items():
-                    output.setdefault(symbol.upper(), []).extend(bars or [])
-                page_token = data.get("next_page_token")
-                if not page_token:
-                    break
-            else:
-                raise RuntimeError("historical replay pagination exceeded safety limit")
+            for batch in batches:
+                params = {
+                    "symbols": ",".join(batch),
+                    "timeframe": self.settings.bar_timeframe,
+                    "start": start.astimezone(timezone.utc).isoformat(),
+                    "end": end.astimezone(timezone.utc).isoformat(),
+                    "limit": 10000,
+                    "sort": "asc",
+                    "feed": self.settings.data_feed,
+                }
+                page_token: str | None = None
+                for _ in range(50):
+                    request_params = dict(params)
+                    if page_token:
+                        request_params["page_token"] = page_token
+                    response = await client.get(
+                        f"{self.settings.data_base_url}/v2/stocks/bars",
+                        headers=self.headers,
+                        params=request_params,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    for symbol, bars in (data.get("bars") or {}).items():
+                        output.setdefault(symbol.upper(), []).extend(bars or [])
+                    page_token = data.get("next_page_token")
+                    if not page_token:
+                        break
+                else:
+                    raise RuntimeError(
+                        "historical replay pagination exceeded safety limit"
+                    )
 
         return output
+
 
     async def latest_quotes_many(
         self,
@@ -133,25 +149,25 @@ class MarketDataClient:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
 
-        normalized = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
-        if not normalized:
+        batches = self._batches(symbols)
+        if not batches:
             return {}
 
-        params = {
-            "symbols": ",".join(normalized),
-            "feed": self.settings.data_feed,
+        output: dict[str, dict[str, Any]] = {
+            symbol: {} for batch in batches for symbol in batch
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{self.settings.data_base_url}/v2/stocks/quotes/latest",
-                headers=self.headers,
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        quotes = data.get("quotes") or {}
-        return {
-            symbol: quotes.get(symbol, {})
-            for symbol in normalized
-        }
+            for batch in batches:
+                response = await client.get(
+                    f"{self.settings.data_base_url}/v2/stocks/quotes/latest",
+                    headers=self.headers,
+                    params={
+                        "symbols": ",".join(batch),
+                        "feed": self.settings.data_feed,
+                    },
+                )
+                response.raise_for_status()
+                quotes = (response.json().get("quotes") or {})
+                for symbol in batch:
+                    output[symbol] = quotes.get(symbol, {})
+        return output

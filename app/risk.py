@@ -5,7 +5,12 @@ from decimal import Decimal
 from typing import Any
 
 from .config import Settings
-from .sizing import effective_gross_limit
+from .sizing import (
+    effective_gross_limit,
+    effective_position_limit,
+    effective_portfolio_stop_risk_limit,
+    portfolio_stop_risk,
+)
 
 
 @dataclass
@@ -68,7 +73,10 @@ def validate_buy(
         position for position in positions
         if d(position.get("qty")) > 0
     ]
-    if len(long_positions) >= settings.max_concurrent_positions:
+    if (
+        settings.portfolio_limit_mode == "count"
+        and len(long_positions) >= settings.max_concurrent_positions
+    ):
         return RiskDecision(False, "maximum concurrent-position limit reached")
     if notional <= 0:
         return RiskDecision(False, "order notional must be positive")
@@ -91,7 +99,18 @@ def validate_buy(
         if current_exposure + notional > gross_limit:
             return RiskDecision(False, "order exceeds MAX_GROSS_EXPOSURE_PCT")
 
-    if entry_orders_today >= settings.max_daily_orders:
+    if settings.portfolio_limit_mode == "risk":
+        position_limit = effective_position_limit(settings, account)
+        if position_limit <= 0 or notional > position_limit:
+            return RiskDecision(False, "order exceeds MAX_POSITION_GROSS_PCT")
+        risk_limit = effective_portfolio_stop_risk_limit(settings, account)
+        projected_stop_risk = (
+            portfolio_stop_risk(settings, long_positions)
+            + (notional * settings.stop_pct)
+        )
+        if risk_limit <= 0 or projected_stop_risk > risk_limit:
+            return RiskDecision(False, "order exceeds MAX_PORTFOLIO_STOP_RISK_PCT")
+    elif entry_orders_today >= settings.max_daily_orders:
         return RiskDecision(False, "daily entry-order limit reached")
 
     cash = d(account.get("cash"))

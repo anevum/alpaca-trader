@@ -151,3 +151,61 @@ def test_total_position_notional_caps_concurrent_entries():
     )
     assert not result.allowed
     assert "MAX_TOTAL_POSITION_NOTIONAL" in result.reason
+
+
+def test_risk_mode_zero_count_caps_do_not_block_entry():
+    s = settings(
+        SIZING_MODE="equity_risk",
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_ORDER_NOTIONAL="100",
+        MAX_POSITION_NOTIONAL="100",
+        MAX_TOTAL_POSITION_NOTIONAL="100",
+        MAX_GROSS_EXPOSURE_PCT="0.80",
+        MAX_POSITION_GROSS_PCT="0.25",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+        STOP_PCT="0.0035",
+    )
+    result = validate_buy(
+        s,
+        "QQQ",
+        Decimal("20"),
+        {"cash": "100", "equity": "100", "last_equity": "100"},
+        [
+            {"symbol": "SPY", "qty": "0.05", "market_value": "5"},
+            {"symbol": "AAPL", "qty": "0.05", "market_value": "5"},
+            {"symbol": "MSFT", "qty": "0.05", "market_value": "5"},
+            {"symbol": "NVDA", "qty": "0.05", "market_value": "5"},
+        ],
+        999,
+    )
+    assert result.allowed
+
+
+def test_risk_mode_blocks_projected_portfolio_stop_risk():
+    s = settings(
+        SIZING_MODE="equity_risk",
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_ORDER_NOTIONAL="100",
+        MAX_POSITION_NOTIONAL="100",
+        MAX_TOTAL_POSITION_NOTIONAL="100",
+        MAX_GROSS_EXPOSURE_PCT="1",
+        MAX_POSITION_GROSS_PCT="1",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.002",
+        STOP_PCT="0.01",
+    )
+    result = validate_buy(
+        s,
+        "QQQ",
+        Decimal("5"),
+        {"cash": "100", "equity": "100", "last_equity": "100"},
+        [{"symbol": "SPY", "qty": "1", "market_value": "18"}],
+        0,
+    )
+    assert not result.allowed
+    assert "MAX_PORTFOLIO_STOP_RISK_PCT" in result.reason
