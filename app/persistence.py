@@ -46,6 +46,11 @@ class TradingEventSink:
             "last_error": self.last_error,
             "run_id": self.settings.trading_run_id or None,
             "strategy_version_id": self.settings.strategy_version_id or None,
+            "run_started_at": (
+                self.settings.trading_run_started_at.isoformat()
+                if self.settings.trading_run_started_at
+                else None
+            ),
         }
 
     async def start(self) -> None:
@@ -312,10 +317,26 @@ class TradingEventSink:
         observed_utc = observed_at.astimezone(timezone.utc)
         self.last_reconcile_at = observed_utc
 
+        run_started_at = self.settings.trading_run_started_at
+
+        def at_or_after_run_start(raw: Any) -> bool:
+            if run_started_at is None:
+                return True
+            if not raw:
+                return False
+            try:
+                stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if stamp.tzinfo is None:
+                return False
+            return stamp.astimezone(timezone.utc) >= run_started_at
+
         bot_orders = [
             order
             for order in orders
             if str(order.get("client_order_id") or "").startswith("anevum-")
+            and at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
         for order in bot_orders:
@@ -330,6 +351,10 @@ class TradingEventSink:
             activity_id = str(activity.get("id") or "")
             order_id = str(activity.get("order_id") or "")
             if not activity_id or not order_id or order_id not in bot_order_ids:
+                continue
+            if not at_or_after_run_start(
+                activity.get("transaction_time") or activity.get("date")
+            ):
                 continue
             self.emit(
                 event_type="broker_fill",
