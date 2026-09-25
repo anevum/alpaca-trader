@@ -136,6 +136,36 @@ The simulator reproduces the current strategy gates, quality ranking, correlatio
 
 Replay output includes trade-level results, an equity curve, win rate, profit factor, expectancy per trade, maximum drawdown, per-symbol results, correlation/risk block counts, and the assumptions used. Replay results are research evidence, not a forecast of future returns.\n\nRun it with:\n\n```bash\npython scripts/replay.py --start 2026-09-01 --end 2026-09-18 --initial-equity 100 --spread-bps 5 --slippage-bps 2 --output replay.json\n```\n\nThe CLI imports market-data and strategy modules only. It does not import the broker client or execution engine.
 
+## Strategy tournament
+
+The strategy tournament runs several rolling momentum/VWAP variants over identical historical data and identical friction assumptions. The live production parameters are always included as the control.
+
+Default research slate:
+
+- `production`: current live 3/8 rolling momentum/VWAP configuration.
+- `fast_2_6`: faster response, 10-minute hold, 0.35% stop / 0.45% target.
+- `balanced_4_10`: slower confirmation, 20-minute hold, 0.40% stop / 0.60% target.
+- `selective_3_10`: stronger momentum/VWAP thresholds, 15-minute hold, 0.35% stop / 0.60% target.
+- `slow_5_15`: slow trend filter, 25-minute hold, 0.45% stop / 0.70% target.
+
+Every variant receives the same bars, starting equity, spread assumption, slippage assumption, capital-allocation rules, quality scoring, and correlation filter. The leaderboard records sample size and marks variants below the configured minimum trade count as ineligible for ranking.
+
+Run one or more non-overlapping or regime-specific periods with:
+
+```bash
+python scripts/strategy_lab.py \
+  --period 2026-08-03:2026-08-21 \
+  --period 2026-08-24:2026-09-11 \
+  --initial-equity 100 \
+  --spread-bps 5 \
+  --slippage-bps 2 \
+  --min-trades 20 \
+  --output strategy_lab.json \
+  --csv strategy_leaderboard.csv
+```
+
+The tournament does not modify live configuration. Historical ranking is research evidence only; promotion to live parameters should require out-of-sample and shadow validation.
+
 ## Deployment
 
 The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader`.
