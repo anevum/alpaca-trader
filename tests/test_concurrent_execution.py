@@ -948,7 +948,7 @@ def test_profit_floor_converts_reversal_into_positive_exit():
     engine._exit_state_for_position(
         position("SPY", entry="100", current="100.20")
     )
-    exit_decision = engine._managed_price_exit(
+    exit_decision = engine._stateful_price_exit(
         position("SPY", entry="100", current="100.05")
     )
 
