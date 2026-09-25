@@ -177,6 +177,9 @@ async def command_snapshot() -> dict:
             "scan_only": settings.scan_only,
             "runtime_paused": runtime_state.paused,
             "entries_enabled": runtime_state.entries_enabled,
+            "startup_reconciled": runtime_state.startup_reconciled,
+            "reconciliation_safe": runtime_state.reconciliation_safe,
+            "last_reconciliation": runtime_state.last_reconciliation,
             "funding_ready": runtime_state.funding_ready,
             "last_strategy_at": runtime_state.last_strategy_at,
             "last_decision": runtime_state.last_decision,
@@ -258,32 +261,134 @@ async def refresh_account_state() -> dict:
     return account
 
 
-async def reconcile_broker_state(account: dict | None = None) -> None:
+async def reconcile_broker_state(
+    account: dict | None = None,
+    *,
+    startup: bool = False,
+    force: bool = False,
+) -> dict | None:
     now = datetime.now(NY)
-    if settings.scan_only or not event_sink.should_reconcile(now):
-        return
+    if settings.scan_only:
+        if startup:
+            runtime_state.set_reconciliation(
+                {"safe_to_enter": False, "reason": "scan-only service"},
+                startup=True,
+            )
+        return runtime_state.last_reconciliation
+    if not force and not event_sink.should_reconcile(now):
+        return runtime_state.last_reconciliation
+
     try:
         account = account or await client.account()
-        positions, recent_orders, fills = await asyncio.gather(
+        positions, open_orders, recent_orders, fills = await asyncio.gather(
             client.positions(),
+            client.open_orders(),
             client.recent_orders(limit=100),
             client.fill_activities(date=now.date().isoformat(), limit=100),
         )
-        event_sink.record_reconciliation(
+        result = await event_sink.sync_reconciliation(
             account=account,
             positions=positions,
             orders=recent_orders,
             fills=fills,
+            open_orders=open_orders,
+            managed_symbols=sorted(settings.allowed_symbols),
             correlation_id=runtime_state.current_correlation_id,
             observed_at=now,
         )
+
+        unresolved = list(result.get("unresolved_intents") or [])
+        if unresolved:
+            changed = False
+            for intent in unresolved:
+                client_order_id = str(intent.get("client_order_id") or "")
+                if not client_order_id:
+                    continue
+                recovered = None
+                for attempt in range(3):
+                    recovered = await client.order_by_client_order_id(client_order_id)
+                    if recovered is not None:
+                        break
+                    if attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+
+                if recovered is not None:
+                    ok = await event_sink.persist_recovered_order(
+                        recovered,
+                        correlation_id=runtime_state.current_correlation_id,
+                    )
+                    if not ok:
+                        raise RuntimeError(
+                            f"recovered broker order {client_order_id} could not be persisted"
+                        )
+                    changed = True
+                    continue
+
+                ok = await event_sink.resolve_intent_not_found(
+                    client_order_id=client_order_id,
+                    correlation_id=runtime_state.current_correlation_id,
+                    checked_at=datetime.now(NY),
+                )
+                if not ok:
+                    raise RuntimeError(
+                        f"unresolved intent {client_order_id} could not be cleared"
+                    )
+                changed = True
+
+            if changed:
+                now = datetime.now(NY)
+                account = await client.account()
+                positions, open_orders, recent_orders, fills = await asyncio.gather(
+                    client.positions(),
+                    client.open_orders(),
+                    client.recent_orders(limit=100),
+                    client.fill_activities(date=now.date().isoformat(), limit=100),
+                )
+                result = await event_sink.sync_reconciliation(
+                    account=account,
+                    positions=positions,
+                    orders=recent_orders,
+                    fills=fills,
+                    open_orders=open_orders,
+                    managed_symbols=sorted(settings.allowed_symbols),
+                    correlation_id=runtime_state.current_correlation_id,
+                    observed_at=now,
+                )
+
+        runtime_state.set_reconciliation(result, startup=startup)
+        runtime_state.record_event(
+            kind="reconciliation",
+            action="safe" if runtime_state.reconciliation_safe else "blocked",
+            message=(
+                "broker and canonical ledger reconciled"
+                if runtime_state.reconciliation_safe
+                else "broker/canonical mismatch; new entries blocked"
+            ),
+            payload=result,
+        )
+        return result
     except Exception as exc:
+        runtime_state.reconciliation_safe = False
+        if startup:
+            runtime_state.startup_reconciled = True
         event_sink.last_error = f"reconciliation {type(exc).__name__}: {exc}"
+        runtime_state.last_reconciliation = {
+            "safe_to_enter": False,
+            "error": event_sink.last_error,
+        }
+        runtime_state.record_event(
+            kind="reconciliation",
+            action="error",
+            message="reconciliation failed; new entries blocked",
+            reason=event_sink.last_error,
+            payload=runtime_state.last_reconciliation,
+        )
         print(
             "LEDGER_RECONCILE_ERROR",
             {"error": event_sink.last_error},
             flush=True,
         )
+        return runtime_state.last_reconciliation
 
 
 async def monitor_loop():
@@ -297,6 +402,7 @@ async def monitor_loop():
                     await scanner.scan_once()
                 else:
                     account = await refresh_account_state()
+                    await reconcile_broker_state(account)
                     if (
                         settings.execution_enabled
                         and settings.bot_armed
@@ -313,7 +419,6 @@ async def monitor_loop():
                             },
                             flush=True,
                         )
-                    await reconcile_broker_state(account)
             else:
                 runtime_state.funding_ready = False
                 runtime_state.last_error = "credentials not configured"
@@ -368,6 +473,18 @@ async def lifespan(app: FastAPI):
         flush=True,
     )
     await event_sink.start()
+    if settings.credentials_configured and not settings.scan_only:
+        runtime_state.begin_cycle(uuid4().hex)
+        await reconcile_broker_state(startup=True, force=True)
+    elif settings.scan_only:
+        runtime_state.set_reconciliation(
+            {"safe_to_enter": False, "reason": "scan-only service"},
+            startup=True,
+        )
+    else:
+        runtime_state.startup_reconciled = True
+        runtime_state.reconciliation_safe = False
+
     event_sink.emit(
         event_type="runtime_start",
         correlation_id=uuid4().hex,
@@ -406,6 +523,9 @@ async def health():
         "runtime_paused": runtime_state.paused,
         "credentials_configured": settings.credentials_configured,
         "funding_ready": runtime_state.funding_ready,
+        "startup_reconciled": runtime_state.startup_reconciled,
+        "reconciliation_safe": runtime_state.reconciliation_safe,
+        "last_reconciliation": runtime_state.last_reconciliation,
         "scan_symbol_count": len(settings.scan_symbols),
         "scan_ready_symbols": _ready_symbols(),
         "last_strategy_at": runtime_state.last_strategy_at,
@@ -437,6 +557,9 @@ async def status(authorization: str | None = Header(default=None)):
         "live_execution_authorized": settings.live_execution_authorized,
         "bot_armed": settings.bot_armed,
         "runtime_paused": runtime_state.paused,
+        "startup_reconciled": runtime_state.startup_reconciled,
+        "reconciliation_safe": runtime_state.reconciliation_safe,
+        "last_reconciliation": runtime_state.last_reconciliation,
         "allowed_symbols": sorted(settings.allowed_symbols),
         "strategy": {
             "name": settings.strategy_name,
@@ -586,6 +709,11 @@ async def command_enable_entries(authorization: str | None = Header(default=None
         raise HTTPException(status_code=409, detail="runtime is paused")
     if not settings.execution_authorized:
         raise HTTPException(status_code=409, detail="live/paper execution is not authorized")
+    if not runtime_state.startup_reconciled or not runtime_state.reconciliation_safe:
+        raise HTTPException(
+            status_code=409,
+            detail="broker/canonical reconciliation must be safe before enabling entries",
+        )
     runtime_state.entries_enabled = True
     runtime_state.last_decision = "new entries enabled from COMMAND"
     runtime_state.record_event(
