@@ -15,6 +15,8 @@ The service runs guarded long-only intraday scanners for a configured universe o
 - verify the selected asset is active, tradable and fractionable before submission;
 - enforce allowlisting, maximum entry/position size, an account-wide daily entry limit and daily-loss circuit breaker;
 - size qualified entries from prior-close equity, stop distance, remaining cash, remaining position slots, and an account-level gross-exposure ceiling;
+- score qualified opportunities from momentum, VWAP edge, confirmations, spread, freshness, relative volume, and trend persistence, then rank stronger setups first;
+- reject a lower-ranked candidate when its recent aligned one-minute returns are too positively correlated with an already-open or already-planned position;
 - avoid averaging down and shorting;
 - manage per-position stop, target, time, and end-of-day exits independently; current fractional exits are bot-managed rather than broker-resident bracket legs;
 - expose safe public health state plus protected account, position, order and scanner telemetry.
@@ -88,6 +90,7 @@ New entries are blocked when:
 - the configured concurrent-position limit has been reached;
 - the order exceeds `MAX_ORDER_NOTIONAL`, `MAX_POSITION_NOTIONAL`, or `MAX_TOTAL_POSITION_NOTIONAL`;
 - equity-risk sizing would take gross exposure above `MAX_GROSS_EXPOSURE_PCT` of prior-close equity;
+- enough return observations exist and pairwise correlation with an open/planned position is at or above `MAX_PAIRWISE_CORRELATION`;
 - the candidate bar/confirmation data is stale or its quoted spread exceeds `MAX_SPREAD_PCT`;
 - the account-wide daily ANEVUM entry limit has been reached;
 - cash is insufficient;
