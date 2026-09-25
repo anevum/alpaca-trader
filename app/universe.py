@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import log1p
 from typing import Any
@@ -77,7 +77,9 @@ class DynamicUniverse:
         return list(dict.fromkeys(symbols))
 
     @staticmethod
-    def _daily_metrics(bars: list[dict[str, Any]]) -> tuple[float, float, float] | None:
+    def _daily_metrics(
+        bars: list[dict[str, Any]],
+    ) -> tuple[float, float, float, float] | None:
         if not bars:
             return None
         closes: list[Decimal] = []
@@ -110,8 +112,12 @@ class DynamicUniverse:
             raise RuntimeError("dynamic universe returned no eligible equities")
 
         lookback_days = max(self.settings.universe_daily_lookback * 2 + 3, 10)
-        end = now.astimezone(timezone.utc)
-        start = (now - timedelta(days=lookback_days)).astimezone(timezone.utc)
+        end = datetime.combine(
+            now.date(),
+            time(0, 0),
+            tzinfo=NY,
+        ).astimezone(timezone.utc)
+        start = (end - timedelta(days=lookback_days)).astimezone(timezone.utc)
         daily = await self.market_data.daily_bars_many(
             eligible,
             start=start,
