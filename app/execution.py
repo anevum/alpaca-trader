@@ -417,13 +417,14 @@ class ExecutionEngine:
     def _stateful_price_exit(
         self,
         position: dict[str, Any],
+        exit_state: dict[str, Any] | None = None,
     ) -> tuple[str, str] | None:
         entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
         current_price = Decimal(str(position.get("current_price", "0") or "0"))
         if entry_price <= 0 or current_price <= 0:
             return None
 
-        state = self._exit_state_for_position(position)
+        state = exit_state or self._exit_state_for_position(position)
         risk_stop_pct = Decimal(
             str(state.get("risk_stop_pct") or self.settings.stop_pct)
         )
@@ -625,12 +626,19 @@ class ExecutionEngine:
         position: dict[str, Any],
         open_orders: list[dict[str, Any]],
         now: datetime,
+        *,
+        bars: list[dict[str, Any]] | None = None,
+        entry_time: datetime | None = None,
     ) -> dict[str, Any]:
         symbol = str(position.get("symbol", "")).upper()
         if not self.settings.broker_protective_stop_enabled:
             return {"action": "disabled", "symbol": symbol}
 
-        state = self._exit_state_for_position(position)
+        state = self._exit_state_for_position(
+            position,
+            bars=bars,
+            entry_time=entry_time,
+        )
         desired_stop = Decimal(str(state.get("desired_stop_price") or "0"))
         entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
         current_price = Decimal(str(position.get("current_price", "0") or "0"))
@@ -814,13 +822,27 @@ class ExecutionEngine:
         self,
         managed_positions: list[dict[str, Any]],
         open_orders: list[dict[str, Any]],
+        recent_orders: list[dict[str, Any]],
+        monitoring_bars: dict[str, list[dict[str, Any]]],
         now: datetime,
     ) -> list[dict[str, Any]]:
         if not self.settings.broker_protective_stop_enabled:
             return []
         results = await asyncio.gather(
             *[
-                self._ensure_protective_stop(position, open_orders, now)
+                self._ensure_protective_stop(
+                    position,
+                    open_orders,
+                    now,
+                    bars=monitoring_bars.get(
+                        str(position.get("symbol", "")).upper(),
+                        [],
+                    ),
+                    entry_time=self._latest_bot_buy_today(
+                        recent_orders,
+                        str(position.get("symbol", "")).upper(),
+                    ),
+                )
                 for position in managed_positions
             ],
             return_exceptions=True,
@@ -1154,14 +1176,16 @@ class ExecutionEngine:
         open_orders: list[dict[str, Any]],
         recent_orders: list[dict[str, Any]],
         now: datetime,
+        monitoring_bars: dict[str, list[dict[str, Any]]] | None = None,
     ) -> list[dict[str, Any]]:
         exit_specs: list[tuple[dict[str, Any], str, str, dict[str, Any]]] = []
 
-        health_bars: dict[str, list[dict[str, Any]]] = {}
+        health_bars: dict[str, list[dict[str, Any]]] = monitoring_bars or {}
         if (
             self.settings.thesis_exit_enabled
             and managed_positions
             and isinstance(self.strategy, RollingMomentumVwapStrategy)
+            and not health_bars
         ):
             health_symbols = {
                 str(position.get("symbol", "")).upper()
@@ -1187,7 +1211,12 @@ class ExecutionEngine:
             if self._has_bot_exit_order(open_orders, symbol):
                 continue
 
-            exit_state = self._exit_state_for_position(position)
+            entry_time = self._latest_bot_buy_today(recent_orders, symbol)
+            exit_state = self._exit_state_for_position(
+                position,
+                bars=health_bars.get(symbol, []),
+                entry_time=entry_time,
+            )
             if (
                 exit_state.get("profit_protection_active")
                 and not exit_state.get("profit_activation_emitted")
@@ -1216,7 +1245,7 @@ class ExecutionEngine:
                 )
                 continue
 
-            price_exit = self._stateful_price_exit(position)
+            price_exit = self._stateful_price_exit(position, exit_state)
             if price_exit is not None:
                 action_tag, exit_reason = price_exit
                 exit_specs.append(
@@ -1254,16 +1283,24 @@ class ExecutionEngine:
                     and current_return
                     <= self.settings.thesis_exit_max_return_pct
                 )
+                health_bar_time = str(health.get("bar_time") or "")
+                prior_failure_bar = str(
+                    exit_state.get("last_thesis_failure_bar_time") or ""
+                )
+                counted_new_failure = False
                 if thesis_failure:
-                    exit_state["thesis_failure_count"] = prior_failures + 1
+                    if health_bar_time and health_bar_time != prior_failure_bar:
+                        exit_state["thesis_failure_count"] = prior_failures + 1
+                        exit_state["last_thesis_failure_bar_time"] = health_bar_time
+                        counted_new_failure = True
+                    elif not health_bar_time and prior_failures == 0:
+                        exit_state["thesis_failure_count"] = 1
+                        counted_new_failure = True
                 else:
                     exit_state["thesis_failure_count"] = 0
+                    exit_state.pop("last_thesis_failure_bar_time", None)
 
-                if (
-                    thesis_failure
-                    and int(exit_state["thesis_failure_count"])
-                    != prior_failures
-                ):
+                if thesis_failure and counted_new_failure:
                     self.state.record_event(
                         kind="exit_health",
                         symbol=symbol,
@@ -1297,7 +1334,6 @@ class ExecutionEngine:
                     continue
 
             if self.settings.max_hold_minutes > 0:
-                entry_time = self._latest_bot_buy_today(recent_orders, symbol)
                 if entry_time is not None:
                     held_minutes = (now - entry_time).total_seconds() / 60
                     exit_state["held_minutes"] = held_minutes
@@ -1386,9 +1422,36 @@ class ExecutionEngine:
 
         self._prune_exit_states(positions)
         managed_positions = self._managed_positions(positions, recent_orders)
+
+        exit_monitoring_bars: dict[str, list[dict[str, Any]]] = {}
+        if managed_positions and (
+            self.settings.broker_protective_stop_enabled
+            or self.settings.thesis_exit_enabled
+        ):
+            monitoring_symbols = {
+                str(position.get("symbol", "")).upper()
+                for position in managed_positions
+                if str(position.get("symbol", "")).strip()
+            }
+            monitoring_symbols.update(self.settings.confirmation_symbols)
+            try:
+                exit_monitoring_bars = await self.market_data.bars_many(
+                    sorted(monitoring_symbols)
+                )
+            except Exception as exc:
+                self.state.record_event(
+                    kind="exit_health",
+                    action="warning",
+                    message="exit-monitoring market data unavailable",
+                    reason=f"{type(exc).__name__}: {exc}",
+                    at=now,
+                )
+
         protection_results = await self._ensure_protective_stops(
             managed_positions,
             open_orders,
+            recent_orders,
+            exit_monitoring_bars,
             now,
         )
         if any(
@@ -1403,6 +1466,7 @@ class ExecutionEngine:
             open_orders,
             recent_orders,
             now,
+            monitoring_bars=exit_monitoring_bars,
         )
         if exit_results:
             submitted = sum(
