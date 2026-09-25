@@ -208,6 +208,7 @@ def aggregate_periods(
 def strategy_004_promotion_gate(
     aggregate_rows: list[dict[str, Any]],
     *,
+    candidate_name: str = "strategy_004_followthrough",
     min_trades: int = 30,
     min_profit_factor: Decimal = Decimal("1.25"),
     max_drawdown_pct: Decimal = Decimal("0.05"),
@@ -217,13 +218,13 @@ def strategy_004_promotion_gate(
     candidate = next(
         (
             row for row in aggregate_rows
-            if row.get("variant") == "strategy_004_vwap_edge"
+            if row.get("variant") == candidate_name
         ),
         None,
     )
     if candidate is None:
         return {
-            "candidate": "strategy_004_vwap_edge",
+            "candidate": candidate_name,
             "historical_gate_passed": False,
             "forward_shadow_validated": forward_shadow_validated,
             "scalable_capital_merge_allowed": False,
@@ -275,7 +276,7 @@ def strategy_004_promotion_gate(
         item["passed"] for item in criteria.values()
     )
     return {
-        "candidate": "strategy_004_vwap_edge",
+        "candidate": candidate_name,
         "historical_gate_passed": historical_gate_passed,
         "forward_shadow_validated": forward_shadow_validated,
         "scalable_capital_merge_allowed": (
