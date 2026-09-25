@@ -624,3 +624,34 @@ def test_protective_exit_fails_open_when_persistence_is_unavailable():
     assert result["action"] == "submitted"
     assert [order["symbol"] for order in client.sell_orders] == ["SPY"]
     assert client.buy_orders == []
+
+
+def test_equity_risk_allocator_compounds_and_uses_gross_capacity():
+    client = FakeClient()
+    engine = ExecutionEngine(
+        settings(
+            SIZING_MODE="equity_risk",
+            RISK_PER_TRADE_PCT="0.001",
+            MAX_GROSS_EXPOSURE_PCT="0.80",
+            MIN_ORDER_NOTIONAL="1",
+            MAX_ORDER_NOTIONAL="80.35",
+            MAX_POSITION_NOTIONAL="80.35",
+            MAX_TOTAL_POSITION_NOTIONAL="250",
+            MAX_NEW_ENTRIES_PER_CYCLE="2",
+        ),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "submitted"
+    assert len(client.buy_orders) == 2
+    notionals = [
+        (Decimal(order["qty"]) * Decimal("100")).quantize(Decimal("0.01"))
+        for order in client.buy_orders
+    ]
+    assert notionals == [Decimal("26.66"), Decimal("26.67")]
+    assert sum(notionals) == Decimal("53.33")
