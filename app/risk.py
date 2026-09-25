@@ -6,6 +6,7 @@ from typing import Any
 
 from .config import Settings
 from .sizing import (
+    effective_daily_loss_limit,
     effective_gross_limit,
     effective_position_limit,
     effective_portfolio_stop_risk_limit,
@@ -107,7 +108,10 @@ def validate_buy(
         (abs(d(position.get("market_value"))) for position in long_positions),
         Decimal("0"),
     )
-    if current_exposure + notional > settings.max_total_position_notional:
+    if (
+        settings.max_total_position_notional > 0
+        and current_exposure + notional > settings.max_total_position_notional
+    ):
         return RiskDecision(False, "order exceeds MAX_TOTAL_POSITION_NOTIONAL")
 
     if settings.sizing_mode == "equity_risk":
@@ -142,8 +146,16 @@ def validate_buy(
 
     equity = d(account.get("equity"))
     last_equity = d(account.get("last_equity"))
-    if last_equity > 0 and (last_equity - equity) >= settings.max_daily_loss:
-        return RiskDecision(False, "daily loss circuit breaker is active")
+    daily_loss_limit = effective_daily_loss_limit(settings, account)
+    if (
+        last_equity > 0
+        and daily_loss_limit > 0
+        and (last_equity - equity) >= daily_loss_limit
+    ):
+        return RiskDecision(
+            False,
+            f"daily loss circuit breaker is active ({daily_loss_limit})",
+        )
 
     return RiskDecision(True, "risk checks passed")
 
