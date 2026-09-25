@@ -43,6 +43,41 @@ class TradingEventSink:
             return True
         return f"-{owner_tag}-" in client_order_id
 
+    def managed_symbols_from_snapshot(
+        self,
+        *,
+        orders: list[dict[str, Any]],
+        fills: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+    ) -> list[str]:
+        managed = {
+            str(symbol).upper()
+            for symbol in (getattr(self.settings, "allowed_symbols", set()) or set())
+            if str(symbol).strip()
+        }
+        owned_orders = [
+            order
+            for order in [*orders, *open_orders]
+            if self._owns_broker_order(order)
+        ]
+        owned_order_ids = {
+            str(order.get("id") or "")
+            for order in owned_orders
+            if order.get("id")
+        }
+        for order in owned_orders:
+            symbol = str(order.get("symbol") or "").upper()
+            if symbol:
+                managed.add(symbol)
+        for activity in fills:
+            order_id = str(activity.get("order_id") or "")
+            if order_id not in owned_order_ids:
+                continue
+            symbol = str(activity.get("symbol") or "").upper()
+            if symbol:
+                managed.add(symbol)
+        return sorted(managed)
+
     @staticmethod
     def _is_standing_protective_stop(order: dict[str, Any]) -> bool:
         client_order_id = str(order.get("client_order_id") or "")
