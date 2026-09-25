@@ -65,22 +65,27 @@ def test_signal_rank_uses_vwap_edge_as_tiebreaker():
 
 
 def test_latest_bot_exit_uses_actual_fill_time():
+    today = datetime.now(NY)
+    first_submitted = today.replace(hour=10, minute=0, second=0, microsecond=0)
+    first_filled = first_submitted.replace(second=5)
+    second_submitted = today.replace(hour=11, minute=0, second=0, microsecond=0)
+    second_filled = second_submitted.replace(second=3)
     orders = [
         {
             "side": "sell",
             "client_order_id": "anevum-spy-time-123",
-            "submitted_at": "2026-09-24T14:00:00Z",
-            "filled_at": "2026-09-24T14:00:05Z",
+            "submitted_at": first_submitted.isoformat(),
+            "filled_at": first_filled.isoformat(),
         },
         {
             "side": "sell",
             "client_order_id": "anevum-spy-target-456",
-            "submitted_at": "2026-09-24T15:00:00Z",
-            "filled_at": "2026-09-24T15:00:03Z",
+            "submitted_at": second_submitted.isoformat(),
+            "filled_at": second_filled.isoformat(),
         },
     ]
     latest = ExecutionEngine._latest_bot_exit_today(orders, "SPY")
-    assert latest == datetime(2026, 9, 24, 11, 0, 3, tzinfo=NY)
+    assert latest == second_filled
 
 
 def test_unfilled_sell_does_not_start_reentry_cooldown():
