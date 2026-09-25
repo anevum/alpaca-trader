@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from .config import Settings
+from .sizing import effective_gross_limit
 
 
 @dataclass
@@ -82,6 +83,13 @@ def validate_buy(
     )
     if current_exposure + notional > settings.max_total_position_notional:
         return RiskDecision(False, "order exceeds MAX_TOTAL_POSITION_NOTIONAL")
+
+    if settings.sizing_mode == "equity_risk":
+        gross_limit = effective_gross_limit(settings, account)
+        if gross_limit <= 0:
+            return RiskDecision(False, "equity-based gross-exposure limit is unavailable")
+        if current_exposure + notional > gross_limit:
+            return RiskDecision(False, "order exceeds MAX_GROSS_EXPOSURE_PCT")
 
     if entry_orders_today >= settings.max_daily_orders:
         return RiskDecision(False, "daily entry-order limit reached")
