@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     poll_seconds: int = Field(default=15, alias="POLL_SECONDS")
     max_bar_age_seconds: int = Field(default=90, alias="MAX_BAR_AGE_SECONDS")
     max_spread_pct: Decimal = Field(default=Decimal("0.002"), alias="MAX_SPREAD_PCT")
+    min_quality_score: Decimal = Field(default=Decimal("0"), alias="MIN_QUALITY_SCORE")
 
     max_pairwise_correlation: Decimal = Field(
         default=Decimal("0.85"), alias="MAX_PAIRWISE_CORRELATION"
@@ -284,6 +285,8 @@ class Settings(BaseSettings):
             raise ValueError("MAX_BAR_AGE_SECONDS must be between 30 and 600")
         if not Decimal("0") < self.max_spread_pct < Decimal("0.05"):
             raise ValueError("MAX_SPREAD_PCT must be between 0 and 0.05")
+        if not Decimal("0") <= self.min_quality_score <= Decimal("100"):
+            raise ValueError("MIN_QUALITY_SCORE must be between 0 and 100")
         if not Decimal("0") < self.max_pairwise_correlation <= Decimal("1"):
             raise ValueError("MAX_PAIRWISE_CORRELATION must be between 0 and 1")
         if not 8 <= self.correlation_lookback_bars <= 120:

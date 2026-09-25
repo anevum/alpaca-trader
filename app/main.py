@@ -218,6 +218,7 @@ async def command_snapshot() -> dict:
             "data_feed": settings.data_feed,
             "max_bar_age_seconds": settings.max_bar_age_seconds,
             "max_spread_pct": str(settings.max_spread_pct),
+            "min_quality_score": str(settings.min_quality_score),
             "max_pairwise_correlation": str(settings.max_pairwise_correlation),
             "correlation_lookback_bars": settings.correlation_lookback_bars,
             "correlation_min_observations": settings.correlation_min_observations,
@@ -478,6 +479,7 @@ async def lifespan(app: FastAPI):
             "max_total_position_notional": str(settings.max_total_position_notional),
             "max_bar_age_seconds": settings.max_bar_age_seconds,
             "max_spread_pct": str(settings.max_spread_pct),
+            "min_quality_score": str(settings.min_quality_score),
             "max_pairwise_correlation": str(settings.max_pairwise_correlation),
             "correlation_lookback_bars": settings.correlation_lookback_bars,
             "correlation_min_observations": settings.correlation_min_observations,
@@ -599,6 +601,7 @@ async def status(authorization: str | None = Header(default=None)):
             "order_notional": str(settings.order_notional),
             "max_bar_age_seconds": settings.max_bar_age_seconds,
             "max_spread_pct": str(settings.max_spread_pct),
+            "min_quality_score": str(settings.min_quality_score),
         },
         "risk": {
             "max_order_notional": str(settings.max_order_notional),
