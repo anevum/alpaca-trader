@@ -559,6 +559,224 @@ class ExecutionEngine:
             )
         ]
 
+    async def _ensure_protective_stop(
+        self,
+        position: dict[str, Any],
+        open_orders: list[dict[str, Any]],
+        now: datetime,
+    ) -> dict[str, Any]:
+        symbol = str(position.get("symbol", "")).upper()
+        if not self.settings.broker_protective_stop_enabled:
+            return {"action": "disabled", "symbol": symbol}
+
+        state = self._exit_state_for_position(position)
+        desired_stop = Decimal(str(state.get("desired_stop_price") or "0"))
+        entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
+        if desired_stop <= 0 or entry_price <= 0:
+            return {
+                "action": "hold",
+                "symbol": symbol,
+                "reason": "protective stop price unavailable",
+            }
+
+        pending_id = str(
+            state.get("protective_stop_pending_client_order_id") or ""
+        )
+        if pending_id:
+            try:
+                recovered = await self.client.order_by_client_order_id(pending_id)
+            except Exception:
+                recovered = None
+            if recovered is None:
+                return {
+                    "action": "hold",
+                    "symbol": symbol,
+                    "reason": "protective stop submission remains ambiguous",
+                }
+            state.pop("protective_stop_pending_client_order_id", None)
+            state["broker_stop_order_id"] = str(recovered.get("id") or "")
+            state["broker_stop_price"] = str(recovered.get("stop_price") or "")
+            self.state.record_event(
+                kind="protection",
+                symbol=symbol,
+                action="recovered",
+                message="protective stop recovered by client order ID",
+                at=now,
+                payload={"order": recovered, "exit_state": dict(state)},
+            )
+            return {
+                "action": "recovered",
+                "symbol": symbol,
+                "order": recovered,
+            }
+
+        existing = self._protective_stop_for_symbol(open_orders, symbol)
+        if existing is not None:
+            current_stop = Decimal(str(existing.get("stop_price") or "0"))
+            state["broker_stop_order_id"] = str(existing.get("id") or "")
+            state["broker_stop_price"] = str(current_stop)
+            improvement = (
+                (desired_stop - current_stop) / entry_price
+                if entry_price > 0
+                else Decimal("0")
+            )
+            if (
+                desired_stop > current_stop
+                and improvement >= self.settings.profit_stop_step_pct
+                and existing.get("id")
+            ):
+                try:
+                    replaced = await self.client.replace_stop_order(
+                        str(existing["id"]),
+                        str(desired_stop),
+                    )
+                except Exception as exc:
+                    self.state.record_event(
+                        kind="protection",
+                        symbol=symbol,
+                        action="warning",
+                        message="protective stop ratchet failed; existing stop retained",
+                        reason=f"{type(exc).__name__}: {exc}",
+                        at=now,
+                        payload={"exit_state": dict(state)},
+                    )
+                    return {
+                        "action": "hold",
+                        "symbol": symbol,
+                        "reason": "existing protective stop retained after replace failure",
+                    }
+
+                state["broker_stop_order_id"] = str(replaced.get("id") or "")
+                state["broker_stop_price"] = str(
+                    replaced.get("stop_price") or desired_stop
+                )
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="ratchet",
+                    message=(
+                        f"protective stop raised from {current_stop} "
+                        f"to {desired_stop}"
+                    ),
+                    at=now,
+                    payload={"order": replaced, "exit_state": dict(state)},
+                )
+                return {
+                    "action": "replaced",
+                    "symbol": symbol,
+                    "order": replaced,
+                }
+
+            return {
+                "action": "present",
+                "symbol": symbol,
+                "order": existing,
+            }
+
+        client_order_id = self._client_order_id(symbol, "hardstop")
+        try:
+            order = await self.client.submit_stop_sell(
+                symbol=symbol,
+                qty=str(position.get("qty")),
+                stop_price=str(desired_stop),
+                client_order_id=client_order_id,
+            )
+        except Exception as exc:
+            recovered = None
+            for attempt in range(3):
+                try:
+                    recovered = await self.client.order_by_client_order_id(
+                        client_order_id
+                    )
+                except Exception:
+                    recovered = None
+                if recovered is not None:
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+
+            if recovered is None:
+                state["protective_stop_pending_client_order_id"] = client_order_id
+                self.state.reconciliation_safe = False
+                self.state.last_reconciliation = {
+                    "safe_to_enter": False,
+                    "reason": "ambiguous broker protective stop submission",
+                    "client_order_id": client_order_id,
+                    "symbol": symbol,
+                }
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="warning",
+                    message=(
+                        "protective stop outcome ambiguous; new entries blocked "
+                        "until reconciled"
+                    ),
+                    reason=f"{type(exc).__name__}: {exc}",
+                    at=now,
+                    payload={"exit_state": dict(state)},
+                )
+                return {
+                    "action": "hold",
+                    "symbol": symbol,
+                    "reason": "protective stop outcome ambiguous",
+                }
+            order = recovered
+
+        state["broker_stop_order_id"] = str(order.get("id") or "")
+        state["broker_stop_price"] = str(order.get("stop_price") or desired_stop)
+        self.state.record_event(
+            kind="protection",
+            symbol=symbol,
+            action="stop",
+            message=f"broker protective stop active at {desired_stop}",
+            at=now,
+            payload={"order": order, "exit_state": dict(state)},
+        )
+        return {
+            "action": "submitted",
+            "symbol": symbol,
+            "order": order,
+        }
+
+    async def _ensure_protective_stops(
+        self,
+        managed_positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        if not self.settings.broker_protective_stop_enabled:
+            return []
+        results = await asyncio.gather(
+            *[
+                self._ensure_protective_stop(position, open_orders, now)
+                for position in managed_positions
+            ],
+            return_exceptions=True,
+        )
+        normalized: list[dict[str, Any]] = []
+        for position, result in zip(managed_positions, results):
+            symbol = str(position.get("symbol", "")).upper()
+            if isinstance(result, Exception):
+                normalized.append(
+                    {
+                        "action": "error",
+                        "symbol": symbol,
+                        "reason": f"{type(result).__name__}: {result}",
+                    }
+                )
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="error",
+                    message="protective stop management failed",
+                    reason=f"{type(result).__name__}: {result}",
+                    at=now,
+                )
+            else:
+                normalized.append(result)
+        return normalized
+
     async def _force_flatten(
         self,
         symbol: str,
