@@ -114,7 +114,7 @@ def test_wider_effective_stop_reduces_risk_sized_notional():
         MAX_NEW_ENTRIES_PER_CYCLE="0",
         MAX_DAILY_ORDERS="0",
         MAX_POSITION_GROSS_PCT="1",
-        MAX_PORTFOLIO_STOP_RISK_PCT="1",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.10",
     )
     base = calculate_entry_notional(
         s,
