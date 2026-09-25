@@ -24,6 +24,8 @@ class TradingEventSink:
         self.last_reconcile_at: datetime | None = None
         self.sent_count = 0
         self.dropped_count = 0
+        self.quarantined_count = 0
+        self.last_quarantined_event: dict[str, Any] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -177,6 +179,8 @@ class TradingEventSink:
             "queued": self.queue.qsize(),
             "sent_count": self.sent_count,
             "dropped_count": self.dropped_count,
+            "quarantined_count": self.quarantined_count,
+            "last_quarantined_event": self.last_quarantined_event,
             "last_sent_at": self.last_sent_at.isoformat() if self.last_sent_at else None,
             "last_reconcile_at": (
                 self.last_reconcile_at.isoformat() if self.last_reconcile_at else None
@@ -573,6 +577,7 @@ class TradingEventSink:
         fills: list[dict[str, Any]],
         correlation_id: str | None,
         observed_at: datetime,
+        position_metrics: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         observed_utc = observed_at.astimezone(timezone.utc)
         owned_order_ids = self._owned_order_ids_from_snapshot(orders)
@@ -686,6 +691,7 @@ class TradingEventSink:
                     "drawdown_pct": str(drawdown_pct),
                     "open_positions": len(positions),
                     "positions": positions,
+                    "position_metrics": position_metrics or {},
                 },
             )
         )
@@ -702,6 +708,7 @@ class TradingEventSink:
         managed_symbols: list[str],
         correlation_id: str | None,
         observed_at: datetime,
+        position_metrics: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not self.enabled:
             raise RuntimeError("canonical trading persistence is not configured")
@@ -713,6 +720,7 @@ class TradingEventSink:
             fills=fills,
             correlation_id=correlation_id,
             observed_at=observed_at,
+            position_metrics=position_metrics,
         )
         async with httpx.AsyncClient(timeout=8.0) as http:
             if not await self._send_batch(http, events):
@@ -822,6 +830,86 @@ class TradingEventSink:
         async with httpx.AsyncClient(timeout=8.0) as http:
             return await self._send_batch(http, [event])
 
+    @staticmethod
+    def _critical_ingest_event(event: dict[str, Any]) -> bool:
+        return str(event.get("event_type") or "") in {
+            "order_intent",
+            "broker_order",
+            "broker_fill",
+        }
+
+    @staticmethod
+    def _response_detail(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+            return str(payload)
+        except Exception:
+            return response.text[:500]
+
+    async def _send_chunk(
+        self,
+        http: httpx.AsyncClient,
+        chunk: list[dict[str, Any]],
+    ) -> bool:
+        if not chunk:
+            return True
+
+        try:
+            response = await http.post(
+                self.settings.trading_ingest_url,
+                headers={
+                    "content-type": "application/json",
+                    "x-anevum-ingest-token": self.settings.trading_ingest_token,
+                },
+                json={"events": chunk},
+            )
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return False
+
+        if 200 <= response.status_code < 300:
+            self.sent_count += len(chunk)
+            return True
+
+        detail = self._response_detail(response)
+        if response.status_code != 400:
+            self.last_error = (
+                f"ingest HTTP {response.status_code}: {detail}"
+            )
+            return False
+
+        # A 400 normally means one event in an otherwise valid reconciliation
+        # snapshot was rejected by schema validation. Bisect the batch so valid
+        # records are not repeatedly poisoned by the same malformed event.
+        if len(chunk) > 1:
+            midpoint = len(chunk) // 2
+            left_ok = await self._send_chunk(http, chunk[:midpoint])
+            if not left_ok:
+                return False
+            return await self._send_chunk(http, chunk[midpoint:])
+
+        event = chunk[0]
+        event_type = str(event.get("event_type") or "unknown")
+        event_key = str(event.get("event_key") or "unknown")
+        rejected = {
+            "event_type": event_type,
+            "event_key": event_key,
+            "status_code": response.status_code,
+            "response": detail,
+        }
+        if self._critical_ingest_event(event):
+            self.last_error = (
+                "critical ingest event rejected: "
+                f"{event_type} {event_key}: {detail}"
+            )
+            return False
+
+        # Noncritical telemetry is quarantined so accounting/order integrity can
+        # keep reconciling. The exact rejected event remains visible in status.
+        self.quarantined_count += 1
+        self.last_quarantined_event = rejected
+        return True
+
     async def _send_batch(
         self,
         http: httpx.AsyncClient,
@@ -830,30 +918,14 @@ class TradingEventSink:
         if not events:
             return True
 
-        try:
-            # The trading-ingest Edge Function accepts at most 100 events per
-            # request. Reconciliation can legitimately exceed that once a run
-            # has accumulated enough broker orders and fills, so keep the
-            # transport bounded while preserving idempotent event keys.
-            for start in range(0, len(events), 100):
-                chunk = events[start : start + 100]
-                response = await http.post(
-                    self.settings.trading_ingest_url,
-                    headers={
-                        "content-type": "application/json",
-                        "x-anevum-ingest-token": self.settings.trading_ingest_token,
-                    },
-                    json={"events": chunk},
-                )
-                response.raise_for_status()
-                self.sent_count += len(chunk)
+        # The Edge Function accepts at most 100 events per request.
+        for start in range(0, len(events), 100):
+            if not await self._send_chunk(http, events[start : start + 100]):
+                return False
 
-            self.last_sent_at = datetime.now(timezone.utc)
-            self.last_error = None
-            return True
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return False
+        self.last_sent_at = datetime.now(timezone.utc)
+        self.last_error = None
+        return True
 
     async def _run(self) -> None:
         async with httpx.AsyncClient(timeout=5.0) as http:
