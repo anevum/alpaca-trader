@@ -41,6 +41,7 @@ if settings.strategy_name == "rolling_momentum_vwap":
         regime_min_confirmations=settings.regime_min_confirmations,
         regime_min_return_pct=settings.regime_min_return_pct,
         max_vwap_extension_pct=settings.max_vwap_extension_pct,
+        signal_persistence_bars=settings.signal_persistence_bars,
         volatility_stop_enabled=settings.volatility_stop_enabled,
         volatility_stop_multiplier=settings.volatility_stop_multiplier,
         volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
