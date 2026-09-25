@@ -61,7 +61,7 @@ def test_risk_budget_can_bind_before_gross_capacity():
 
 
 def test_cash_and_hard_caps_still_bind_dynamic_sizing():
-    s = settings(MAX_ORDER_NOTIONAL="12", MAX_POSITION_NOTIONAL="12")
+    s = settings(ORDER_NOTIONAL="12", MAX_ORDER_NOTIONAL="12", MAX_POSITION_NOTIONAL="12")
     assert calculate_entry_notional(s, account(cash="9.50"), []) == Decimal("9.50")
 
 
