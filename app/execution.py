@@ -795,9 +795,18 @@ class ExecutionEngine:
                 "results": exit_results,
             }
 
+        position_symbols = [
+            str(position.get("symbol", "")).upper()
+            for position in positions
+            if str(position.get("symbol", "")).strip()
+        ]
         symbols = list(
             dict.fromkeys(
-                [*self.settings.scan_symbols, *self.settings.confirmation_symbols]
+                [
+                    *self.settings.scan_symbols,
+                    *self.settings.confirmation_symbols,
+                    *position_symbols,
+                ]
             )
         )
         market_bars = await self.market_data.bars_many(symbols)
@@ -962,10 +971,17 @@ class ExecutionEngine:
             for order in open_orders
         }
         entry_count = self._entry_orders_today(recent_orders)
-        cycle_limit = min(
-            self.settings.max_new_entries_per_cycle,
-            self.settings.max_concurrent_positions,
-        )
+        if self.settings.portfolio_limit_mode == "risk":
+            cycle_limit: int | None = (
+                self.settings.max_new_entries_per_cycle
+                if self.settings.max_new_entries_per_cycle > 0
+                else None
+            )
+        else:
+            cycle_limit = min(
+                self.settings.max_new_entries_per_cycle,
+                self.settings.max_concurrent_positions,
+            )
 
         planned: list[tuple[Signal, Decimal]] = []
         skipped: list[dict[str, str]] = []
@@ -974,7 +990,7 @@ class ExecutionEngine:
         simulated_cash = Decimal(str(account.get("cash", "0")))
 
         for signal in ranked:
-            if len(planned) >= cycle_limit:
+            if cycle_limit is not None and len(planned) >= cycle_limit:
                 break
 
             symbol = signal.symbol.upper()
