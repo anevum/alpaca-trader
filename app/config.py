@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     trading_ingest_token: str = Field(default="", alias="TRADING_INGEST_TOKEN")
     trading_run_id: str = Field(default="", alias="TRADING_RUN_ID")
     strategy_version_id: str = Field(default="", alias="STRATEGY_VERSION_ID")
+    ledger_reconcile_seconds: int = Field(default=60, alias="LEDGER_RECONCILE_SECONDS")
 
     min_ready_cash: Decimal = Field(default=Decimal("10.00"), alias="MIN_READY_CASH")
     max_order_notional: Decimal = Field(default=Decimal("80.35"), alias="MAX_ORDER_NOTIONAL")
@@ -175,6 +176,8 @@ class Settings(BaseSettings):
             raise ValueError("DATA_FEED must be iex, sip, or delayed_sip")
         if self.poll_seconds < 15:
             raise ValueError("POLL_SECONDS must be at least 15")
+        if not 30 <= self.ledger_reconcile_seconds <= 300:
+            raise ValueError("LEDGER_RECONCILE_SECONDS must be between 30 and 300")
         if self.bar_timeframe != "1Min":
             raise ValueError("BAR_TIMEFRAME must be 1Min for the opening-range strategy")
         if self.lookback_bars < 50:
