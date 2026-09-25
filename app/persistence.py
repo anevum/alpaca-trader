@@ -433,6 +433,39 @@ class TradingEventSink:
             },
         )
 
+    def record_position_metrics(
+        self,
+        *,
+        symbol: str,
+        exit_state: dict[str, Any],
+        correlation_id: str | None,
+        observed_at: datetime,
+    ) -> None:
+        """Persist minute-bucketed MFE/MAE telemetry for the canonical position."""
+
+        observed_utc = observed_at.astimezone(timezone.utc)
+        bucket = observed_utc.replace(second=0, microsecond=0).isoformat()
+        peak = exit_state.get("peak_return_pct")
+        trough = exit_state.get("trough_return_pct")
+        self.emit(
+            event_type="position_metrics",
+            event_key=(
+                f"{self.settings.trading_run_id}:position-metrics:"
+                f"{symbol.upper()}:{bucket}"
+            ),
+            symbol=symbol.upper(),
+            correlation_id=correlation_id,
+            occurred_at=observed_utc.isoformat(),
+            payload={
+                "max_favorable_excursion": peak,
+                "max_adverse_excursion": trough,
+                "current_return_pct": exit_state.get("current_return_pct"),
+                "entry_price": exit_state.get("entry_price"),
+                "current_price": exit_state.get("current_price"),
+                "entry_client_order_id": exit_state.get("entry_client_order_id"),
+            },
+        )
+
     def should_reconcile(self, now: datetime) -> bool:
         if not self.enabled:
             return False
