@@ -74,6 +74,20 @@ DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
             "max_hold_minutes": 25,
         },
     ),
+    StrategyVariant(
+        name="strategy_004_vwap_edge",
+        description=(
+            "September 25 research candidate: keep the production trend model "
+            "but demand a materially stronger 0.65%-0.80% VWAP edge and at "
+            "least two independent confirmations."
+        ),
+        overrides={
+            "min_vwap_edge_pct": Decimal("0.0065"),
+            "max_vwap_extension_pct": Decimal("0.0080"),
+            "min_confirmations": 2,
+            "min_quality_score": Decimal("80"),
+        },
+    ),
 )
 
 
@@ -90,6 +104,14 @@ def build_strategy(settings: Settings):
             entry_cutoff=settings.entry_cutoff,
             confirmation_symbols=settings.confirmation_symbols,
             min_confirmations=settings.min_confirmations,
+            regime_window=settings.regime_window,
+            regime_min_confirmations=settings.regime_min_confirmations,
+            regime_min_return_pct=settings.regime_min_return_pct,
+            max_vwap_extension_pct=settings.max_vwap_extension_pct,
+            volatility_stop_enabled=settings.volatility_stop_enabled,
+            volatility_stop_multiplier=settings.volatility_stop_multiplier,
+            volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
+            max_dynamic_stop_pct=settings.max_dynamic_stop_pct,
         )
     return OpeningRangeVwapStrategy(
         opening_range_minutes=settings.opening_range_minutes,
@@ -205,6 +227,9 @@ class StrategyTournament:
                         "slow_window": settings.slow_window,
                         "min_momentum_pct": str(settings.min_momentum_pct),
                         "min_vwap_edge_pct": str(settings.min_vwap_edge_pct),
+                        "max_vwap_extension_pct": str(settings.max_vwap_extension_pct),
+                        "min_confirmations": settings.min_confirmations,
+                        "min_quality_score": str(settings.min_quality_score),
                         "stop_pct": str(settings.stop_pct),
                         "target_pct": str(settings.target_pct),
                         "max_hold_minutes": settings.max_hold_minutes,
