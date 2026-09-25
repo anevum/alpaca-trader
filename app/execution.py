@@ -1263,8 +1263,13 @@ class ExecutionEngine:
                 bars=health_bars.get(symbol, []),
                 entry_time=entry_time,
             )
-            if self.ledger is not None:
-                self.ledger.record_position_metrics(
+            record_position_metrics = (
+                getattr(self.ledger, "record_position_metrics", None)
+                if self.ledger is not None
+                else None
+            )
+            if callable(record_position_metrics):
+                record_position_metrics(
                     symbol=symbol,
                     exit_state=exit_state,
                     correlation_id=self.state.current_correlation_id,
