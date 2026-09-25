@@ -191,6 +191,38 @@ class AlpacaClient:
             },
         )
 
+    async def submit_stop_sell(
+        self,
+        symbol: str,
+        qty: str,
+        stop_price: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v2/orders",
+            json={
+                "symbol": symbol,
+                "qty": qty,
+                "side": "sell",
+                "type": "stop",
+                "time_in_force": "day",
+                "stop_price": stop_price,
+                "client_order_id": client_order_id,
+            },
+        )
+
+    async def replace_stop_order(
+        self,
+        order_id: str,
+        stop_price: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "PATCH",
+            f"/v2/orders/{order_id}",
+            json={"stop_price": stop_price},
+        )
+
     async def cancel_order(self, order_id: str) -> None:
         try:
             await self._request("DELETE", f"/v2/orders/{order_id}")
