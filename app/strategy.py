@@ -327,15 +327,10 @@ class OpeningRangeVwapStrategy:
                 metadata=metadata,
             )
 
-        effective_stop_pct, stop_model = self._effective_stop_pct(session)
-        stop_price = self._price(
-            current_close * (Decimal("1") - effective_stop_pct)
-        )
+        stop_price = self._price(current_close * (Decimal("1") - self.stop_pct))
         take_profit_price = self._price(
             current_close * (Decimal("1") + self.target_pct)
         )
-        metadata["effective_stop_pct"] = str(effective_stop_pct)
-        metadata["stop_model"] = stop_model
         metadata["stop_price"] = str(stop_price)
         metadata["take_profit_price"] = str(take_profit_price)
 
@@ -771,10 +766,15 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
                 metadata=metadata,
             )
 
-        stop_price = self._price(current_close * (Decimal("1") - self.stop_pct))
+        effective_stop_pct, stop_model = self._effective_stop_pct(session)
+        stop_price = self._price(
+            current_close * (Decimal("1") - effective_stop_pct)
+        )
         take_profit_price = self._price(
             current_close * (Decimal("1") + self.target_pct)
         )
+        metadata["effective_stop_pct"] = str(effective_stop_pct)
+        metadata["stop_model"] = stop_model
         metadata["stop_price"] = str(stop_price)
         metadata["take_profit_price"] = str(take_profit_price)
 
