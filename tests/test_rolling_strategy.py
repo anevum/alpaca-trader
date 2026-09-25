@@ -257,3 +257,77 @@ def test_position_health_flags_joint_market_and_candidate_failure():
     assert health["regime_ok"] is False
     assert health["candidate_failure_count"] >= 2
     assert health["strong_failure"] is True
+
+
+def test_two_bar_persistence_accepts_continuing_setup():
+    s = RollingMomentumVwapStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("0.0005"),
+        min_vwap_edge_pct=Decimal("0"),
+        stop_pct=Decimal("0.0035"),
+        target_pct=Decimal("0.005"),
+        entry_start=datetime.strptime("09:31", "%H:%M").time(),
+        entry_cutoff=datetime.strptime("15:30", "%H:%M").time(),
+        confirmation_symbols=("QQQ", "SMH"),
+        min_confirmations=1,
+        signal_persistence_bars=2,
+    )
+
+    signal = s.evaluate(
+        bars=rising_bars(100),
+        confirmation_bars={"QQQ": rising_bars(200), "SMH": rising_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+
+    assert signal.action == "buy"
+    assert signal.metadata["signal_persistence_passes"] == 2
+    assert signal.metadata["checks"]["persistence_ok"] is True
+
+
+def test_two_bar_persistence_blocks_single_bar_recovery():
+    candidate = rising_bars(100)
+    candidate[-2]["c"] = "100.75"
+    candidate[-2]["h"] = "100.82"
+    candidate[-2]["l"] = "100.70"
+    candidate[-2]["vw"] = "100.75"
+
+    one_bar = strategy()
+    one_bar_signal = one_bar.evaluate(
+        bars=candidate,
+        confirmation_bars={"QQQ": rising_bars(200), "SMH": rising_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+    assert one_bar_signal.action == "buy"
+
+    two_bar = RollingMomentumVwapStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("0.0005"),
+        min_vwap_edge_pct=Decimal("0"),
+        stop_pct=Decimal("0.0035"),
+        target_pct=Decimal("0.005"),
+        entry_start=datetime.strptime("09:31", "%H:%M").time(),
+        entry_cutoff=datetime.strptime("15:30", "%H:%M").time(),
+        confirmation_symbols=("QQQ", "SMH"),
+        min_confirmations=1,
+        signal_persistence_bars=2,
+    )
+    two_bar_signal = two_bar.evaluate(
+        bars=candidate,
+        confirmation_bars={"QQQ": rising_bars(200), "SMH": rising_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+
+    assert two_bar_signal.action == "hold"
+    assert "did not persist" in two_bar_signal.reason
+    assert two_bar_signal.metadata["signal_persistence_passes"] == 1
