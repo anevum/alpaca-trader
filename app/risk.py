@@ -66,6 +66,7 @@ def validate_buy(
     positions: list[dict[str, Any]],
     entry_orders_today: int,
     entry_symbols: set[str] | None = None,
+    stop_pct_override: Decimal | None = None,
 ) -> RiskDecision:
     blocked = (
         _execution_gate(
@@ -121,9 +122,10 @@ def validate_buy(
         if position_limit <= 0 or notional > position_limit:
             return RiskDecision(False, "order exceeds MAX_POSITION_GROSS_PCT")
         risk_limit = effective_portfolio_stop_risk_limit(settings, account)
+        effective_stop_pct = stop_pct_override or settings.stop_pct
         projected_stop_risk = (
             portfolio_stop_risk(settings, long_positions)
-            + (notional * settings.stop_pct)
+            + (notional * effective_stop_pct)
         )
         if risk_limit <= 0 or projected_stop_risk > risk_limit:
             return RiskDecision(False, "order exceeds MAX_PORTFOLIO_STOP_RISK_PCT")

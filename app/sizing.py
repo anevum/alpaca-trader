@@ -81,18 +81,39 @@ def effective_portfolio_stop_risk_limit(
     return equity * settings.max_portfolio_stop_risk_pct
 
 
+def position_stop_pct(
+    settings: Settings,
+    position: dict[str, Any],
+) -> Decimal:
+    explicit = d(position.get("risk_stop_pct"))
+    if explicit > 0:
+        return explicit
+    if settings.volatility_stop_enabled:
+        return settings.max_dynamic_stop_pct
+    return settings.stop_pct
+
+
 def portfolio_stop_risk(
     settings: Settings,
     positions: list[dict[str, Any]],
 ) -> Decimal:
-    """Conservative nominal risk if every long position reaches the configured stop."""
-    return long_exposure(positions) * settings.stop_pct
+    """Conservative nominal risk if every long position reaches its effective stop."""
+    return sum(
+        (
+            abs(d(position.get("market_value")))
+            * position_stop_pct(settings, position)
+            for position in positions
+            if d(position.get("qty")) > 0
+        ),
+        Decimal("0"),
+    )
 
 
 def calculate_entry_notional(
     settings: Settings,
     account: dict[str, Any],
     positions: list[dict[str, Any]],
+    stop_pct_override: Decimal | None = None,
 ) -> Decimal:
     """Return a bounded entry notional without changing the strategy signal.
 
@@ -113,7 +134,8 @@ def calculate_entry_notional(
         return settings.order_notional
 
     equity = base_equity(account)
-    if equity <= 0 or settings.stop_pct <= 0:
+    effective_stop_pct = stop_pct_override or settings.stop_pct
+    if equity <= 0 or effective_stop_pct <= 0:
         return Decimal("0")
 
     gross_limit = effective_gross_limit(settings, account)
@@ -127,14 +149,14 @@ def calculate_entry_notional(
         return Decimal("0")
 
     risk_budget = equity * settings.risk_per_trade_pct
-    risk_notional = risk_budget / settings.stop_pct
+    risk_notional = risk_budget / effective_stop_pct
 
     if settings.portfolio_limit_mode == "risk":
         position_limit = effective_position_limit(settings, account)
         risk_limit = effective_portfolio_stop_risk_limit(settings, account)
         current_stop_risk = portfolio_stop_risk(settings, positions)
         remaining_stop_risk = max(risk_limit - current_stop_risk, Decimal("0"))
-        remaining_risk_notional = remaining_stop_risk / settings.stop_pct
+        remaining_risk_notional = remaining_stop_risk / effective_stop_pct
 
         notional = min(
             risk_notional,
@@ -168,11 +190,18 @@ def sizing_snapshot(
     settings: Settings,
     account: dict[str, Any],
     positions: list[dict[str, Any]],
+    stop_pct_override: Decimal | None = None,
 ) -> dict[str, str]:
     equity = base_equity(account)
     gross_limit = effective_gross_limit(settings, account)
     exposure = long_exposure(positions)
-    recommended = calculate_entry_notional(settings, account, positions)
+    effective_stop_pct = stop_pct_override or settings.stop_pct
+    recommended = calculate_entry_notional(
+        settings,
+        account,
+        positions,
+        stop_pct_override=effective_stop_pct,
+    )
     return {
         "mode": settings.sizing_mode,
         "portfolio_limit_mode": settings.portfolio_limit_mode,
@@ -180,6 +209,7 @@ def sizing_snapshot(
         "gross_limit": str(gross_limit),
         "current_exposure": str(exposure),
         "risk_per_trade_pct": str(settings.risk_per_trade_pct),
+        "effective_stop_pct": str(effective_stop_pct),
         "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
         "max_position_gross_pct": str(settings.max_position_gross_pct),
         "position_limit": str(effective_position_limit(settings, account)),

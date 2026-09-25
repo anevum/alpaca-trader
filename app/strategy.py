@@ -371,6 +371,10 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         regime_min_confirmations: int = 1,
         regime_min_return_pct: Decimal = Decimal("0"),
         max_vwap_extension_pct: Decimal = Decimal("0.008"),
+        volatility_stop_enabled: bool = False,
+        volatility_stop_multiplier: Decimal = Decimal("2.0"),
+        volatility_stop_lookback_bars: int = 8,
+        max_dynamic_stop_pct: Decimal = Decimal("0.006"),
     ):
         super().__init__(
             opening_range_minutes=1,
@@ -391,6 +395,147 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         self.regime_min_confirmations = regime_min_confirmations
         self.regime_min_return_pct = regime_min_return_pct
         self.max_vwap_extension_pct = max_vwap_extension_pct
+        self.volatility_stop_enabled = volatility_stop_enabled
+        self.volatility_stop_multiplier = volatility_stop_multiplier
+        self.volatility_stop_lookback_bars = volatility_stop_lookback_bars
+        self.max_dynamic_stop_pct = max_dynamic_stop_pct
+
+    def _effective_stop_pct(
+        self,
+        session: list[dict[str, Any]],
+    ) -> tuple[Decimal, dict[str, str]]:
+        if not self.volatility_stop_enabled or not session:
+            return self.stop_pct, {
+                "mode": "fixed",
+                "base_stop_pct": str(self.stop_pct),
+                "effective_stop_pct": str(self.stop_pct),
+            }
+
+        bars = session[-self.volatility_stop_lookback_bars:]
+        true_ranges: list[Decimal] = []
+        previous_close: Decimal | None = None
+        for bar in bars:
+            high = self._d(bar["h"])
+            low = self._d(bar["l"])
+            close = self._d(bar["c"])
+            true_range = high - low
+            if previous_close is not None:
+                true_range = max(
+                    true_range,
+                    abs(high - previous_close),
+                    abs(low - previous_close),
+                )
+            if true_range > 0:
+                true_ranges.append(true_range)
+            previous_close = close
+
+        current_close = self._d(session[-1]["c"])
+        if not true_ranges or current_close <= 0:
+            return self.stop_pct, {
+                "mode": "fixed_fallback",
+                "base_stop_pct": str(self.stop_pct),
+                "effective_stop_pct": str(self.stop_pct),
+            }
+
+        atr = self._mean(true_ranges)
+        atr_pct = atr / current_close
+        volatility_stop_pct = atr_pct * self.volatility_stop_multiplier
+        effective_stop_pct = min(
+            self.max_dynamic_stop_pct,
+            max(self.stop_pct, volatility_stop_pct),
+        )
+        return effective_stop_pct, {
+            "mode": "volatility",
+            "atr": str(atr),
+            "atr_pct": str(atr_pct),
+            "multiplier": str(self.volatility_stop_multiplier),
+            "base_stop_pct": str(self.stop_pct),
+            "max_dynamic_stop_pct": str(self.max_dynamic_stop_pct),
+            "effective_stop_pct": str(effective_stop_pct),
+        }
+
+    def position_health(
+        self,
+        *,
+        bars: list[dict[str, Any]],
+        confirmation_bars: dict[str, list[dict[str, Any]]],
+        symbol: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        now = now.astimezone(NY)
+        session = self._completed_session_bars(bars, now)
+        if len(session) < self.slow_window + 1:
+            return {
+                "data_ready": False,
+                "strong_failure": False,
+                "reason": "not enough completed bars for position health",
+            }
+
+        closes = [self._d(bar["c"]) for bar in session]
+        current_close = closes[-1]
+        fast_average = self._mean(closes[-self.fast_window:])
+        slow_average = self._mean(closes[-self.slow_window:])
+        momentum_anchor = closes[-(self.fast_window + 1)]
+        momentum_pct = (
+            (current_close - momentum_anchor) / momentum_anchor
+            if momentum_anchor > 0
+            else Decimal("0")
+        )
+
+        candidate_checks = {
+            "fast_above_slow": fast_average > slow_average,
+            "above_fast_average": current_close >= fast_average,
+            "positive_momentum": momentum_pct > 0,
+        }
+        candidate_failure_count = sum(
+            1 for ok in candidate_checks.values() if not ok
+        )
+
+        regime_passes = 0
+        regime_details: dict[str, Any] = {}
+        independent_confirmations = 0
+        for confirmation_symbol in self.confirmation_symbols:
+            confirmation_symbol = confirmation_symbol.upper()
+            if confirmation_symbol == symbol.upper():
+                continue
+            independent_confirmations += 1
+            ok, reason, details = self._regime_ok(
+                confirmation_bars.get(confirmation_symbol, []),
+                now,
+            )
+            regime_details[confirmation_symbol] = {
+                "ok": ok,
+                "reason": reason,
+                **details,
+            }
+            if ok:
+                regime_passes += 1
+
+        regime_ok = (
+            independent_confirmations >= self.regime_min_confirmations
+            and regime_passes >= self.regime_min_confirmations
+        )
+        strong_failure = (not regime_ok) and candidate_failure_count >= 2
+        return {
+            "data_ready": True,
+            "bar_time": self._timestamp(session[-1]).isoformat(),
+            "strong_failure": strong_failure,
+            "reason": (
+                "market regime and position momentum both deteriorated"
+                if strong_failure
+                else "position thesis remains viable"
+            ),
+            "current_close": str(current_close),
+            "fast_average": str(fast_average),
+            "slow_average": str(slow_average),
+            "momentum_pct": str(momentum_pct),
+            "candidate_checks": candidate_checks,
+            "candidate_failure_count": candidate_failure_count,
+            "regime_ok": regime_ok,
+            "regime_passes": regime_passes,
+            "regime_min_confirmations": self.regime_min_confirmations,
+            "regime": regime_details,
+        }
 
     def _regime_ok(
         self,
@@ -621,10 +766,15 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
                 metadata=metadata,
             )
 
-        stop_price = self._price(current_close * (Decimal("1") - self.stop_pct))
+        effective_stop_pct, stop_model = self._effective_stop_pct(session)
+        stop_price = self._price(
+            current_close * (Decimal("1") - effective_stop_pct)
+        )
         take_profit_price = self._price(
             current_close * (Decimal("1") + self.target_pct)
         )
+        metadata["effective_stop_pct"] = str(effective_stop_pct)
+        metadata["stop_model"] = stop_model
         metadata["stop_price"] = str(stop_price)
         metadata["take_profit_price"] = str(take_profit_price)
 

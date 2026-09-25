@@ -105,3 +105,30 @@ def test_risk_mode_uses_remaining_gross_capacity_for_last_position():
         {"symbol": "C", "qty": "1", "market_value": "25"},
     ]
     assert calculate_entry_notional(s, account(), positions) == Decimal("5.00")
+
+
+def test_wider_effective_stop_reduces_risk_sized_notional():
+    s = settings(
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_POSITION_GROSS_PCT="1",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.10",
+    )
+    base = calculate_entry_notional(
+        s,
+        account(),
+        [],
+        stop_pct_override=Decimal("0.0035"),
+    )
+    wider = calculate_entry_notional(
+        s,
+        account(),
+        [],
+        stop_pct_override=Decimal("0.006"),
+    )
+
+    assert base == Decimal("28.57")
+    assert wider == Decimal("16.66")
+    assert wider < base

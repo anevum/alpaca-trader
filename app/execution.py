@@ -65,11 +65,36 @@ class ExecutionEngine:
         ]
 
     @staticmethod
-    def _has_bot_exit_order(open_orders: list[dict[str, Any]], symbol: str) -> bool:
+    def _is_standing_protective_stop(order: dict[str, Any]) -> bool:
+        return "-hardstop-" in str(order.get("client_order_id", ""))
+
+    @classmethod
+    def _protective_stop_for_symbol(
+        cls,
+        open_orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> dict[str, Any] | None:
+        prefix = f"anevum-{symbol.lower()}-"
+        for order in open_orders:
+            if (
+                str(order.get("side", "")).lower() == "sell"
+                and str(order.get("client_order_id", "")).startswith(prefix)
+                and cls._is_standing_protective_stop(order)
+            ):
+                return order
+        return None
+
+    @classmethod
+    def _has_bot_exit_order(
+        cls,
+        open_orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> bool:
         prefix = f"anevum-{symbol.lower()}-"
         return any(
             str(order.get("side", "")).lower() == "sell"
             and str(order.get("client_order_id", "")).startswith(prefix)
+            and not cls._is_standing_protective_stop(order)
             for order in open_orders
         )
 
@@ -193,7 +218,13 @@ class ExecutionEngine:
             client_order_id = str(order.get("client_order_id", ""))
             if not client_order_id.startswith("anevum-"):
                 continue
-            raw_stamp = order.get("filled_at") or order.get("submitted_at")
+            status = str(order.get("status", "")).lower()
+            filled_qty = Decimal(str(order.get("filled_qty") or "0"))
+            if not order.get("filled_at") and not (
+                status == "filled" and filled_qty > 0
+            ):
+                continue
+            raw_stamp = order.get("filled_at")
             if not raw_stamp:
                 continue
             try:
@@ -210,7 +241,10 @@ class ExecutionEngine:
         streak = 0
         latest_stop: datetime | None = None
         for stamp, client_order_id in exits:
-            if "-stop-" not in client_order_id:
+            if (
+                "-stop-" not in client_order_id
+                and "-hardstop-" not in client_order_id
+            ):
                 break
             streak += 1
             if latest_stop is None:
@@ -249,6 +283,114 @@ class ExecutionEngine:
         )
 
     @staticmethod
+    def _price_for_order(value: Decimal) -> Decimal:
+        increment = Decimal("0.0001") if value < Decimal("1") else Decimal("0.01")
+        return value.quantize(increment, rounding=ROUND_DOWN)
+
+    def _prune_exit_states(self, positions: list[dict[str, Any]]) -> None:
+        active = {
+            str(position.get("symbol", "")).upper()
+            for position in positions
+            if Decimal(str(position.get("qty", "0") or "0")) > 0
+        }
+        for symbol in list(self.state.exit_states):
+            if symbol not in active:
+                del self.state.exit_states[symbol]
+
+    def _exit_state_for_position(
+        self,
+        position: dict[str, Any],
+        *,
+        bars: list[dict[str, Any]] | None = None,
+        entry_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        symbol = str(position.get("symbol", "")).upper()
+        entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
+        current_price = Decimal(str(position.get("current_price", "0") or "0"))
+        state = self.state.exit_states.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "risk_stop_pct": str(self.settings.stop_pct),
+                "peak_return_pct": "0",
+                "trough_return_pct": "0",
+                "protected_floor_pct": None,
+                "profit_protection_active": False,
+                "thesis_failure_count": 0,
+            },
+        )
+        if entry_price <= 0 or current_price <= 0:
+            return state
+
+        current_return = (current_price - entry_price) / entry_price
+        observed_peak = current_return
+        observed_trough = current_return
+        if bars and entry_time is not None:
+            for bar in bars:
+                stamp = self._timestamp(bar.get("t"))
+                if stamp is None or stamp < entry_time:
+                    continue
+                high = Decimal(str(bar.get("h", "0") or "0"))
+                low = Decimal(str(bar.get("l", "0") or "0"))
+                if high > 0:
+                    observed_peak = max(
+                        observed_peak,
+                        (high - entry_price) / entry_price,
+                    )
+                if low > 0:
+                    observed_trough = min(
+                        observed_trough,
+                        (low - entry_price) / entry_price,
+                    )
+
+        peak = max(
+            Decimal(str(state.get("peak_return_pct") or "0")),
+            observed_peak,
+        )
+        trough = min(
+            Decimal(str(state.get("trough_return_pct") or "0")),
+            observed_trough,
+        )
+        state["entry_price"] = str(entry_price)
+        state["current_price"] = str(current_price)
+        state["current_return_pct"] = str(current_return)
+        state["peak_return_pct"] = str(peak)
+        state["trough_return_pct"] = str(trough)
+        state["observed_peak_return_pct"] = str(observed_peak)
+        state["observed_trough_return_pct"] = str(observed_trough)
+
+        if (
+            self.settings.profit_protect_enabled
+            and peak >= self.settings.profit_protect_activation_pct
+        ):
+            floor = max(
+                self.settings.profit_protect_min_pct,
+                peak * self.settings.profit_protect_retain_fraction,
+            )
+            old_floor_raw = state.get("protected_floor_pct")
+            old_floor = (
+                Decimal(str(old_floor_raw))
+                if old_floor_raw not in {None, ""}
+                else Decimal("-1")
+            )
+            floor = max(floor, old_floor)
+            state["profit_protection_active"] = True
+            state["protected_floor_pct"] = str(floor)
+
+        risk_stop_pct = Decimal(
+            str(state.get("risk_stop_pct") or self.settings.stop_pct)
+        )
+        stop_floor_pct = -risk_stop_pct
+        if state.get("profit_protection_active"):
+            stop_floor_pct = max(
+                stop_floor_pct,
+                Decimal(str(state.get("protected_floor_pct") or "0")),
+            )
+        desired_stop = entry_price * (Decimal("1") + stop_floor_pct)
+        state["desired_stop_price"] = str(self._price_for_order(desired_stop))
+        return state
+
+    @staticmethod
     def _managed_price_exit(
         position: dict[str, Any],
         stop_pct: Decimal,
@@ -261,13 +403,59 @@ class ExecutionEngine:
 
         stop_price = entry_price * (Decimal("1") - stop_pct)
         target_price = entry_price * (Decimal("1") + target_pct)
-
         if current_price <= stop_price:
             return (
                 "stop",
                 f"bot-managed stop loss triggered at {current_price} "
                 f"(entry {entry_price})",
             )
+        if current_price >= target_price:
+            return (
+                "target",
+                f"bot-managed take profit triggered at {current_price} "
+                f"(entry {entry_price})",
+            )
+        return None
+
+    def _stateful_price_exit(
+        self,
+        position: dict[str, Any],
+        exit_state: dict[str, Any] | None = None,
+    ) -> tuple[str, str] | None:
+        entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
+        current_price = Decimal(str(position.get("current_price", "0") or "0"))
+        if entry_price <= 0 or current_price <= 0:
+            return None
+
+        state = exit_state or self._exit_state_for_position(position)
+        risk_stop_pct = Decimal(
+            str(state.get("risk_stop_pct") or self.settings.stop_pct)
+        )
+        hard_stop_price = entry_price * (Decimal("1") - risk_stop_pct)
+        target_price = entry_price * (Decimal("1") + self.settings.target_pct)
+
+        if current_price <= hard_stop_price:
+            return (
+                "stop",
+                f"software fallback stop triggered at {current_price} "
+                f"(entry {entry_price}, risk {risk_stop_pct:.4%})",
+            )
+
+        if state.get("profit_protection_active"):
+            protected_floor_pct = Decimal(
+                str(state.get("protected_floor_pct") or "0")
+            )
+            protected_price = entry_price * (
+                Decimal("1") + protected_floor_pct
+            )
+            if current_price <= protected_price:
+                return (
+                    "protect",
+                    f"profit-protection floor triggered at {current_price} "
+                    f"(peak {Decimal(str(state.get('peak_return_pct') or '0')):.4%}, "
+                    f"floor {protected_floor_pct:.4%})",
+                )
+
         if current_price >= target_price:
             return (
                 "target",
@@ -436,6 +624,255 @@ class ExecutionEngine:
             )
         ]
 
+    async def _ensure_protective_stop(
+        self,
+        position: dict[str, Any],
+        open_orders: list[dict[str, Any]],
+        now: datetime,
+        *,
+        bars: list[dict[str, Any]] | None = None,
+        entry_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        symbol = str(position.get("symbol", "")).upper()
+        if not self.settings.broker_protective_stop_enabled:
+            return {"action": "disabled", "symbol": symbol}
+
+        state = self._exit_state_for_position(
+            position,
+            bars=bars,
+            entry_time=entry_time,
+        )
+        desired_stop = Decimal(str(state.get("desired_stop_price") or "0"))
+        entry_price = Decimal(str(position.get("avg_entry_price", "0") or "0"))
+        current_price = Decimal(str(position.get("current_price", "0") or "0"))
+        if desired_stop <= 0 or entry_price <= 0 or current_price <= 0:
+            return {
+                "action": "hold",
+                "symbol": symbol,
+                "reason": "protective stop price unavailable",
+            }
+        if current_price <= desired_stop:
+            return {
+                "action": "hold",
+                "symbol": symbol,
+                "reason": (
+                    "current price is at or below desired protection; "
+                    "software exit will handle"
+                ),
+            }
+
+        pending_id = str(
+            state.get("protective_stop_pending_client_order_id") or ""
+        )
+        if pending_id:
+            try:
+                recovered = await self.client.order_by_client_order_id(pending_id)
+            except Exception:
+                recovered = None
+            if recovered is None:
+                return {
+                    "action": "hold",
+                    "symbol": symbol,
+                    "reason": "protective stop submission remains ambiguous",
+                }
+            state.pop("protective_stop_pending_client_order_id", None)
+            state["broker_stop_order_id"] = str(recovered.get("id") or "")
+            state["broker_stop_price"] = str(recovered.get("stop_price") or "")
+            self.state.record_event(
+                kind="protection",
+                symbol=symbol,
+                action="recovered",
+                message="protective stop recovered by client order ID",
+                at=now,
+                payload={"order": recovered, "exit_state": dict(state)},
+            )
+            return {
+                "action": "recovered",
+                "symbol": symbol,
+                "order": recovered,
+            }
+
+        existing = self._protective_stop_for_symbol(open_orders, symbol)
+        if existing is not None:
+            current_stop = Decimal(str(existing.get("stop_price") or "0"))
+            state["broker_stop_order_id"] = str(existing.get("id") or "")
+            state["broker_stop_price"] = str(current_stop)
+            improvement = (
+                (desired_stop - current_stop) / entry_price
+                if entry_price > 0
+                else Decimal("0")
+            )
+            if (
+                desired_stop > current_stop
+                and improvement >= self.settings.profit_stop_step_pct
+                and existing.get("id")
+            ):
+                try:
+                    replaced = await self.client.replace_stop_order(
+                        str(existing["id"]),
+                        str(desired_stop),
+                    )
+                except Exception as exc:
+                    self.state.record_event(
+                        kind="protection",
+                        symbol=symbol,
+                        action="warning",
+                        message="protective stop ratchet failed; existing stop retained",
+                        reason=f"{type(exc).__name__}: {exc}",
+                        at=now,
+                        payload={"exit_state": dict(state)},
+                    )
+                    return {
+                        "action": "hold",
+                        "symbol": symbol,
+                        "reason": "existing protective stop retained after replace failure",
+                    }
+
+                state["broker_stop_order_id"] = str(replaced.get("id") or "")
+                state["broker_stop_price"] = str(
+                    replaced.get("stop_price") or desired_stop
+                )
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="ratchet",
+                    message=(
+                        f"protective stop raised from {current_stop} "
+                        f"to {desired_stop}"
+                    ),
+                    at=now,
+                    payload={"order": replaced, "exit_state": dict(state)},
+                )
+                return {
+                    "action": "replaced",
+                    "symbol": symbol,
+                    "order": replaced,
+                }
+
+            return {
+                "action": "present",
+                "symbol": symbol,
+                "order": existing,
+            }
+
+        client_order_id = self._client_order_id(symbol, "hardstop")
+        try:
+            order = await self.client.submit_stop_sell(
+                symbol=symbol,
+                qty=str(position.get("qty")),
+                stop_price=str(desired_stop),
+                client_order_id=client_order_id,
+            )
+        except Exception as exc:
+            recovered = None
+            for attempt in range(3):
+                try:
+                    recovered = await self.client.order_by_client_order_id(
+                        client_order_id
+                    )
+                except Exception:
+                    recovered = None
+                if recovered is not None:
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+
+            if recovered is None:
+                state["protective_stop_pending_client_order_id"] = client_order_id
+                self.state.reconciliation_safe = False
+                self.state.last_reconciliation = {
+                    "safe_to_enter": False,
+                    "reason": "ambiguous broker protective stop submission",
+                    "client_order_id": client_order_id,
+                    "symbol": symbol,
+                }
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="warning",
+                    message=(
+                        "protective stop outcome ambiguous; new entries blocked "
+                        "until reconciled"
+                    ),
+                    reason=f"{type(exc).__name__}: {exc}",
+                    at=now,
+                    payload={"exit_state": dict(state)},
+                )
+                return {
+                    "action": "hold",
+                    "symbol": symbol,
+                    "reason": "protective stop outcome ambiguous",
+                }
+            order = recovered
+
+        state["broker_stop_order_id"] = str(order.get("id") or "")
+        state["broker_stop_price"] = str(order.get("stop_price") or desired_stop)
+        self.state.record_event(
+            kind="protection",
+            symbol=symbol,
+            action="stop",
+            message=f"broker protective stop active at {desired_stop}",
+            at=now,
+            payload={"order": order, "exit_state": dict(state)},
+        )
+        return {
+            "action": "submitted",
+            "symbol": symbol,
+            "order": order,
+        }
+
+    async def _ensure_protective_stops(
+        self,
+        managed_positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+        recent_orders: list[dict[str, Any]],
+        monitoring_bars: dict[str, list[dict[str, Any]]],
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        if not self.settings.broker_protective_stop_enabled:
+            return []
+        results = await asyncio.gather(
+            *[
+                self._ensure_protective_stop(
+                    position,
+                    open_orders,
+                    now,
+                    bars=monitoring_bars.get(
+                        str(position.get("symbol", "")).upper(),
+                        [],
+                    ),
+                    entry_time=self._latest_bot_buy_today(
+                        recent_orders,
+                        str(position.get("symbol", "")).upper(),
+                    ),
+                )
+                for position in managed_positions
+            ],
+            return_exceptions=True,
+        )
+        normalized: list[dict[str, Any]] = []
+        for position, result in zip(managed_positions, results):
+            symbol = str(position.get("symbol", "")).upper()
+            if isinstance(result, Exception):
+                normalized.append(
+                    {
+                        "action": "error",
+                        "symbol": symbol,
+                        "reason": f"{type(result).__name__}: {result}",
+                    }
+                )
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="error",
+                    message="protective stop management failed",
+                    reason=f"{type(result).__name__}: {result}",
+                    at=now,
+                )
+            else:
+                normalized.append(result)
+        return normalized
+
     async def _force_flatten(
         self,
         symbol: str,
@@ -445,6 +882,7 @@ class ExecutionEngine:
         *,
         exit_reason: str = "forced end-of-day flatten",
         action_tag: str = "eod",
+        exit_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._has_bot_exit_order(open_orders, symbol):
             return {
@@ -503,6 +941,7 @@ class ExecutionEngine:
                     exit_reason=exit_reason,
                     correlation_id=self.state.current_correlation_id,
                     intended_at=datetime.now(NY),
+                    exit_metadata=exit_metadata,
                 )
             except Exception as exc:
                 self.state.record_event(
@@ -632,6 +1071,7 @@ class ExecutionEngine:
             "status": order.get("status"),
             "submitted_at": order.get("submitted_at"),
             "reason": exit_reason,
+            "exit_metadata": exit_metadata or {},
         }
         self.state.last_order = order_payload
         self.state.record_event(
@@ -639,6 +1079,7 @@ class ExecutionEngine:
             symbol=symbol,
             action="sell",
             message=f"{exit_reason} order submitted",
+            payload={"exit_state": exit_metadata or {}},
         )
         return {
             "action": "submitted",
@@ -738,40 +1179,174 @@ class ExecutionEngine:
         open_orders: list[dict[str, Any]],
         recent_orders: list[dict[str, Any]],
         now: datetime,
+        monitoring_bars: dict[str, list[dict[str, Any]]] | None = None,
     ) -> list[dict[str, Any]]:
-        exit_specs: list[tuple[dict[str, Any], str, str]] = []
+        exit_specs: list[tuple[dict[str, Any], str, str, dict[str, Any]]] = []
+
+        health_bars: dict[str, list[dict[str, Any]]] = monitoring_bars or {}
+        if (
+            self.settings.thesis_exit_enabled
+            and managed_positions
+            and isinstance(self.strategy, RollingMomentumVwapStrategy)
+            and not health_bars
+        ):
+            health_symbols = {
+                str(position.get("symbol", "")).upper()
+                for position in managed_positions
+                if str(position.get("symbol", "")).strip()
+            }
+            health_symbols.update(self.settings.confirmation_symbols)
+            try:
+                health_bars = await self.market_data.bars_many(
+                    sorted(health_symbols)
+                )
+            except Exception as exc:
+                self.state.record_event(
+                    kind="exit_health",
+                    action="warning",
+                    message="position-health market data unavailable",
+                    reason=f"{type(exc).__name__}: {exc}",
+                    at=now,
+                )
 
         for position in managed_positions:
             symbol = str(position.get("symbol", "")).upper()
             if self._has_bot_exit_order(open_orders, symbol):
                 continue
 
+            entry_time = self._latest_bot_buy_today(recent_orders, symbol)
+            exit_state = self._exit_state_for_position(
+                position,
+                bars=health_bars.get(symbol, []),
+                entry_time=entry_time,
+            )
+            if (
+                exit_state.get("profit_protection_active")
+                and not exit_state.get("profit_activation_emitted")
+            ):
+                exit_state["profit_activation_emitted"] = True
+                self.state.record_event(
+                    kind="protection",
+                    symbol=symbol,
+                    action="activated",
+                    message=(
+                        "profit protection activated at "
+                        f"{Decimal(str(exit_state.get('peak_return_pct') or '0')):.4%}"
+                    ),
+                    at=now,
+                    payload={"exit_state": dict(exit_state)},
+                )
+
             if now.time() >= self.settings.force_flat_time:
                 exit_specs.append(
-                    (position, "eod", "forced end-of-day flatten")
+                    (
+                        position,
+                        "eod",
+                        "forced end-of-day flatten",
+                        dict(exit_state),
+                    )
                 )
                 continue
 
-            price_exit = self._managed_price_exit(
-                position,
-                self.settings.stop_pct,
-                self.settings.target_pct,
-            )
+            price_exit = self._stateful_price_exit(position, exit_state)
             if price_exit is not None:
                 action_tag, exit_reason = price_exit
-                exit_specs.append((position, action_tag, exit_reason))
+                exit_specs.append(
+                    (position, action_tag, exit_reason, dict(exit_state))
+                )
                 continue
 
+            if (
+                self.settings.thesis_exit_enabled
+                and isinstance(self.strategy, RollingMomentumVwapStrategy)
+                and health_bars
+            ):
+                confirmation_bars = {
+                    confirmation_symbol: health_bars.get(
+                        confirmation_symbol,
+                        [],
+                    )
+                    for confirmation_symbol in self.settings.confirmation_symbols
+                }
+                health = self.strategy.position_health(
+                    bars=health_bars.get(symbol, []),
+                    confirmation_bars=confirmation_bars,
+                    symbol=symbol,
+                    now=now,
+                )
+                exit_state["position_health"] = health
+                current_return = Decimal(
+                    str(exit_state.get("current_return_pct") or "0")
+                )
+                prior_failures = int(
+                    exit_state.get("thesis_failure_count") or 0
+                )
+                thesis_failure = (
+                    bool(health.get("strong_failure"))
+                    and current_return
+                    <= self.settings.thesis_exit_max_return_pct
+                )
+                health_bar_time = str(health.get("bar_time") or "")
+                prior_failure_bar = str(
+                    exit_state.get("last_thesis_failure_bar_time") or ""
+                )
+                counted_new_failure = False
+                if thesis_failure:
+                    if health_bar_time and health_bar_time != prior_failure_bar:
+                        exit_state["thesis_failure_count"] = prior_failures + 1
+                        exit_state["last_thesis_failure_bar_time"] = health_bar_time
+                        counted_new_failure = True
+                    elif not health_bar_time and prior_failures == 0:
+                        exit_state["thesis_failure_count"] = 1
+                        counted_new_failure = True
+                else:
+                    exit_state["thesis_failure_count"] = 0
+                    exit_state.pop("last_thesis_failure_bar_time", None)
+
+                if thesis_failure and counted_new_failure:
+                    self.state.record_event(
+                        kind="exit_health",
+                        symbol=symbol,
+                        action="failure",
+                        message=(
+                            "thesis deterioration observed "
+                            f"({exit_state['thesis_failure_count']}/"
+                            f"{self.settings.thesis_failure_cycles})"
+                        ),
+                        reason=str(health.get("reason") or ""),
+                        at=now,
+                        payload={"exit_state": dict(exit_state)},
+                    )
+
+                if (
+                    int(exit_state.get("thesis_failure_count") or 0)
+                    >= self.settings.thesis_failure_cycles
+                ):
+                    exit_specs.append(
+                        (
+                            position,
+                            "thesis",
+                            (
+                                "position thesis failed for "
+                                f"{self.settings.thesis_failure_cycles} "
+                                "consecutive evaluations"
+                            ),
+                            dict(exit_state),
+                        )
+                    )
+                    continue
+
             if self.settings.max_hold_minutes > 0:
-                entry_time = self._latest_bot_buy_today(recent_orders, symbol)
                 if entry_time is not None:
                     held_minutes = (now - entry_time).total_seconds() / 60
+                    exit_state["held_minutes"] = held_minutes
                     if held_minutes >= self.settings.max_hold_minutes:
                         exit_specs.append(
                             (
                                 position,
                                 "time",
                                 f"max hold {self.settings.max_hold_minutes} minutes",
+                                dict(exit_state),
                             )
                         )
 
@@ -787,14 +1362,18 @@ class ExecutionEngine:
                     open_orders=open_orders,
                     exit_reason=reason,
                     action_tag=tag,
+                    exit_metadata=metadata,
                 )
-                for position, tag, reason in exit_specs
+                for position, tag, reason, metadata in exit_specs
             ],
             return_exceptions=True,
         )
 
         normalized: list[dict[str, Any]] = []
-        for (position, _tag, reason), result in zip(exit_specs, results):
+        for (position, _tag, reason, metadata), result in zip(
+            exit_specs,
+            results,
+        ):
             symbol = str(position.get("symbol", "")).upper()
             if isinstance(result, Exception):
                 normalized.append(
@@ -810,6 +1389,7 @@ class ExecutionEngine:
                     action="error",
                     message=f"exit failed: {reason}",
                     reason=str(result),
+                    payload={"exit_state": metadata},
                 )
             else:
                 normalized.append(result)
@@ -843,13 +1423,53 @@ class ExecutionEngine:
         recent_orders = await self.client.recent_orders(limit=100)
         now = datetime.now(NY)
 
+        self._prune_exit_states(positions)
         managed_positions = self._managed_positions(positions, recent_orders)
+
+        exit_monitoring_bars: dict[str, list[dict[str, Any]]] = {}
+        if managed_positions and (
+            self.settings.broker_protective_stop_enabled
+            or self.settings.thesis_exit_enabled
+        ):
+            monitoring_symbols = {
+                str(position.get("symbol", "")).upper()
+                for position in managed_positions
+                if str(position.get("symbol", "")).strip()
+            }
+            monitoring_symbols.update(self.settings.confirmation_symbols)
+            try:
+                exit_monitoring_bars = await self.market_data.bars_many(
+                    sorted(monitoring_symbols)
+                )
+            except Exception as exc:
+                self.state.record_event(
+                    kind="exit_health",
+                    action="warning",
+                    message="exit-monitoring market data unavailable",
+                    reason=f"{type(exc).__name__}: {exc}",
+                    at=now,
+                )
+
+        protection_results = await self._ensure_protective_stops(
+            managed_positions,
+            open_orders,
+            recent_orders,
+            exit_monitoring_bars,
+            now,
+        )
+        if any(
+            result.get("action") in {"submitted", "replaced", "recovered"}
+            for result in protection_results
+        ):
+            open_orders = await self.client.open_orders()
+
         exit_results = await self._exit_managed_positions(
             account,
             managed_positions,
             open_orders,
             recent_orders,
             now,
+            monitoring_bars=exit_monitoring_bars,
         )
         if exit_results:
             submitted = sum(
@@ -1157,10 +1777,19 @@ class ExecutionEngine:
                         continue
 
             simulated_account["cash"] = str(simulated_cash)
+            effective_stop_pct = Decimal(
+                str(
+                    (signal.metadata or {}).get(
+                        "effective_stop_pct",
+                        self.settings.stop_pct,
+                    )
+                )
+            )
             entry_notional = calculate_entry_notional(
                 self.settings,
                 simulated_account,
                 simulated_positions,
+                stop_pct_override=effective_stop_pct,
             )
             if entry_notional <= 0:
                 skipped.append(
@@ -1177,6 +1806,7 @@ class ExecutionEngine:
                 self.settings,
                 simulated_account,
                 simulated_positions,
+                stop_pct_override=effective_stop_pct,
             )
 
             risk = validate_buy(
@@ -1187,6 +1817,7 @@ class ExecutionEngine:
                 simulated_positions,
                 entry_count + len(planned),
                 entry_symbols=set(entry_symbols),
+                stop_pct_override=effective_stop_pct,
             )
             if not risk.allowed:
                 skipped.append({"symbol": symbol, "reason": risk.reason})
@@ -1222,6 +1853,7 @@ class ExecutionEngine:
                     "symbol": symbol,
                     "qty": str(qty),
                     "market_value": str(signal.notional),
+                    "risk_stop_pct": str(effective_stop_pct),
                 }
             )
 
@@ -1376,6 +2008,60 @@ class ExecutionEngine:
                     payload={"client_order_id": _client_order_id},
                 )
 
+            effective_stop_pct = Decimal(
+                str(
+                    (signal.metadata or {}).get(
+                        "effective_stop_pct",
+                        self.settings.stop_pct,
+                    )
+                )
+            )
+            self.state.exit_states[symbol] = {
+                "symbol": symbol,
+                "risk_stop_pct": str(effective_stop_pct),
+                "peak_return_pct": "0",
+                "trough_return_pct": "0",
+                "protected_floor_pct": None,
+                "profit_protection_active": False,
+                "thesis_failure_count": 0,
+                "entry_client_order_id": _client_order_id,
+            }
+
+            protection_result: dict[str, Any] | None = None
+            filled_qty = Decimal(str(result.get("filled_qty") or "0"))
+            filled_price = Decimal(str(result.get("filled_avg_price") or "0"))
+            if (
+                self.settings.broker_protective_stop_enabled
+                and filled_qty > 0
+                and filled_price > 0
+            ):
+                synthetic_position = {
+                    "symbol": symbol,
+                    "qty": str(filled_qty),
+                    "avg_entry_price": str(filled_price),
+                    "current_price": str(filled_price),
+                }
+                try:
+                    protection_result = await self._ensure_protective_stop(
+                        synthetic_position,
+                        [],
+                        now,
+                    )
+                except Exception as exc:
+                    protection_result = {
+                        "action": "error",
+                        "symbol": symbol,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                    self.state.record_event(
+                        kind="protection",
+                        symbol=symbol,
+                        action="error",
+                        message="immediate post-fill protective stop failed",
+                        reason=str(exc),
+                        at=now,
+                    )
+
             order_payload = {
                 "id": result.get("id"),
                 "client_order_id": result.get("client_order_id"),
@@ -1387,7 +2073,9 @@ class ExecutionEngine:
                 "submitted_at": result.get("submitted_at"),
                 "stop_price": str(signal.stop_price),
                 "take_profit_price": str(signal.take_profit_price),
-                "exit_management": "bot",
+                "effective_stop_pct": str(effective_stop_pct),
+                "exit_management": "exit_engine_v2",
+                "protection": protection_result,
             }
             submitted_orders.append(order_payload)
             if self.ledger is not None:
@@ -1414,7 +2102,7 @@ class ExecutionEngine:
                 action="buy",
                 message=(
                     "fractional-compatible market entry submitted; "
-                    "bot-managed stop/target/time exits active"
+                    "Exit Engine v2 protection active"
                 ),
                 at=now,
             )

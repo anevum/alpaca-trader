@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -41,6 +42,25 @@ class TradingEventSink:
         if not owner_tag:
             return True
         return f"-{owner_tag}-" in client_order_id
+
+    @staticmethod
+    def _is_standing_protective_stop(order: dict[str, Any]) -> bool:
+        client_order_id = str(order.get("client_order_id") or "")
+        return "-hardstop-" in client_order_id
+
+    @classmethod
+    def _projectable_order(cls, order: dict[str, Any]) -> bool:
+        if not cls._is_standing_protective_stop(order):
+            return True
+        filled_qty = Decimal(str(order.get("filled_qty") or "0"))
+        status = str(order.get("status") or "").lower()
+        return filled_qty > 0 or status == "filled"
+
+    @classmethod
+    def _inferred_exit_reason(cls, order: dict[str, Any]) -> str | None:
+        if cls._is_standing_protective_stop(order):
+            return "broker protective stop filled"
+        return None
 
     def status(self) -> dict[str, Any]:
         return {
@@ -223,6 +243,7 @@ class TradingEventSink:
         exit_reason: str,
         correlation_id: str | None,
         intended_at: datetime,
+        exit_metadata: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         intent_id = str(uuid4())
         exit_id = str(uuid4())
@@ -244,6 +265,7 @@ class TradingEventSink:
                     "client_order_id": client_order_id,
                     "exit_id": exit_id,
                     "exit_reason": exit_reason,
+                    "exit_metadata": exit_metadata or {},
                 },
             }
         }
@@ -345,11 +367,16 @@ class TradingEventSink:
             order
             for order in orders
             if self._owns_broker_order(order)
+            and self._projectable_order(order)
             and at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
         for order in bot_orders:
-            self.record_broker_order(order, correlation_id=correlation_id)
+            self.record_broker_order(
+                order,
+                exit_reason=self._inferred_exit_reason(order),
+                correlation_id=correlation_id,
+            )
 
         bot_order_ids = {
             str(order.get("id") or "")
@@ -443,6 +470,7 @@ class TradingEventSink:
             order
             for order in orders
             if self._owns_broker_order(order)
+            and self._projectable_order(order)
             and self._at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
@@ -474,7 +502,10 @@ class TradingEventSink:
                         if order.get("submitted_at")
                         else None
                     ),
-                    payload={"order": order},
+                    payload={
+                        "order": order,
+                        "exit_reason": self._inferred_exit_reason(order),
+                    },
                 )
             )
 

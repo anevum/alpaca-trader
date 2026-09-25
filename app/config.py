@@ -134,6 +134,46 @@ class Settings(BaseSettings):
         default=10, alias="LOSS_STREAK_COOLDOWN_MINUTES"
     )
 
+    broker_protective_stop_enabled: bool = Field(
+        default=False, alias="BROKER_PROTECTIVE_STOP_ENABLED"
+    )
+    volatility_stop_enabled: bool = Field(
+        default=False, alias="VOLATILITY_STOP_ENABLED"
+    )
+    volatility_stop_multiplier: Decimal = Field(
+        default=Decimal("2.0"), alias="VOLATILITY_STOP_MULTIPLIER"
+    )
+    volatility_stop_lookback_bars: int = Field(
+        default=8, alias="VOLATILITY_STOP_LOOKBACK_BARS"
+    )
+    max_dynamic_stop_pct: Decimal = Field(
+        default=Decimal("0.006"), alias="MAX_DYNAMIC_STOP_PCT"
+    )
+    profit_protect_enabled: bool = Field(
+        default=False, alias="PROFIT_PROTECT_ENABLED"
+    )
+    profit_protect_activation_pct: Decimal = Field(
+        default=Decimal("0.001"), alias="PROFIT_PROTECT_ACTIVATION_PCT"
+    )
+    profit_protect_retain_fraction: Decimal = Field(
+        default=Decimal("0.50"), alias="PROFIT_PROTECT_RETAIN_FRACTION"
+    )
+    profit_protect_min_pct: Decimal = Field(
+        default=Decimal("0.0003"), alias="PROFIT_PROTECT_MIN_PCT"
+    )
+    profit_stop_step_pct: Decimal = Field(
+        default=Decimal("0.0002"), alias="PROFIT_STOP_STEP_PCT"
+    )
+    thesis_exit_enabled: bool = Field(
+        default=False, alias="THESIS_EXIT_ENABLED"
+    )
+    thesis_failure_cycles: int = Field(
+        default=2, alias="THESIS_FAILURE_CYCLES"
+    )
+    thesis_exit_max_return_pct: Decimal = Field(
+        default=Decimal("0.0005"), alias="THESIS_EXIT_MAX_RETURN_PCT"
+    )
+
     order_notional: Decimal = Field(default=Decimal("80.00"), alias="ORDER_NOTIONAL")
     opening_range_minutes: int = Field(default=5, alias="OPENING_RANGE_MINUTES")
     max_opening_range_pct: Decimal = Field(
@@ -427,6 +467,33 @@ class Settings(BaseSettings):
             raise ValueError("LOSS_STREAK_LIMIT must be between 0 and 10")
         if not 0 <= self.loss_streak_cooldown_minutes <= 120:
             raise ValueError("LOSS_STREAK_COOLDOWN_MINUTES must be between 0 and 120")
+        if not Decimal("0") < self.volatility_stop_multiplier <= Decimal("10"):
+            raise ValueError("VOLATILITY_STOP_MULTIPLIER must be between 0 and 10")
+        if not 3 <= self.volatility_stop_lookback_bars <= 60:
+            raise ValueError("VOLATILITY_STOP_LOOKBACK_BARS must be between 3 and 60")
+        if not Decimal("0") < self.max_dynamic_stop_pct < Decimal("0.05"):
+            raise ValueError("MAX_DYNAMIC_STOP_PCT must be between 0 and 0.05")
+        if (
+            self.volatility_stop_enabled
+            and self.max_dynamic_stop_pct < self.stop_pct
+        ):
+            raise ValueError(
+                "MAX_DYNAMIC_STOP_PCT must be >= STOP_PCT when volatility stops are enabled"
+            )
+        if not Decimal("0") < self.profit_protect_activation_pct < Decimal("0.05"):
+            raise ValueError("PROFIT_PROTECT_ACTIVATION_PCT must be between 0 and 0.05")
+        if not Decimal("0") < self.profit_protect_retain_fraction <= Decimal("1"):
+            raise ValueError("PROFIT_PROTECT_RETAIN_FRACTION must be between 0 and 1")
+        if not Decimal("0") <= self.profit_protect_min_pct < self.profit_protect_activation_pct:
+            raise ValueError(
+                "PROFIT_PROTECT_MIN_PCT must be >= 0 and below PROFIT_PROTECT_ACTIVATION_PCT"
+            )
+        if not Decimal("0") < self.profit_stop_step_pct < Decimal("0.02"):
+            raise ValueError("PROFIT_STOP_STEP_PCT must be between 0 and 0.02")
+        if not 1 <= self.thesis_failure_cycles <= 10:
+            raise ValueError("THESIS_FAILURE_CYCLES must be between 1 and 10")
+        if not Decimal("-0.02") <= self.thesis_exit_max_return_pct <= Decimal("0.05"):
+            raise ValueError("THESIS_EXIT_MAX_RETURN_PCT must be between -0.02 and 0.05")
         if not 0 <= self.max_hold_minutes <= 390:
             raise ValueError("MAX_HOLD_MINUTES must be between 0 and 390")
         if not 0 <= self.reentry_cooldown_minutes <= 60:
