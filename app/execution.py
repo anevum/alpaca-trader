@@ -11,6 +11,7 @@ from .alpaca_client import AlpacaClient
 from .config import Settings
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
+from .opportunity import correlation_checks, score_opportunity
 from .risk import validate_buy, validate_sell_to_flat
 from .sizing import calculate_entry_notional, sizing_snapshot
 from .state import RuntimeState
@@ -208,9 +209,10 @@ class ExecutionEngine:
         return None
 
     @staticmethod
-    def _signal_rank(signal: Signal) -> tuple[Decimal, Decimal, int]:
+    def _signal_rank(signal: Signal) -> tuple[Decimal, Decimal, Decimal, int]:
         metadata = signal.metadata or {}
         return (
+            Decimal(str(metadata.get("quality_score", "0"))),
             Decimal(str(metadata.get("momentum_pct", "0"))),
             Decimal(str(metadata.get("vwap_edge_pct", "0"))),
             int(metadata.get("confirmation_passes", 0) or 0),
@@ -839,6 +841,16 @@ class ExecutionEngine:
                 signal.metadata = dict(signal.metadata or {})
                 signal.metadata["market_quality"] = quality
                 if allowed:
+                    ranking = score_opportunity(
+                        self.settings,
+                        signal,
+                        market_bars.get(signal.symbol, []),
+                        quality,
+                    )
+                    signal.metadata["quality_score"] = ranking["score"]
+                    signal.metadata["quality_components"] = ranking["components"]
+                    signal.metadata["relative_volume_ratio"] = ranking["relative_volume_ratio"]
+                    signal.metadata["trend_persistence"] = ranking["trend_persistence"]
                     quality_signals.append(signal)
                     scan[signal.symbol] = self._signal_payload(signal)
                 else:
@@ -950,6 +962,40 @@ class ExecutionEngine:
                         "symbol": symbol,
                         "reason": "open order already exists for symbol",
                     }
+                )
+                continue
+
+            exposure_symbols = [
+                str(position.get("symbol", "")).upper()
+                for position in simulated_positions
+                if Decimal(str(position.get("qty", "0") or "0")) > 0
+            ]
+            correlation_allowed, correlation_reason, correlation_detail = correlation_checks(
+                self.settings,
+                symbol,
+                exposure_symbols,
+                market_bars,
+            )
+            signal.metadata = dict(signal.metadata or {})
+            signal.metadata["correlation"] = {
+                "threshold": str(self.settings.max_pairwise_correlation),
+                "lookback_bars": self.settings.correlation_lookback_bars,
+                "min_observations": self.settings.correlation_min_observations,
+                "checks": correlation_detail,
+            }
+            scan[symbol] = self._signal_payload(signal)
+            if not correlation_allowed:
+                skipped.append({"symbol": symbol, "reason": correlation_reason})
+                scan[symbol]["action"] = "hold"
+                scan[symbol]["reason"] = correlation_reason
+                self.state.record_event(
+                    kind="allocation",
+                    symbol=symbol,
+                    action="hold",
+                    message=correlation_reason,
+                    reason=correlation_reason,
+                    at=now,
+                    payload={"correlation": correlation_detail},
                 )
                 continue
 

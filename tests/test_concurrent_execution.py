@@ -655,3 +655,58 @@ def test_equity_risk_allocator_compounds_and_uses_gross_capacity():
     ]
     assert notionals == [Decimal("26.66"), Decimal("26.67")]
     assert sum(notionals) == Decimal("53.33")
+
+
+class CorrelatedMarketData(FakeMarketData):
+    def _bars(self, scale=1):
+        now = datetime.now(NY).replace(second=0, microsecond=0)
+        closes = [
+            Decimal("100.00"), Decimal("100.08"), Decimal("100.05"),
+            Decimal("100.16"), Decimal("100.12"), Decimal("100.25"),
+            Decimal("100.21"), Decimal("100.34"), Decimal("100.30"),
+            Decimal("100.45"), Decimal("100.41"), Decimal("100.55"),
+        ]
+        result = []
+        for index, close in enumerate(closes):
+            adjusted = Decimal("100") + (close - Decimal("100")) * Decimal(str(scale))
+            stamp = now - timedelta(minutes=len(closes) - index)
+            result.append({
+                "t": stamp.isoformat(),
+                "o": str(adjusted),
+                "h": str(adjusted + Decimal("0.05")),
+                "l": str(adjusted - Decimal("0.05")),
+                "c": str(adjusted),
+                "v": str(1000 + index * 25),
+                "vw": str(adjusted),
+            })
+        return result
+
+    async def bars_many(self, symbols):
+        self.bar_calls += 1
+        return {symbol: self._bars(1) for symbol in symbols}
+
+
+def test_allocator_blocks_second_highly_correlated_candidate():
+    client = FakeClient()
+    state = reconciled_state()
+    engine = ExecutionEngine(
+        settings(
+            MAX_PAIRWISE_CORRELATION="0.85",
+            CORRELATION_LOOKBACK_BARS="30",
+            CORRELATION_MIN_OBSERVATIONS="8",
+        ),
+        client,
+        CorrelatedMarketData(),
+        BuyStrategy(),
+        state,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "submitted"
+    assert [order["symbol"] for order in client.buy_orders] == ["SPY"]
+    assert any(
+        item["symbol"] == "QQQ" and "correlation" in item["reason"]
+        for item in result["skipped"]
+    )
+    assert state.last_scan["SPY"]["metadata"]["quality_score"] > state.last_scan["QQQ"]["metadata"]["quality_score"]
