@@ -359,7 +359,10 @@ class ExecutionEngine:
         state["observed_peak_return_pct"] = str(observed_peak)
         state["observed_trough_return_pct"] = str(observed_trough)
 
-        if peak >= self.settings.profit_protect_activation_pct:
+        if (
+            self.settings.profit_protect_enabled
+            and peak >= self.settings.profit_protect_activation_pct
+        ):
             floor = max(
                 self.settings.profit_protect_min_pct,
                 peak * self.settings.profit_protect_retain_fraction,
