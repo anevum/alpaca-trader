@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.config import Settings
 from app.execution import ExecutionEngine
 from app.state import RuntimeState
-from app.strategy import Signal
+from app.strategy import RollingMomentumVwapStrategy, Signal
 
 
 NY = ZoneInfo("America/New_York")
@@ -861,3 +861,212 @@ def test_consecutive_stop_exits_trigger_temporary_entry_cooldown():
     assert result["action"] == "hold"
     assert "loss-streak cooldown active" in result["reason"]
     assert client.buy_orders == []
+
+
+def test_broker_hardstop_is_installed_for_managed_position():
+    client = FakeClient()
+    engine = ExecutionEngine(
+        settings(BROKER_PROTECTIVE_STOP_ENABLED="true"),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    result = asyncio.run(
+        engine._ensure_protective_stop(
+            position("SPY", entry="100", current="100"),
+            [],
+            TEST_NOW,
+        )
+    )
+
+    assert result["action"] == "submitted"
+    assert len(client.stop_orders) == 1
+    assert client.stop_orders[0]["symbol"] == "SPY"
+    assert Decimal(client.stop_orders[0]["stop_price"]) == Decimal("99.65")
+    assert "-hardstop-" in client.stop_orders[0]["client_order_id"]
+
+
+def test_profit_peak_ratchets_existing_broker_stop_upward():
+    hardstop = {
+        "id": "stop-SPY-1",
+        "client_order_id": "anevum-spy-hardstop-existing",
+        "symbol": "SPY",
+        "side": "sell",
+        "qty": "0.2",
+        "type": "stop",
+        "status": "new",
+        "stop_price": "99.65",
+        "submitted_at": iso_now(-60),
+    }
+    client = FakeClient(open_orders=[hardstop])
+    engine = ExecutionEngine(
+        settings(
+            BROKER_PROTECTIVE_STOP_ENABLED="true",
+            PROFIT_PROTECT_ACTIVATION_PCT="0.001",
+            PROFIT_PROTECT_RETAIN_FRACTION="0.50",
+            PROFIT_PROTECT_MIN_PCT="0.0003",
+            PROFIT_STOP_STEP_PCT="0.0002",
+        ),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    result = asyncio.run(
+        engine._ensure_protective_stop(
+            position("SPY", entry="100", current="100.20"),
+            [hardstop],
+            TEST_NOW,
+        )
+    )
+
+    assert result["action"] == "replaced"
+    assert len(client.replaced_orders) == 1
+    assert Decimal(client.replaced_orders[0]["stop_price"]) == Decimal("100.10")
+    state = engine.state.exit_states["SPY"]
+    assert state["profit_protection_active"] is True
+    assert Decimal(state["protected_floor_pct"]) == Decimal("0.0010")
+
+
+def test_profit_floor_converts_reversal_into_positive_exit():
+    engine = ExecutionEngine(
+        settings(
+            PROFIT_PROTECT_ACTIVATION_PCT="0.001",
+            PROFIT_PROTECT_RETAIN_FRACTION="0.50",
+            PROFIT_PROTECT_MIN_PCT="0.0003",
+        ),
+        FakeClient(),
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    engine._exit_state_for_position(
+        position("SPY", entry="100", current="100.20")
+    )
+    exit_decision = engine._managed_price_exit(
+        position("SPY", entry="100", current="100.05")
+    )
+
+    assert exit_decision is not None
+    tag, reason = exit_decision
+    assert tag == "protect"
+    assert "profit-protection floor" in reason
+    assert Decimal(engine.state.exit_states["SPY"]["peak_return_pct"]) == Decimal("0.002")
+    assert Decimal(engine.state.exit_states["SPY"]["protected_floor_pct"]) == Decimal("0.0010")
+
+
+class FailingHealthStrategy(RollingMomentumVwapStrategy):
+    def __init__(self):
+        super().__init__(
+            fast_window=3,
+            slow_window=8,
+            min_momentum_pct=Decimal("0.0005"),
+            min_vwap_edge_pct=Decimal("0"),
+            stop_pct=Decimal("0.0035"),
+            target_pct=Decimal("0.005"),
+            entry_start=datetime.strptime("09:31", "%H:%M").time(),
+            entry_cutoff=datetime.strptime("15:30", "%H:%M").time(),
+            confirmation_symbols=("SMH",),
+            min_confirmations=1,
+        )
+
+    def position_health(self, **kwargs):
+        return {
+            "data_ready": True,
+            "strong_failure": True,
+            "reason": "market regime and position momentum both deteriorated",
+            "candidate_failure_count": 3,
+            "regime_ok": False,
+        }
+
+
+def test_thesis_failure_requires_two_cycles_before_exit():
+    client = FakeClient(
+        positions=[position("SPY", entry="100", current="99.95")],
+        recent_orders=[bot_buy("SPY")],
+    )
+    state = reconciled_state()
+    engine = ExecutionEngine(
+        settings(
+            THESIS_EXIT_ENABLED="true",
+            THESIS_FAILURE_CYCLES="2",
+            THESIS_EXIT_MAX_RETURN_PCT="0.0005",
+        ),
+        client,
+        FakeMarketData(),
+        FailingHealthStrategy(),
+        state,
+    )
+
+    first = asyncio.run(
+        engine._exit_managed_positions(
+            client._positions,
+            client._positions,
+            [],
+            client._recent_orders,
+            TEST_NOW,
+        )
+    )
+    assert first == []
+    assert state.exit_states["SPY"]["thesis_failure_count"] == 1
+
+    second = asyncio.run(
+        engine._exit_managed_positions(
+            client._positions,
+            client._positions,
+            [],
+            client._recent_orders,
+            TEST_NOW + timedelta(seconds=20),
+        )
+    )
+
+    assert len(second) == 1
+    assert second[0]["action"] == "submitted"
+    assert client.sell_orders[-1]["symbol"] == "SPY"
+    assert "-thesis-" in client.sell_orders[-1]["client_order_id"]
+
+
+def test_standing_hardstop_does_not_block_discretionary_profit_exit():
+    hardstop = {
+        "id": "stop-SPY-1",
+        "client_order_id": "anevum-spy-hardstop-existing",
+        "symbol": "SPY",
+        "side": "sell",
+        "qty": "0.2",
+        "type": "stop",
+        "status": "new",
+        "stop_price": "99.65",
+        "submitted_at": iso_now(-60),
+    }
+    client = FakeClient(
+        positions=[position("SPY", entry="100", current="100.60")],
+        recent_orders=[bot_buy("SPY")],
+        open_orders=[hardstop],
+    )
+    engine = ExecutionEngine(
+        settings(),
+        client,
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    result = asyncio.run(
+        engine._exit_managed_positions(
+            client._positions,
+            client._positions,
+            [hardstop],
+            client._recent_orders,
+            TEST_NOW,
+        )
+    )
+
+    assert len(result) == 1
+    assert result[0]["action"] == "submitted"
+    assert client._open_orders == []
+    assert len(client.sell_orders) == 1
+    assert "-target-" in client.sell_orders[0]["client_order_id"]
