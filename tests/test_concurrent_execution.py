@@ -905,6 +905,7 @@ def test_profit_peak_ratchets_existing_broker_stop_upward():
     engine = ExecutionEngine(
         settings(
             BROKER_PROTECTIVE_STOP_ENABLED="true",
+            PROFIT_PROTECT_ENABLED="true",
             PROFIT_PROTECT_ACTIVATION_PCT="0.001",
             PROFIT_PROTECT_RETAIN_FRACTION="0.50",
             PROFIT_PROTECT_MIN_PCT="0.0003",
@@ -935,6 +936,7 @@ def test_profit_peak_ratchets_existing_broker_stop_upward():
 def test_profit_floor_converts_reversal_into_positive_exit():
     engine = ExecutionEngine(
         settings(
+            PROFIT_PROTECT_ENABLED="true",
             PROFIT_PROTECT_ACTIVATION_PCT="0.001",
             PROFIT_PROTECT_RETAIN_FRACTION="0.50",
             PROFIT_PROTECT_MIN_PCT="0.0003",
@@ -1104,6 +1106,7 @@ def test_standing_hardstop_does_not_block_discretionary_profit_exit():
 def test_exit_state_reconstructs_peak_and_trough_from_bar_path():
     engine = ExecutionEngine(
         settings(
+            PROFIT_PROTECT_ENABLED="true",
             PROFIT_PROTECT_ACTIVATION_PCT="0.001",
             PROFIT_PROTECT_RETAIN_FRACTION="0.50",
             PROFIT_PROTECT_MIN_PCT="0.0003",
