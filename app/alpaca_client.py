@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -217,10 +218,21 @@ class AlpacaClient:
         order_id: str,
         stop_price: str,
     ) -> dict[str, Any]:
+        existing = await self._request("GET", f"/v2/orders/{order_id}")
+        existing_client_order_id = str(existing.get("client_order_id") or "")
+        payload: dict[str, Any] = {"stop_price": stop_price}
+
+        if (
+            existing_client_order_id.startswith("anevum-")
+            and "-hardstop-" in existing_client_order_id
+        ):
+            base = existing_client_order_id.rsplit("-", 1)[0]
+            payload["client_order_id"] = f"{base}-{uuid4().hex[:12]}"[:128]
+
         return await self._request(
             "PATCH",
             f"/v2/orders/{order_id}",
-            json={"stop_price": stop_price},
+            json=payload,
         )
 
     async def cancel_order(self, order_id: str) -> None:

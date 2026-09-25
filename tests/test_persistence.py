@@ -258,3 +258,83 @@ def test_managed_symbols_include_owned_dynamic_universe_orders_and_fills():
     )
 
     assert managed == ["SMCI", "SPY", "TQQQ"]
+
+
+def test_replaced_hardstop_inherits_bot_ownership_and_protective_semantics():
+    sink = CapturingSink()
+    sink.settings.allowed_symbols = set()
+    observed_at = datetime(2026, 9, 25, 17, 0, tzinfo=timezone.utc)
+    orders = [
+        {
+            "id": "original-stop",
+            "client_order_id": "anevum-smci-hardstop-owner-abc123",
+            "symbol": "SMCI",
+            "side": "sell",
+            "status": "replaced",
+            "qty": "0.48",
+            "filled_qty": "0",
+            "submitted_at": "2026-09-25T16:28:00Z",
+            "replaced_by": "replacement-stop",
+        },
+        {
+            "id": "replacement-stop",
+            "client_order_id": "039ba482-08c1-46e1-baf7-03d4f81679ff",
+            "symbol": "SMCI",
+            "side": "sell",
+            "type": "stop",
+            "status": "filled",
+            "qty": "0.48",
+            "filled_qty": "0.48",
+            "filled_avg_price": "43.20",
+            "stop_price": "43.21",
+            "submitted_at": "2026-09-25T16:30:00Z",
+            "filled_at": "2026-09-25T16:31:00Z",
+            "replaces": "original-stop",
+        },
+    ]
+    fills = [
+        {
+            "id": "replacement-fill",
+            "order_id": "replacement-stop",
+            "symbol": "SMCI",
+            "side": "sell",
+            "qty": "0.48",
+            "price": "43.20",
+            "transaction_time": "2026-09-25T16:31:00Z",
+        }
+    ]
+
+    managed = sink.managed_symbols_from_snapshot(
+        orders=orders,
+        fills=fills,
+        open_orders=[],
+    )
+    assert managed == ["SMCI"]
+
+    events = sink._build_reconciliation_events(
+        account={
+            "equity": "100",
+            "last_equity": "100",
+            "cash": "100",
+            "buying_power": "100",
+        },
+        positions=[],
+        orders=orders,
+        fills=fills,
+        correlation_id="cycle-replaced-hardstop",
+        observed_at=observed_at,
+    )
+
+    broker_orders = [
+        event for event in events if event["event_type"] == "broker_order"
+    ]
+    broker_fills = [
+        event for event in events if event["event_type"] == "broker_fill"
+    ]
+    assert [event["payload"]["order"]["id"] for event in broker_orders] == [
+        "replacement-stop"
+    ]
+    assert broker_orders[0]["payload"]["exit_reason"] == "broker protective stop filled"
+    assert [event["payload"]["activity"]["id"] for event in broker_fills] == [
+        "replacement-fill"
+    ]

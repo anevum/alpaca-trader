@@ -43,6 +43,63 @@ class TradingEventSink:
             return True
         return f"-{owner_tag}-" in client_order_id
 
+    def _owned_order_ids_from_snapshot(
+        self,
+        orders: list[dict[str, Any]],
+    ) -> set[str]:
+        owned_ids = {
+            str(order.get("id") or "")
+            for order in orders
+            if order.get("id") and self._owns_broker_order(order)
+        }
+
+        changed = True
+        while changed:
+            changed = False
+            for order in orders:
+                order_id = str(order.get("id") or "")
+                if not order_id or order_id in owned_ids:
+                    continue
+                replaces = str(order.get("replaces") or "")
+                replaced_by = str(order.get("replaced_by") or "")
+                if (
+                    (replaces and replaces in owned_ids)
+                    or (replaced_by and replaced_by in owned_ids)
+                ):
+                    owned_ids.add(order_id)
+                    changed = True
+
+        return owned_ids
+
+    def _protective_stop_lineage_ids(
+        self,
+        orders: list[dict[str, Any]],
+    ) -> set[str]:
+        protective_ids = {
+            str(order.get("id") or "")
+            for order in orders
+            if order.get("id")
+            and "-hardstop-" in str(order.get("client_order_id") or "")
+        }
+
+        changed = True
+        while changed:
+            changed = False
+            for order in orders:
+                order_id = str(order.get("id") or "")
+                if not order_id or order_id in protective_ids:
+                    continue
+                replaces = str(order.get("replaces") or "")
+                replaced_by = str(order.get("replaced_by") or "")
+                if (
+                    (replaces and replaces in protective_ids)
+                    or (replaced_by and replaced_by in protective_ids)
+                ):
+                    protective_ids.add(order_id)
+                    changed = True
+
+        return protective_ids
+
     def managed_symbols_from_snapshot(
         self,
         *,
@@ -55,10 +112,12 @@ class TradingEventSink:
             for symbol in (getattr(self.settings, "allowed_symbols", set()) or set())
             if str(symbol).strip()
         }
+        all_orders = [*orders, *open_orders]
+        owned_order_ids = self._owned_order_ids_from_snapshot(all_orders)
         owned_orders = [
             order
-            for order in [*orders, *open_orders]
-            if self._owns_broker_order(order)
+            for order in all_orders
+            if str(order.get("id") or "") in owned_order_ids
         ]
         owned_order_ids = {
             str(order.get("id") or "")
@@ -79,21 +138,36 @@ class TradingEventSink:
         return sorted(managed)
 
     @staticmethod
-    def _is_standing_protective_stop(order: dict[str, Any]) -> bool:
+    def _is_standing_protective_stop(
+        order: dict[str, Any],
+        protective_order_ids: set[str] | None = None,
+    ) -> bool:
         client_order_id = str(order.get("client_order_id") or "")
-        return "-hardstop-" in client_order_id
+        order_id = str(order.get("id") or "")
+        return (
+            "-hardstop-" in client_order_id
+            or bool(protective_order_ids and order_id in protective_order_ids)
+        )
 
     @classmethod
-    def _projectable_order(cls, order: dict[str, Any]) -> bool:
-        if not cls._is_standing_protective_stop(order):
+    def _projectable_order(
+        cls,
+        order: dict[str, Any],
+        protective_order_ids: set[str] | None = None,
+    ) -> bool:
+        if not cls._is_standing_protective_stop(order, protective_order_ids):
             return True
         filled_qty = Decimal(str(order.get("filled_qty") or "0"))
         status = str(order.get("status") or "").lower()
         return filled_qty > 0 or status == "filled"
 
     @classmethod
-    def _inferred_exit_reason(cls, order: dict[str, Any]) -> str | None:
-        if cls._is_standing_protective_stop(order):
+    def _inferred_exit_reason(
+        cls,
+        order: dict[str, Any],
+        protective_order_ids: set[str] | None = None,
+    ) -> str | None:
+        if cls._is_standing_protective_stop(order, protective_order_ids):
             return "broker protective stop filled"
         return None
 
@@ -501,11 +575,13 @@ class TradingEventSink:
         observed_at: datetime,
     ) -> list[dict[str, Any]]:
         observed_utc = observed_at.astimezone(timezone.utc)
+        owned_order_ids = self._owned_order_ids_from_snapshot(orders)
+        protective_order_ids = self._protective_stop_lineage_ids(orders)
         bot_orders = [
             order
             for order in orders
-            if self._owns_broker_order(order)
-            and self._projectable_order(order)
+            if str(order.get("id") or "") in owned_order_ids
+            and self._projectable_order(order, protective_order_ids)
             and self._at_or_after_run_start(order.get("submitted_at"))
         ]
         bot_orders.sort(key=lambda order: str(order.get("submitted_at") or ""))
@@ -539,7 +615,10 @@ class TradingEventSink:
                     ),
                     payload={
                         "order": order,
-                        "exit_reason": self._inferred_exit_reason(order),
+                        "exit_reason": self._inferred_exit_reason(
+                            order,
+                            protective_order_ids,
+                        ),
                     },
                 )
             )
