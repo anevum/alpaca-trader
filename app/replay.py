@@ -11,7 +11,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .opportunity import correlation_checks, score_opportunity
 from .sizing import calculate_entry_notional, effective_gross_limit
-from .strategy import Signal
+from .strategy import RollingMomentumVwapStrategy, Signal
 
 
 NY = ZoneInfo("America/New_York")
@@ -54,6 +54,13 @@ class ReplayPosition:
     entry_at: datetime
     notional: Decimal
     quality_score: float
+    risk_stop_pct: Decimal
+    peak_return_pct: Decimal = Decimal("0")
+    trough_return_pct: Decimal = Decimal("0")
+    protected_floor_pct: Decimal | None = None
+    profit_protection_active: bool = False
+    thesis_failure_count: int = 0
+    last_thesis_failure_bar_time: str = ""
 
     def market_value(self, mark: Decimal) -> Decimal:
         return self.qty * mark
@@ -263,25 +270,156 @@ class ReplayEngine:
             return reference * (Decimal("1") + adjustment)
         return reference * (Decimal("1") - adjustment)
 
+    def _update_excursion_state(
+        self,
+        position: ReplayPosition,
+        bar: dict[str, Any],
+    ) -> tuple[bool, Decimal | None, Decimal]:
+        """Update MFE/MAE and return the protection state that existed pre-bar.
+
+        Historical one-minute bars do not reveal intrabar ordering. Protection
+        newly activated by the current bar is therefore not allowed to stop the
+        same bar; it becomes eligible on the next bar. This avoids look-ahead.
+        """
+        low = price(bar, "l")
+        high = price(bar, "h")
+        close = price(bar, "c")
+        entry = position.entry_price
+        if entry <= 0:
+            return (
+                position.profit_protection_active,
+                position.protected_floor_pct,
+                Decimal("0"),
+            )
+
+        prior_active = position.profit_protection_active
+        prior_floor = position.protected_floor_pct
+        current_return = (close - entry) / entry if close > 0 else Decimal("0")
+
+        if high > 0:
+            position.peak_return_pct = max(
+                position.peak_return_pct,
+                (high - entry) / entry,
+            )
+        if low > 0:
+            position.trough_return_pct = min(
+                position.trough_return_pct,
+                (low - entry) / entry,
+            )
+
+        if (
+            self.settings.profit_protect_enabled
+            and position.peak_return_pct
+            >= self.settings.profit_protect_activation_pct
+        ):
+            floor = max(
+                self.settings.profit_protect_min_pct,
+                position.peak_return_pct
+                * self.settings.profit_protect_retain_fraction,
+            )
+            if position.protected_floor_pct is not None:
+                floor = max(floor, position.protected_floor_pct)
+            position.profit_protection_active = True
+            position.protected_floor_pct = floor
+
+        return prior_active, prior_floor, current_return
+
+    def _thesis_exit(
+        self,
+        position: ReplayPosition,
+        *,
+        bars: list[dict[str, Any]],
+        confirmation_bars: dict[str, list[dict[str, Any]]],
+        now: datetime,
+        current_return: Decimal,
+    ) -> bool:
+        if (
+            not self.settings.thesis_exit_enabled
+            or not isinstance(self.strategy, RollingMomentumVwapStrategy)
+            or not bars
+        ):
+            return False
+
+        health = self.strategy.position_health(
+            bars=bars,
+            confirmation_bars=confirmation_bars,
+            symbol=position.symbol,
+            now=now,
+        )
+        thesis_failure = (
+            bool(health.get("strong_failure"))
+            and current_return <= self.settings.thesis_exit_max_return_pct
+        )
+        bar_time = str(health.get("bar_time") or "")
+        if thesis_failure:
+            if bar_time and bar_time != position.last_thesis_failure_bar_time:
+                position.thesis_failure_count += 1
+                position.last_thesis_failure_bar_time = bar_time
+            elif not bar_time and position.thesis_failure_count == 0:
+                position.thesis_failure_count = 1
+        else:
+            position.thesis_failure_count = 0
+            position.last_thesis_failure_bar_time = ""
+
+        return (
+            thesis_failure
+            and position.thesis_failure_count
+            >= self.settings.thesis_failure_cycles
+        )
+
     def _exit_decision(
         self,
         position: ReplayPosition,
         bar: dict[str, Any],
         now: datetime,
+        *,
+        bars: list[dict[str, Any]],
+        confirmation_bars: dict[str, list[dict[str, Any]]],
     ) -> tuple[str, Decimal] | None:
         low = price(bar, "l")
         high = price(bar, "h")
         close = price(bar, "c")
-        stop = position.entry_price * (Decimal("1") - self.settings.stop_pct)
-        target = position.entry_price * (Decimal("1") + self.settings.target_pct)
+        prior_active, prior_floor, current_return = self._update_excursion_state(
+            position,
+            bar,
+        )
 
-        stop_hit = low > 0 and low <= stop
+        hard_stop = position.entry_price * (
+            Decimal("1") - position.risk_stop_pct
+        )
+        target = position.entry_price * (
+            Decimal("1") + self.settings.target_pct
+        )
+
+        hard_stop_hit = low > 0 and low <= hard_stop
         target_hit = high > 0 and high >= target
-        if stop_hit:
-            # One-minute bars do not reveal intrabar ordering. Stop-first is conservative.
-            return "stop", stop
+        if hard_stop_hit:
+            # One-minute bars do not reveal intrabar ordering. Hard-stop first
+            # is conservative when both stop and target are touched.
+            return "stop", hard_stop
+
+        if prior_active and prior_floor is not None:
+            protected_price = position.entry_price * (
+                Decimal("1") + prior_floor
+            )
+            if self.settings.broker_protective_stop_enabled:
+                if low > 0 and low <= protected_price:
+                    return "protect", protected_price
+            elif close > 0 and close <= protected_price:
+                return "protect", close
+
         if target_hit:
             return "target", target
+
+        if self._thesis_exit(
+            position,
+            bars=bars,
+            confirmation_bars=confirmation_bars,
+            now=now,
+            current_return=current_return,
+        ):
+            return "thesis", close
+
         if self.settings.max_hold_minutes > 0:
             elapsed = (now - position.entry_at).total_seconds() / 60
             if elapsed >= self.settings.max_hold_minutes:
@@ -326,6 +464,15 @@ class ReplayEngine:
                 ),
             }
 
+        mfe_values = [
+            d(trade.get("max_favorable_excursion"))
+            for trade in trades
+        ]
+        mae_values = [
+            d(trade.get("max_adverse_excursion"))
+            for trade in trades
+        ]
+
         return {
             "initial_equity": str(initial_equity.quantize(CENT)),
             "ending_equity": str(ending_equity.quantize(CENT)),
@@ -355,6 +502,22 @@ class ReplayEngine:
             "max_drawdown": str(max_drawdown.quantize(CENT)),
             "max_drawdown_pct": round(
                 float(max_drawdown / initial_equity) if initial_equity > 0 else 0.0,
+                6,
+            ),
+            "average_mfe_pct": round(
+                float(
+                    sum(mfe_values, Decimal("0"))
+                    / Decimal(len(mfe_values))
+                )
+                if mfe_values else 0.0,
+                6,
+            ),
+            "average_mae_pct": round(
+                float(
+                    sum(mae_values, Decimal("0"))
+                    / Decimal(len(mae_values))
+                )
+                if mae_values else 0.0,
                 6,
             ),
             "signals_qualified": counters["signals_qualified"],
@@ -427,7 +590,20 @@ class ReplayEngine:
                     if not current or stamp(current[-1]) != bar_time:
                         continue
                     position = positions[symbol]
-                    decision = self._exit_decision(position, current[-1], now)
+                    decision = self._exit_decision(
+                        position,
+                        current[-1],
+                        now,
+                        bars=current,
+                        confirmation_bars={
+                            confirmation_symbol: visible.get(
+                                confirmation_symbol,
+                                [],
+                            )
+                            for confirmation_symbol
+                            in self.settings.confirmation_symbols
+                        },
+                    )
                     if decision is None:
                         continue
                     exit_reason, exit_reference = decision
@@ -449,6 +625,12 @@ class ReplayEngine:
                             "return_pct": round(float(net_pnl / cost_basis), 6)
                             if cost_basis > 0 else 0.0,
                             "quality_score": position.quality_score,
+                            "max_favorable_excursion": str(
+                                position.peak_return_pct
+                            ),
+                            "max_adverse_excursion": str(
+                                position.trough_return_pct
+                            ),
                             "exit_reason": exit_reason,
                         }
                     )
@@ -588,6 +770,14 @@ class ReplayEngine:
                         continue
 
                     cash -= cost
+                    effective_stop_pct = d(
+                        (signal.metadata or {}).get(
+                            "effective_stop_pct",
+                            self.settings.stop_pct,
+                        )
+                    )
+                    if effective_stop_pct <= 0:
+                        effective_stop_pct = self.settings.stop_pct
                     positions[symbol] = ReplayPosition(
                         symbol=symbol,
                         qty=qty,
@@ -595,7 +785,14 @@ class ReplayEngine:
                         entry_reference=reference,
                         entry_at=now,
                         notional=cost,
-                        quality_score=float((signal.metadata or {}).get("quality_score", 0) or 0),
+                        quality_score=float(
+                            (signal.metadata or {}).get(
+                                "quality_score",
+                                0,
+                            )
+                            or 0
+                        ),
+                        risk_stop_pct=effective_stop_pct,
                     )
                     entries_today += 1
                     planned += 1
@@ -628,6 +825,12 @@ class ReplayEngine:
                             "return_pct": round(float(net_pnl / cost_basis), 6)
                             if cost_basis > 0 else 0.0,
                             "quality_score": position.quality_score,
+                            "max_favorable_excursion": str(
+                                position.peak_return_pct
+                            ),
+                            "max_adverse_excursion": str(
+                                position.trough_return_pct
+                            ),
                             "exit_reason": "session_end",
                         }
                     )
@@ -658,9 +861,11 @@ class ReplayEngine:
                 "spread_bps": str(spread_bps),
                 "slippage_bps_per_side": str(slippage_bps),
                 "commission_per_order": "0",
-                "intrabar_stop_target_policy": "stop_first",
+                "intrabar_stop_target_policy": "hard_stop_then_prior_protection_then_target",
+                "new_profit_protection_same_bar": False,
                 "historical_quotes_available": False,
                 "same_strategy_logic": True,
+                "exit_engine_v2_modeled": True,
                 "broker_orders_possible": False,
             },
             "strategy": {
@@ -671,6 +876,11 @@ class ReplayEngine:
                 "stop_pct": str(self.settings.stop_pct),
                 "target_pct": str(self.settings.target_pct),
                 "max_hold_minutes": self.settings.max_hold_minutes,
+                "profit_protect_enabled": self.settings.profit_protect_enabled,
+                "thesis_exit_enabled": self.settings.thesis_exit_enabled,
+                "broker_protective_stop_enabled": (
+                    self.settings.broker_protective_stop_enabled
+                ),
                 "max_concurrent_positions": self.settings.max_concurrent_positions,
                 "max_new_entries_per_cycle": self.settings.max_new_entries_per_cycle,
                 "max_daily_orders": self.settings.max_daily_orders,
