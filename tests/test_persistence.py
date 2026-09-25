@@ -158,3 +158,59 @@ def test_reconciliation_only_projects_orders_owned_by_runtime_tag():
         event for event in sink.events if event["event_type"] == "broker_fill"
     ]
     assert [event["payload"]["activity"]["id"] for event in fill_events] == ["fill-live"]
+
+
+def test_unfilled_hardstop_is_not_projected_but_filled_hardstop_is():
+    sink = CapturingSink()
+    observed_at = datetime(2026, 9, 24, 20, 0, tzinfo=timezone.utc)
+    orders = [
+        {
+            "id": "open-stop",
+            "client_order_id": "anevum-spy-hardstop-abc",
+            "symbol": "SPY",
+            "side": "sell",
+            "status": "new",
+            "qty": "0.2",
+            "filled_qty": "0",
+            "stop_price": "99.65",
+            "submitted_at": "2026-09-24T14:01:00Z",
+        },
+        {
+            "id": "filled-stop",
+            "client_order_id": "anevum-qqq-hardstop-def",
+            "symbol": "QQQ",
+            "side": "sell",
+            "status": "filled",
+            "qty": "0.2",
+            "filled_qty": "0.2",
+            "filled_avg_price": "99.60",
+            "stop_price": "99.65",
+            "submitted_at": "2026-09-24T14:02:00Z",
+            "filled_at": "2026-09-24T14:02:01Z",
+        },
+    ]
+
+    events = sink._build_reconciliation_events(
+        account={
+            "equity": "100",
+            "last_equity": "100",
+            "cash": "100",
+            "buying_power": "100",
+        },
+        positions=[],
+        orders=orders,
+        fills=[],
+        correlation_id="cycle-hardstop",
+        observed_at=observed_at,
+    )
+
+    broker_events = [
+        event for event in events if event["event_type"] == "broker_order"
+    ]
+    assert [event["payload"]["order"]["id"] for event in broker_events] == [
+        "filled-stop"
+    ]
+    assert (
+        broker_events[0]["payload"]["exit_reason"]
+        == "broker protective stop filled"
+    )
