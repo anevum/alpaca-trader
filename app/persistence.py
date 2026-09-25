@@ -276,7 +276,9 @@ class TradingEventSink:
             ),
             symbol=str(order.get("symbol") or "").upper(),
             correlation_id=correlation_id,
-            occurred_at=str(order.get("submitted_at") or None) or None,
+            occurred_at=(
+                str(order.get("submitted_at")) if order.get("submitted_at") else None
+            ),
             payload={
                 "order": order,
                 "intent_id": intent_id,
@@ -316,10 +318,16 @@ class TradingEventSink:
                 continue
             self.record_broker_order(order, correlation_id=correlation_id)
 
+        bot_order_ids = {
+            str(order.get("id") or "")
+            for order in orders
+            if str(order.get("client_order_id") or "").startswith("anevum-")
+            and order.get("id")
+        }
         for activity in fills:
             activity_id = str(activity.get("id") or "")
             order_id = str(activity.get("order_id") or "")
-            if not activity_id or not order_id:
+            if not activity_id or not order_id or order_id not in bot_order_ids:
                 continue
             self.emit(
                 event_type="broker_fill",
