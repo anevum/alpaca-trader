@@ -14,6 +14,7 @@ The service runs guarded long-only intraday scanners for a configured universe o
 - hold and manage multiple bounded fractional long positions concurrently;
 - verify the selected asset is active, tradable and fractionable before submission;
 - enforce allowlisting, maximum entry/position size, an account-wide daily entry limit and daily-loss circuit breaker;
+- size qualified entries from prior-close equity, stop distance, remaining cash, remaining position slots, and an account-level gross-exposure ceiling;
 - avoid averaging down and shorting;
 - manage per-position stop, target, time, and end-of-day exits independently; current fractional exits are bot-managed rather than broker-resident bracket legs;
 - expose safe public health state plus protected account, position, order and scanner telemetry.
@@ -74,7 +75,7 @@ For each candidate, the rolling mode:
 10. Re-entry cooldown is measured from the prior completed exit rather than from the prior entry.
 11. Uses bot-managed stop/target exits and, when configured, a `MAX_HOLD_MINUTES` time stop.
 
-The Test 002 small-account profile in `.env.example` uses a 3/8-minute fast/slow structure, 0.35% stop, 0.50% target, 15-minute maximum hold, 2-minute post-exit same-symbol cooldown, entries through 3:30 PM ET, up to 3 concurrent positions, up to 2 new entries in one scan cycle, a $60 total-position-notional cap, a 90-second latest-bar freshness limit, a 0.20% maximum quoted spread, and up to 12 entry orders while retaining the $1 daily-loss circuit breaker. These are implementation choices, not a claim of profitability.
+The small-account profile in `.env.example` uses a 3/8-minute fast/slow structure, 0.35% stop, 0.50% target, 15-minute maximum hold, 2-minute post-exit same-symbol cooldown, entries through 3:30 PM ET, up to 3 concurrent positions, up to 2 new entries in one scan cycle, and up to 12 entry orders while retaining the $1 daily-loss circuit breaker. Entry notional is now equity-aware: the allocator budgets 0.10% of prior-close equity per trade, caps total long exposure at 80% of prior-close equity, divides remaining exposure capacity across the remaining position slots, and still obeys hard per-order, per-position, cash, and $250 gross-notional ceilings. These are implementation choices, not a claim of profitability.
 
 ## Risk controls
 
@@ -86,6 +87,7 @@ New entries are blocked when:
 - the same symbol already has a long position or open order;
 - the configured concurrent-position limit has been reached;
 - the order exceeds `MAX_ORDER_NOTIONAL`, `MAX_POSITION_NOTIONAL`, or `MAX_TOTAL_POSITION_NOTIONAL`;
+- equity-risk sizing would take gross exposure above `MAX_GROSS_EXPOSURE_PCT` of prior-close equity;
 - the candidate bar/confirmation data is stale or its quoted spread exceeds `MAX_SPREAD_PCT`;
 - the account-wide daily ANEVUM entry limit has been reached;
 - cash is insufficient;

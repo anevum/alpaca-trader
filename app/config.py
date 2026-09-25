@@ -59,6 +59,18 @@ class Settings(BaseSettings):
         default=Decimal("80.35"), alias="MAX_TOTAL_POSITION_NOTIONAL"
     )
 
+    # Small-capital allocator. Fixed sizing remains available as a fallback.
+    sizing_mode: str = Field(default="fixed", alias="SIZING_MODE")
+    risk_per_trade_pct: Decimal = Field(
+        default=Decimal("0.001"), alias="RISK_PER_TRADE_PCT"
+    )
+    max_gross_exposure_pct: Decimal = Field(
+        default=Decimal("1.0"), alias="MAX_GROSS_EXPOSURE_PCT"
+    )
+    min_order_notional: Decimal = Field(
+        default=Decimal("1.00"), alias="MIN_ORDER_NOTIONAL"
+    )
+
     allowed_symbols_raw: str = Field(default="SPY", alias="ALLOWED_SYMBOLS")
     scan_symbols_raw: str = Field(default="", alias="SCAN_SYMBOLS")
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
@@ -248,6 +260,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "MAX_TOTAL_POSITION_NOTIONAL cannot be below ORDER_NOTIONAL"
             )
+        if self.sizing_mode not in {"fixed", "equity_risk"}:
+            raise ValueError("SIZING_MODE must be fixed or equity_risk")
+        if not Decimal("0") < self.risk_per_trade_pct <= Decimal("0.02"):
+            raise ValueError("RISK_PER_TRADE_PCT must be between 0 and 0.02")
+        if not Decimal("0") < self.max_gross_exposure_pct <= Decimal("1"):
+            raise ValueError("MAX_GROSS_EXPOSURE_PCT must be between 0 and 1")
+        if self.min_order_notional <= 0:
+            raise ValueError("MIN_ORDER_NOTIONAL must be positive")
+        if self.min_order_notional > self.max_order_notional:
+            raise ValueError("MIN_ORDER_NOTIONAL cannot exceed MAX_ORDER_NOTIONAL")
         if not 30 <= self.max_bar_age_seconds <= 600:
             raise ValueError("MAX_BAR_AGE_SECONDS must be between 30 and 600")
         if not Decimal("0") < self.max_spread_pct < Decimal("0.05"):
