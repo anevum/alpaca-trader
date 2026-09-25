@@ -55,6 +55,40 @@ def effective_gross_limit(
     return min(hard_limit, percent_limit)
 
 
+def effective_position_limit(
+    settings: Settings,
+    account: dict[str, Any],
+) -> Decimal:
+    if settings.portfolio_limit_mode != "risk":
+        return settings.max_position_notional
+
+    equity = base_equity(account)
+    if equity <= 0:
+        return Decimal("0")
+    return min(
+        settings.max_position_notional,
+        equity * settings.max_position_gross_pct,
+    )
+
+
+def effective_portfolio_stop_risk_limit(
+    settings: Settings,
+    account: dict[str, Any],
+) -> Decimal:
+    equity = base_equity(account)
+    if equity <= 0:
+        return Decimal("0")
+    return equity * settings.max_portfolio_stop_risk_pct
+
+
+def portfolio_stop_risk(
+    settings: Settings,
+    positions: list[dict[str, Any]],
+) -> Decimal:
+    """Conservative nominal risk if every long position reaches the configured stop."""
+    return long_exposure(positions) * settings.stop_pct
+
+
 def calculate_entry_notional(
     settings: Settings,
     account: dict[str, Any],
@@ -62,25 +96,24 @@ def calculate_entry_notional(
 ) -> Decimal:
     """Return a bounded entry notional without changing the strategy signal.
 
-    In equity_risk mode the allocator caps each entry by:
-    - risk budget divided by configured stop distance;
-    - an equal share of remaining gross-exposure capacity;
-    - remaining cash;
-    - hard per-order and per-position limits.
+    Count mode preserves the original equal-slot allocator.
 
-    The gross-exposure limit itself is the lower of the hard dollar ceiling and
-    MAX_GROSS_EXPOSURE_PCT of prior-close equity.
+    Risk mode has no fixed position-count dependency. Each entry is bounded by:
+    - per-trade risk budget;
+    - per-position equity percentage;
+    - remaining portfolio gross exposure;
+    - remaining portfolio stop-risk budget;
+    - remaining cash;
+    - hard order/position dollar ceilings.
+
+    This makes trade/position count an output of capital and risk capacity rather
+    than a configured quota.
     """
     if settings.sizing_mode == "fixed":
         return settings.order_notional
 
     equity = base_equity(account)
     if equity <= 0 or settings.stop_pct <= 0:
-        return Decimal("0")
-
-    used_slots = long_position_count(positions)
-    slots_remaining = settings.max_concurrent_positions - used_slots
-    if slots_remaining <= 0:
         return Decimal("0")
 
     gross_limit = effective_gross_limit(settings, account)
@@ -95,15 +128,36 @@ def calculate_entry_notional(
 
     risk_budget = equity * settings.risk_per_trade_pct
     risk_notional = risk_budget / settings.stop_pct
-    slot_budget = remaining_gross / Decimal(slots_remaining)
 
-    notional = min(
-        risk_notional,
-        slot_budget,
-        cash,
-        settings.max_order_notional,
-        settings.max_position_notional,
-    ).quantize(CENT, rounding=ROUND_DOWN)
+    if settings.portfolio_limit_mode == "risk":
+        position_limit = effective_position_limit(settings, account)
+        risk_limit = effective_portfolio_stop_risk_limit(settings, account)
+        current_stop_risk = portfolio_stop_risk(settings, positions)
+        remaining_stop_risk = max(risk_limit - current_stop_risk, Decimal("0"))
+        remaining_risk_notional = remaining_stop_risk / settings.stop_pct
+
+        notional = min(
+            risk_notional,
+            position_limit,
+            remaining_gross,
+            remaining_risk_notional,
+            cash,
+            settings.max_order_notional,
+            settings.max_position_notional,
+        ).quantize(CENT, rounding=ROUND_DOWN)
+    else:
+        used_slots = long_position_count(positions)
+        slots_remaining = settings.max_concurrent_positions - used_slots
+        if slots_remaining <= 0:
+            return Decimal("0")
+        slot_budget = remaining_gross / Decimal(slots_remaining)
+        notional = min(
+            risk_notional,
+            slot_budget,
+            cash,
+            settings.max_order_notional,
+            settings.max_position_notional,
+        ).quantize(CENT, rounding=ROUND_DOWN)
 
     if notional < settings.min_order_notional:
         return Decimal("0")
@@ -121,10 +175,18 @@ def sizing_snapshot(
     recommended = calculate_entry_notional(settings, account, positions)
     return {
         "mode": settings.sizing_mode,
+        "portfolio_limit_mode": settings.portfolio_limit_mode,
         "base_equity": str(equity),
         "gross_limit": str(gross_limit),
         "current_exposure": str(exposure),
         "risk_per_trade_pct": str(settings.risk_per_trade_pct),
         "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
+        "max_position_gross_pct": str(settings.max_position_gross_pct),
+        "position_limit": str(effective_position_limit(settings, account)),
+        "max_portfolio_stop_risk_pct": str(settings.max_portfolio_stop_risk_pct),
+        "portfolio_stop_risk_limit": str(
+            effective_portfolio_stop_risk_limit(settings, account)
+        ),
+        "current_portfolio_stop_risk": str(portfolio_stop_risk(settings, positions)),
         "recommended_notional": str(recommended),
     }
