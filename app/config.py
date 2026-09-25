@@ -106,6 +106,16 @@ class Settings(BaseSettings):
     max_bar_age_seconds: int = Field(default=90, alias="MAX_BAR_AGE_SECONDS")
     max_spread_pct: Decimal = Field(default=Decimal("0.002"), alias="MAX_SPREAD_PCT")
 
+    max_pairwise_correlation: Decimal = Field(
+        default=Decimal("0.85"), alias="MAX_PAIRWISE_CORRELATION"
+    )
+    correlation_lookback_bars: int = Field(
+        default=30, alias="CORRELATION_LOOKBACK_BARS"
+    )
+    correlation_min_observations: int = Field(
+        default=8, alias="CORRELATION_MIN_OBSERVATIONS"
+    )
+
     @property
     def base_url(self) -> str:
         if self.trading_mode == "live":
@@ -274,6 +284,14 @@ class Settings(BaseSettings):
             raise ValueError("MAX_BAR_AGE_SECONDS must be between 30 and 600")
         if not Decimal("0") < self.max_spread_pct < Decimal("0.05"):
             raise ValueError("MAX_SPREAD_PCT must be between 0 and 0.05")
+        if not Decimal("0") < self.max_pairwise_correlation <= Decimal("1"):
+            raise ValueError("MAX_PAIRWISE_CORRELATION must be between 0 and 1")
+        if not 8 <= self.correlation_lookback_bars <= 120:
+            raise ValueError("CORRELATION_LOOKBACK_BARS must be between 8 and 120")
+        if not 3 <= self.correlation_min_observations < self.correlation_lookback_bars:
+            raise ValueError(
+                "CORRELATION_MIN_OBSERVATIONS must be at least 3 and below CORRELATION_LOOKBACK_BARS"
+            )
         if not self.scan_symbols:
             raise ValueError("SCAN_SYMBOLS/STRATEGY_SYMBOL cannot both be empty")
         if len(self.scan_symbols) > 30:
