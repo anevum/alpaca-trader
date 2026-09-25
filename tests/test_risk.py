@@ -323,3 +323,46 @@ def test_risk_mode_nonzero_daily_order_cap_is_enforced():
     )
     assert not result.allowed
     assert "daily entry-order limit" in result.reason
+
+
+def test_daily_loss_breaker_can_scale_with_equity():
+    s = settings(
+        MAX_DAILY_LOSS="0",
+        MAX_DAILY_LOSS_PCT="0.01",
+    )
+    result = validate_buy(
+        s,
+        "QQQ",
+        Decimal("5"),
+        {"cash": "10", "equity": "98.90", "last_equity": "100"},
+        [],
+        0,
+    )
+    assert not result.allowed
+    assert "daily loss circuit breaker" in result.reason
+
+
+def test_equity_risk_mode_can_disable_hard_total_notional_cap():
+    s = settings(
+        SIZING_MODE="equity_risk",
+        PORTFOLIO_LIMIT_MODE="risk",
+        MAX_CONCURRENT_POSITIONS="0",
+        MAX_NEW_ENTRIES_PER_CYCLE="0",
+        MAX_DAILY_ORDERS="0",
+        MAX_ORDER_NOTIONAL="100",
+        MAX_POSITION_NOTIONAL="100",
+        MAX_TOTAL_POSITION_NOTIONAL="0",
+        MAX_GROSS_EXPOSURE_PCT="0.80",
+        MAX_POSITION_GROSS_PCT="0.25",
+        MAX_PORTFOLIO_STOP_RISK_PCT="0.01",
+        STOP_PCT="0.0035",
+    )
+    result = validate_buy(
+        s,
+        "QQQ",
+        Decimal("20"),
+        {"cash": "100", "equity": "100", "last_equity": "100"},
+        [],
+        0,
+    )
+    assert result.allowed
