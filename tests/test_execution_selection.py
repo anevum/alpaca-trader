@@ -170,3 +170,45 @@ def test_dynamic_universe_keeps_bot_opened_position_managed_after_rotation():
     managed = engine._managed_positions([position], orders)
 
     assert managed == [position]
+
+
+
+def test_universe_snapshot_is_emitted_once_per_refresh_timestamp():
+    now = datetime(2026, 9, 25, 10, 1, tzinfo=NY)
+
+    class FakeUniverse:
+        def snapshot(self):
+            return {
+                "selector": "dynamic_universe_v1",
+                "active_rankings": [{"symbol": "SPY", "score": 1.0}],
+            }
+
+    class FakeLedger:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    engine = object.__new__(ExecutionEngine)
+    engine.settings = SimpleNamespace(trading_run_id="run-1")
+    engine.state = SimpleNamespace(
+        universe_updated_at=now,
+        current_correlation_id="cycle-1",
+    )
+    engine.universe = FakeUniverse()
+    engine.ledger = FakeLedger()
+    engine._last_universe_snapshot_key = None
+
+    engine._record_universe_snapshot()
+    engine._record_universe_snapshot()
+
+    assert len(engine.ledger.events) == 1
+    event = engine.ledger.events[0]
+    assert event["event_type"] == "universe_snapshot"
+    assert event["occurred_at"] == now.isoformat()
+    assert event["payload"]["active_rankings"][0]["symbol"] == "SPY"
+
+    engine.state.universe_updated_at = now.replace(minute=6)
+    engine._record_universe_snapshot()
+    assert len(engine.ledger.events) == 2
