@@ -301,6 +301,12 @@ class TradingEventSink:
             int((cycle_ended_at - cycle_started_at).total_seconds() * 1000),
             0,
         )
+        if market_is_open is None:
+            market_is_open = (
+                cycle_outcome != "market is closed"
+                if cycle_outcome
+                else None
+            )
         candidates: list[dict[str, Any]] = []
         qualified_count = 0
         for rank, (symbol, signal) in enumerate(scan.items(), start=1):
