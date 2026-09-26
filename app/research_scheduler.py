@@ -331,10 +331,7 @@ class ResearchReportScheduler:
         self.last_error = None
         self.event_sink.emit(
             event_type="research_daily_report",
-            event_key=(
-                f"research_daily_report:{session.isoformat()}:"
-                f"{getattr(self.settings, 'strategy_version_id', '') or 'unversioned'}"
-            ),
+            event_key=f"research_daily_report:{session.isoformat()}",
             occurred_at=datetime.now(NY).isoformat(),
             payload=payload,
         )
@@ -413,10 +410,7 @@ class ResearchReportScheduler:
         self.last_error = None
         self.event_sink.emit(
             event_type="research_weekly_report",
-            event_key=(
-                f"research_weekly_report:{end_date.isoformat()}:"
-                f"{getattr(self.settings, 'strategy_version_id', '') or 'unversioned'}"
-            ),
+            event_key=f"research_weekly_report:{end_date.isoformat()}",
             occurred_at=datetime.now(NY).isoformat(),
             payload=payload,
         )
