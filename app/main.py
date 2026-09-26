@@ -16,6 +16,7 @@ from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
+from .provenance import RHEN_VERSION, capture_runtime_provenance
 from .research_scheduler import ResearchReportScheduler
 from .sizing import sizing_snapshot
 from .state import runtime_state
@@ -547,6 +548,44 @@ async def monitor_loop():
             pass
 
 
+def _runtime_configuration_snapshot() -> dict:
+    """Non-secret runtime configuration needed to reproduce deployment state."""
+    return {
+        "trading_mode": settings.trading_mode,
+        "scan_only": settings.scan_only,
+        "execution_enabled": settings.execution_enabled,
+        "bot_armed": settings.bot_armed,
+        "live_trading": settings.live_trading,
+        "strategy_name": settings.strategy_name,
+        "strategy_version_id": settings.strategy_version_id,
+        "data_feed": settings.data_feed,
+        "bar_timeframe": settings.bar_timeframe,
+        "scan_symbols": list(settings.scan_symbols),
+        "confirmation_symbols": list(settings.confirmation_symbols),
+        "dynamic_universe_enabled": settings.dynamic_universe_enabled,
+        "universe_size": settings.universe_size,
+        "entry_start": settings.entry_start_raw,
+        "entry_cutoff": settings.entry_cutoff_raw,
+        "force_flat_time": settings.force_flat_time_raw,
+        "sizing_mode": settings.sizing_mode,
+        "portfolio_limit_mode": settings.portfolio_limit_mode,
+        "order_notional": str(settings.order_notional),
+        "max_concurrent_positions": settings.max_concurrent_positions,
+        "max_new_entries_per_cycle": settings.max_new_entries_per_cycle,
+        "max_total_position_notional": str(settings.max_total_position_notional),
+        "max_position_gross_pct": str(settings.max_position_gross_pct),
+        "max_portfolio_stop_risk_pct": str(settings.max_portfolio_stop_risk_pct),
+        "max_daily_orders": settings.max_daily_orders,
+        "max_daily_loss": str(settings.max_daily_loss),
+        "stop_pct": str(settings.stop_pct),
+        "target_pct": str(settings.target_pct),
+        "broker_protective_stop_enabled": settings.broker_protective_stop_enabled,
+        "volatility_stop_enabled": settings.volatility_stop_enabled,
+        "profit_protect_enabled": settings.profit_protect_enabled,
+        "thesis_exit_enabled": settings.thesis_exit_enabled,
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(
@@ -606,6 +645,54 @@ async def lifespan(app: FastAPI):
         flush=True,
     )
     await event_sink.start()
+
+    runtime_provenance = capture_runtime_provenance()
+    runtime_start_payload = {
+        "trading_mode": settings.trading_mode,
+        "scan_only": settings.scan_only,
+        "execution_enabled": settings.execution_enabled,
+        "bot_armed": settings.bot_armed,
+        "strategy_name": settings.strategy_name,
+        "persistence_configured": settings.persistence_configured,
+        "run_id": settings.trading_run_id or None,
+        "strategy_version_id": settings.strategy_version_id or None,
+        "runtime": runtime_provenance.as_dict(),
+        "configuration": _runtime_configuration_snapshot(),
+    }
+    runtime_event_key = (
+        f"{settings.trading_run_id}:runtime_start:"
+        f"{runtime_provenance.runtime_instance_id}"
+    )
+    runtime_start_persisted = await event_sink.emit_critical(
+        event_type="runtime_start",
+        event_key=runtime_event_key,
+        occurred_at=runtime_provenance.runtime_started_at,
+        correlation_id=uuid4().hex,
+        payload=runtime_start_payload,
+    )
+    if not runtime_start_persisted:
+        # Preserve eventual delivery without changing execution behavior.
+        event_sink.emit(
+            event_type="runtime_start",
+            event_key=runtime_event_key,
+            occurred_at=runtime_provenance.runtime_started_at,
+            correlation_id=uuid4().hex,
+            payload=runtime_start_payload,
+        )
+        print(
+            "RUNTIME_PROVENANCE_PERSIST_WARNING",
+            {
+                "runtime_instance_id": runtime_provenance.runtime_instance_id,
+                "error": event_sink.last_error,
+            },
+            flush=True,
+        )
+    print(
+        "RUNTIME_PROVENANCE",
+        runtime_provenance.as_dict(),
+        flush=True,
+    )
+
     if settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
         await reconcile_broker_state(startup=True, force=True)
@@ -618,29 +705,25 @@ async def lifespan(app: FastAPI):
         runtime_state.startup_reconciled = True
         runtime_state.reconciliation_safe = False
 
-    event_sink.emit(
-        event_type="runtime_start",
-        correlation_id=uuid4().hex,
-        payload={
-            "trading_mode": settings.trading_mode,
-            "scan_only": settings.scan_only,
-            "execution_enabled": settings.execution_enabled,
-            "bot_armed": settings.bot_armed,
-            "strategy_name": settings.strategy_name,
-            "persistence_configured": settings.persistence_configured,
-        },
-    )
     await research_reports.start()
     task = asyncio.create_task(monitor_loop())
     yield
     _stop.set()
     await task
     await research_reports.stop()
-    event_sink.emit(event_type="runtime_stop", correlation_id=uuid4().hex)
+    event_sink.emit(
+        event_type="runtime_stop",
+        correlation_id=uuid4().hex,
+        payload={
+            "runtime_instance_id": runtime_provenance.runtime_instance_id,
+            "deployment_id": runtime_provenance.deployment_id,
+            "git_commit": runtime_provenance.git_commit,
+        },
+    )
     await event_sink.stop()
 
 
-app = FastAPI(title="RHEN", version="0.8.1", lifespan=lifespan)
+app = FastAPI(title="RHEN", version=RHEN_VERSION, lifespan=lifespan)
 
 
 @app.get("/health")
