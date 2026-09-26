@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import httpx
 from datetime import date, datetime, time, timedelta
@@ -431,11 +432,10 @@ class ResearchReportScheduler:
                 "generator": "alpaca-trader",
                 "trading_run_id": getattr(self.settings, "trading_run_id", "") or None,
                 "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
-                "runtime_git_commit": (
-                    (persistence.get("runtime") or {}).get("git_commit")
-                    if isinstance(persistence.get("runtime"), dict)
-                    else None
-                ),
+                "runtime_git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA"),
+                "runtime_deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+                "runtime_service_id": os.environ.get("RAILWAY_SERVICE_ID"),
+                "runtime_environment_id": os.environ.get("RAILWAY_ENVIRONMENT_ID"),
                 "source": "canonical_daily_reports_plus_telemetry",
             },
         )
