@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
       `;
       return json(200, {
         ok: true,
-        report_version: "rhen-weekly-v1",
+        report_version: "rhen-weekly-v1.1",
         inputs: rows[0]?.inputs ?? {},
       });
     }
@@ -92,7 +92,7 @@ Deno.serve(async (req) => {
       }
       return json(200, {
         ok: true,
-        report_version: "rhen-weekly-v1",
+        report_version: "rhen-weekly-v1.1",
         report: rows[0]?.report_payload ?? null,
       });
     }
