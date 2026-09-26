@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 
 import httpx
@@ -8,6 +10,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .post_event_evidence import PostEventEvidenceRunner
 from .research_reporting import (
     classify_daily,
     enrich_excursions,
@@ -21,6 +24,7 @@ from .weekly_reporting import REPORT_VERSION, build_weekly_report
 
 NY = ZoneInfo("America/New_York")
 REPORT_AFTER = time(16, 20)
+DAILY_REPORT_VERSION = "rhen-daily-v1.1"
 
 
 def is_last_session_of_week(current: date, next_session: date | None) -> bool:
@@ -51,6 +55,7 @@ class ResearchReportScheduler:
         self.weekly_done: set[date] = set()
         self.last_daily_report: dict[str, Any] | None = None
         self.last_weekly_report: dict[str, Any] | None = None
+        self.last_post_event_summary: dict[str, Any] | None = None
         self.last_error: str | None = None
 
     def status(self) -> dict[str, Any]:
@@ -68,7 +73,9 @@ class ResearchReportScheduler:
                 else None
             ),
             "last_error": self.last_error,
+            "daily_report_version": DAILY_REPORT_VERSION,
             "weekly_report_version": REPORT_VERSION,
+            "last_post_event_summary": self.last_post_event_summary,
             "last_weekly_completeness": (
                 self.last_weekly_report.get("completeness_state")
                 if self.last_weekly_report
@@ -134,6 +141,8 @@ class ResearchReportScheduler:
 
         latest = completed[-1]
         if latest not in self.daily_done:
+            if getattr(self.event_sink, "enabled", False):
+                await self.generate_post_event_evidence(latest)
             await self.generate_daily(latest)
             self.daily_done.add(latest)
 
@@ -165,6 +174,8 @@ class ResearchReportScheduler:
             return
 
         if current.date() not in self.daily_done:
+            if getattr(self.event_sink, "enabled", False):
+                await self.generate_post_event_evidence(current.date())
             await self.generate_daily(current.date())
             self.daily_done.add(current.date())
 
@@ -266,9 +277,52 @@ class ResearchReportScheduler:
             "persistence": persistence,
         }
 
+    async def generate_post_event_evidence(self, session: date) -> dict[str, Any]:
+        """Compute analytics only after the session and all requested horizons mature."""
+        runner = PostEventEvidenceRunner(
+            settings=self.settings,
+            market_data=self.market_data,
+            event_sink=self.event_sink,
+            evidence_reader=self._report_api_get,
+        )
+        summary = await runner.run_session(session)
+        if getattr(self.event_sink, "enabled", False):
+            await self.event_sink.queue.join()
+        payload = {
+            "session": summary.session,
+            "candidates": summary.candidates,
+            "outcome_events": summary.outcome_events,
+            "comparison_events": summary.comparison_events,
+            "complete_outcomes": summary.complete_outcomes,
+            "incomplete_outcomes": summary.incomplete_outcomes,
+            "error_outcomes": summary.error_outcomes,
+            "analytics_only": True,
+        }
+        self.last_post_event_summary = payload
+        return payload
+
+    async def _daily_post_event_inputs(self, session: date) -> dict[str, Any]:
+        try:
+            payload = await self._report_api_get(
+                evidence_session=session.isoformat(),
+            )
+        except Exception as exc:
+            return {
+                "post_event": {},
+                "latest_daily_report": None,
+                "warning": f"canonical post-event evidence unavailable: {type(exc).__name__}: {exc}",
+            }
+        return {
+            "post_event": payload.get("post_event") or {},
+            "latest_daily_report": payload.get("latest_daily_report"),
+            "warning": None,
+        }
+
     async def generate_daily(self, session: date) -> dict[str, Any]:
         evidence = await self._collect(session, session)
         account = await self.client.account()
+        canonical = await self._daily_post_event_inputs(session)
+        post_event = canonical.get("post_event") or {}
         runtime = self._runtime_snapshot()
         classification = classify_daily(evidence["metrics"], runtime)
         if (
@@ -286,9 +340,63 @@ class ResearchReportScheduler:
             evidence["funnel"],
             classification,
         )
+        daily_warnings = list(evidence["data_quality_warnings"])
+        if canonical.get("warning"):
+            daily_warnings.append(str(canonical["warning"]))
+        outcome_status = post_event.get("forward_outcome_status") or {}
+        if int(outcome_status.get("incomplete_rows") or 0):
+            daily_warnings.append(
+                "Some candidate horizons are incomplete because the requested window did not have sufficient regular-session data."
+            )
+        if int(outcome_status.get("error_rows") or 0):
+            daily_warnings.append(
+                "One or more candidate forward-outcome measurements failed and remain explicitly recorded as errors."
+            )
+        live_offline = post_event.get("live_offline_summary") or []
+        if any(int(row.get("unreconstructable") or 0) for row in live_offline):
+            daily_warnings.append(
+                "Some live-vs-offline decisions are unreconstructable because required decision-time evidence was not historically retained."
+            )
+
+        fingerprint_material = {
+            "version": DAILY_REPORT_VERSION,
+            "session": session.isoformat(),
+            "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
+            "metrics": serialize(evidence["metrics"]),
+            "forward_outcomes": post_event.get("forward_outcomes_by_horizon") or [],
+            "live_offline": live_offline,
+        }
+        source_fingerprint = hashlib.sha256(
+            json.dumps(
+                fingerprint_material,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        report_key = (
+            f"{session.isoformat()}:{DAILY_REPORT_VERSION}:"
+            f"{source_fingerprint[:16]}"
+        )
+        previous = canonical.get("latest_daily_report")
+        previous_payload = (
+            previous.get("payload")
+            if isinstance(previous, dict) and isinstance(previous.get("payload"), dict)
+            else {}
+        )
+        supersedes = (
+            previous.get("event_id")
+            if isinstance(previous, dict)
+            and previous_payload.get("report_key") != report_key
+            else None
+        )
+
         payload = serialize(
             {
                 "report_type": "daily",
+                "report_version": DAILY_REPORT_VERSION,
+                "report_key": report_key,
+                "source_fingerprint": source_fingerprint,
+                "supersedes_report_event_id": supersedes,
                 "title": f"Daily review — {session.isoformat()}",
                 "summary": classification.get("reason"),
                 "focus": action,
@@ -319,7 +427,18 @@ class ResearchReportScheduler:
                     }
                     for position in evidence["positions"]
                 ],
-                "data_quality_warnings": evidence["data_quality_warnings"],
+                "data_quality_warnings": daily_warnings,
+                "candidate_forward_evidence": {
+                    "by_horizon": post_event.get("forward_outcomes_by_horizon") or [],
+                    "status": outcome_status,
+                    "post_event_only": True,
+                    "counterfactual_not_realized_trades": True,
+                },
+                "live_vs_offline_consistency": {
+                    "summary": live_offline,
+                    "methodology": "live-offline-v1",
+                    "post_event_only": True,
+                },
                 "reconstruction": evidence["reconstruction"],
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,
@@ -341,7 +460,7 @@ class ResearchReportScheduler:
         self.last_error = None
         self.event_sink.emit(
             event_type="research_daily_report",
-            event_key=f"research_daily_report:{session.isoformat()}",
+            event_key=f"research_daily_report:{report_key}",
             occurred_at=datetime.now(NY).isoformat(),
             payload=payload,
         )

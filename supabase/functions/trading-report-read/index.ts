@@ -57,17 +57,130 @@ Deno.serve(async (req) => {
   const end = url.searchParams.get("end");
   const latest = url.searchParams.get("latest");
   const weekEnd = url.searchParams.get("week_end");
+  const evidenceSession = url.searchParams.get("evidence_session");
 
   try {
     if (validDate(start) && validDate(end)) {
       if (start > end) return json(422, { ok: false, error: "invalid_period" });
-      const rows = await sql<{ inputs: Record<string, unknown> }[]>`
-        select private.rhen_weekly_report_inputs(${start}::date, ${end}::date) as inputs
+      const rows = await sql<{
+        base_inputs: Record<string, unknown>;
+        post_event_inputs: Record<string, unknown>;
+      }[]>`
+        select
+          private.rhen_weekly_report_inputs(${start}::date, ${end}::date) as base_inputs,
+          private.rhen_post_event_evidence_inputs(${start}::date, ${end}::date) as post_event_inputs
       `;
       return json(200, {
         ok: true,
-        report_version: "rhen-weekly-v1.1",
-        inputs: rows[0]?.inputs ?? {},
+        report_version: "rhen-weekly-v1.2",
+        inputs: {
+          ...(rows[0]?.base_inputs ?? {}),
+          ...(rows[0]?.post_event_inputs ?? {}),
+        },
+      });
+    }
+
+
+    if (validDate(evidenceSession)) {
+      const candidateRows = await sql<{
+        candidate: Record<string, unknown>;
+        scan_cycle: Record<string, unknown>;
+        decision_cycle_payload: Record<string, unknown> | null;
+        outcomes: unknown[];
+        signal_id: string | null;
+        intent_id: string | null;
+        broker_order_id: string | null;
+        order_status: string | null;
+      }[]>`
+        select
+          to_jsonb(c) as candidate,
+          to_jsonb(sc) as scan_cycle,
+          de.payload as decision_cycle_payload,
+          coalesce(fo.outcomes,'[]'::jsonb) as outcomes,
+          sig.signal_id::text as signal_id,
+          intent.intent_id::text as intent_id,
+          ord.broker_order_id,
+          ord.status as order_status
+        from private.trading_candidate_evaluations c
+        join private.trading_scan_cycles sc using(scan_cycle_id)
+        left join lateral (
+          select e.payload
+          from private.trading_events e
+          where e.event_type='decision_cycle'
+            and e.payload->>'cycle_key'=sc.cycle_key
+          order by e.received_at desc
+          limit 1
+        ) de on true
+        left join lateral (
+          select jsonb_agg(to_jsonb(o) order by o.horizon_minutes) as outcomes
+          from private.trading_candidate_forward_outcomes o
+          where o.candidate_id=c.candidate_id
+        ) fo on true
+        left join lateral (
+          select s.signal_id
+          from private.trading_signals s
+          where s.candidate_id=c.candidate_id
+             or (c.signal_id is not null and s.signal_id=c.signal_id)
+          order by s.signal_at desc
+          limit 1
+        ) sig on true
+        left join lateral (
+          select i.intent_id
+          from private.trading_order_intents i
+          where i.signal_id=sig.signal_id
+          order by i.intended_at desc
+          limit 1
+        ) intent on true
+        left join lateral (
+          select o.broker_order_id,o.status
+          from private.trading_orders o
+          where o.order_intent_id=intent.intent_id
+          order by coalesce(o.submitted_at,o.updated_at) desc
+          limit 1
+        ) ord on true
+        where (c.observed_at at time zone 'America/New_York')::date=${evidenceSession}::date
+        order by c.observed_at,c.symbol
+      `;
+
+      const postRows = await sql<{ inputs: Record<string, unknown> }[]>`
+        select private.rhen_post_event_evidence_inputs(
+          ${evidenceSession}::date,
+          ${evidenceSession}::date
+        ) as inputs
+      `;
+
+      const dailyRows = await sql<{
+        event_id: string;
+        occurred_at: string;
+        payload: Record<string, unknown>;
+      }[]>`
+        select event_id::text,occurred_at::text,payload
+        from private.trading_events
+        where event_type='research_daily_report'
+          and nullif(payload->>'session','')::date=${evidenceSession}::date
+        order by coalesce(
+          nullif(payload->>'generated_at','')::timestamptz,
+          occurred_at
+        ) desc,received_at desc
+        limit 1
+      `;
+
+      return json(200, {
+        ok: true,
+        evidence_session: evidenceSession,
+        candidates: candidateRows.map((row) => ({
+          ...(row.candidate ?? {}),
+          scan_cycle: row.scan_cycle ?? {},
+          decision_cycle_payload: row.decision_cycle_payload,
+          outcomes: row.outcomes ?? [],
+          signal_id: row.signal_id,
+          intent_id: row.intent_id,
+          broker_order_id: row.broker_order_id,
+          order_status: row.order_status,
+          submitted: Boolean(row.intent_id),
+        })),
+        post_event: postRows[0]?.inputs ?? {},
+        latest_daily_report: dailyRows[0] ?? null,
       });
     }
 
@@ -92,7 +205,7 @@ Deno.serve(async (req) => {
       }
       return json(200, {
         ok: true,
-        report_version: "rhen-weekly-v1.1",
+        report_version: "rhen-weekly-v1.2",
         report: rows[0]?.report_payload ?? null,
       });
     }

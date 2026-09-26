@@ -99,8 +99,12 @@ class ExecutionEngine:
         )
 
     @staticmethod
-    def _entry_orders_today(orders: list[dict[str, Any]]) -> int:
-        today = datetime.now(NY).date()
+    def _entry_orders_today(
+        orders: list[dict[str, Any]],
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        today = (now or datetime.now(NY)).astimezone(NY).date()
         count = 0
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
@@ -172,8 +176,10 @@ class ExecutionEngine:
     def _latest_bot_exit_today(
         orders: list[dict[str, Any]],
         symbol: str,
+        *,
+        now: datetime | None = None,
     ) -> datetime | None:
-        today = datetime.now(NY).date()
+        today = (now or datetime.now(NY)).astimezone(NY).date()
         prefix = f"anevum-{symbol.lower()}-"
         latest: datetime | None = None
         for order in orders:
@@ -1487,6 +1493,7 @@ class ExecutionEngine:
 
     async def run_once(self) -> dict[str, Any]:
         self.state.mark_strategy()
+        self.state.last_execution_context = {}
 
         if self.state.paused:
             self.state.last_decision = "runtime paused"
@@ -1601,6 +1608,63 @@ class ExecutionEngine:
                 ]
             )
         )
+        self.state.last_execution_context = {
+            "decision_at": now.isoformat(),
+            "entry_symbols": list(entry_symbols),
+            "account": {
+                key: account.get(key)
+                for key in (
+                    "cash",
+                    "equity",
+                    "last_equity",
+                    "buying_power",
+                    "account_blocked",
+                    "trading_blocked",
+                )
+            },
+            "positions": [
+                {
+                    key: position.get(key)
+                    for key in (
+                        "symbol",
+                        "qty",
+                        "market_value",
+                        "avg_entry_price",
+                        "current_price",
+                    )
+                }
+                for position in positions
+            ],
+            "open_order_symbols": sorted(
+                {
+                    str(order.get("symbol") or "").upper()
+                    for order in open_orders
+                    if order.get("symbol")
+                }
+            ),
+            "recent_orders": [
+                {
+                    key: order.get(key)
+                    for key in (
+                        "id",
+                        "client_order_id",
+                        "symbol",
+                        "side",
+                        "status",
+                        "filled_qty",
+                        "filled_avg_price",
+                        "filled_at",
+                        "submitted_at",
+                    )
+                }
+                for order in recent_orders
+            ],
+            "startup_reconciled": self.state.startup_reconciled,
+            "reconciliation_safe": self.state.reconciliation_safe,
+            "entries_enabled": self.state.entries_enabled,
+            "assets": {},
+        }
+
         market_bars = await self.market_data.bars_many(symbols)
 
         buy_signals: list[Signal] = []
@@ -1618,6 +1682,13 @@ class ExecutionEngine:
                 order_notional=self.settings.order_notional,
                 now=now,
             )
+            signal.metadata = dict(signal.metadata or {})
+            signal.metadata["strategy_evaluation"] = {
+                "action": signal.action,
+                "reason": signal.reason,
+            }
+            if not scan:
+                signal.metadata["_comparison_context"] = self.state.last_execution_context
             scan[symbol] = self._signal_payload(signal)
             if signal.action == "buy":
                 buy_signals.append(signal)
@@ -1783,7 +1854,7 @@ class ExecutionEngine:
             str(order.get("symbol", "")).upper()
             for order in open_orders
         }
-        entry_count = self._entry_orders_today(recent_orders)
+        entry_count = self._entry_orders_today(recent_orders, now=now)
         if self.settings.portfolio_limit_mode == "risk":
             cycle_limit: int | None = (
                 self.settings.max_new_entries_per_cycle
@@ -1851,7 +1922,11 @@ class ExecutionEngine:
                 continue
 
             if self.settings.reentry_cooldown_minutes > 0:
-                latest_exit = self._latest_bot_exit_today(recent_orders, symbol)
+                latest_exit = self._latest_bot_exit_today(
+                    recent_orders,
+                    symbol,
+                    now=now,
+                )
                 if latest_exit is not None:
                     minutes_since_exit = (now - latest_exit).total_seconds() / 60
                     if minutes_since_exit < self.settings.reentry_cooldown_minutes:
@@ -1915,6 +1990,11 @@ class ExecutionEngine:
                 continue
 
             asset = await self.client.asset(symbol)
+            self.state.last_execution_context.setdefault("assets", {})[symbol] = {
+                "status": asset.get("status"),
+                "tradable": asset.get("tradable"),
+                "fractionable": asset.get("fractionable"),
+            }
             if (
                 str(asset.get("status", "")).lower() != "active"
                 or not bool(asset.get("tradable"))

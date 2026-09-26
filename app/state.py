@@ -33,6 +33,7 @@ class RuntimeState:
     universe_source: str = "static"
     universe_error: str | None = None
     exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_execution_context: dict[str, Any] = field(default_factory=dict)
     event_emitter: Any = field(default=None, repr=False)
 
     def set_event_emitter(self, emitter: Any) -> None:
