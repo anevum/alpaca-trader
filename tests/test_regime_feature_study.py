@@ -162,3 +162,40 @@ def test_regime_summary_keeps_regimes_separate():
 
     assert summary["broad_up"]["horizons"]["15"]["target_before_stop_rate"] == 1.0
     assert summary["broad_down"]["horizons"]["15"]["stop_before_target_rate"] == 1.0
+
+
+
+def test_benchmark_alignment_uses_visible_candidate_and_reference_bars_only():
+    start = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
+    decision_time = start + timedelta(minutes=5)
+    bars = {
+        "AAPL": reference_series(start, [100, 100.1, 100.2, 100.3, 100.4, 100.6]),
+        "QQQ": reference_series(start, [200, 200.02, 200.04, 200.06, 200.08, 200.10]),
+    }
+    rows = [
+        {
+            "symbol": "AAPL",
+            "decision_bar_time": decision_time.isoformat(),
+            "features": {},
+        }
+    ]
+
+    attached = attach_benchmark_alignment(rows, bars, window=5)
+    features = attached[0]["features"]
+
+    assert features["benchmark_symbol"] == "QQQ"
+    assert features["benchmark_alignment_available"] is True
+    assert Decimal(features["relative_strength_pct"]) > 0
+
+    future = {
+        "AAPL": [
+            *bars["AAPL"],
+            bar(start + timedelta(minutes=6), "1"),
+        ],
+        "QQQ": [
+            *bars["QQQ"],
+            bar(start + timedelta(minutes=6), "999"),
+        ],
+    }
+    after = attach_benchmark_alignment(rows, future, window=5)
+    assert after[0]["features"] == features
