@@ -261,7 +261,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(
-        description="Run the read-only ANEVUM strategy tournament."
+        description="Run the read-only RHEN strategy tournament."
     )
     value.add_argument(
         "--period",
