@@ -605,6 +605,7 @@ async def lifespan(app: FastAPI):
             "bot_armed": settings.bot_armed,
             "strategy_name": settings.strategy_name,
             "persistence_configured": settings.persistence_configured,
+            "config_snapshot": research_config_snapshot(settings),
         },
     )
     task = asyncio.create_task(monitor_loop())
