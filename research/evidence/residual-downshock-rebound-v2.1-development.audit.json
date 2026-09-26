@@ -123,5 +123,19 @@
     "trading_experiment_windows": 0,
     "trading_experiment_results": 0,
     "trading_research_decisions": 0
+  },
+  "verification": {
+    "github_main_matches_commit": "09424bb20bebd88f28f511c6ea83ba1252bc455a",
+    "test_suite": "180 passed",
+    "recovery_audit_checks": "PASS",
+    "material_ordering_mismatch_check": "CONFIRMED",
+    "shadow_cleanup_deployment": "d408a930-6bb9-4f3b-b353-a832633f9cfd",
+    "shadow_cleanup_status": "SUCCESS",
+    "superseded_report_deployment_status": "REMOVED",
+    "production_deployment": "c7641682-8881-42d4-bc2d-24241ec49118",
+    "production_deployment_status": "SUCCESS",
+    "live_strategy_version_id": "LIVE-2026-09-25-003",
+    "live_strategy_name": "rolling_momentum_vwap",
+    "live_behavior_changed": false
   }
 }
