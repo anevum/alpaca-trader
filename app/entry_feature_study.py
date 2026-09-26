@@ -7,6 +7,7 @@ from typing import Any
 
 from .config import Settings
 from .opportunity import score_opportunity
+from .market_regime import market_regime_features
 from .replay import BPS, ReplayEngine, d, price, stamp
 from .strategy import Signal
 
@@ -414,11 +415,16 @@ class EntryFeatureStudy:
                     if effective_stop_pct <= 0:
                         effective_stop_pct = self.settings.stop_pct
 
+                    regime_snapshot = market_regime_features(
+                        confirmation_bars,
+                        regime_window=self.settings.regime_window,
+                    )
                     features = decision_path_features(
                         visible.get(symbol, []),
                         fast_window=self.settings.fast_window,
                         slow_window=self.settings.slow_window,
                     )
+                    features.update(regime_snapshot["features"])
                     features.update(
                         {
                             "quality_score": str(quality_score),
@@ -455,6 +461,7 @@ class EntryFeatureStudy:
                             "market_quality_reason": market_reason,
                             "quality_allowed": quality_allowed,
                             "features": features,
+                            "market_regime": regime_snapshot,
                             "effective_stop_pct": str(effective_stop_pct),
                             "target_pct": str(self.settings.target_pct),
                             "forward": forward_excursion(
