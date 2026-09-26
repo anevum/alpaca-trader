@@ -477,3 +477,95 @@ def test_canonical_input_hash_versions_regeneration_when_underlying_telemetry_ch
     assert first["canonical_input_hash"] != second["canonical_input_hash"]
     assert first["report_key"] != second["report_key"]
     assert first["report_version"] == REPORT_VERSION == "rhen-weekly-v1.2"
+
+
+def test_post_event_evidence_aggregates_without_changing_headline_performance():
+    reports = [daily("d1", "2026-09-25", "-0.10", [trade()])]
+    inputs = base_inputs(reports)
+    inputs["forward_outcomes_by_horizon"] = [
+        {
+            "session": "2026-09-25",
+            "horizon_minutes": 30,
+            "observations": 4,
+            "complete": 3,
+            "incomplete": 1,
+            "errors": 0,
+            "rejected_favorable": 1,
+            "rejected_unfavorable": 1,
+            "qualified_favorable": 1,
+            "qualified_unfavorable": 0,
+            "rejected_avg_mfe": "0.004",
+            "rejected_avg_mae": "-0.002",
+            "qualified_avg_mfe": "0.006",
+            "qualified_avg_mae": "-0.001",
+        }
+    ]
+    inputs["forward_outcome_status"] = {
+        "candidate_count": 4,
+        "eligible_reference_price_count": 4,
+        "complete_rows": 3,
+        "incomplete_rows": 1,
+        "error_rows": 0,
+        "methodologies": ["candidate-forward-v1"],
+    }
+    inputs["live_offline_summary"] = [
+        {
+            "session": "2026-09-25",
+            "total": 4,
+            "matches": 2,
+            "mismatches": 1,
+            "unreconstructable": 1,
+            "match_rate": "0.6666666666666667",
+            "mismatch_categories": {
+                "MATCH": 2,
+                "ACTION_MISMATCH": 1,
+                "UNRECONSTRUCTABLE": 1,
+            },
+        }
+    ]
+
+    report = build(
+        inputs,
+        calendar(("2026-09-25", "09:30", "16:00")),
+        "2026-09-25",
+        "2026-09-25",
+    )
+
+    assert report["metrics"]["weekly_realized_pnl"] == "-0.10"
+    assert report["metrics"]["completed_trades"] == 1
+    assert report["candidate_analysis"]["forward_outcomes_complete"] == 3
+    assert report["candidate_analysis"]["forward_outcomes_by_horizon"][0][
+        "horizon_minutes"
+    ] == 30
+    assert report["candidate_analysis"]["counterfactual_not_realized_trades"] is True
+    consistency = report["live_vs_offline_consistency"]
+    assert consistency["status"] == "available"
+    assert consistency["summary"][0]["matches"] == 2
+    assert consistency["summary"][0]["unreconstructable"] == 1
+    assert any("UNRECONSTRUCTABLE" in warning for warning in report["warnings"])
+    assert any("incomplete or error" in warning for warning in report["warnings"])
+
+
+def test_newer_daily_report_supersedes_same_session_without_double_counting():
+    old = daily("old", "2026-09-25", "-0.10", [trade()])
+    old["payload"]["generated_at"] = "2026-09-26T12:00:00+00:00"
+    new = daily(
+        "new",
+        "2026-09-25",
+        "0.25",
+        [trade(pnl="0.25", return_pct="0.25")],
+    )
+    new["payload"]["generated_at"] = "2026-09-26T13:00:00+00:00"
+    inputs = base_inputs([old, new])
+    inputs["earliest_daily_session"] = "2026-09-25"
+
+    report = build(
+        inputs,
+        calendar(("2026-09-25", "09:30", "16:00")),
+        "2026-09-25",
+        "2026-09-25",
+    )
+
+    assert report["included_daily_report_ids"] == ["new"]
+    assert report["metrics"]["completed_trades"] == 1
+    assert report["metrics"]["weekly_realized_pnl"] == "0.25"
