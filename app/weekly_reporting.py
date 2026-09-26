@@ -6,9 +6,10 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from statistics import median
+from zoneinfo import ZoneInfo
 from typing import Any
 
-REPORT_VERSION = "rhen-weekly-v1"
+REPORT_VERSION = "rhen-weekly-v1.1"
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 
@@ -108,6 +109,87 @@ def _daily_metric(records: list[dict[str, Any]], key: str) -> list[tuple[str, De
         metrics = payload.get("metrics") or {}
         values.append((str(payload["session"]), d(metrics.get(key))))
     return values
+
+
+def _local_session(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _daily_position_consistency(
+    records: list[dict[str, Any]],
+    inputs: dict[str, Any],
+) -> dict[str, Any]:
+    daily: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in records:
+        payload = record["payload"]
+        session = str(payload["session"])
+        version = str(
+            payload.get("strategy_version_id")
+            or record.get("strategy_version_id")
+            or "unknown"
+        )
+        trades = [row for row in payload.get("trades") or [] if isinstance(row, dict)]
+        daily[(session, version)] = {
+            "session": session,
+            "strategy_version_id": version,
+            "daily_trade_count": len(trades),
+            "daily_realized_pnl": sum(
+                (d(row.get("realized_pnl")) for row in trades),
+                ZERO,
+            ),
+        }
+
+    canonical: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "pnl": ZERO}
+    )
+    for position in inputs.get("positions") or []:
+        if str(position.get("status") or "") != "closed":
+            continue
+        session = _local_session(position.get("opened_at"))
+        if not session:
+            continue
+        version = str(position.get("strategy_version_id") or "unknown")
+        key = (session, version)
+        canonical[key]["count"] += 1
+        canonical[key]["pnl"] += d(position.get("realized_pnl"))
+
+    comparisons: list[dict[str, Any]] = []
+    tolerance = Decimal("0.000001")
+    for key, daily_row in sorted(daily.items()):
+        canonical_row = canonical.get(key, {"count": 0, "pnl": ZERO})
+        count_delta = int(canonical_row["count"]) - int(daily_row["daily_trade_count"])
+        pnl_delta = d(canonical_row["pnl"]) - d(daily_row["daily_realized_pnl"])
+        mismatch = count_delta != 0 or abs(pnl_delta) > tolerance
+        comparisons.append(
+            {
+                **daily_row,
+                "canonical_closed_position_count": int(canonical_row["count"]),
+                "canonical_realized_pnl": d(canonical_row["pnl"]),
+                "trade_count_delta": count_delta,
+                "realized_pnl_delta": pnl_delta,
+                "matches": not mismatch,
+            }
+        )
+
+    mismatches = [row for row in comparisons if not row["matches"]]
+    return {
+        "comparisons": comparisons,
+        "mismatches": mismatches,
+        "mismatch_count": len(mismatches),
+        "authoritative_daily_layer": True,
+        "interpretation": (
+            "Canonical position telemetry is a deeper consistency check; weekly headline "
+            "performance remains sourced from canonical daily reports."
+        ),
+    }
 
 
 def _calendar_session_strings(calendar: list[dict[str, Any]]) -> list[str]:
@@ -802,12 +884,20 @@ def build_weekly_report(
         completeness = "INCOMPLETE"
 
     source_ids = [str(record.get("event_id") or "") for record in records if record.get("event_id")]
+    canonical_input_hash = hashlib.sha256(
+        json.dumps(
+            _serialize(inputs),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     source_material = {
         "version": REPORT_VERSION,
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
         "daily_report_ids": sorted(source_ids),
         "data_cutoff": inputs.get("data_cutoff"),
+        "canonical_input_hash": canonical_input_hash,
     }
     fingerprint = hashlib.sha256(
         json.dumps(source_material, sort_keys=True, separators=(",", ":")).encode()
@@ -818,6 +908,7 @@ def build_weekly_report(
     )
 
     performance = _performance(records, inputs)
+    consistency = _daily_position_consistency(records, inputs)
     trade_quality = _trade_quality(records, inputs)
     candidates = _candidate_analysis(inputs)
     operations = _operational_health(inputs)
@@ -830,6 +921,18 @@ def build_weekly_report(
         completeness,
         missing_sessions,
     )
+    if consistency["mismatch_count"]:
+        findings["data_quality_limitations"].append(
+            {
+                "type": "daily_vs_canonical_position_consistency",
+                "message": (
+                    "One or more canonical closed positions do not reconcile exactly "
+                    "to the authoritative daily-report trade reconstruction."
+                ),
+                "mismatches": consistency["mismatches"],
+                "headline_source": "canonical daily reports",
+            }
+        )
 
     strategy_versions = [
         str(row.get("version_id"))
@@ -843,6 +946,11 @@ def build_weekly_report(
     ]
 
     warnings = list(inputs.get("warnings") or [])
+    if consistency["mismatch_count"]:
+        warnings.append(
+            "Daily-vs-canonical position consistency mismatch detected; "
+            "headline weekly performance remains sourced from canonical daily reports."
+        )
     if completeness != "COMPLETE":
         warnings.append(
             f"{completeness} weekly evidence: {len(missing_sessions)} expected session(s) lack a canonical daily report."
@@ -926,6 +1034,7 @@ def build_weekly_report(
         "report_version": REPORT_VERSION,
         "report_key": report_key,
         "source_fingerprint": fingerprint,
+        "canonical_input_hash": canonical_input_hash,
         "title": f"Canonical weekly review — {period_end.isoformat()}",
         "summary": (
             f"{completeness} week: {len(included_sessions)}/{len(expected_sessions)} "
@@ -959,6 +1068,7 @@ def build_weekly_report(
         "performance": performance,
         "metrics": performance,
         "cross_day_trade_quality": trade_quality,
+        "daily_vs_canonical_consistency": consistency,
         "candidate_analysis": candidates,
         "live_vs_offline_consistency": {
             "status": "not_available" if not inputs.get("live_offline") else "available",
