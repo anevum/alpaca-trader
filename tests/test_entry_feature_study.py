@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from app.entry_feature_study import (
     decision_path_features,
     forward_excursion,
+    stable_rule_scan,
 )
 from app.replay import stamp
 
