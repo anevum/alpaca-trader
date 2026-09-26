@@ -208,7 +208,7 @@ def aggregate_periods(
 def strategy_004_promotion_gate(
     aggregate_rows: list[dict[str, Any]],
     *,
-    candidate_name: str = "strategy_004_followthrough",
+    candidate_name: str = "strategy_004_candidate_c_controlled",
     min_trades: int = 30,
     min_profit_factor: Decimal = Decimal("1.25"),
     max_drawdown_pct: Decimal = Decimal("0.05"),
