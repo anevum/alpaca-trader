@@ -63,6 +63,7 @@ def test_manifest_requires_chronological_roles(tmp_path):
 def test_manifest_rejects_overlapping_windows(tmp_path):
     payload = minimal_payload()
     payload["windows"][1]["start"] = "2026-01-09"
+    payload["windows"][1]["end"] = "2026-01-13"
 
     with pytest.raises(ValueError, match="overlap"):
         load_manifest(write_manifest(tmp_path, payload))
