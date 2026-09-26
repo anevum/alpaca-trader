@@ -1915,7 +1915,11 @@ class ExecutionEngine:
                 continue
 
             if self.settings.reentry_cooldown_minutes > 0:
-                latest_exit = self._latest_bot_exit_today(recent_orders, symbol)
+                latest_exit = self._latest_bot_exit_today(
+                    recent_orders,
+                    symbol,
+                    now=now,
+                )
                 if latest_exit is not None:
                     minutes_since_exit = (now - latest_exit).total_seconds() / 60
                     if minutes_since_exit < self.settings.reentry_cooldown_minutes:
