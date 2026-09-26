@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+
+import httpx
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -14,6 +16,7 @@ from .research_reporting import (
     serialize,
     trade_metrics,
 )
+from .weekly_reporting import REPORT_VERSION, build_weekly_report
 
 NY = ZoneInfo("America/New_York")
 REPORT_AFTER = time(16, 20)
@@ -64,6 +67,12 @@ class ResearchReportScheduler:
                 else None
             ),
             "last_error": self.last_error,
+            "weekly_report_version": REPORT_VERSION,
+            "last_weekly_completeness": (
+                self.last_weekly_report.get("completeness_state")
+                if self.last_weekly_report
+                else None
+            ),
             "live_configuration_changes_allowed": False,
         }
 
@@ -337,81 +346,137 @@ class ResearchReportScheduler:
         )
         return payload
 
+    @property
+    def _report_read_url(self) -> str:
+        ingest_url = str(getattr(self.settings, "trading_ingest_url", "") or "")
+        if not ingest_url:
+            raise RuntimeError("canonical trading persistence is not configured")
+        return f"{ingest_url.rsplit('/', 1)[0]}/trading-report-read"
+
+    async def _report_api_get(self, **params: str) -> dict[str, Any]:
+        token = str(getattr(self.settings, "trading_ingest_token", "") or "")
+        if not token:
+            raise RuntimeError("canonical trading persistence token is not configured")
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            response = await http.get(
+                self._report_read_url,
+                headers={"x-anevum-ingest-token": token},
+                params=params,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError("canonical report read returned no result")
+        return payload
+
+    async def _canonical_weekly_inputs(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, Any]:
+        payload = await self._report_api_get(
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        )
+        inputs = payload.get("inputs")
+        if not isinstance(inputs, dict):
+            raise RuntimeError("canonical weekly reporting inputs are unavailable")
+        return inputs
+
+    async def fetch_weekly_report(
+        self,
+        *,
+        end_date: date | None = None,
+    ) -> dict[str, Any] | None:
+        params = {"latest": "weekly"}
+        if end_date is not None:
+            params["week_end"] = end_date.isoformat()
+        payload = await self._report_api_get(**params)
+        report = payload.get("report")
+        return report if isinstance(report, dict) else None
+
     async def generate_weekly(
         self,
         start_date: date,
         end_date: date,
     ) -> dict[str, Any]:
-        evidence = await self._collect(start_date, end_date)
-        runtime = self._runtime_snapshot()
-        classification = classify_daily(evidence["metrics"], runtime)
-        if (
-            evidence["data_quality_warnings"]
-            and classification.get("classification") == "KEEP"
-        ):
-            classification = {
-                "classification": "INVESTIGATE",
-                "reason": "broker evidence may be truncated; completeness must be resolved first",
-                "defects": [],
-                "data_quality_warnings": list(evidence["data_quality_warnings"]),
-            }
-        action = next_research_action(
-            evidence["metrics"],
-            evidence["funnel"],
-            classification,
-        )
-        payload = serialize(
-            {
-                "report_type": "weekly",
-                "title": f"Weekly review — {end_date.isoformat()}",
-                "summary": classification.get("reason"),
-                "focus": action,
-                "classification": classification,
-                "next_offline_research_action": action,
-                "week_start": start_date.isoformat(),
-                "week_end": end_date.isoformat(),
-                "generated_at": datetime.now(NY),
-                "sessions": evidence["sessions"],
+        """Build the canonical weekly report from durable daily reports + telemetry."""
+        if self.event_sink.enabled:
+            # A daily close report is queued immediately before the weekly report
+            # on the final session. Drain that queue first so the weekly read
+            # cannot race the authoritative daily-report write.
+            await self.event_sink.queue.join()
+
+        if hasattr(self.market_data, "market_calendar_details"):
+            calendar = await self.market_data.market_calendar_details(
+                start=start_date,
+                end=end_date,
+            )
+        else:
+            sessions = await self.market_data.market_calendar(
+                start=start_date,
+                end=end_date,
+            )
+            calendar = [{"date": session, "open": None, "close": None} for session in sessions]
+
+        inputs = await self._canonical_weekly_inputs(start_date, end_date)
+        persistence = self.event_sink.status()
+        report = build_weekly_report(
+            inputs,
+            calendar,
+            period_start=start_date,
+            period_end=end_date,
+            generation_provenance={
+                "report_version": REPORT_VERSION,
+                "generator": "alpaca-trader",
                 "trading_run_id": getattr(self.settings, "trading_run_id", "") or None,
                 "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
-                "metrics": evidence["metrics"],
-                "trades": evidence["trades"],
-                "open_positions": [
-                    {
-                        key: position.get(key)
-                        for key in (
-                            "symbol",
-                            "qty",
-                            "avg_entry_price",
-                            "current_price",
-                            "market_value",
-                            "unrealized_pl",
-                            "unrealized_plpc",
-                        )
-                    }
-                    for position in evidence["positions"]
-                ],
-                "data_quality_warnings": evidence["data_quality_warnings"],
-                "reconstruction": evidence["reconstruction"],
-                "candidate_funnel": evidence["funnel"],
-                "runtime": runtime,
-                "research_gate": {
-                    "live_promotion_requires_separate_decision": True,
-                    "historical_or_weekly_performance_is_not_promotion_authority": True,
-                    "offline_validation_required": True,
-                    "forward_shadow_required_when_applicable": True,
-                },
-                "live_configuration_changed": False,
-                "promotion_authorized": False,
-                "capital_scaling_authorized": False,
-            }
+                "runtime_git_commit": (
+                    (persistence.get("runtime") or {}).get("git_commit")
+                    if isinstance(persistence.get("runtime"), dict)
+                    else None
+                ),
+                "source": "canonical_daily_reports_plus_telemetry",
+            },
         )
-        self.last_weekly_report = payload
-        self.last_error = None
-        self.event_sink.emit(
+        report_key = str(report.get("report_key") or "")
+        if not report_key:
+            raise RuntimeError("canonical weekly report has no report key")
+
+        persisted = await self.event_sink.emit_critical(
             event_type="research_weekly_report",
-            event_key=f"research_weekly_report:{end_date.isoformat()}",
+            event_key=f"research_weekly_report:{report_key}",
             occurred_at=datetime.now(NY).isoformat(),
-            payload=payload,
+            payload=report,
         )
-        return payload
+        if not persisted:
+            raise RuntimeError(
+                self.event_sink.last_error
+                or "canonical weekly report could not be durably persisted"
+            )
+
+        stored = await self.fetch_weekly_report(end_date=end_date)
+        self.last_weekly_report = stored or report
+        completeness = str(
+            self.last_weekly_report.get("completeness_state") or "INCOMPLETE"
+        )
+        self.last_error = (
+            None
+            if completeness in {"COMPLETE", "PARTIAL"}
+            else (
+                "canonical weekly report is INCOMPLETE; "
+                "one or more required daily reports are missing"
+            )
+        )
+        return self.last_weekly_report
+
+    async def regenerate_weekly(self, end_date: date) -> dict[str, Any]:
+        """Manual, read-only regeneration for the ISO trading week containing end_date."""
+        start_date = end_date - timedelta(days=end_date.weekday())
+        sessions = await self.market_data.market_calendar(
+            start=start_date,
+            end=end_date,
+        )
+        if end_date not in sessions:
+            raise ValueError("week_end must be an actual US equity trading session")
+        return await self.generate_weekly(start_date, end_date)
