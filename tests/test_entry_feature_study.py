@@ -132,3 +132,73 @@ def test_path_efficiency_separates_directional_from_choppy_path():
     assert Decimal(directional_features["path_efficiency"]) > Decimal(
         choppy_features["path_efficiency"]
     )
+
+
+
+def _study_row(feature_value: str, *, target: bool, stop: bool):
+    return {
+        "quality_allowed": True,
+        "features": {"quality_score": feature_value},
+        "forward": {
+            "15": {
+                "mfe_pct": "0.006" if target else "0.001",
+                "mae_pct": "-0.001" if target else "-0.004",
+                "close_return_pct": "0.002" if target else "-0.001",
+                "target_before_stop": target,
+                "stop_before_target": stop,
+            }
+        },
+    }
+
+
+def test_stable_rule_scan_requires_cross_period_improvement():
+    period_a = {
+        "period": "a",
+        "observations": [
+            _study_row("10", target=False, stop=True),
+            _study_row("20", target=False, stop=True),
+            _study_row("80", target=True, stop=False),
+            _study_row("90", target=True, stop=False),
+        ],
+    }
+    period_b = {
+        "period": "b",
+        "observations": [
+            _study_row("10", target=False, stop=True),
+            _study_row("20", target=False, stop=True),
+            _study_row("80", target=True, stop=False),
+            _study_row("90", target=True, stop=False),
+        ],
+    }
+
+    result = stable_rule_scan(
+        [period_a, period_b],
+        horizon=15,
+        min_per_period=2,
+        top_n=10,
+    )
+
+    assert result["status"] == "research_only"
+    assert result["candidate_frozen"] is False
+    assert result["promotion_authorized"] is False
+    assert result["rules"]
+    assert any(
+        any(
+            condition["feature"] == "quality_score"
+            and condition["operator"] == ">="
+            and Decimal(condition["threshold"]) >= Decimal("80")
+            for condition in rule["conditions"]
+        )
+        for rule in result["rules"]
+    )
+    for rule in result["rules"]:
+        for label, metrics in rule["periods"].items():
+            baseline = result["development_periods"][label]
+            assert (
+                metrics["target_before_stop_rate"]
+                >= baseline["target_before_stop_rate"]
+            )
+            assert (
+                metrics["stop_before_target_rate"]
+                <= baseline["stop_before_target_rate"]
+            )
