@@ -121,3 +121,28 @@ These are discovery results, not Candidate C. The scan is now implemented in
 the offline tooling so future rule discovery is reproducible. Candidate C must
 be frozen from development data, run through the full replay engine, and then
 tested on a genuinely reserved holdout before any shadow promotion.
+
+
+## Candidate C frozen before holdout
+
+Candidate C is now frozen as a deliberately simple controlled-continuation
+filter:
+
+- retain all ordinary production BUY requirements;
+- retain the production minimum 3-bar momentum floor;
+- reject when 3-bar momentum exceeds **0.29%**;
+- reject when nine-bar trend persistence exceeds **0.625**, equivalent to more
+  than five rising close-to-close transitions across the last eight
+  transitions.
+
+The rule was chosen because the development-period stability scan showed the
+same basic effect in both windows: moderate rather than extreme momentum, with
+some recent interruption/pullback, improved target-before-stop balance.
+
+No other production parameter changes in Candidate C. Stop, target, quality
+floor, confirmation logic, regime logic, sizing, correlation, cooldowns and
+exit behavior remain the production control.
+
+The thresholds are now frozen. Reserved holdout results must not be used to
+retune Candidate C. A failure means reject Candidate C and return to research,
+not optimize against the holdout.
