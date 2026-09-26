@@ -15,6 +15,7 @@ from .edge_corpus import (
     manifest_sha256,
     windows_for_roles,
 )
+from .edge_development_decisive import irreversible_development_rejections
 from .edge_discovery import (
     EdgeDiscoveryStudy,
     aggregate_family_periods,
@@ -31,6 +32,26 @@ from .market_data import MarketDataClient
 
 
 MIN_SHARED_PANEL_RATIO = Decimal("0.80")
+
+
+def _research_settings(settings, manifest: CorpusManifest):
+    return settings.model_copy(
+        update={
+            "stop_pct": Decimal(manifest.research_stop_pct),
+            "target_pct": Decimal(manifest.research_target_pct),
+            "entry_start_raw": manifest.research_entry_start,
+            "entry_cutoff_raw": manifest.research_entry_cutoff,
+        }
+    )
+
+
+def _manifest_scenarios(
+    manifest: CorpusManifest,
+) -> list[tuple[str, Decimal, Decimal]]:
+    return [
+        (name, Decimal(spread), Decimal(slippage))
+        for name, spread, slippage in manifest.research_cost_scenarios
+    ]
 
 
 def _shared_panel(
@@ -166,6 +187,7 @@ async def _load_role(
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     settings = get_settings()
     manifest = load_manifest(args.manifest)
+    settings = _research_settings(settings, manifest)
     if settings.data_feed != manifest.data_feed:
         raise ValueError(
             f"runtime DATA_FEED={settings.data_feed} does not match "
@@ -177,7 +199,24 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             f"corpus timeframe {manifest.timeframe}"
         )
 
-    scenarios = args.cost_scenario or list(DEFAULT_COST_SCENARIOS)
+    manifest_scenarios = _manifest_scenarios(manifest)
+    if args.cost_scenario and list(args.cost_scenario) != manifest_scenarios:
+        raise ValueError(
+            "cost scenarios are frozen by the corpus manifest and cannot "
+            "be overridden for this corpus version"
+        )
+    if args.horizon != manifest.research_horizon_minutes:
+        raise ValueError(
+            "research horizon is frozen by the corpus manifest"
+        )
+    if (
+        args.event_cooldown_minutes
+        != manifest.research_event_cooldown_minutes
+    ):
+        raise ValueError(
+            "event cooldown is frozen by the corpus manifest"
+        )
+    scenarios = manifest_scenarios
     market_data = MarketDataClient(settings)
 
     development_payloads = await _load_role(
@@ -201,18 +240,112 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             f"{MIN_SHARED_PANEL_RATIO} minimum"
         )
 
-    development_scenarios = _scenario_stage(
-        development_payloads,
-        settings=settings,
-        panel=development_panel,
-        confirmation_symbols=manifest.confirmation_symbols,
-        scenarios=scenarios,
-        horizon=args.horizon,
-        event_cooldown_minutes=args.event_cooldown_minutes,
+    stress_scenario = next(
+        (
+            scenario
+            for scenario in scenarios
+            if scenario[0].lower() == "stress"
+        ),
+        None,
     )
-    development_gate = development_elimination(
-        development_scenarios,
-    )
+    if stress_scenario is None:
+        raise ValueError("corpus manifest must define a stress cost scenario")
+
+    stress_name, stress_spread, stress_slippage = stress_scenario
+    stress_periods = []
+    early_proof = None
+    for payload in development_payloads:
+        bars = _bars_for_panel(
+            payload,
+            development_panel,
+            manifest.confirmation_symbols,
+        )
+        study = EdgeDiscoveryStudy(
+            settings,
+            development_panel,
+            confirmation_symbols=manifest.confirmation_symbols,
+            event_cooldown_minutes=args.event_cooldown_minutes,
+        )
+        result = await asyncio.to_thread(
+            study.run,
+            bars,
+            spread_bps=stress_spread,
+            slippage_bps=stress_slippage,
+            horizon=args.horizon,
+        )
+        window = payload["window"]
+        stress_periods.append(
+            {
+                "period": window["id"],
+                "range": {
+                    "start": window["start"],
+                    "end": window["end"],
+                },
+                "role": window["role"],
+                **result,
+            }
+        )
+        early_proof = irreversible_development_rejections(
+            stress_periods,
+            total_periods=len(development_payloads),
+        )
+        if early_proof["all_families_irreversibly_rejected"]:
+            break
+
+    stress_result = {
+        "scenario": stress_name,
+        "spread_bps": str(stress_spread),
+        "slippage_bps_per_side": str(stress_slippage),
+        "periods": stress_periods,
+        "aggregate_by_family": aggregate_family_periods(
+            stress_periods,
+            horizon=args.horizon,
+        ),
+    }
+
+    if (
+        early_proof is not None
+        and early_proof["all_families_irreversibly_rejected"]
+    ):
+        development_scenarios = [stress_result]
+        development_gate = {
+            "stage": "development",
+            "survivors": [],
+            "rejected": list(early_proof["irreversibly_rejected"]),
+            "decisive_scenario": stress_name,
+            "early_stop_valid": True,
+            "proof": early_proof,
+            "next_step": (
+                "all five families rejected; design new structural families"
+            ),
+        }
+    else:
+        other_scenarios = [
+            scenario
+            for scenario in scenarios
+            if scenario[0] != stress_name
+        ]
+        extra_results = await asyncio.to_thread(
+            _scenario_stage,
+            development_payloads,
+            settings=settings,
+            panel=development_panel,
+            confirmation_symbols=manifest.confirmation_symbols,
+            scenarios=other_scenarios,
+            horizon=args.horizon,
+            event_cooldown_minutes=args.event_cooldown_minutes,
+        )
+        by_name = {
+            item["scenario"]: item
+            for item in [*extra_results, stress_result]
+        }
+        development_scenarios = [
+            by_name[name]
+            for name, _, _ in scenarios
+        ]
+        development_gate = development_elimination(
+            development_scenarios,
+        )
 
     report: dict[str, Any] = {
         "status": "research_only",
