@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import get_settings
-from .entry_feature_study import EntryFeatureStudy
+from .entry_feature_study import EntryFeatureStudy\nfrom .entry_exit_surface import (\n    consistent_surface_cells,\n    run_exit_surface,\n)
 from .market_data import MarketDataClient
 from .regime_feature_study import (
     DEFAULT_REGIME_REFERENCES,
@@ -45,7 +45,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
 
-    periods: list[dict[str, Any]] = []
+    periods: list[dict[str, Any]] = []\n    exit_surfaces: list[dict[str, Any]] = []
     for raw in args.period:
         start, end = parse_period(raw)
         bars = await fetch_period(
@@ -85,7 +85,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "entry_confirmation_symbols": list(settings.confirmation_symbols),
         "regime_reference_symbols": list(args.regime_references),
         "confirmation_reference_separation_explicit": True,
-        "periods": periods,
+        "periods": periods,\n        "exit_surface_consistency": consistent_surface_cells(exit_surfaces),
         "candidate_frozen": False,
         "promotion_authorized": False,
         "scalable_capital_merge_allowed": False,
