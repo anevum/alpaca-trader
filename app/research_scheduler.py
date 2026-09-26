@@ -146,14 +146,25 @@ class ResearchReportScheduler:
             }
 
         orders = await self.client.recent_orders(limit=500)
+        data_quality_warnings: list[str] = []
+        if len(orders) >= 500:
+            data_quality_warnings.append(
+                "recent order response reached the 500-order request limit"
+            )
+
         fills: list[dict[str, Any]] = []
         for session in sessions:
-            fills.extend(
-                await self.client.fill_activities(
-                    date=session.isoformat(),
-                    limit=100,
-                )
+            session_fills = await self.client.fill_activities(
+                date=session.isoformat(),
+                limit=100,
             )
+            if len(session_fills) >= 100:
+                data_quality_warnings.append(
+                    f"{session.isoformat()} fill activity reached the 100-record request limit"
+                )
+            fills.extend(session_fills)
+
+        positions = await self.client.positions()
 
         rebuilt = reconstruct_closed_trades(
             fills,
@@ -177,6 +188,8 @@ class ResearchReportScheduler:
             "sessions": [session.isoformat() for session in sessions],
             "orders": orders,
             "fills": fills,
+            "positions": positions,
+            "data_quality_warnings": data_quality_warnings,
             "trades": trades,
             "reconstruction": {
                 key: value
@@ -203,6 +216,16 @@ class ResearchReportScheduler:
         account = await self.client.account()
         runtime = self._runtime_snapshot()
         classification = classify_daily(evidence["metrics"], runtime)
+        if (
+            evidence["data_quality_warnings"]
+            and classification.get("classification") == "KEEP"
+        ):
+            classification = {
+                "classification": "INVESTIGATE",
+                "reason": "broker evidence may be truncated; completeness must be resolved first",
+                "defects": [],
+                "data_quality_warnings": list(evidence["data_quality_warnings"]),
+            }
         action = next_research_action(
             evidence["metrics"],
             evidence["funnel"],
@@ -223,6 +246,22 @@ class ResearchReportScheduler:
                 },
                 "metrics": evidence["metrics"],
                 "trades": evidence["trades"],
+                "open_positions": [
+                    {
+                        key: position.get(key)
+                        for key in (
+                            "symbol",
+                            "qty",
+                            "avg_entry_price",
+                            "current_price",
+                            "market_value",
+                            "unrealized_pl",
+                            "unrealized_plpc",
+                        )
+                    }
+                    for position in evidence["positions"]
+                ],
+                "data_quality_warnings": evidence["data_quality_warnings"],
                 "reconstruction": evidence["reconstruction"],
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,
@@ -271,6 +310,22 @@ class ResearchReportScheduler:
                 "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
                 "metrics": evidence["metrics"],
                 "trades": evidence["trades"],
+                "open_positions": [
+                    {
+                        key: position.get(key)
+                        for key in (
+                            "symbol",
+                            "qty",
+                            "avg_entry_price",
+                            "current_price",
+                            "market_value",
+                            "unrealized_pl",
+                            "unrealized_plpc",
+                        )
+                    }
+                    for position in evidence["positions"]
+                ],
+                "data_quality_warnings": evidence["data_quality_warnings"],
                 "reconstruction": evidence["reconstruction"],
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,
