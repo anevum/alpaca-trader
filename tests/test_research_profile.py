@@ -27,7 +27,7 @@ def test_strategy_005_profile_overrides_ambient_strategy_settings():
         ENTRY_START="10:30",
         ENTRY_CUTOFF="11:00",
         MAX_BAR_AGE_SECONDS="30",
-        MAX_SPREAD_PCT="0.05",
+        MAX_SPREAD_PCT="0.04",
         MIN_QUALITY_SCORE="0",
         DATA_FEED="sip",
     )
