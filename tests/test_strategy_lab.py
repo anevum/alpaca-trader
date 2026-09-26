@@ -126,6 +126,7 @@ def test_default_tournament_has_control_and_research_variants():
         "balanced_4_10",
         "selective_3_10",
         "slow_5_15",
+        "strategy_004_candidate_c_controlled",
         "strategy_004_vwap_edge",
         "strategy_004_followthrough",
     } <= set(names)
@@ -192,3 +193,21 @@ def test_strategy_004_followthrough_candidate_changes_only_entry_persistence():
     assert variant.target_pct == base.target_pct
     assert variant.signal_persistence_bars == 2
     assert variant.min_quality_score == Decimal("80")
+
+
+
+def test_candidate_c_is_research_gate_without_parameter_mutation():
+    base = settings(MIN_QUALITY_SCORE="80")
+    candidate = next(
+        item for item in DEFAULT_VARIANTS
+        if item.name == "strategy_004_candidate_c_controlled"
+    )
+    variant = variant_settings(base, candidate)
+
+    assert candidate.entry_gate is not None
+    assert variant.fast_window == base.fast_window
+    assert variant.slow_window == base.slow_window
+    assert variant.min_momentum_pct == base.min_momentum_pct
+    assert variant.min_vwap_edge_pct == base.min_vwap_edge_pct
+    assert variant.stop_pct == base.stop_pct
+    assert variant.target_pct == base.target_pct
