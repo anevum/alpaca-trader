@@ -420,6 +420,10 @@ class TradingEventSink:
         intent_id = str(uuid4())
         position_id = str(uuid4())
         metadata = dict(signal.metadata or {})
+        cycle_key = (
+            f"{self.settings.trading_run_id}:{correlation_id}"
+            if correlation_id else None
+        )
         market_quality = dict(metadata.get("market_quality") or {})
         decision_quote = {
             "bid": market_quality.get("bid"),
@@ -440,6 +444,7 @@ class TradingEventSink:
                 "payload": {
                     "reason": signal.reason,
                     "metadata": signal.metadata or {},
+                    "cycle_key": cycle_key,
                 },
             },
             "intent": {
@@ -461,6 +466,7 @@ class TradingEventSink:
                     "decision_at": intended_at.isoformat(),
                     "decision_reference_price": str(signal.reference_price),
                     "decision_quote": decision_quote,
+                    "cycle_key": cycle_key,
                 },
             },
         }
