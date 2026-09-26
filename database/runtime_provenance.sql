@@ -65,6 +65,7 @@ begin
         || jsonb_build_object(
           'run_origin', v_origin,
           'current_runtime', v_runtime,
+          'current_configuration', coalesce(new.payload->'configuration', '{}'::jsonb),
           'last_runtime_event_at', new.occurred_at
         ),
       true
