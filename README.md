@@ -171,6 +171,36 @@ python scripts/strategy_lab.py \
 
 The tournament does not modify live configuration. Historical ranking is research evidence only; promotion to live parameters should require out-of-sample and shadow validation.
 
+## Automated improvement loop
+
+The production service includes a read-only post-close research reporter. It is
+separate from order execution and cannot change strategy parameters, capital,
+position limits, deployment settings, or promotion state.
+
+After 4:20 PM America/New_York on each completed Alpaca trading-calendar
+session, the reporter reconstructs ANEVUM-owned round trips from broker fills and
+bot client-order IDs. Manual trades are excluded. It calculates measured
+realized P&L, wins/losses, win rate, expectancy, profit factor, average/median
+hold time, realized drawdown, symbol and exit-reason breakdowns, and MFE/MAE
+from paginated historical one-minute bars when those bars are available. It
+also summarizes the bounded runtime candidate/rejection funnel and current
+reconciliation/persistence health.
+
+On the final trading session of each ISO week, the same engine emits a weekly
+aggregate. Daily evidence is classified as KEEP, INVESTIGATE, or CHANGE, where
+CHANGE is reserved for implementation/safety defects; a small or weak trading
+sample remains INVESTIGATE rather than automatically rewriting the strategy.
+
+Reports are sent through the canonical trading event sink with deterministic
+event keys. Historical or weekly results never authorize live promotion. A
+candidate strategy must still pass the separate offline development,
+validation, holdout, and forward-shadow gates that apply to its research path.
+
+Known evidence boundaries are explicit rather than estimated: signal-to-fill
+slippage is marked unavailable until the reporter has a canonical
+signal-reference read path, and the in-memory rejection funnel is identified as
+bounded when its 200-event runtime buffer is saturated.
+
 ## Deployment
 
 The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader`.
