@@ -203,7 +203,10 @@ def _performance(
         for row in inputs.get("order_intents_by_session") or []
     )
     fill_count = sum(int(row.get("fills") or 0) for row in inputs.get("fills_by_session") or [])
-    entry_count = sum(int(row.get("entry_fills") or 0) for row in inputs.get("fills_by_session") or [])
+    entry_count = sum(
+        int(row.get("filled_opportunities") or row.get("entry_fills") or 0)
+        for row in inputs.get("fills_by_session") or []
+    )
     candidate_count = sum(int(row.get("evaluated") or 0) for row in inputs.get("candidate_by_session") or [])
     rejected_count = sum(int(row.get("rejected") or 0) for row in inputs.get("candidate_by_session") or [])
     qualified_count = sum(int(row.get("qualified") or 0) for row in inputs.get("candidate_by_session") or [])
@@ -415,7 +418,7 @@ def _candidate_analysis(inputs: dict[str, Any]) -> dict[str, Any]:
             for row in inputs.get("order_intents_by_session") or []
         ),
         "filled_opportunities": sum(
-            int(row.get("entry_fills") or 0)
+            int(row.get("filled_opportunities") or row.get("entry_fills") or 0)
             for row in inputs.get("fills_by_session") or []
         ),
         "partial_backfill_candidates": partial_backfill,
