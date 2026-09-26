@@ -239,3 +239,6 @@ clean live evidence pass separately.
 If all five families are rejected, the report includes a next-generation
 research slate based on genuinely different information sources rather than
 retuning the rejected thresholds.
+
+
+<!-- Railway edge-corpus-v1 source refresh -->
