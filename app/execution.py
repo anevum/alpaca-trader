@@ -99,8 +99,12 @@ class ExecutionEngine:
         )
 
     @staticmethod
-    def _entry_orders_today(orders: list[dict[str, Any]]) -> int:
-        today = datetime.now(NY).date()
+    def _entry_orders_today(
+        orders: list[dict[str, Any]],
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        today = (now or datetime.now(NY)).astimezone(NY).date()
         count = 0
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
@@ -1650,6 +1654,7 @@ class ExecutionEngine:
                         "filled_qty",
                         "filled_avg_price",
                         "filled_at",
+                        "submitted_at",
                     )
                 }
                 for order in recent_orders
@@ -1849,7 +1854,7 @@ class ExecutionEngine:
             str(order.get("symbol", "")).upper()
             for order in open_orders
         }
-        entry_count = self._entry_orders_today(recent_orders)
+        entry_count = self._entry_orders_today(recent_orders, now=now)
         if self.settings.portfolio_limit_mode == "risk":
             cycle_limit: int | None = (
                 self.settings.max_new_entries_per_cycle
