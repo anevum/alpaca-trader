@@ -444,8 +444,8 @@
   "freeze": {
     "change_policy": "semantic changes require a new methodology version",
     "frozen_at": "2026-09-26T17:17:00Z",
-    "manifest_checksum_algorithm": "sha256 canonical JSON excluding freeze.manifest_checksum_sha256 and freeze.source_commit_sha",
-    "manifest_checksum_sha256": "5b30d3f84f272bc6b9078cd18aaf72cc0855534c06aca8f73013675d865fc4b8",
+    "manifest_checksum_algorithm": "sha256 exact UTF-8 file after blanking freeze.manifest_checksum_sha256 and freeze.source_commit_sha values",
+    "manifest_checksum_sha256": "",
     "source_commit_sha": null
   },
   "holdout_gates": {
