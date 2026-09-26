@@ -395,9 +395,13 @@ class TradingEventSink:
             )
         cycle_key = f"{self.settings.trading_run_id}:{correlation_id}"
         candidates: list[dict[str, Any]] = []
+        embedded_comparison_context: dict[str, Any] = {}
         qualified_count = 0
         for rank, (symbol, signal) in enumerate(scan.items(), start=1):
             metadata = dict(signal.get("metadata") or {})
+            candidate_comparison_context = metadata.pop("_comparison_context", None)
+            if isinstance(candidate_comparison_context, dict) and not embedded_comparison_context:
+                embedded_comparison_context = candidate_comparison_context
             quality = dict(metadata.get("market_quality") or {})
             bid = quality.get("bid")
             ask = quality.get("ask")
@@ -483,7 +487,7 @@ class TradingEventSink:
             )
         replay_context = {
             "configuration": self._comparison_configuration(),
-            "execution_context": comparison_context or {},
+            "execution_context": comparison_context or embedded_comparison_context,
             "execution_result": execution_result or {},
         }
         self.emit(
