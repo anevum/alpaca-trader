@@ -41,6 +41,8 @@ class DynamicUniverse:
         self._candidate_day: date | None = None
         self._active_symbols: list[str] = []
         self._last_refresh: datetime | None = None
+        self._candidate_scores: dict[str, float] = {}
+        self._active_scores: dict[str, float] = {}
 
     def _static_fallback(self) -> list[str]:
         return list(
@@ -152,6 +154,12 @@ class DynamicUniverse:
         always = list(self.settings.universe_always_include)
         self._eligible_symbols = eligible
         self._candidate_symbols = list(dict.fromkeys([*always, *candidates]))
+        selected = set(self._candidate_symbols)
+        self._candidate_scores = {
+            symbol: score
+            for score, symbol in ranked
+            if symbol in selected
+        }
         self._candidate_day = now.date()
 
         if not self._candidate_symbols:
@@ -187,6 +195,60 @@ class DynamicUniverse:
         return (
             now - self._last_refresh
         ).total_seconds() >= self.settings.universe_refresh_seconds
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a read-only selector snapshot suitable for durable telemetry."""
+        updated_at = self.state.universe_updated_at
+        return {
+            "selector": "dynamic_universe_v1",
+            "source": self.state.universe_source,
+            "candidate_day": (
+                self._candidate_day.isoformat()
+                if self._candidate_day is not None
+                else None
+            ),
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "eligible_count": len(self._eligible_symbols),
+            "candidate_count": len(self._candidate_symbols),
+            "active_count": len(self._active_symbols),
+            "candidate_rankings": [
+                {
+                    "symbol": symbol,
+                    "score": (
+                        round(self._candidate_scores[symbol], 8)
+                        if symbol in self._candidate_scores
+                        else None
+                    ),
+                }
+                for symbol in self._candidate_symbols
+            ],
+            "active_rankings": [
+                {
+                    "symbol": symbol,
+                    "score": (
+                        round(self._active_scores[symbol], 8)
+                        if symbol in self._active_scores
+                        else None
+                    ),
+                }
+                for symbol in self._active_symbols
+            ],
+            "settings": {
+                "universe_size": self.settings.universe_size,
+                "candidate_pool_size": self.settings.universe_candidate_pool_size,
+                "refresh_seconds": self.settings.universe_refresh_seconds,
+                "daily_lookback": self.settings.universe_daily_lookback,
+                "min_price": str(self.settings.universe_min_price),
+                "min_avg_volume": str(self.settings.universe_min_avg_volume),
+                "min_avg_dollar_volume": str(
+                    self.settings.universe_min_avg_dollar_volume
+                ),
+                "exchanges": sorted(self.settings.universe_exchanges),
+                "always_include": list(self.settings.universe_always_include),
+                "data_feed": self.settings.data_feed,
+            },
+            "error": self.state.universe_error,
+        }
 
     async def active_symbols(
         self,
@@ -240,6 +302,12 @@ class DynamicUniverse:
                 raise RuntimeError("dynamic universe active set is empty")
 
             self._active_symbols = active
+            ranked_scores = {symbol: score for score, symbol in ranked}
+            self._active_scores = {
+                symbol: ranked_scores[symbol]
+                for symbol in active
+                if symbol in ranked_scores
+            }
             self._last_refresh = current
             self.state.set_universe(
                 symbols=active,
@@ -252,6 +320,8 @@ class DynamicUniverse:
             return tuple(active)
         except Exception as exc:
             fallback = self._active_symbols or self._static_fallback()
+            if not self._active_symbols:
+                self._active_scores = {}
             self.state.set_universe(
                 symbols=fallback,
                 candidate_count=len(self._candidate_symbols),
