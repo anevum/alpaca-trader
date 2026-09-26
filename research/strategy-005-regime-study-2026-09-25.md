@@ -94,3 +94,45 @@ Reserved holdout, locked before viewing: **2026-09-21 through 2026-09-23**.
 The reserved holdout must not be queried until a Candidate D rule is frozen.
 If the opening-period effect does not repeat in the additional development
 window, no Candidate D should be created from this hypothesis.
+
+
+## Additional development window result
+
+The predeclared additional development window, Aug 24–28, repeated the
+time-of-day effect using production-parity QQQ/SMH context.
+
+| Segment | N | Target before stop | Stop before target | Mean MFE | Mean MAE | Mean 15m close |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All eligible | 106 | 16.04% | 39.62% | +0.3182% | -0.4447% | -0.0520% |
+| 09:31–10:29 | 31 | 6.45% | 61.29% | +0.3143% | -0.7944% | -0.3362% |
+| 10:30–15:30 | 75 | 20.00% | 30.67% | +0.3198% | -0.3001% | +0.0655% |
+
+Across the three development windows, removing the pre-10:30 entry period
+improved target-minus-stop balance each time:
+
+- Aug 17–21: 61 later opportunities, 11.48% target-first / 49.18% stop-first;
+- Sep 8–11: 39 later opportunities, 20.51% target-first / 33.33% stop-first;
+- Aug 24–28: 75 later opportunities, 20.00% target-first / 30.67% stop-first.
+
+The mechanism is plausible and simpler than the rejected static feature
+thresholds: the existing strategy is especially vulnerable to early-session
+noise, volatility, gap digestion, and rapid reversals.
+
+## Candidate D frozen before holdout
+
+Candidate: `strategy_005_candidate_d_delay_open`.
+
+Frozen rule:
+
+**Do not permit new entries before 10:30 ET.**
+
+Nothing else changes. Candidate D keeps the production strategy, quality floor,
+VWAP/momentum requirements, confirmations, regime checks, sizing, correlation,
+stops, targets, maximum hold, cooldowns, and exits.
+
+The 10:30 boundary was predeclared in the Strategy 005 time-band design before
+the Aug 24–28 development window was opened. It is now frozen.
+
+Reserved holdout remains **2026-09-21 through 2026-09-23** and has not been
+queried as part of this phase. If Candidate D fails that holdout, it is rejected
+rather than retuned.
