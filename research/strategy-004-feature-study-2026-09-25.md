@@ -158,3 +158,58 @@ Candidate C thresholds were frozen before viewing this window's Candidate C
 results. The holdout must be evaluated once. If it fails the historical
 promotion criteria, Candidate C is rejected; its thresholds must not be tuned
 against this window.
+
+
+## Candidate C reserved-holdout result — REJECTED
+
+The locked 2026-08-31 through 2026-09-04 holdout was opened only after the
+Candidate C thresholds were frozen.
+
+Opportunity-level 15-minute forward labels used the same fixed validation
+universe, IEX one-minute bars, 5 bps assumed spread, 2 bps per-side slippage,
+0.35% stop, 0.50% target, quality floor 80, and conservative stop-first
+same-bar ordering.
+
+| Sample | N | Target before stop | Stop before target | Mean MFE | Mean MAE | Mean 15m close |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Production-like eligible opportunities | 118 | 25.42% | 40.68% | +0.4422% | -0.4206% | +0.0194% |
+| Candidate C | 41 | 17.07% | 46.34% | +0.3160% | -0.3836% | -0.0183% |
+
+Candidate C improved average adverse excursion slightly, but degraded every
+primary continuation measure: target-before-stop rate, stop-before-target rate,
+MFE, and 15-minute close return. The effect also varied sharply by day, which is
+evidence against treating the frozen static thresholds as a generally valid
+entry rule.
+
+Decision: **REJECTED.**
+
+Candidate C must not be retuned against this holdout. Full portfolio replay is
+not warranted because the candidate already failed the earlier entry-quality
+holdout gate. The implementation remains in this research branch only for
+reproducibility.
+
+## Research conclusion after Candidates A, B, and C
+
+Three different static approaches have now failed unseen data:
+
+- Candidate A: demand substantially more VWAP separation and confirmations;
+- Candidate B: demand two consecutive valid setup bars;
+- Candidate C: suppress mature momentum and high trend persistence.
+
+The feature study also showed that no single decision feature was monotonically
+better across development periods. Higher momentum and wider recent ranges often
+produced more upside and more stop-first failures at the same time.
+
+The next research question should therefore be conditional rather than another
+global threshold search:
+
+**Which entry structure works in which observable market regime?**
+
+The next offline phase should segment opportunities using broad-market state
+known at the decision point, then test whether impulse and controlled-
+continuation structures have different expectancy across those regimes. Regime
+definitions must be coarse, predeclared, and based only on visible SPY/QQQ/SMH
+bars so that the holdout process remains auditable.
+
+Scalable-capital PR #28 remains blocked. No production exposure increase is
+authorized by this research.
