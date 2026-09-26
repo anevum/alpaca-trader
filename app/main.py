@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -943,6 +943,37 @@ async def command_status(authorization: str | None = Header(default=None)):
         return await command_snapshot()
     except HTTPException:
         raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/v1/command/reports/weekly")
+async def command_weekly_report(
+    week_end: date | None = None,
+    authorization: str | None = Header(default=None),
+):
+    await require_command_admin(authorization)
+    try:
+        report = await research_reports.fetch_weekly_report(end_date=week_end)
+        if report is None:
+            raise HTTPException(status_code=404, detail="canonical weekly report not found")
+        return report
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/v1/command/reports/weekly/regenerate")
+async def command_regenerate_weekly_report(
+    week_end: date,
+    authorization: str | None = Header(default=None),
+):
+    await require_command_admin(authorization)
+    try:
+        return await research_reports.regenerate_weekly(week_end)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

@@ -72,3 +72,182 @@ def test_startup_catch_up_backfills_friday_and_weekly_review():
         date(2026, 9, 21),
         date(2026, 9, 25),
     ) in generated
+
+
+def test_canonical_weekly_generation_persists_once_with_deterministic_key():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    class MarketData:
+        async def market_calendar_details(self, start, end):
+            return [{"date": date(2026, 9, 25), "open": "09:30", "close": "16:00"}]
+
+    class Sink:
+        def __init__(self):
+            self.enabled = False
+            self.last_error = None
+            self.events = []
+
+        def status(self):
+            return {}
+
+        async def emit_critical(self, **event):
+            self.events.append(event)
+            return True
+
+    sink = Sink()
+    settings = SimpleNamespace(
+        trading_ingest_url="https://example.test/functions/v1/trading-ingest",
+        trading_ingest_token="x" * 32,
+        trading_run_id="11111111-1111-1111-1111-111111111111",
+        strategy_version_id="LIVE-2026-09-25-003",
+    )
+    scheduler = ResearchReportScheduler(
+        settings,
+        SimpleNamespace(),
+        MarketData(),
+        SimpleNamespace(),
+        sink,
+    )
+    scheduler._canonical_weekly_inputs = lambda start, end: asyncio.sleep(
+        0,
+        result={
+            "daily_reports": [
+                {
+                    "event_id": "daily-1",
+                    "payload": {
+                        "session": "2026-09-25",
+                        "metrics": {
+                            "trade_count": 0,
+                            "wins": 0,
+                            "losses": 0,
+                            "flat": 0,
+                            "realized_pnl": "0",
+                        },
+                        "trades": [],
+                    },
+                }
+            ],
+            "earliest_daily_session": "2026-09-25",
+            "strategy_versions": [{"version_id": "LIVE-2026-09-25-003"}],
+            "runs": [{"run_id": settings.trading_run_id}],
+            "runtime_instances": [],
+            "account_equity_by_session": [],
+            "account_weekly_drawdown": {},
+            "orders_by_session": [],
+            "fills_by_session": [],
+            "candidate_by_session": [],
+            "rejection_reasons": [],
+            "gate_rates": [],
+            "positions": [],
+            "incidents": [],
+            "operational_by_session": [],
+            "forward_outcomes": [],
+            "live_offline": [],
+            "duplicate_checks": {},
+            "canonical_period_summary": {},
+            "data_cutoff": "2026-09-26T14:00:00Z",
+            "warnings": [],
+        },
+    )
+    scheduler.fetch_weekly_report = lambda end_date=None: asyncio.sleep(0, result=None)
+
+    report = asyncio.run(
+        scheduler.generate_weekly(date(2026, 9, 25), date(2026, 9, 25))
+    )
+
+    assert report["completeness_state"] == "COMPLETE"
+    assert len(sink.events) == 1
+    assert sink.events[0]["event_type"] == "research_weekly_report"
+    assert sink.events[0]["event_key"].endswith(report["report_key"])
+    assert report["live_configuration_changed"] is False
+
+
+def test_manual_regeneration_rejects_non_session_week_end():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    class MarketData:
+        async def market_calendar(self, start, end):
+            return [date(2026, 9, 25)]
+
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        MarketData(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+
+    try:
+        asyncio.run(scheduler.regenerate_weekly(date(2026, 9, 26)))
+    except ValueError as exc:
+        assert "actual US equity trading session" in str(exc)
+    else:
+        raise AssertionError("Saturday regeneration should be rejected")
+
+
+def test_manual_regeneration_uses_actual_trading_week_boundary():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    class MarketData:
+        async def market_calendar(self, start, end):
+            return [date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 25)]
+
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        MarketData(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    observed = []
+
+    async def weekly(start, end):
+        observed.append((start, end))
+        return {"period_start": start.isoformat(), "period_end": end.isoformat()}
+
+    scheduler.generate_weekly = weekly
+    report = asyncio.run(scheduler.regenerate_weekly(date(2026, 9, 25)))
+
+    assert observed == [(date(2026, 9, 21), date(2026, 9, 25))]
+    assert report["period_end"] == "2026-09-25"
+
+
+def test_weekly_report_read_uses_durable_report_api():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    calls = []
+
+    async def api_get(**params):
+        calls.append(params)
+        return {
+            "ok": True,
+            "report": {
+                "report_key": "2026-09-21:2026-09-25:rhen-weekly-v1:test",
+                "completeness_state": "PARTIAL",
+            },
+        }
+
+    scheduler._report_api_get = api_get
+    report = asyncio.run(scheduler.fetch_weekly_report(end_date=date(2026, 9, 25)))
+
+    assert calls == [{"latest": "weekly", "week_end": "2026-09-25"}]
+    assert report["completeness_state"] == "PARTIAL"
