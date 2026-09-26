@@ -540,7 +540,11 @@ def build_regime_report(
         reference_symbols=reference_symbols,
         window=window,
     )
-    observations = attach_benchmark_alignment(\n        attached.get("observations") or [],\n        bars_by_symbol,\n        window=window,\n    )
+    observations = attach_benchmark_alignment(
+        attached.get("observations") or [],
+        bars_by_symbol,
+        window=window,
+    )
     return {
         "status": "research_only",
         "purpose": (
@@ -549,7 +553,8 @@ def build_regime_report(
         ),
         "reference_symbols": list(reference_symbols),
         "regime_window_bars": window,
-        "entry_confirmation_symbols_changed": False,\n        "benchmark_map": DEFAULT_BENCHMARK_MAP,
+        "entry_confirmation_symbols_changed": False,
+        "benchmark_map": DEFAULT_BENCHMARK_MAP,
         "regime_summary": summarize_regimes(
             observations,
             horizons=horizons,
