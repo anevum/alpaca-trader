@@ -86,13 +86,13 @@ class MarketDataClient:
         return output
 
 
-    async def market_calendar(
+    async def market_calendar_details(
         self,
         *,
         start: date,
         end: date,
-    ) -> list[date]:
-        """Return Alpaca trading sessions for an inclusive date range."""
+    ) -> list[dict[str, Any]]:
+        """Return Alpaca session dates and published open/close boundaries."""
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
         if end < start:
@@ -110,13 +110,32 @@ class MarketDataClient:
             response.raise_for_status()
             payload = response.json()
 
-        return sorted(
-            {
-                date.fromisoformat(str(item["date"]))
-                for item in payload
-                if item.get("date")
-            }
-        )
+        details: list[dict[str, Any]] = []
+        for item in payload:
+            if not item.get("date"):
+                continue
+            details.append(
+                {
+                    "date": date.fromisoformat(str(item["date"])),
+                    "open": item.get("open"),
+                    "close": item.get("close"),
+                    "session_open": item.get("session_open"),
+                    "session_close": item.get("session_close"),
+                }
+            )
+        return sorted(details, key=lambda item: item["date"])
+
+    async def market_calendar(
+        self,
+        *,
+        start: date,
+        end: date,
+    ) -> list[date]:
+        """Return Alpaca trading-session dates for an inclusive date range."""
+        return [
+            item["date"]
+            for item in await self.market_calendar_details(start=start, end=end)
+        ]
 
     async def historical_bars_many(
         self,
