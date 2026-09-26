@@ -126,6 +126,7 @@ def test_default_tournament_has_control_and_research_variants():
         "balanced_4_10",
         "selective_3_10",
         "slow_5_15",
+        "strategy_005_candidate_d_delay_open",
         "strategy_004_candidate_c_controlled",
         "strategy_004_vwap_edge",
         "strategy_004_followthrough",
@@ -211,3 +212,23 @@ def test_candidate_c_is_research_gate_without_parameter_mutation():
     assert variant.min_vwap_edge_pct == base.min_vwap_edge_pct
     assert variant.stop_pct == base.stop_pct
     assert variant.target_pct == base.target_pct
+
+
+
+def test_candidate_d_changes_only_entry_start():
+    base = settings(ENTRY_START="09:31")
+    candidate = next(
+        item for item in DEFAULT_VARIANTS
+        if item.name == "strategy_005_candidate_d_delay_open"
+    )
+    variant = variant_settings(base, candidate)
+
+    assert variant.entry_start.hour == 10
+    assert variant.entry_start.minute == 30
+    assert variant.fast_window == base.fast_window
+    assert variant.slow_window == base.slow_window
+    assert variant.min_momentum_pct == base.min_momentum_pct
+    assert variant.min_vwap_edge_pct == base.min_vwap_edge_pct
+    assert variant.stop_pct == base.stop_pct
+    assert variant.target_pct == base.target_pct
+    assert variant.max_hold_minutes == base.max_hold_minutes
