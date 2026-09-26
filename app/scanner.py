@@ -94,6 +94,18 @@ class ReadOnlyScanner:
                 buy_signals.append(signal)
 
         self.state.record_scan(scan, at=now)
+        if self.state.event_emitter is not None and self.state.current_correlation_id:
+            self.state.record_event(
+                kind="scan_cycle_summary",
+                action="qualified" if buy_signals else "hold",
+                message="scan-only cycle completed",
+                at=now,
+                payload={
+                    "active_universe": entry_symbols,
+                    "scan": scan,
+                    "qualified_count": len(buy_signals),
+                },
+            )
         print(
             "SAFE_SCAN_CYCLE",
             {
