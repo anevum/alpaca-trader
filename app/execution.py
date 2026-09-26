@@ -1684,6 +1684,21 @@ class ExecutionEngine:
             buy_signals = quality_signals
 
         self.state.record_scan(scan, at=now)
+        if self.ledger is not None and self.state.current_correlation_id:
+            self.ledger.record_decision_cycle(
+                correlation_id=self.state.current_correlation_id,
+                cycle_started_at=now,
+                cycle_ended_at=datetime.now(NY),
+                market_is_open=True,
+                active_universe=entry_symbols,
+                scan=scan,
+                cycle_outcome=(
+                    "qualified" if any(
+                        payload.get("action") == "buy" for payload in scan.values()
+                    ) else "no_qualified_candidates"
+                ),
+                data_status="ok",
+            )
         hold_reasons: dict[str, int] = {}
         for payload in scan.values():
             if payload.get("action") == "buy":
