@@ -1,0 +1,818 @@
+{
+  "costs": {
+    "application": "entry*=1+spread/2+slippage; exit*=1-spread/2-slippage",
+    "scenarios": [
+      {
+        "full_spread_bps": 5,
+        "name": "BASE",
+        "nominal_round_trip_bps": 9,
+        "slippage_bps_per_side": 2
+      },
+      {
+        "full_spread_bps": 8,
+        "name": "NORMAL",
+        "nominal_round_trip_bps": 14,
+        "slippage_bps_per_side": 3
+      },
+      {
+        "full_spread_bps": 12,
+        "name": "STRESS",
+        "nominal_round_trip_bps": 22,
+        "slippage_bps_per_side": 5
+      }
+    ],
+    "survival_scenario": "STRESS"
+  },
+  "data": {
+    "adjustment": "raw",
+    "analysis_interval": "5Min",
+    "feed": "iex",
+    "historical_request_contract": {
+      "adjustment": "raw",
+      "feed": "iex",
+      "page_limit": 10000,
+      "pagination": "follow next_page_token until absent; safety-limit exhaustion fails quality gate",
+      "sort": "asc",
+      "timeframe": "1Min"
+    },
+    "later_stage_fetch_policy": "validation only after development PASS; holdout only after validation PASS",
+    "provider": "Alpaca",
+    "quarantine_policy": "never accessible under v2.1",
+    "raw_interval": "1Min",
+    "regular_session": [
+      "09:30:00",
+      "16:00:00"
+    ],
+    "timezone": "America/New_York",
+    "windows": [
+      {
+        "access": "development",
+        "end": "2026-01-23",
+        "expected_session_count": 14,
+        "expected_sessions": [
+          "2026-01-05",
+          "2026-01-06",
+          "2026-01-07",
+          "2026-01-08",
+          "2026-01-09",
+          "2026-01-12",
+          "2026-01-13",
+          "2026-01-14",
+          "2026-01-15",
+          "2026-01-16",
+          "2026-01-20",
+          "2026-01-21",
+          "2026-01-22",
+          "2026-01-23"
+        ],
+        "id": "dev-01",
+        "role": "development",
+        "start": "2026-01-05"
+      },
+      {
+        "access": "development",
+        "end": "2026-02-13",
+        "expected_session_count": 15,
+        "expected_sessions": [
+          "2026-01-26",
+          "2026-01-27",
+          "2026-01-28",
+          "2026-01-29",
+          "2026-01-30",
+          "2026-02-02",
+          "2026-02-03",
+          "2026-02-04",
+          "2026-02-05",
+          "2026-02-06",
+          "2026-02-09",
+          "2026-02-10",
+          "2026-02-11",
+          "2026-02-12",
+          "2026-02-13"
+        ],
+        "id": "dev-02",
+        "role": "development",
+        "start": "2026-01-26"
+      },
+      {
+        "access": "development",
+        "end": "2026-03-06",
+        "expected_session_count": 14,
+        "expected_sessions": [
+          "2026-02-17",
+          "2026-02-18",
+          "2026-02-19",
+          "2026-02-20",
+          "2026-02-23",
+          "2026-02-24",
+          "2026-02-25",
+          "2026-02-26",
+          "2026-02-27",
+          "2026-03-02",
+          "2026-03-03",
+          "2026-03-04",
+          "2026-03-05",
+          "2026-03-06"
+        ],
+        "id": "dev-03",
+        "role": "development",
+        "start": "2026-02-17"
+      },
+      {
+        "access": "development",
+        "end": "2026-03-27",
+        "expected_session_count": 15,
+        "expected_sessions": [
+          "2026-03-09",
+          "2026-03-10",
+          "2026-03-11",
+          "2026-03-12",
+          "2026-03-13",
+          "2026-03-16",
+          "2026-03-17",
+          "2026-03-18",
+          "2026-03-19",
+          "2026-03-20",
+          "2026-03-23",
+          "2026-03-24",
+          "2026-03-25",
+          "2026-03-26",
+          "2026-03-27"
+        ],
+        "id": "dev-04",
+        "role": "development",
+        "start": "2026-03-09"
+      },
+      {
+        "access": "development",
+        "end": "2026-04-17",
+        "expected_session_count": 14,
+        "expected_sessions": [
+          "2026-03-30",
+          "2026-03-31",
+          "2026-04-01",
+          "2026-04-02",
+          "2026-04-06",
+          "2026-04-07",
+          "2026-04-08",
+          "2026-04-09",
+          "2026-04-10",
+          "2026-04-13",
+          "2026-04-14",
+          "2026-04-15",
+          "2026-04-16",
+          "2026-04-17"
+        ],
+        "id": "dev-05",
+        "role": "development",
+        "start": "2026-03-30"
+      },
+      {
+        "access": "development",
+        "end": "2026-05-08",
+        "expected_session_count": 15,
+        "expected_sessions": [
+          "2026-04-20",
+          "2026-04-21",
+          "2026-04-22",
+          "2026-04-23",
+          "2026-04-24",
+          "2026-04-27",
+          "2026-04-28",
+          "2026-04-29",
+          "2026-04-30",
+          "2026-05-01",
+          "2026-05-04",
+          "2026-05-05",
+          "2026-05-06",
+          "2026-05-07",
+          "2026-05-08"
+        ],
+        "id": "dev-06",
+        "role": "development",
+        "start": "2026-04-20"
+      },
+      {
+        "access": "locked",
+        "end": "2026-06-05",
+        "expected_session_count": 14,
+        "expected_sessions": [
+          "2026-05-18",
+          "2026-05-19",
+          "2026-05-20",
+          "2026-05-21",
+          "2026-05-22",
+          "2026-05-26",
+          "2026-05-27",
+          "2026-05-28",
+          "2026-05-29",
+          "2026-06-01",
+          "2026-06-02",
+          "2026-06-03",
+          "2026-06-04",
+          "2026-06-05"
+        ],
+        "id": "val-01",
+        "role": "validation",
+        "start": "2026-05-18"
+      },
+      {
+        "access": "locked",
+        "end": "2026-06-26",
+        "expected_session_count": 14,
+        "expected_sessions": [
+          "2026-06-08",
+          "2026-06-09",
+          "2026-06-10",
+          "2026-06-11",
+          "2026-06-12",
+          "2026-06-15",
+          "2026-06-16",
+          "2026-06-17",
+          "2026-06-18",
+          "2026-06-22",
+          "2026-06-23",
+          "2026-06-24",
+          "2026-06-25",
+          "2026-06-26"
+        ],
+        "id": "val-02",
+        "role": "validation",
+        "start": "2026-06-08"
+      },
+      {
+        "access": "locked",
+        "end": "2026-07-31",
+        "expected_session_count": 15,
+        "expected_sessions": [
+          "2026-07-13",
+          "2026-07-14",
+          "2026-07-15",
+          "2026-07-16",
+          "2026-07-17",
+          "2026-07-20",
+          "2026-07-21",
+          "2026-07-22",
+          "2026-07-23",
+          "2026-07-24",
+          "2026-07-27",
+          "2026-07-28",
+          "2026-07-29",
+          "2026-07-30",
+          "2026-07-31"
+        ],
+        "id": "holdout-01",
+        "role": "holdout",
+        "start": "2026-07-13"
+      },
+      {
+        "access": "locked",
+        "end": "2026-08-21",
+        "expected_session_count": 15,
+        "expected_sessions": [
+          "2026-08-03",
+          "2026-08-04",
+          "2026-08-05",
+          "2026-08-06",
+          "2026-08-07",
+          "2026-08-10",
+          "2026-08-11",
+          "2026-08-12",
+          "2026-08-13",
+          "2026-08-14",
+          "2026-08-17",
+          "2026-08-18",
+          "2026-08-19",
+          "2026-08-20",
+          "2026-08-21"
+        ],
+        "id": "quarantine-01",
+        "role": "quarantine",
+        "start": "2026-08-03"
+      },
+      {
+        "access": "locked",
+        "end": "2026-09-11",
+        "expected_session_count": 14,
+        "expected_sessions": [
+          "2026-08-24",
+          "2026-08-25",
+          "2026-08-26",
+          "2026-08-27",
+          "2026-08-28",
+          "2026-08-31",
+          "2026-09-01",
+          "2026-09-02",
+          "2026-09-03",
+          "2026-09-04",
+          "2026-09-08",
+          "2026-09-09",
+          "2026-09-10",
+          "2026-09-11"
+        ],
+        "id": "quarantine-02",
+        "role": "quarantine",
+        "start": "2026-08-24"
+      },
+      {
+        "access": "locked",
+        "end": "2026-09-25",
+        "expected_session_count": 10,
+        "expected_sessions": [
+          "2026-09-14",
+          "2026-09-15",
+          "2026-09-16",
+          "2026-09-17",
+          "2026-09-18",
+          "2026-09-21",
+          "2026-09-22",
+          "2026-09-23",
+          "2026-09-24",
+          "2026-09-25"
+        ],
+        "id": "quarantine-03",
+        "role": "quarantine",
+        "start": "2026-09-14"
+      }
+    ]
+  },
+  "data_quality_gate": {
+    "completeness_basis": "expected sessions + exact-timestamp synchronization; raw IEX density diagnostic only",
+    "expected_session_representation_required": 1.0,
+    "failure_action": "stop stage before performance; no silent exclusions/threshold changes",
+    "minimum_market_benchmark_five_minute_ratio": 0.95,
+    "minimum_sector_benchmark_five_minute_ratio": 0.95,
+    "minimum_symbol_session_model_availability_ratio": 0.9,
+    "minimum_synchronized_five_minute_ratio_per_symbol_window": 0.9,
+    "must_run_before_performance": true,
+    "pagination_complete_required": true,
+    "required_report_fields": [
+      "expected_sessions",
+      "represented_sessions",
+      "first_timestamp",
+      "last_timestamp",
+      "raw_one_minute_bar_count",
+      "five_minute_observation_count",
+      "missing_sessions",
+      "partial_sessions",
+      "synchronization_completeness",
+      "market_benchmark_completeness",
+      "sector_benchmark_completeness",
+      "pagination_complete"
+    ]
+  },
+  "development_gates": {
+    "STRESS_day_cluster_bootstrap_95pct_lower_bound_must_be_positive": true,
+    "aggregate_STRESS_expectancy_must_be_positive": true,
+    "bonferroni_adjusted_one_sided_p_must_pass": true,
+    "gross_residual_30m_mean_must_be_positive": true,
+    "leave_best_group_definition": "group with largest sum of STRESS net 30m returns; lexicographic tie-break",
+    "leave_best_sector_out_STRESS_expectancy_must_be_positive": true,
+    "leave_best_symbol_out_STRESS_expectancy_must_be_positive": true,
+    "matched_nonshock_uplift_must_be_positive": true,
+    "maximum_day_event_share": 0.1,
+    "maximum_sector_event_share": 0.35,
+    "maximum_symbol_event_share": 0.2,
+    "minimum_STRESS_cvar_5pct": -0.03,
+    "minimum_STRESS_profit_factor": 1.15,
+    "minimum_development_windows_meeting_event_floor": 4,
+    "minimum_distinct_event_sessions": 50,
+    "minimum_events": 240,
+    "minimum_events_per_development_window": 20,
+    "minimum_matched_control_coverage": 0.8,
+    "minimum_positive_STRESS_expectancy_windows": 4,
+    "minimum_positive_shock_control_events": 60,
+    "minimum_single_event_STRESS_return": -0.08,
+    "minimum_worst_window_STRESS_expectancy": -0.001,
+    "no_tuning_after_failure": true,
+    "per_configuration_alpha": 0.008333333333333333,
+    "positive_shock_control_uplift_must_be_positive": true
+  },
+  "development_selection": {
+    "if_no_survivor": "reject; validation locked",
+    "order": [
+      "highest_STRESS_bootstrap_lower95",
+      "highest_worst_window_STRESS_expectancy",
+      "highest_aggregate_STRESS_expectancy",
+      "highest_event_count",
+      "ascending_configuration_id"
+    ],
+    "survivor_count_forward": 1
+  },
+  "entry": {
+    "cooldown_minutes": 30,
+    "cross_symbol_simultaneous_events": "retain",
+    "decision_time": "shock bar end T",
+    "entry_time": "T at raw 1Min open",
+    "gap_filter": "none",
+    "maximum_entry_delay_minutes": 0,
+    "missing_next_bar": "entry_unavailable; exclude executable performance",
+    "overlap": "suppress same-symbol decision times <30m after kept event",
+    "same_bar_close_execution_prohibited": true
+  },
+  "event_definition": {
+    "continuation_features_prohibited": [
+      "positive_momentum",
+      "VWAP_strength",
+      "breakout",
+      "reclaim"
+    ],
+    "liquidity_filter": "frozen universe + data availability only",
+    "rule": "residual <= -absolute_residual_floor AND z <= -residual_z_threshold",
+    "shock_bars": 1,
+    "volume_filter": "none"
+  },
+  "event_independence": {
+    "cluster_unit": "trading_day",
+    "cooldown_minutes": 30,
+    "cross_symbol_events_retained": true,
+    "same_symbol_primary_overlap_prohibited": true
+  },
+  "experiment": {
+    "canonical_experiment_id": "1e0e2f4a-6fef-4b2b-923f-630fa830c458",
+    "canonical_status": "planned",
+    "capital_scaling_authorized": false,
+    "environment": "simulation",
+    "experiment_key": "edge-discovery-v2-residual-downshock-rebound-v2.1",
+    "manifest_version": "residual-downshock-rebound-v2.1",
+    "methodology_version": "residual-downshock-rebound-v2.1",
+    "parent_experiment_id": "2e9a0ec5-2896-47a3-921d-f4c6c00ae6e4",
+    "production_behavior_changed": false,
+    "semantic_id": "residual-downshock-rebound-v2.1",
+    "state": "FROZEN/READY_TO_RUN"
+  },
+  "freeze": {
+    "change_policy": "semantic changes require a new methodology version",
+    "frozen_at": "2026-09-26T17:17:00Z",
+    "manifest_checksum_algorithm": "sha256 exact UTF-8 file after blanking freeze.manifest_checksum_sha256 and freeze.source_commit_sha values",
+    "manifest_checksum_sha256": "92f8bad6362144805cc262c9188d199111a7f9c088caec56c0b0e6d579ffef7a",
+    "source_commit_sha": "88bbc7389a45f7eaa66573809789bb1395eb3f26"
+  },
+  "holdout_gates": {
+    "STRESS_day_cluster_bootstrap_95pct_lower_bound_must_be_positive": true,
+    "aggregate_STRESS_expectancy_must_be_positive": true,
+    "chronological_blocks": [
+      [
+        "2026-07-13",
+        "2026-07-17"
+      ],
+      [
+        "2026-07-20",
+        "2026-07-24"
+      ],
+      [
+        "2026-07-27",
+        "2026-07-31"
+      ]
+    ],
+    "gross_residual_30m_mean_must_be_positive": true,
+    "leave_best_sector_out_STRESS_expectancy_must_be_positive": true,
+    "leave_best_symbol_out_STRESS_expectancy_must_be_positive": true,
+    "matched_nonshock_uplift_must_be_positive": true,
+    "maximum_day_event_share": 0.2,
+    "maximum_sector_event_share": 0.4,
+    "maximum_symbol_event_share": 0.25,
+    "minimum_STRESS_cvar_5pct": -0.03,
+    "minimum_STRESS_profit_factor": 1.1,
+    "minimum_distinct_event_sessions": 10,
+    "minimum_events": 40,
+    "minimum_matched_control_coverage": 0.8,
+    "minimum_positive_STRESS_blocks": 2,
+    "minimum_positive_shock_control_events": 10,
+    "minimum_single_event_STRESS_return": -0.08,
+    "minimum_worst_block_STRESS_expectancy": -0.001,
+    "pass_meaning": "historical evidence only; no live authorization",
+    "positive_shock_control_uplift_must_be_positive": true
+  },
+  "horizons": {
+    "primary": 30,
+    "secondary": [
+      5,
+      15,
+      60
+    ]
+  },
+  "hypothesis": {
+    "alternative": "conditional 30m residual rebound > 0 AND 30m executable STRESS-cost return > 0",
+    "failure": "primary 30m gate failure is terminal for that stage; secondary endpoints cannot rescue",
+    "null": "conditional 30m residual rebound <= 0 OR 30m executable STRESS-cost return <= 0",
+    "primary_horizon_minutes": 30,
+    "secondary_horizons_minutes": [
+      5,
+      15,
+      60
+    ],
+    "trade_direction": "long_only",
+    "unit_of_observation": "cooldown-filtered session+symbol+shock_bar_end event per configuration"
+  },
+  "negative_controls": {
+    "controls": [
+      {
+        "definition": "same symbol/session/time bucket; abs(z)<=0.5; abs(residual)<0.001; >=60m from any qualifying shock in same configuration; deterministic SHA256 selection",
+        "minimum_match_coverage": 0.8,
+        "name": "matched_nonshock"
+      },
+      {
+        "definition": "same thresholds/synchronization/entry/cooldown but residual>=floor and z>=threshold",
+        "minimum_development_control_events": 60,
+        "minimum_holdout_control_events": 10,
+        "minimum_validation_control_events": 20,
+        "name": "sign_flipped_positive_residual_shock"
+      }
+    ],
+    "credibility_rule": "both downshock-minus-control uplifts > 0",
+    "seed": 21020263
+  },
+  "no_lookahead_audit": {
+    "analytics_only_fields": [
+      "forward returns",
+      "forward residual returns",
+      "MFE/MAE",
+      "future controls outcomes",
+      "canonical candidate forward outcomes"
+    ],
+    "features": [
+      {
+        "field": "stock_5m_return",
+        "known_at_decision": true,
+        "latest_reference": "T"
+      },
+      {
+        "field": "market_5m_return",
+        "known_at_decision": true,
+        "latest_reference": "T"
+      },
+      {
+        "field": "sector_5m_return",
+        "known_at_decision": true,
+        "latest_reference": "T"
+      },
+      {
+        "field": "OLS_coefficients",
+        "known_at_decision": true,
+        "latest_reference": "prior_session_close"
+      },
+      {
+        "field": "residual_center_scale",
+        "known_at_decision": true,
+        "latest_reference": "prior_session_close"
+      },
+      {
+        "field": "residual_z_score",
+        "known_at_decision": true,
+        "latest_reference": "T"
+      },
+      {
+        "field": "time_of_day_bucket",
+        "known_at_decision": true,
+        "latest_reference": "T"
+      },
+      {
+        "field": "SPY_session_open_to_T_sign",
+        "known_at_decision": true,
+        "latest_reference": "T"
+      }
+    ]
+  },
+  "panel_construction": {
+    "bins": "fixed ET [09:30,09:35)...[15:55,16:00)",
+    "first_eligible_shock_bar_end": "09:40:00",
+    "halts": "missing; no synthetic observations",
+    "last_eligible_shock_bar_end": "15:00:00",
+    "missing_bin": "missing; no forward fill/interpolation",
+    "ohlcv": [
+      "first_open",
+      "max_high",
+      "min_low",
+      "last_close",
+      "sum_volume"
+    ],
+    "same_timestamp_required": true,
+    "short_session": "hard data-quality stop",
+    "sparse_bin": "valid if >=1 source bar; record raw_minute_count",
+    "synchronization": "stock+SPY+mapped sector need current and immediately prior closes at identical timestamps"
+  },
+  "parameter_grid": {
+    "configuration_count": 6,
+    "expansion_order": [
+      "residual_z_threshold",
+      "absolute_residual_floor"
+    ],
+    "structural_parameters": {
+      "cooldown_minutes": 30,
+      "entry": "next_interval_exact_open",
+      "primary_horizon_minutes": 30,
+      "shock_bars": 1,
+      "training_sessions": 20
+    },
+    "tunable_parameters": {
+      "absolute_residual_floor": [
+        0.003,
+        0.005
+      ],
+      "residual_z_threshold": [
+        2.0,
+        2.5,
+        3.0
+      ]
+    }
+  },
+  "regime_descriptors": {
+    "cannot_rescue_primary": true,
+    "descriptive_only": true,
+    "dimensions": [
+      "time_of_day",
+      "shock_magnitude",
+      "sector_return_sign",
+      "SPY_open_to_T_sign"
+    ]
+  },
+  "reproducibility": {
+    "analysis_interval": "5Min",
+    "baseline_commit": "e51322d50f54423f89437fd26928bc951c88ee7a",
+    "data_feed": "iex",
+    "data_provider": "Alpaca",
+    "expected_artifacts": {
+      "development": "artifacts/residual-downshock-rebound-v2.1-development.json",
+      "holdout": "artifacts/residual-downshock-rebound-v2.1-holdout.json",
+      "validation": "artifacts/residual-downshock-rebound-v2.1-validation.json"
+    },
+    "numeric_tolerance": 1e-12,
+    "random_seeds": {
+      "bootstrap": 21020261,
+      "cluster_sign_flip": 21020262,
+      "negative_controls": 21020263
+    },
+    "raw_bar_interval": "1Min",
+    "repository": "anevum/alpaca-trader",
+    "runner_entrypoint": "scripts/residual_downshock_rebound_v2_1.py"
+  },
+  "residual_model": {
+    "estimator": "OLS_with_intercept",
+    "factor_variance_floor": 1e-10,
+    "fallback": "model_unavailable; no event",
+    "formula": "r_stock = alpha + beta_market*r_SPY + beta_sector*(r_sector-r_SPY) + epsilon",
+    "forward_residual_rule": "same pre-session alpha/betas applied to each future 5m bar and summed",
+    "minimum_distinct_training_sessions": 10,
+    "minimum_synchronized_training_returns": 600,
+    "scope": "per_symbol_per_session",
+    "training_rule": "most recent 20 completed sessions strictly before event session",
+    "training_sessions": 20,
+    "winsorization": "none"
+  },
+  "returns": {
+    "convention": "arithmetic",
+    "entry_reference": "raw 1Min open timestamped exactly T",
+    "forward_residual_return": "sum h/5 future 5m residuals with pre-session coefficients",
+    "forward_stock_return": "exit_close_h/entry_reference-1",
+    "outcome_availability_rule": "primary requires exact 30m stock exit and all six future residual bars; secondary missingness does not remove an otherwise valid primary event",
+    "signal_market_return": "SPY close_T/close_T-5m-1",
+    "signal_sector_return": "sector close_T/close_T-5m-1",
+    "signal_stock_return": "close_T/close_T-5m-1"
+  },
+  "schema_version": 1,
+  "shock_standardization": {
+    "center": "prior-session training residual median in same time bucket",
+    "minimum_bucket_observations": 100,
+    "minimum_scale": 1e-06,
+    "scale": "1.4826*MAD",
+    "time_buckets": [
+      [
+        "early",
+        "09:40",
+        "11:00"
+      ],
+      [
+        "midday",
+        "11:00",
+        "14:00"
+      ],
+      [
+        "late",
+        "14:00",
+        "15:00"
+      ]
+    ],
+    "z_score": "(residual-center)/scale"
+  },
+  "stage_access": {
+    "development": "first executable stage only",
+    "holdout": "requires exact-checksum validation PASS same configuration_id",
+    "quarantine": "never accessible under v2.1",
+    "validation": "requires exact-checksum development PASS + selected_configuration_id"
+  },
+  "uncertainty": {
+    "bootstrap_interval": "percentile",
+    "bootstrap_resamples": 10000,
+    "bootstrap_seed": 21020261,
+    "bootstrap_unit": "trading_day",
+    "multiple_testing": {
+      "family_alpha": 0.05,
+      "method": "Bonferroni family-wise over 6 configurations",
+      "per_configuration_alpha": 0.008333333333333333,
+      "resamples": 10000,
+      "seed": 21020262,
+      "test": "trading-day cluster sign-flip mean STRESS 30m"
+    },
+    "one_sided_lower_confidence": 0.95,
+    "two_sided_confidence": 0.95
+  },
+  "universe": {
+    "etfs_context_only": true,
+    "excluded_symbols": [
+      "IWM",
+      "DIA",
+      "XBI",
+      "KRE",
+      "XRT",
+      "QQQ"
+    ],
+    "market_benchmark": "SPY",
+    "sector_benchmarks": [
+      "SMH",
+      "XLC",
+      "XLE",
+      "XLF",
+      "XLI",
+      "XLK",
+      "XLP",
+      "XLV",
+      "XLY"
+    ],
+    "sector_mapping": {
+      "AAPL": "XLK",
+      "AMD": "SMH",
+      "AMZN": "XLY",
+      "AVGO": "SMH",
+      "BA": "XLI",
+      "BAC": "XLF",
+      "CAT": "XLI",
+      "COST": "XLP",
+      "CVX": "XLE",
+      "GOOGL": "XLC",
+      "JPM": "XLF",
+      "LLY": "XLV",
+      "META": "XLC",
+      "MRVL": "SMH",
+      "MSFT": "XLK",
+      "MU": "SMH",
+      "NKE": "XLY",
+      "NVDA": "SMH",
+      "PLTR": "XLK",
+      "TSLA": "XLY",
+      "UNH": "XLV",
+      "WMT": "XLP",
+      "XOM": "XLE"
+    },
+    "source_universe_version": "edge-corpus-v1-frozen-36",
+    "survivorship_bias_note": "Inference is limited to the previously frozen liquid panel; it is not survivorship-bias-free for all US equities.",
+    "tradable_symbols": [
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "AMD",
+      "AMZN",
+      "META",
+      "GOOGL",
+      "TSLA",
+      "AVGO",
+      "MU",
+      "JPM",
+      "BAC",
+      "XOM",
+      "CVX",
+      "LLY",
+      "UNH",
+      "COST",
+      "WMT",
+      "CAT",
+      "BA",
+      "NKE",
+      "MRVL",
+      "PLTR"
+    ],
+    "version": "residual-downshock-rebound-v2.1-frozen-23"
+  },
+  "validation_gates": {
+    "STRESS_day_cluster_bootstrap_95pct_lower_bound_must_be_positive": true,
+    "aggregate_STRESS_expectancy_must_be_positive": true,
+    "all_validation_windows_STRESS_expectancy_positive": true,
+    "failure_action": "reject; holdout locked",
+    "gross_residual_30m_mean_must_be_positive": true,
+    "leave_best_sector_out_STRESS_expectancy_must_be_positive": true,
+    "leave_best_symbol_out_STRESS_expectancy_must_be_positive": true,
+    "matched_nonshock_uplift_must_be_positive": true,
+    "maximum_day_event_share": 0.15,
+    "maximum_sector_event_share": 0.35,
+    "maximum_symbol_event_share": 0.2,
+    "minimum_STRESS_cvar_5pct": -0.03,
+    "minimum_STRESS_profit_factor": 1.15,
+    "minimum_distinct_event_sessions": 20,
+    "minimum_events": 80,
+    "minimum_events_each_validation_window": 20,
+    "minimum_matched_control_coverage": 0.8,
+    "minimum_positive_shock_control_events": 20,
+    "minimum_single_event_STRESS_return": -0.08,
+    "positive_shock_control_uplift_must_be_positive": true
+  }
+}
