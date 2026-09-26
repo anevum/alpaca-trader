@@ -146,3 +146,15 @@ exit behavior remain the production control.
 The thresholds are now frozen. Reserved holdout results must not be used to
 retune Candidate C. A failure means reject Candidate C and return to research,
 not optimize against the holdout.
+
+
+## Reserved holdout lock
+
+Before Candidate C holdout evaluation, the reserved test window is locked as:
+
+**2026-08-31 through 2026-09-04**
+
+Candidate C thresholds were frozen before viewing this window's Candidate C
+results. The holdout must be evaluated once. If it fails the historical
+promotion criteria, Candidate C is rejected; its thresholds must not be tuned
+against this window.
