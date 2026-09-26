@@ -565,11 +565,24 @@ class EdgeDiscoveryStudy:
         settings: Settings,
         candidate_symbols: tuple[str, ...],
         *,
+        confirmation_symbols: tuple[str, ...] | None = None,
         event_cooldown_minutes: int = DEFAULT_EVENT_COOLDOWN_MINUTES,
     ):
         self.settings = settings
         self.candidate_symbols = tuple(
             dict.fromkeys(symbol.upper() for symbol in candidate_symbols if symbol)
+        )
+        configured_confirmations = (
+            confirmation_symbols
+            if confirmation_symbols is not None
+            else settings.confirmation_symbols
+        )
+        self.confirmation_symbols = tuple(
+            dict.fromkeys(
+                symbol.upper()
+                for symbol in configured_confirmations
+                if symbol
+            )
         )
         self.event_cooldown_minutes = max(event_cooldown_minutes, 1)
 
@@ -603,7 +616,7 @@ class EdgeDiscoveryStudy:
                 continue
 
             symbols = set(self.candidate_symbols) | set(
-                self.settings.confirmation_symbols
+                self.confirmation_symbols
             )
             visible = {symbol: [] for symbol in symbols}
             indexes = {symbol: 0 for symbol in symbols}
@@ -627,7 +640,7 @@ class EdgeDiscoveryStudy:
 
                 confirmation_bars = {
                     symbol: visible.get(symbol, [])
-                    for symbol in self.settings.confirmation_symbols
+                    for symbol in self.confirmation_symbols
                 }
 
                 for symbol in self.candidate_symbols:
@@ -727,7 +740,7 @@ class EdgeDiscoveryStudy:
         return {
             "status": "research_only",
             "candidate_symbols": list(self.candidate_symbols),
-            "confirmation_symbols": list(self.settings.confirmation_symbols),
+            "confirmation_symbols": list(self.confirmation_symbols),
             "family_names": list(FAMILY_NAMES),
             "horizon_minutes": horizon,
             "event_cooldown_minutes": self.event_cooldown_minutes,
