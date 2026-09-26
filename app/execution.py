@@ -40,6 +40,28 @@ class ExecutionEngine:
         self.state = state
         self.ledger = ledger
         self.universe = universe
+        self._last_universe_snapshot_key: str | None = None
+
+    def _record_universe_snapshot(self) -> None:
+        if self.ledger is None or self.universe is None:
+            return
+        updated_at = self.state.universe_updated_at
+        if updated_at is None:
+            return
+        event_key = (
+            f"{self.settings.trading_run_id}:universe_snapshot:"
+            f"{updated_at.isoformat()}"
+        )
+        if event_key == self._last_universe_snapshot_key:
+            return
+        self.ledger.emit(
+            event_type="universe_snapshot",
+            event_key=event_key,
+            occurred_at=updated_at.isoformat(),
+            correlation_id=self.state.current_correlation_id,
+            payload=self.universe.snapshot(),
+        )
+        self._last_universe_snapshot_key = event_key
 
     @staticmethod
     def _position_for_symbol(
@@ -1542,6 +1564,7 @@ class ExecutionEngine:
                     now=now,
                 )
             )
+            self._record_universe_snapshot()
         else:
             entry_symbols = list(self.settings.scan_symbols)
 
