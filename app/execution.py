@@ -1682,6 +1682,8 @@ class ExecutionEngine:
                 "action": signal.action,
                 "reason": signal.reason,
             }
+            if not scan:
+                signal.metadata["_comparison_context"] = self.state.last_execution_context
             scan[symbol] = self._signal_payload(signal)
             if signal.action == "buy":
                 buy_signals.append(signal)
