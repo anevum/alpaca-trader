@@ -28,7 +28,7 @@ MANIFEST = "research/residual-downshock-rebound-v2.1.json"
 
 def test_manifest_parses_and_checksum_is_stable():
     m = load_manifest(MANIFEST)
-    assert manifest_checksum(m) == m["freeze"]["manifest_checksum_sha256"]
+    assert manifest_checksum(MANIFEST) == m["freeze"]["manifest_checksum_sha256"]
 
 
 def test_parameter_grid_is_exactly_six_in_frozen_order():
