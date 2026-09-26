@@ -186,6 +186,14 @@ def _performance(
         weekly_return = (ending_equity - starting_equity) / starting_equity
 
     order_count = sum(int(row.get("orders") or 0) for row in inputs.get("orders_by_session") or [])
+    order_intent_count = sum(
+        int(row.get("order_intents") or 0)
+        for row in inputs.get("order_intents_by_session") or []
+    )
+    entry_intent_count = sum(
+        int(row.get("entry_intents") or 0)
+        for row in inputs.get("order_intents_by_session") or []
+    )
     fill_count = sum(int(row.get("fills") or 0) for row in inputs.get("fills_by_session") or [])
     entry_count = sum(int(row.get("entry_fills") or 0) for row in inputs.get("fills_by_session") or [])
     candidate_count = sum(int(row.get("evaluated") or 0) for row in inputs.get("candidate_by_session") or [])
@@ -238,6 +246,8 @@ def _performance(
         "maximum_weekly_drawdown": max_drawdown,
         "cumulative_equity_path": equity_rows,
         "order_count": order_count,
+        "order_intent_count": order_intent_count,
+        "entry_intent_count": entry_intent_count,
         "fill_count": fill_count,
         "entry_count": entry_count,
         "evaluated_candidates": candidate_count,
@@ -388,6 +398,18 @@ def _candidate_analysis(inputs: dict[str, Any]) -> dict[str, Any]:
         "rejected_candidates": rejected,
         "qualified_candidates": qualified,
         "signals": signals,
+        "order_intents": sum(
+            int(row.get("order_intents") or 0)
+            for row in inputs.get("order_intents_by_session") or []
+        ),
+        "entry_order_intents": sum(
+            int(row.get("entry_intents") or 0)
+            for row in inputs.get("order_intents_by_session") or []
+        ),
+        "filled_opportunities": sum(
+            int(row.get("entry_fills") or 0)
+            for row in inputs.get("fills_by_session") or []
+        ),
         "partial_backfill_candidates": partial_backfill,
         "rejection_reason_frequencies": dict(reason_totals),
         "rejection_reason_frequencies_by_day": dict(reason_by_day),
