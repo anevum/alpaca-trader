@@ -1,4 +1,4 @@
-# Edge Corpus v1 — development elimination result
+> SUPERSEDED on 2026-09-26 by `research/edge-corpus-v1-corrected-integrity-result-2026-09-26.md`. The terminal rejection remained the same, but the corrected report uses the verified session-integrity rule and supersedes the older event counts.\n\n# Edge Corpus v1 — development elimination result
 
 Date: 2026-09-25  
 Status: **ALL FIVE FAMILIES REJECTED IN DEVELOPMENT**
