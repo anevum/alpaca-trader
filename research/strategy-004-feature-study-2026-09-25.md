@@ -74,3 +74,50 @@ A Candidate C entry rule may be proposed only after:
 
 PR #28 remains gated regardless of feature-study findings until that sequence is
 complete.
+
+
+## Development-period feature study result
+
+The first feature study was run against the two development windows already
+used for Candidate B:
+
+- 2026-08-17 through 2026-08-21: 99 quality-eligible BUY opportunities;
+- 2026-09-08 through 2026-09-11: 84 quality-eligible BUY opportunities.
+
+Using the configured 0.50% target and 0.35% stop with conservative stop-first
+same-bar ordering, the unfiltered 15-minute opportunity labels were:
+
+| Period | Target before stop | Stop before target | Mean MFE | Mean MAE |
+| --- | ---: | ---: | ---: | ---: |
+| Aug 17–21 | 14.1% | 49.5% | +0.279% | -0.548% |
+| Sep 8–11 | 22.6% | 42.9% | +0.398% | -0.371% |
+
+No single feature showed a clean monotonic relationship in both periods.
+Notably:
+
+- higher momentum increased favorable excursion but also increased stop-first
+  behavior;
+- wider recent ranges behaved similarly;
+- higher VWAP edge was not consistently better;
+- the existing 0–100 quality score remained non-monotonic.
+
+A constrained two-condition scan was then used only on these development
+periods. Rules had to retain at least 15 observations in each period and improve
+both target-before-stop and stop-before-target behavior versus each period's
+baseline.
+
+The strongest provisional structures again separated into two families:
+
+1. **quiet/controlled continuation** — limited prior-bar expansion combined with
+   non-accelerating current volume;
+2. **participation impulse** — above-median quality combined with a sharp
+   current-volume acceleration.
+
+Other stable development-period combinations included moderate trend-gap plus
+broad market confirmation and adequate relative volume after a less efficient
+recent price path.
+
+These are discovery results, not Candidate C. The scan is now implemented in
+the offline tooling so future rule discovery is reproducible. Candidate C must
+be frozen from development data, run through the full replay engine, and then
+tested on a genuinely reserved holdout before any shadow promotion.
