@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import get_settings
-from .entry_feature_study import DEFAULT_HORIZONS, EntryFeatureStudy
+from .entry_feature_study import (\n    DEFAULT_HORIZONS,\n    EntryFeatureStudy,\n    stable_rule_scan,\n)
 from .market_data import MarketDataClient
 from .strategy_lab import build_strategy
 from .strategy_lab_runner import fetch_period, parse_period
