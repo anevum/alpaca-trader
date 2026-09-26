@@ -30,7 +30,7 @@ async function sha256Hex(value: string): Promise<string> {
 }
 
 function validDate(value: string | null): value is string {
-  return Boolean(value && /^\\d{4}-\\d{2}-\\d{2}$/.test(value));
+  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
 }
 
 async function authorized(req: Request): Promise<boolean> {
