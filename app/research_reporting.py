@@ -68,8 +68,18 @@ def infer_exit_reason(order: dict[str, Any] | None) -> str:
     if not order:
         return "unknown"
     client_order_id = str(order.get("client_order_id") or "").lower()
-    if "-hardstop-" in client_order_id:
-        return "broker_protective_stop"
+    tagged_reasons = (
+        ("-hardstop-", "broker_protective_stop"),
+        ("-protect-", "profit_protection"),
+        ("-target-", "take_profit"),
+        ("-thesis-", "thesis_failure"),
+        ("-time-", "max_hold"),
+        ("-eod-", "end_of_day"),
+        ("-stop-", "software_stop"),
+    )
+    for marker, reason in tagged_reasons:
+        if marker in client_order_id:
+            return reason
     order_type = str(order.get("type") or "").lower()
     if order_type == "stop":
         return "stop_order"
