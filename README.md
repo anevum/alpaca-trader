@@ -1,6 +1,6 @@
-# Alpaca Trading Bot
+# RHEN
 
-Private ANEVUM service for Alpaca account monitoring and deterministic automated execution.
+RHEN is ANEVUM's private market-research and deterministic automated-execution system, currently connected to Alpaca.
 
 ## Current build
 
@@ -97,7 +97,7 @@ New entries are blocked when:
 - equity-risk sizing would take gross exposure above `MAX_GROSS_EXPOSURE_PCT` of prior-close equity;
 - enough return observations exist and pairwise correlation with an open/planned position is at or above `MAX_PAIRWISE_CORRELATION`;
 - the candidate bar/confirmation data is stale or its quoted spread exceeds `MAX_SPREAD_PCT`;
-- the account-wide daily ANEVUM entry limit has been reached;
+- the account-wide daily RHEN entry limit has been reached;
 - cash is insufficient;
 - equity decline versus Alpaca `last_equity` reaches `MAX_DAILY_LOSS`;
 - the asset is not active, tradable and fractionable;
@@ -178,7 +178,7 @@ separate from order execution and cannot change strategy parameters, capital,
 position limits, deployment settings, or promotion state.
 
 After 4:20 PM America/New_York on each completed Alpaca trading-calendar
-session, the reporter reconstructs ANEVUM-owned round trips from broker fills
+session, the reporter reconstructs RHEN-owned round trips from broker fills
 and bot client-order IDs; manual trades are excluded. It calculates measured
 realized P&L, wins/losses, win rate, expectancy, profit factor, average/median
 hold time, realized drawdown, symbol and exit-reason breakdowns, and MFE/MAE
@@ -203,7 +203,7 @@ bounded when its 200-event runtime buffer is saturated.
 
 ## Deployment
 
-The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader`.
+The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader` (legacy infrastructure identifier retained for deployment continuity).
 
 
 ## Durable canonical trading ledger
