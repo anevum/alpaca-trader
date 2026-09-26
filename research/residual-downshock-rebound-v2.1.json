@@ -445,7 +445,7 @@
     "change_policy": "semantic changes require a new methodology version",
     "frozen_at": "2026-09-26T17:17:00Z",
     "manifest_checksum_algorithm": "sha256 exact UTF-8 file after blanking freeze.manifest_checksum_sha256 and freeze.source_commit_sha values",
-    "manifest_checksum_sha256": "",
+    "manifest_checksum_sha256": "92f8bad6362144805cc262c9188d199111a7f9c088caec56c0b0e6d579ffef7a",
     "source_commit_sha": null
   },
   "holdout_gates": {
