@@ -99,3 +99,13 @@ Not run. Matched non-shock and sign-flipped positive-shock results do not exist 
 No recovered evidence was written to `private.trading_experiments`, `private.trading_experiment_windows`, `private.trading_experiment_results`, or `private.trading_research_decisions`.
 
 Canonical state remains planned / methodology_frozen / not_run with zero v2.1 result rows. Validation remains ineligible and unopened; holdout and quarantine remain unopened.
+
+## OPERATIONAL VERIFICATION
+
+- GitHub `main` compares identical to canonical commit `09424bb20bebd88f28f511c6ea83ba1252bc455a`.
+- Recovery/checksum/boundary/gate-consistency audit checks passed; the material ordering mismatch check was confirmed.
+- Existing test suite: 180 passed.
+- The superseded one-shot shadow deployment `ded64342-ee58-47db-8378-8bc8dfa8b6ba` is REMOVED.
+- Shadow cleanup deployment `d408a930-6bb9-4f3b-b353-a832633f9cfd` is SUCCESS with the restored `edge_corpus_dev_service` command, restart policy NEVER, and application sleep enabled.
+- Production deployment `c7641682-8881-42d4-bc2d-24241ec49118` remains SUCCESS.
+- Live strategy remains `LIVE-2026-09-25-003` / `rolling_momentum_vwap`; live execution, sizing, and risk configuration were not changed.
