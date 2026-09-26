@@ -13,12 +13,14 @@ from .config import get_settings
 from .edge_corpus import load_manifest, manifest_sha256
 from .edge_corpus_runner import (
     MIN_SHARED_PANEL_RATIO,
+    _bars_for_panel,
     _load_role,
     _panel_integrity,
     _scenario_stage,
     _shared_panel,
 )
-from .edge_discovery_runner import DEFAULT_COST_SCENARIOS
+from .edge_development_decisive import irreversible_development_rejections
+from .edge_discovery import EdgeDiscoveryStudy, aggregate_family_periods
 from .edge_elimination import development_elimination
 from .market_data import MarketDataClient
 
@@ -33,37 +35,52 @@ STATE: dict[str, Any] = {
 }
 
 
-def _compact_elimination(gate: dict[str, Any]) -> dict[str, Any]:
-    families = {}
-    for name, result in (gate.get("families") or {}).items():
-        families[name] = {
-            "passed": result.get("passed"),
-            "failed_scenarios": result.get("failed_scenarios"),
-            "scenario_checks": [
-                {
-                    "scenario": item.get("scenario"),
-                    "passed": item.get("passed"),
-                    "actual": item.get("actual"),
-                    "checks": item.get("checks"),
-                }
-                for item in result.get("scenario_checks") or []
-            ],
+def _research_settings(settings, manifest):
+    return settings.model_copy(
+        update={
+            "stop_pct": Decimal(manifest.research_stop_pct),
+            "target_pct": Decimal(manifest.research_target_pct),
+            "entry_start_raw": manifest.research_entry_start,
+            "entry_cutoff_raw": manifest.research_entry_cutoff,
         }
+    )
+
+
+def _scenario(manifest, name: str) -> tuple[str, Decimal, Decimal]:
+    for scenario_name, spread, slippage in manifest.research_cost_scenarios:
+        if scenario_name.lower() == name.lower():
+            return (
+                scenario_name,
+                Decimal(spread),
+                Decimal(slippage),
+            )
+    raise RuntimeError(f"corpus manifest has no {name!r} cost scenario")
+
+
+def _period_summary(period: dict[str, Any]) -> dict[str, Any]:
     return {
-        "survivors": gate.get("survivors") or [],
-        "rejected": gate.get("rejected") or [],
-        "families": families,
-        "criteria": gate.get("criteria"),
+        family: {
+            "events": summary.get("events"),
+            "expectancy_pct": summary.get("expectancy_pct"),
+            "profit_factor": summary.get("profit_factor"),
+        }
+        for family, summary in (period.get("summary_by_family") or {}).items()
     }
 
 
 async def run_development_only() -> None:
     try:
-        settings = get_settings()
-        if settings.execution_enabled or settings.bot_armed or settings.live_trading:
+        runtime_settings = get_settings()
+        if (
+            runtime_settings.execution_enabled
+            or runtime_settings.bot_armed
+            or runtime_settings.live_trading
+        ):
             raise RuntimeError("research service execution gates are not hard-disabled")
 
         manifest = load_manifest("research/edge-corpus-v1.json")
+        settings = _research_settings(runtime_settings, manifest)
+
         if settings.data_feed != manifest.data_feed:
             raise RuntimeError(
                 f"DATA_FEED={settings.data_feed} does not match {manifest.data_feed}"
@@ -78,6 +95,10 @@ async def run_development_only() -> None:
             "event": "edge_corpus_development_started",
             "manifest_sha256": manifest_sha256(manifest),
             "development_windows": 6,
+            "research_stop_pct": manifest.research_stop_pct,
+            "research_target_pct": manifest.research_target_pct,
+            "research_entry_start": manifest.research_entry_start,
+            "research_entry_cutoff": manifest.research_entry_cutoff,
             "validation_opened": False,
             "holdout_opened": False,
         }), flush=True)
@@ -94,7 +115,7 @@ async def run_development_only() -> None:
         integrity_windows = []
         for payload in payloads:
             cov = payload.get("coverage") or {}
-            integrity_windows.append({
+            integrity = {
                 "window": payload.get("window"),
                 "fetch_pagination_complete": (
                     (payload.get("fetch_integrity") or {}).get("pagination_complete")
@@ -112,10 +133,11 @@ async def run_development_only() -> None:
                 "minimum_iex_density_ratio": min(
                     (cov.get("iex_bar_density_ratio") or {"": 0.0}).values()
                 ),
-            })
+            }
+            integrity_windows.append(integrity)
             print(json.dumps({
                 "event": "edge_corpus_integrity_window",
-                **integrity_windows[-1],
+                **integrity,
             }), flush=True)
 
         panel = _shared_panel(payloads, manifest)
@@ -130,18 +152,119 @@ async def run_development_only() -> None:
                 f"{MIN_SHARED_PANEL_RATIO} minimum after session-integrity checks"
             )
 
-        STATE["status"] = "evaluating_development"
-        scenarios = list(DEFAULT_COST_SCENARIOS)
-        scenario_results = _scenario_stage(
-            payloads,
-            settings=settings,
-            panel=panel,
-            confirmation_symbols=manifest.confirmation_symbols,
-            scenarios=scenarios,
-            horizon=manifest.research_horizon_minutes,
-            event_cooldown_minutes=manifest.research_event_cooldown_minutes,
+        stress_name, stress_spread, stress_slippage = _scenario(
+            manifest,
+            "stress",
         )
-        gate = development_elimination(scenario_results)
+        total_periods = len(payloads)
+        stress_periods: list[dict[str, Any]] = []
+        proof: dict[str, Any] | None = None
+        STATE["status"] = "evaluating_development_stress"
+
+        for index, payload in enumerate(payloads, start=1):
+            bars = _bars_for_panel(
+                payload,
+                panel,
+                manifest.confirmation_symbols,
+            )
+            study = EdgeDiscoveryStudy(
+                settings,
+                panel,
+                confirmation_symbols=manifest.confirmation_symbols,
+                event_cooldown_minutes=manifest.research_event_cooldown_minutes,
+            )
+            result = await asyncio.to_thread(
+                study.run,
+                bars,
+                spread_bps=stress_spread,
+                slippage_bps=stress_slippage,
+                horizon=manifest.research_horizon_minutes,
+            )
+            window = payload["window"]
+            period = {
+                "period": window["id"],
+                "range": {
+                    "start": window["start"],
+                    "end": window["end"],
+                },
+                "role": window["role"],
+                **result,
+            }
+            stress_periods.append(period)
+            proof = irreversible_development_rejections(
+                stress_periods,
+                total_periods=total_periods,
+            )
+            STATE.update({
+                "status": "evaluating_development_stress",
+                "periods_completed": index,
+                "periods_total": total_periods,
+                "irreversible_proof": proof,
+            })
+            print(json.dumps({
+                "event": "edge_corpus_stress_period_complete",
+                "period": window["id"],
+                "position": index,
+                "total": total_periods,
+                "summary_by_family": _period_summary(period),
+                "irreversible_proof": proof,
+            }), flush=True)
+
+            if proof["all_families_irreversibly_rejected"]:
+                break
+
+        if proof is None:
+            raise RuntimeError("development produced no stress periods")
+
+        if proof["all_families_irreversibly_rejected"]:
+            gate = {
+                "stage": "development",
+                "survivors": [],
+                "rejected": list(proof["irreversibly_rejected"]),
+                "decisive_scenario": stress_name,
+                "early_stop_valid": True,
+                "proof": proof,
+                "criteria": {
+                    "rule": (
+                        "A family must pass every cost scenario. Failure of the "
+                        "stress scenario is sufficient for development rejection."
+                    ),
+                },
+            }
+            scenarios_run = [stress_name]
+        else:
+            stress_scenario = {
+                "scenario": stress_name,
+                "spread_bps": str(stress_spread),
+                "slippage_bps_per_side": str(stress_slippage),
+                "periods": stress_periods,
+                "aggregate_by_family": aggregate_family_periods(
+                    stress_periods,
+                    horizon=manifest.research_horizon_minutes,
+                ),
+            }
+            other_scenarios = [
+                (
+                    name,
+                    Decimal(spread),
+                    Decimal(slippage),
+                )
+                for name, spread, slippage in manifest.research_cost_scenarios
+                if name != stress_name
+            ]
+            extra = await asyncio.to_thread(
+                _scenario_stage,
+                payloads,
+                settings=settings,
+                panel=panel,
+                confirmation_symbols=manifest.confirmation_symbols,
+                scenarios=other_scenarios,
+                horizon=manifest.research_horizon_minutes,
+                event_cooldown_minutes=manifest.research_event_cooldown_minutes,
+            )
+            scenarios = [*extra, stress_scenario]
+            gate = development_elimination(scenarios)
+            scenarios_run = [item["scenario"] for item in scenarios]
 
         report = {
             "status": "research_only",
@@ -152,8 +275,28 @@ async def run_development_only() -> None:
                 "data_feed": manifest.data_feed,
                 "timeframe": manifest.timeframe,
             },
+            "research_settings": {
+                "horizon_minutes": manifest.research_horizon_minutes,
+                "event_cooldown_minutes": (
+                    manifest.research_event_cooldown_minutes
+                ),
+                "stop_pct": manifest.research_stop_pct,
+                "target_pct": manifest.research_target_pct,
+                "entry_start": manifest.research_entry_start,
+                "entry_cutoff": manifest.research_entry_cutoff,
+                "scenarios_run": scenarios_run,
+            },
             "integrity_windows": integrity_windows,
             "panel_integrity": panel_integrity,
+            "stress_periods": [
+                {
+                    "period": period["period"],
+                    "range": period["range"],
+                    "role": period["role"],
+                    "summary_by_family": period["summary_by_family"],
+                }
+                for period in stress_periods
+            ],
             "development_elimination": gate,
             "validation_opened": False,
             "holdout_opened": False,
@@ -169,12 +312,12 @@ async def run_development_only() -> None:
         STATE.update({
             "status": "complete",
             "panel_integrity": panel_integrity,
-            "development_elimination": _compact_elimination(gate),
+            "development_elimination": gate,
         })
         print(json.dumps({
             "event": "edge_corpus_development_complete",
             "panel_integrity": panel_integrity,
-            "development_elimination": _compact_elimination(gate),
+            "development_elimination": gate,
             "validation_opened": False,
             "holdout_opened": False,
         }), flush=True)
@@ -201,8 +344,7 @@ async def startup() -> None:
 async def health() -> dict[str, Any]:
     return {
         "ok": True,
-        "status": STATE.get("status"),
-        "stage": STATE.get("stage"),
+        **STATE,
         "validation_opened": False,
         "holdout_opened": False,
     }
