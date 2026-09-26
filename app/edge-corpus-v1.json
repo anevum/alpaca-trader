@@ -1,0 +1,35 @@
+{
+  "version": "edge-corpus-v1",
+  "created_at": "2026-09-25",
+  "data_feed": "iex",
+  "timeframe": "1Min",
+  "candidate_symbols": [
+    "AAPL", "MSFT", "NVDA", "AMD", "AMZN", "META", "GOOGL", "TSLA",
+    "AVGO", "MU", "JPM", "BAC", "XOM", "CVX", "LLY", "UNH",
+    "COST", "WMT", "CAT", "BA", "NKE", "MRVL", "PLTR", "IWM",
+    "DIA", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP",
+    "XLC", "XBI", "KRE", "XRT"
+  ],
+  "confirmation_symbols": ["SPY", "QQQ", "SMH"],
+  "windows": [
+    {"id": "dev-01", "start": "2026-01-05", "end": "2026-01-23", "role": "development"},
+    {"id": "dev-02", "start": "2026-01-26", "end": "2026-02-13", "role": "development"},
+    {"id": "dev-03", "start": "2026-02-17", "end": "2026-03-06", "role": "development"},
+    {"id": "dev-04", "start": "2026-03-09", "end": "2026-03-27", "role": "development"},
+    {"id": "dev-05", "start": "2026-03-30", "end": "2026-04-17", "role": "development"},
+    {"id": "dev-06", "start": "2026-04-20", "end": "2026-05-08", "role": "development"},
+    {"id": "val-01", "start": "2026-05-18", "end": "2026-06-05", "role": "validation"},
+    {"id": "val-02", "start": "2026-06-08", "end": "2026-06-26", "role": "validation"},
+    {"id": "holdout-01", "start": "2026-07-13", "end": "2026-07-31", "role": "holdout"},
+    {"id": "quarantine-01", "start": "2026-08-03", "end": "2026-08-21", "role": "quarantine"},
+    {"id": "quarantine-02", "start": "2026-08-24", "end": "2026-09-11", "role": "quarantine"},
+    {"id": "quarantine-03", "start": "2026-09-14", "end": "2026-09-25", "role": "quarantine"}
+  ],
+  "notes": [
+    "The candidate panel is frozen for this corpus version; do not add or remove symbols after seeing family outcomes.",
+    "SPY, QQQ and SMH are context references and are not part of the candidate panel.",
+    "August and September 2026 are quarantined because prior ANEVUM research already inspected those periods.",
+    "The July historical holdout must not be fetched or evaluated until a family survives both development and validation.",
+    "This fixed panel is not survivorship-bias-free; results must be interpreted as evidence for this frozen liquid-symbol panel, not the entire historical market."
+  ]
+}
