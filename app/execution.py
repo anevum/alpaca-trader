@@ -399,6 +399,51 @@ class ExecutionEngine:
         state["observed_peak_return_pct"] = str(observed_peak)
         state["observed_trough_return_pct"] = str(observed_trough)
 
+        if self.ledger is not None and hasattr(self.ledger, "record_position_metrics"):
+            peak_price = entry_price * (Decimal("1") + peak)
+            trough_price = entry_price * (Decimal("1") + trough)
+            peak_at = None
+            trough_at = None
+            if bars and entry_time is not None:
+                best_peak = Decimal("-Infinity")
+                best_trough = Decimal("Infinity")
+                for bar in bars:
+                    stamp = self._timestamp(bar.get("t"))
+                    if stamp is None or stamp < entry_time:
+                        continue
+                    high = Decimal(str(bar.get("h", "0") or "0"))
+                    low = Decimal(str(bar.get("l", "0") or "0"))
+                    if high > 0 and high > best_peak:
+                        best_peak = high
+                        peak_at = stamp
+                    if low > 0 and low < best_trough:
+                        best_trough = low
+                        trough_at = stamp
+            metrics = {
+                "max_favorable_excursion": str(peak),
+                "max_adverse_excursion": str(trough),
+                "peak_favorable_price": str(peak_price),
+                "peak_adverse_price": str(trough_price),
+                "peak_favorable_at": peak_at.isoformat() if peak_at else None,
+                "peak_adverse_at": trough_at.isoformat() if trough_at else None,
+                "time_to_mfe_ms": (
+                    max(int((peak_at - entry_time).total_seconds() * 1000), 0)
+                    if peak_at is not None and entry_time is not None else None
+                ),
+                "time_to_mae_ms": (
+                    max(int((trough_at - entry_time).total_seconds() * 1000), 0)
+                    if trough_at is not None and entry_time is not None else None
+                ),
+                "entry_reference_price": None,
+                "source": "live_observed_bars" if bars and entry_time is not None else "live_position_snapshot",
+            }
+            self.ledger.record_position_metrics(
+                symbol=symbol,
+                metrics=metrics,
+                correlation_id=self.state.current_correlation_id,
+                observed_at=datetime.now(NY),
+            )
+
         if (
             self.settings.profit_protect_enabled
             and peak >= self.settings.profit_protect_activation_pct
@@ -586,6 +631,7 @@ class ExecutionEngine:
         spread_pct = (ask - bid) / midpoint if midpoint > 0 else Decimal("1")
         details["bid"] = str(bid)
         details["ask"] = str(ask)
+        details["midpoint"] = str(midpoint)
         details["spread_pct"] = str(spread_pct)
         if spread_pct > self.settings.max_spread_pct:
             return (
@@ -596,6 +642,7 @@ class ExecutionEngine:
             )
 
         quote_stamp = self._timestamp(quote.get("t", quote.get("timestamp")))
+        details["quote_timestamp"] = quote_stamp.isoformat() if quote_stamp is not None else None
         if quote_stamp is not None:
             quote_age_seconds = max((now - quote_stamp).total_seconds(), 0)
             details["quote_age_seconds"] = round(quote_age_seconds, 3)

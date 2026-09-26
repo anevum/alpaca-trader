@@ -87,6 +87,7 @@ research_reports = ResearchReportScheduler(
 )
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
+runtime_provenance = None
 
 
 def emit_runtime_event(event: dict) -> None:
@@ -501,6 +502,9 @@ async def reconcile_broker_state(
 async def monitor_loop():
     while not _stop.is_set():
         runtime_state.begin_cycle(uuid4().hex)
+        cycle_started_at = datetime.now(NY)
+        runtime_state.last_scan = {}
+        market_is_open: bool | None = None
         try:
             if settings.credentials_configured:
                 if settings.scan_only:
@@ -540,6 +544,26 @@ async def monitor_loop():
                 "LIVE_LOOP_ERROR",
                 {"error": runtime_state.last_error},
                 flush=True,
+            )
+
+        if event_sink.enabled and runtime_state.current_correlation_id:
+            cycle_ended_at = datetime.now(NY)
+            scan = dict(runtime_state.last_scan)
+            event_sink.record_decision_cycle(
+                correlation_id=runtime_state.current_correlation_id,
+                cycle_started_at=cycle_started_at,
+                cycle_ended_at=cycle_ended_at,
+                market_is_open=(True if scan else market_is_open),
+                active_universe=(
+                    list(runtime_state.universe_active_symbols)
+                    or list(scan)
+                ),
+                scan=scan,
+                cycle_outcome=(runtime_state.last_decision or "cycle_complete"),
+                data_status="degraded" if runtime_state.last_error else "ok",
+                degraded=bool(runtime_state.last_error),
+                error=runtime_state.last_error,
+                runtime=(runtime_provenance.as_dict() if runtime_provenance else {}),
             )
 
         try:
@@ -588,6 +612,7 @@ def _runtime_configuration_snapshot() -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global runtime_provenance
     print(
         "SAFE_RUNTIME_CONFIG",
         {

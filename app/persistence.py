@@ -281,6 +281,132 @@ class TradingEventSink:
                 await asyncio.sleep(0.25 * (2 ** attempt))
         return False
 
+    def record_decision_cycle(
+        self,
+        *,
+        correlation_id: str,
+        cycle_started_at: datetime,
+        cycle_ended_at: datetime,
+        market_is_open: bool | None,
+        active_universe: list[str],
+        scan: dict[str, dict[str, Any]],
+        cycle_outcome: str,
+        data_status: str = "ok",
+        degraded: bool = False,
+        error: str | None = None,
+        runtime: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one complete strategy-evaluation cycle without affecting execution."""
+        duration_ms = max(
+            int((cycle_ended_at - cycle_started_at).total_seconds() * 1000),
+            0,
+        )
+        candidates: list[dict[str, Any]] = []
+        qualified_count = 0
+        for rank, (symbol, signal) in enumerate(scan.items(), start=1):
+            metadata = dict(signal.get("metadata") or {})
+            quality = dict(metadata.get("market_quality") or {})
+            bid = quality.get("bid")
+            ask = quality.get("ask")
+            midpoint = None
+            try:
+                if bid not in {None, ""} and ask not in {None, ""}:
+                    midpoint = str((Decimal(str(bid)) + Decimal(str(ask))) / Decimal("2"))
+            except Exception:
+                midpoint = None
+            qualified = str(signal.get("action") or "").lower() == "buy"
+            qualified_count += int(qualified)
+            reason = str(signal.get("reason") or "")
+            candidates.append(
+                {
+                    "symbol": symbol.upper(),
+                    "observed_at": cycle_ended_at.isoformat(),
+                    "action": str(signal.get("action") or "hold"),
+                    "qualified": qualified,
+                    "candidate_state": "qualified" if qualified else "rejected",
+                    "reason": reason or None,
+                    "rejection_reasons": [] if qualified else ([reason] if reason else []),
+                    "candidate_rank": rank if qualified else None,
+                    "data_quality_state": (
+                        "unavailable"
+                        if "missing" in reason.lower() or "not enough" in reason.lower()
+                        else ("degraded" if "stale" in reason.lower() else "available")
+                    ),
+                    "decision_reference_price": (
+                        str(signal.get("reference_price"))
+                        if signal.get("reference_price") not in {None, "", "0", 0}
+                        else None
+                    ),
+                    "quote": {
+                        "bid": bid,
+                        "ask": ask,
+                        "midpoint": midpoint,
+                        "spread_pct": quality.get("spread_pct"),
+                        "observed_at": quality.get("quote_timestamp"),
+                    },
+                    "features": metadata,
+                    "checks": {
+                        "strategy": metadata.get("checks") or {},
+                        "confirmations": metadata.get("confirmations") or {},
+                        "regime_confirmations": metadata.get("regime_confirmations") or {},
+                        "market_quality": quality,
+                        "correlation": metadata.get("correlation") or {},
+                    },
+                    "stop_price": str(signal.get("stop_price") or "") or None,
+                    "target_price": str(signal.get("take_profit_price") or "") or None,
+                    "forward_outcomes_status": "pending",
+                    "research_attribution": {
+                        "live_strategy_version": self.settings.strategy_version_id,
+                    },
+                }
+            )
+        cycle_key = f"{self.settings.trading_run_id}:{correlation_id}"
+        self.emit(
+            event_type="decision_cycle",
+            event_key=f"{self.settings.trading_run_id}:decision-cycle:{correlation_id}",
+            correlation_id=correlation_id,
+            occurred_at=cycle_ended_at.isoformat(),
+            payload={
+                "cycle_key": cycle_key,
+                "cycle_started_at": cycle_started_at.isoformat(),
+                "cycle_ended_at": cycle_ended_at.isoformat(),
+                "market_is_open": market_is_open,
+                "active_universe_size": len(active_universe),
+                "active_universe": list(active_universe),
+                "symbols_evaluated": list(scan),
+                "candidate_count": len(candidates),
+                "qualified_count": qualified_count,
+                "rejected_count": len(candidates) - qualified_count,
+                "cycle_outcome": cycle_outcome,
+                "data_status": data_status,
+                "degraded": degraded,
+                "error": error,
+                "cycle_duration_ms": duration_ms,
+                "runtime": runtime or {},
+                "candidates": candidates,
+            },
+        )
+
+    def record_position_metrics(
+        self,
+        *,
+        symbol: str,
+        metrics: dict[str, Any],
+        correlation_id: str | None,
+        observed_at: datetime,
+    ) -> None:
+        if not metrics:
+            return
+        bucket = observed_at.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+        self.emit(
+            event_type="position_metrics",
+            event_key=f"{self.settings.trading_run_id}:position-metrics:{symbol.upper()}:{bucket}",
+            symbol=symbol.upper(),
+            correlation_id=correlation_id,
+            occurred_at=observed_at.isoformat(),
+            payload=metrics,
+        )
+
     async def persist_entry_intent(
         self,
         *,
@@ -293,6 +419,19 @@ class TradingEventSink:
         signal_id = str(uuid4())
         intent_id = str(uuid4())
         position_id = str(uuid4())
+        metadata = dict(signal.metadata or {})
+        cycle_key = (
+            f"{self.settings.trading_run_id}:{correlation_id}"
+            if correlation_id else None
+        )
+        market_quality = dict(metadata.get("market_quality") or {})
+        decision_quote = {
+            "bid": market_quality.get("bid"),
+            "ask": market_quality.get("ask"),
+            "midpoint": market_quality.get("midpoint"),
+            "spread_pct": market_quality.get("spread_pct"),
+            "observed_at": market_quality.get("quote_timestamp"),
+        }
         payload = {
             "signal": {
                 "signal_id": signal_id,
@@ -305,6 +444,7 @@ class TradingEventSink:
                 "payload": {
                     "reason": signal.reason,
                     "metadata": signal.metadata or {},
+                    "cycle_key": cycle_key,
                 },
             },
             "intent": {
@@ -323,6 +463,10 @@ class TradingEventSink:
                 "payload": {
                     "client_order_id": client_order_id,
                     "position_id": position_id,
+                    "decision_at": intended_at.isoformat(),
+                    "decision_reference_price": str(signal.reference_price),
+                    "decision_quote": decision_quote,
+                    "cycle_key": cycle_key,
                 },
             },
         }
