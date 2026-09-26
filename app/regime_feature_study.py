@@ -14,7 +14,7 @@ from .replay import d, stamp
 
 DEFAULT_REGIME_REFERENCES = ("SPY", "QQQ", "SMH")
 DEFAULT_REGIME_WINDOW = 5
-DEFAULT_INTERACTION_HORIZON = 15
+DEFAULT_INTERACTION_HORIZON = 15\nDEFAULT_BENCHMARK_MAP = {\n    "AAPL": "QQQ",\n    "MSFT": "QQQ",\n    "TQQQ": "QQQ",\n    "SMCI": "SMH",\n    "SOXL": "SMH",\n}\nSTRATEGY_005_INTERACTION_FEATURES = (\n    *FEATURES_FOR_QUARTILES,\n    "benchmark_window_return_pct",\n    "benchmark_vwap_edge_pct",\n    "relative_strength_pct",\n)
 
 
 def _mean(values: list[Decimal]) -> Decimal:
@@ -238,6 +238,81 @@ def attach_regimes(
     return payload
 
 
+
+def attach_benchmark_alignment(
+    observations: list[dict[str, Any]],
+    bars_by_symbol: dict[str, list[dict[str, Any]]],
+    *,
+    benchmark_map: dict[str, str] = DEFAULT_BENCHMARK_MAP,
+    window: int = DEFAULT_REGIME_WINDOW,
+) -> list[dict[str, Any]]:
+    """Attach candidate-versus-benchmark features available at decision time."""
+    output: list[dict[str, Any]] = []
+
+    for row in observations:
+        copied = deepcopy(row)
+        symbol = str(row.get("symbol") or "").upper()
+        benchmark = benchmark_map.get(symbol)
+        raw_time = str(row.get("decision_bar_time") or "")
+        features = dict(copied.get("features") or {})
+
+        if not benchmark or not raw_time:
+            features["benchmark_symbol"] = benchmark or ""
+            features["benchmark_alignment_available"] = False
+            copied["features"] = features
+            output.append(copied)
+            continue
+
+        decision_bar_time = datetime.fromisoformat(
+            raw_time.replace("Z", "+00:00")
+        )
+        candidate_bars = _visible_session_bars(
+            bars_by_symbol.get(symbol, []),
+            decision_bar_time=decision_bar_time,
+        )
+        benchmark_bars = _visible_session_bars(
+            bars_by_symbol.get(benchmark, []),
+            decision_bar_time=decision_bar_time,
+        )
+        needed = window + 1
+        if len(candidate_bars) < needed or len(benchmark_bars) < needed:
+            features["benchmark_symbol"] = benchmark
+            features["benchmark_alignment_available"] = False
+            copied["features"] = features
+            output.append(copied)
+            continue
+
+        candidate_close = d(candidate_bars[-1].get("c"))
+        candidate_anchor = d(candidate_bars[-needed].get("c"))
+        benchmark_close = d(benchmark_bars[-1].get("c"))
+        benchmark_anchor = d(benchmark_bars[-needed].get("c"))
+        benchmark_vwap = _session_vwap(benchmark_bars)
+
+        candidate_return = _return(candidate_close, candidate_anchor)
+        benchmark_return = _return(benchmark_close, benchmark_anchor)
+        benchmark_vwap_edge = (
+            (benchmark_close - benchmark_vwap) / benchmark_vwap
+            if benchmark_vwap > 0
+            else Decimal("0")
+        )
+
+        features.update(
+            {
+                "benchmark_symbol": benchmark,
+                "benchmark_alignment_available": True,
+                "candidate_window_return_pct": str(candidate_return),
+                "benchmark_window_return_pct": str(benchmark_return),
+                "benchmark_vwap_edge_pct": str(benchmark_vwap_edge),
+                "relative_strength_pct": str(
+                    candidate_return - benchmark_return
+                ),
+            }
+        )
+        copied["features"] = features
+        output.append(copied)
+
+    return output
+
 def _forward_metrics(
     rows: list[dict[str, Any]],
     *,
@@ -345,7 +420,7 @@ def feature_regime_interactions(
     *,
     horizon: int = DEFAULT_INTERACTION_HORIZON,
     min_regime_sample: int = 20,
-    features: tuple[str, ...] = FEATURES_FOR_QUARTILES,
+    features: tuple[str, ...] = STRATEGY_005_INTERACTION_FEATURES,
 ) -> dict[str, Any]:
     """Describe how feature quartiles behave inside each broad-market regime.
 
@@ -452,7 +527,7 @@ def build_regime_report(
         reference_symbols=reference_symbols,
         window=window,
     )
-    observations = attached.get("observations") or []
+    observations = attach_benchmark_alignment(\n        attached.get("observations") or [],\n        bars_by_symbol,\n        window=window,\n    )
     return {
         "status": "research_only",
         "purpose": (
@@ -461,7 +536,7 @@ def build_regime_report(
         ),
         "reference_symbols": list(reference_symbols),
         "regime_window_bars": window,
-        "entry_confirmation_symbols_changed": False,
+        "entry_confirmation_symbols_changed": False,\n        "benchmark_map": DEFAULT_BENCHMARK_MAP,
         "regime_summary": summarize_regimes(
             observations,
             horizons=horizons,
