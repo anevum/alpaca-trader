@@ -143,11 +143,15 @@ def test_data_quality_gate_is_session_and_sync_based_not_density_based():
         "synchronization_completeness": 0.91,
         "market_benchmark_completeness": 0.99,
         "sector_benchmark_completeness": 0.98,
+        "model_availability_ratio": 0.95,
         "iex_bar_density_ratio": 0.46,
     }
     assert data_quality_pass(good, m)
     bad = deepcopy(good)
     bad["expected_session_representation"] = 0.93
+    assert not data_quality_pass(bad, m)
+    bad = deepcopy(good)
+    bad["model_availability_ratio"] = 0.89
     assert not data_quality_pass(bad, m)
 
 
