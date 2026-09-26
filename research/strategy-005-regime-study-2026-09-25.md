@@ -136,3 +136,50 @@ the Aug 24–28 development window was opened. It is now frozen.
 Reserved holdout remains **2026-09-21 through 2026-09-23** and has not been
 queried as part of this phase. If Candidate D fails that holdout, it is rejected
 rather than retuned.
+
+
+## Candidate D reserved-holdout result — REJECTED
+
+The locked Sep 21–23 holdout was opened only after Candidate D was frozen and
+its implementation passed CI.
+
+Production-parity opportunity-level result:
+
+| Sample | N | Target before stop | Stop before target | Mean MFE | Mean MAE | Mean 15m close |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Production-like 09:31–15:30 | 52 | 23.08% | 40.38% | +0.2841% | -0.4353% | -0.0119% |
+| Candidate D 10:30–15:30 | 36 | 19.44% | 36.11% | +0.2457% | -0.4210% | -0.0606% |
+
+Candidate D reduced stop-first frequency by 4.27 percentage points, but it also
+reduced target-first frequency by 3.63 points, reduced MFE, and made final
+15-minute return materially worse. Target-minus-stop balance improved by less
+than one percentage point and did not translate into stronger forward price
+behavior.
+
+Decision: **REJECTED.**
+
+The 10:30 threshold must not be retuned against Sep 21–23.
+
+## Strategy 005 conclusion
+
+Broad-market agreement was not stable across the development periods, and the
+opening-time effect that looked consistent in three development windows did not
+produce a meaningful holdout improvement.
+
+At this point the project has rejected static VWAP-strength, multi-bar
+persistence, mature-momentum suppression, and delayed-open hypotheses on unseen
+data.
+
+The next engineering priority should not be Candidate E. It should be research
+parity:
+
+1. reconstruct or persist the production dynamic universe so historical replay
+   does not depend on a five-symbol fixed universe;
+2. record decision-time bid/ask spread and realized fill slippage in the
+   canonical ledger rather than relying on a fixed 5-bps historical assumption;
+3. ensure every offline run pins the exact production strategy identity,
+   confirmation set, universe rules, risk settings, and exit-engine settings;
+4. collect clean forward live/shadow telemetry across additional sessions before
+   attempting another strategy candidate.
+
+No Strategy 005 result authorizes a production change or scalable-capital merge.
