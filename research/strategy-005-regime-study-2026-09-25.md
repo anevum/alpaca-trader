@@ -60,3 +60,37 @@ profitable backtest.
 This branch does not change live execution, Railway variables, sizing, exits,
 dynamic-universe behavior, or capital limits. Scalable-capital PR #28 remains
 gated.
+
+
+## Exact-parity research configuration
+
+Source-control review confirms the live rolling strategy was introduced with
+`CONFIRMATION_SYMBOLS=QQQ,SMH` and `MIN_CONFIRMATIONS=1`. Strategy 005 uses
+QQQ/SMH as the production-parity market-reference set. SPY may remain a broader
+market diagnostic in future work, but it must not silently become an additional
+production confirmation.
+
+A parity audit of rejected Candidate C using QQQ/SMH reached the same rejection
+decision, so Candidate C remains closed.
+
+## Preliminary development observation
+
+Using production-parity QQQ/SMH context on the two existing development
+windows, time of day was more stable than broad-market agreement.
+
+- Aug 17–21: open-period opportunities were 1/12 target-first and 11/12
+  stop-first; midday was 5/43 target-first and 22/43 stop-first.
+- Sep 8–11: open-period opportunities were 7/26 target-first and 17/26
+  stop-first; midday was 8/32 target-first and 8/32 stop-first.
+
+This is not yet a strategy rule. It motivates one additional development test.
+
+## Strategy 005 data protocol
+
+Additional development window: **2026-08-24 through 2026-08-28**.
+
+Reserved holdout, locked before viewing: **2026-09-21 through 2026-09-23**.
+
+The reserved holdout must not be queried until a Candidate D rule is frozen.
+If the opening-period effect does not repeat in the additional development
+window, no Candidate D should be created from this hypothesis.
