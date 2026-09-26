@@ -69,9 +69,10 @@ class ReplayPosition:
 class ReplayEngine:
     """Deterministic, broker-isolated replay of the production long-only logic."""
 
-    def __init__(self, settings: Settings, strategy: Any):
+    def __init__(self, settings: Settings, strategy: Any, entry_gate: Any | None = None):
         self.settings = settings
         self.strategy = strategy
+        self.entry_gate = entry_gate
 
     @staticmethod
     def _session_bar_map(
@@ -697,6 +698,17 @@ class ReplayEngine:
                     if d(ranking["score"]) < self.settings.min_quality_score:
                         counters["quality_blocks"] += 1
                         continue
+                    if self.entry_gate is not None:
+                        decision = self.entry_gate(signal)
+                        signal.metadata["research_entry_gate"] = {
+                            "allowed": decision.allowed,
+                            "lane": decision.lane,
+                            "reason": decision.reason,
+                            **decision.details,
+                        }
+                        if not decision.allowed:
+                            counters["entry_gate_blocks"] += 1
+                            continue
                     buy_signals.append(signal)
                     counters["signals_qualified"] += 1
 
@@ -867,6 +879,7 @@ class ReplayEngine:
                 "same_strategy_logic": True,
                 "exit_engine_v2_modeled": True,
                 "broker_orders_possible": False,
+                "research_entry_gate": bool(self.entry_gate),
             },
             "strategy": {
                 "name": self.settings.strategy_name,
