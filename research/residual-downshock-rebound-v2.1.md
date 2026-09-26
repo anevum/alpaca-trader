@@ -26,7 +26,7 @@ The fixed panel is not survivorship-bias-free for the full US equity market, so 
 ## Windows
 
 Development: six non-overlapping windows from 2026-01-05 through 2026-05-08.
-Validation: 2026-05-18 through 2026-05-26? No. The machine-readable manifest is authoritative: val-01 is 2026-05-18 through 2026-06-05 and val-02 is 2026-06-08 through 2026-06-26. Validation remains locked until development passes.
+Validation: val-01 is 2026-05-18 through 2026-06-05 and val-02 is 2026-06-08 through 2026-06-26. Validation remains locked until development passes.
 Holdout: 2026-07-13 through 2026-07-31. Holdout remains locked until validation passes.
 August 3 through September 25, 2026 remains quarantined and is never accessible under v2.1.
 
