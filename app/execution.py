@@ -1159,7 +1159,7 @@ class ExecutionEngine:
         self.state.record_event(
             kind="control",
             action="cancel_orders",
-            message=f"cancel requested for {len(bot_orders)} ANEVUM open orders",
+            message=f"cancel requested for {len(bot_orders)} RHEN open orders",
         )
         return {
             "action": "cancel_requested",
