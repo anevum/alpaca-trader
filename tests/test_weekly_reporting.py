@@ -406,3 +406,74 @@ def test_candidate_counterfactuals_remain_post_event_only():
     assert report["candidate_analysis"]["post_event_only"] is True
     assert report["candidate_analysis"]["forward_outcomes_complete"] == 3
     assert report["live_configuration_changed"] is False
+
+
+def test_daily_vs_canonical_position_mismatch_is_explicit_and_daily_remains_authoritative():
+    reports = [
+        daily(
+            "d1",
+            "2026-09-25",
+            "-0.10",
+            [trade(symbol="SPY", pnl="-0.10")],
+        )
+    ]
+    inputs = base_inputs(reports)
+    inputs["positions"] = [
+        {
+            "strategy_version_id": "LIVE-2026-09-25-003",
+            "symbol": "SPY",
+            "status": "closed",
+            "opened_at": "2026-09-25T15:00:00+00:00",
+            "realized_pnl": "-0.10",
+        },
+        {
+            "strategy_version_id": "LIVE-2026-09-25-003",
+            "symbol": "SMCI",
+            "status": "closed",
+            "opened_at": "2026-09-25T16:00:00+00:00",
+            "realized_pnl": "0.01",
+        },
+    ]
+    report = build(
+        inputs,
+        calendar(("2026-09-25", "09:30", "16:00")),
+        "2026-09-25",
+        "2026-09-25",
+    )
+
+    consistency = report["daily_vs_canonical_consistency"]
+    assert consistency["mismatch_count"] == 1
+    assert consistency["mismatches"][0]["daily_trade_count"] == 1
+    assert consistency["mismatches"][0]["canonical_closed_position_count"] == 2
+    assert report["metrics"]["weekly_realized_pnl"] == "-0.10"
+    assert any(
+        row["type"] == "daily_vs_canonical_position_consistency"
+        for row in report["evidence_stability"]["data_quality_limitations"]
+    )
+    assert any(
+        "Daily-vs-canonical position consistency mismatch" in warning
+        for warning in report["warnings"]
+    )
+
+
+def test_canonical_input_hash_versions_regeneration_when_underlying_telemetry_changes():
+    reports = [daily("d1", "2026-09-25", "-0.10", [trade()])]
+    cal = calendar(("2026-09-25", "09:30", "16:00"))
+    first_inputs = base_inputs(reports)
+    second_inputs = deepcopy(first_inputs)
+    second_inputs["incidents"] = [
+        {
+            "session": "2026-09-25",
+            "incident_type": "reconciliation_mismatch",
+            "severity": "critical",
+            "message": "late canonical incident",
+            "resolved_at": "2026-09-25T20:00:00Z",
+        }
+    ]
+
+    first = build(first_inputs, cal, "2026-09-25", "2026-09-25")
+    second = build(second_inputs, cal, "2026-09-25", "2026-09-25")
+
+    assert first["canonical_input_hash"] != second["canonical_input_hash"]
+    assert first["report_key"] != second["report_key"]
+    assert first["report_version"] == REPORT_VERSION == "rhen-weekly-v1.1"
