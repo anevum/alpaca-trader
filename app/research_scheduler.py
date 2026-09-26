@@ -45,6 +45,27 @@ class ResearchReportScheduler:
         self.task: asyncio.Task | None = None
         self.daily_done: set[date] = set()
         self.weekly_done: set[date] = set()
+        self.last_daily_report: dict[str, Any] | None = None
+        self.last_weekly_report: dict[str, Any] | None = None
+        self.last_error: str | None = None
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "running": self.task is not None and not self.task.done(),
+            "report_after_et": REPORT_AFTER.strftime("%H:%M"),
+            "last_daily_session": (
+                self.last_daily_report.get("session")
+                if self.last_daily_report
+                else None
+            ),
+            "last_weekly_end": (
+                self.last_weekly_report.get("week_end")
+                if self.last_weekly_report
+                else None
+            ),
+            "last_error": self.last_error,
+            "live_configuration_changes_allowed": False,
+        }
 
     async def start(self) -> None:
         if self.task is None:
@@ -62,6 +83,7 @@ class ResearchReportScheduler:
                 await self._tick()
             except Exception as exc:
                 message = f"research reporting {type(exc).__name__}: {exc}"
+                self.last_error = message
                 self.state.record_event(
                     kind="research_reporting",
                     action="warning",
@@ -218,6 +240,8 @@ class ResearchReportScheduler:
                 "capital_scaling_authorized": False,
             }
         )
+        self.last_daily_report = payload
+        self.last_error = None
         self.event_sink.emit(
             event_type="research_daily_report",
             event_key=(
@@ -261,6 +285,8 @@ class ResearchReportScheduler:
                 "capital_scaling_authorized": False,
             }
         )
+        self.last_weekly_report = payload
+        self.last_error = None
         self.event_sink.emit(
             event_type="research_weekly_report",
             event_key=(
