@@ -58,6 +58,7 @@ Deno.serve(async (req) => {
   const latest = url.searchParams.get("latest");
   const weekEnd = url.searchParams.get("week_end");
   const evidenceSession = url.searchParams.get("evidence_session");
+  const session = url.searchParams.get("session");
 
   try {
     if (validDate(start) && validDate(end)) {
@@ -181,6 +182,170 @@ Deno.serve(async (req) => {
         })),
         post_event: postRows[0]?.inputs ?? {},
         latest_daily_report: dailyRows[0] ?? null,
+      });
+    }
+
+    if (latest === "daily") {
+      if (session != null && !validDate(session)) {
+        return json(422, { ok: false, error: "invalid_session" });
+      }
+      const rows = session
+        ? await sql<{ payload: Record<string, unknown> }[]>`
+            select payload
+            from private.trading_events
+            where event_type='research_daily_report'
+              and nullif(payload->>'session','')::date=${session}::date
+            order by coalesce(
+              nullif(payload->>'generated_at','')::timestamptz,
+              occurred_at
+            ) desc, received_at desc
+            limit 1
+          `
+        : await sql<{ payload: Record<string, unknown> }[]>`
+            select payload
+            from private.trading_events
+            where event_type='research_daily_report'
+            order by coalesce(
+              nullif(payload->>'generated_at','')::timestamptz,
+              occurred_at
+            ) desc, received_at desc
+            limit 1
+          `;
+      return json(200, {
+        ok: true,
+        report_version: rows[0]?.payload?.report_version ?? null,
+        report: rows[0]?.payload ?? null,
+      });
+    }
+
+    if (latest === "command") {
+      const [
+        dailyRows,
+        weeklyRows,
+        questionRows,
+        weeklyDecisionRows,
+        researchDecisionRows,
+        outcomeRows,
+        comparisonRows,
+        runtimeRows,
+        scanRows,
+        healthRows,
+      ] = await Promise.all([
+        sql<{ payload: Record<string, unknown> }[]>`
+          select payload
+          from private.trading_events
+          where event_type='research_daily_report'
+          order by coalesce(
+            nullif(payload->>'generated_at','')::timestamptz,
+            occurred_at
+          ) desc, received_at desc
+          limit 1
+        `,
+        sql<{ report_payload: Record<string, unknown> }[]>`
+          select report_payload
+          from private.trading_weekly_reports
+          order by period_end desc, generated_at desc, created_at desc
+          limit 1
+        `,
+        sql<Record<string, unknown>[]>`
+          select *
+          from (
+            select distinct on (research_question_id)
+              research_question_id, created_on, evidence_summary, sample_size,
+              question, why_it_matters, required_data, status,
+              linked_experiment_id, created_at
+            from private.trading_research_questions
+            order by research_question_id, created_at desc
+          ) q
+          order by created_at desc
+          limit 24
+        `,
+        sql<Record<string, unknown>[]>`
+          select *
+          from (
+            select distinct on (decision_key)
+              decision_key, evidence, interpretation, decision, scope,
+              production_behavior_changed, decided_at, created_at
+            from private.trading_weekly_decisions
+            order by decision_key, decided_at desc, created_at desc
+          ) d
+          order by decided_at desc
+          limit 24
+        `,
+        sql<Record<string, unknown>[]>`
+          select decision_key, decided_at, status, decision_type, subject,
+                 conclusion, methodology_version, evidence, code_commit,
+                 deployment_id, created_at
+          from private.trading_research_decisions
+          order by decided_at desc
+          limit 24
+        `,
+        sql<Record<string, unknown>[]>`
+          select horizon_minutes, status, count(*)::int as count
+          from private.trading_candidate_forward_outcomes
+          group by horizon_minutes, status
+          order by horizon_minutes, status
+        `,
+        sql<Record<string, unknown>[]>`
+          select
+            coalesce(nullif(payload->>'session',''),'unknown') as session,
+            coalesce(nullif(payload->>'match_state',''),'UNKNOWN') as match_state,
+            count(*)::int as count
+          from private.trading_events
+          where event_type='live_offline_comparison'
+          group by 1,2
+          order by 1 desc,2
+        `,
+        sql<Record<string, unknown>[]>`
+          select runtime_instance_id, run_id::text, strategy_version_id,
+                 deployment_id, build_id, git_commit, repository, branch,
+                 service_id, service_name, environment_id, environment_name,
+                 system_version, started_at, stopped_at, metadata
+          from private.trading_runtime_instances
+          order by started_at desc
+          limit 1
+        `,
+        sql<Record<string, unknown>[]>`
+          select scan_cycle_id, run_id::text, observed_at, strategy_version_id,
+                 runtime_instance_id, deployment_id, git_commit, candidate_count,
+                 qualified_count, rejected_count, cycle_outcome, data_status,
+                 degraded, error_text, execution_mode, market_session,
+                 universe_version, data_source, data_feed, bar_interval,
+                 methodology_version, strategy_family, build_id
+          from private.trading_scan_cycles
+          order by observed_at desc
+          limit 1
+        `,
+        sql<Record<string, unknown>[]>`
+          select
+            count(*) filter (where occurred_at >= now() - interval '24 hours')::int as events_24h,
+            count(*) filter (where event_type='runtime_error' and occurred_at >= now() - interval '24 hours')::int as runtime_errors_24h,
+            count(*) filter (where event_type='scan' and occurred_at >= now() - interval '24 hours')::int as scan_events_24h,
+            max(occurred_at) as latest_event_at,
+            max(received_at) as latest_received_at
+          from private.trading_events
+        `,
+      ]);
+
+      return json(200, {
+        ok: true,
+        evidence_version: "rhen-command-evidence-v1",
+        generated_at: new Date().toISOString(),
+        latest_daily: dailyRows[0]?.payload ?? null,
+        latest_weekly: weeklyRows[0]?.report_payload ?? null,
+        research_questions: questionRows,
+        weekly_decisions: weeklyDecisionRows,
+        research_decisions: researchDecisionRows,
+        post_event_evidence: {
+          forward_outcomes: outcomeRows,
+          live_offline: comparisonRows,
+          analytics_only: true,
+        },
+        provenance: {
+          runtime: runtimeRows[0] ?? null,
+          latest_scan_cycle: scanRows[0] ?? null,
+        },
+        telemetry_health: healthRows[0] ?? null,
       });
     }
 

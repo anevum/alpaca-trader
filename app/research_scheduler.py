@@ -515,6 +515,24 @@ class ResearchReportScheduler:
         report = payload.get("report")
         return report if isinstance(report, dict) else None
 
+    async def fetch_daily_report(
+        self,
+        *,
+        session: date | None = None,
+    ) -> dict[str, Any] | None:
+        params = {"latest": "daily"}
+        if session is not None:
+            params["session"] = session.isoformat()
+        payload = await self._report_api_get(**params)
+        report = payload.get("report")
+        return report if isinstance(report, dict) else None
+
+    async def fetch_command_evidence(self) -> dict[str, Any]:
+        payload = await self._report_api_get(latest="command")
+        if not isinstance(payload, dict):
+            raise RuntimeError("canonical Command evidence is unavailable")
+        return payload
+
     async def generate_weekly(
         self,
         start_date: date,

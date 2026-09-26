@@ -947,6 +947,34 @@ async def command_status(authorization: str | None = Header(default=None)):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@app.get("/v1/command/reports/daily")
+async def command_daily_report(
+    session: date | None = None,
+    authorization: str | None = Header(default=None),
+):
+    await require_command_admin(authorization)
+    try:
+        report = await research_reports.fetch_daily_report(session=session)
+        if report is None:
+            raise HTTPException(status_code=404, detail="canonical daily report not found")
+        return report
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/v1/command/evidence")
+async def command_evidence(authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    try:
+        return await research_reports.fetch_command_evidence()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @app.get("/v1/command/reports/weekly")
 async def command_weekly_report(
     week_end: date | None = None,
