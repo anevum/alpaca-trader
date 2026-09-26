@@ -45,9 +45,18 @@ function optionalString(value: unknown): string | null {
 }
 
 function safeStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item) => typeof item === "string").map(String)
-    : [];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => item !== null && item !== undefined)
+    .map((item) => {
+      if (item instanceof Date) return item.toISOString().slice(0, 10);
+      const raw = String(item);
+      const parsed = new Date(raw);
+      if (!Number.isNaN(parsed.getTime()) && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
+        return parsed.toISOString().slice(0, 10);
+      }
+      return raw;
+    });
 }
 
 function publicResearchEvent(row: Record<string, unknown>) {
