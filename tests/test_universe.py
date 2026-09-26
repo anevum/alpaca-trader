@@ -170,3 +170,31 @@ def test_dynamic_universe_falls_back_to_static_symbols_on_refresh_failure():
     assert {"SPY", "QQQ", "SMH"} <= set(active)
     assert state.universe_source == "fallback"
     assert "asset endpoint unavailable" in str(state.universe_error)
+
+
+
+def test_dynamic_universe_snapshot_contains_research_membership_and_scores():
+    state = RuntimeState()
+    manager = DynamicUniverse(
+        settings(),
+        FakeClient(),
+        FakeMarketData(),
+        state,
+    )
+    now = datetime(2026, 9, 25, 10, 1, tzinfo=NY)
+
+    import asyncio
+    active = asyncio.run(manager.active_symbols(now=now))
+    snapshot = manager.snapshot()
+
+    assert snapshot["selector"] == "dynamic_universe_v1"
+    assert snapshot["source"] == "dynamic"
+    assert snapshot["candidate_day"] == "2026-09-25"
+    assert snapshot["active_count"] == len(active)
+    assert snapshot["candidate_count"] >= len(active)
+    assert snapshot["eligible_count"] >= snapshot["candidate_count"]
+    assert [item["symbol"] for item in snapshot["active_rankings"]] == list(active)
+    assert snapshot["candidate_rankings"]
+    assert snapshot["settings"]["universe_size"] == 10
+    assert snapshot["settings"]["daily_lookback"] == 5
+    assert snapshot["settings"]["data_feed"] == "iex"
