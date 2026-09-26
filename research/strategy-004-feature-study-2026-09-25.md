@@ -1,0 +1,76 @@
+# Strategy 004 feature study — 2026-09-25
+
+Status: **OFFLINE RESEARCH ONLY.**
+
+## Why this build exists
+
+Candidate A (stronger VWAP edge) and Candidate B (two-bar persistence) both
+reduced activity but remained negative on untouched pre-September-25 periods.
+The next experiment therefore must not be another small threshold adjustment to
+the same momentum/VWAP rules.
+
+The feature study separates two questions that were previously confounded:
+
+1. Was an entry opportunity structurally good at the decision point?
+2. Did portfolio capacity, ranking, correlation, cooldowns, or exit management
+   later determine whether and how that opportunity was traded?
+
+For every raw production-strategy BUY opportunity that passes historical market
+quality, the study records only information available at that moment and labels
+what price does over the next 1, 3, 5, 10, and 15 minutes.
+
+## Decision-time features
+
+The initial feature set includes:
+
+- production quality score;
+- short-horizon momentum;
+- VWAP edge;
+- relative volume;
+- confirmation and regime counts;
+- completed-bar age;
+- latest and prior one-minute returns;
+- fast/slow average gap;
+- recent range;
+- fraction of recent bars that are positive;
+- path efficiency = net directional move / gross absolute path;
+- fraction of the recent net move contributed by the latest bar;
+- current-bar close location inside its high/low range;
+- current volume relative to the preceding three bars.
+
+These features are intentionally descriptive. No new live threshold is selected
+by this build.
+
+## Forward labels
+
+For each candidate and horizon the study records:
+
+- maximum favorable excursion (MFE);
+- maximum adverse excursion (MAE);
+- horizon close return;
+- whether the configured target was reached before the effective stop;
+- whether the effective stop was reached before the target.
+
+When a single one-minute bar touches both stop and target, stop is labeled first
+because intrabar ordering is unknown. This is deliberately conservative.
+
+Production exits, position caps, correlation blocks, cooldowns, and portfolio
+allocation are ignored by the labeler. The goal is to isolate entry quality.
+
+## Research protocol
+
+Use earlier periods for feature discovery. Look for features whose quartiles show
+a monotonic improvement in MFE, target-before-stop rate, and/or reduction in MAE.
+Do not choose thresholds from September 25 and call them validated.
+
+A Candidate C entry rule may be proposed only after:
+
+1. the same structural relationship appears across multiple development periods;
+2. the rule is frozen before opening the untouched holdout;
+3. the holdout produces positive expectancy after spread/slippage in the full
+   replay engine;
+4. the ordinary Strategy 004 promotion gate still passes;
+5. a separate forward shadow sample passes.
+
+PR #28 remains gated regardless of feature-study findings until that sequence is
+complete.
