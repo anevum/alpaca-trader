@@ -21,7 +21,7 @@ def test_strategy_005_profile_overrides_ambient_strategy_settings():
         MIN_VWAP_EDGE_PCT="0.02",
         MIN_CONFIRMATIONS="2",
         REGIME_MIN_CONFIRMATIONS="2",
-        MAX_VWAP_EXTENSION_PCT="0.05",
+        MAX_VWAP_EXTENSION_PCT="0.04",
         STOP_PCT="0.02",
         TARGET_PCT="0.03",
         ENTRY_START="10:30",
