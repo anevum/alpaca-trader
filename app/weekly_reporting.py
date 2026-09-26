@@ -860,6 +860,41 @@ def build_weekly_report(
             "Multiple strategy versions operated during the period; strategy-specific results are kept separate."
         )
 
+    duplicate_checks = dict(inputs.get("duplicate_checks") or {})
+    duplicate_groups = sum(
+        int(value or 0)
+        for value in duplicate_checks.values()
+        if isinstance(value, (int, float, str))
+    )
+    telemetry_completeness = {
+        "canonical_daily_reports": {
+            "included": len(included_sessions),
+            "expected": len(expected_sessions),
+            "state": completeness,
+        },
+        "candidate_history": (
+            "PARTIAL_BACKFILL"
+            if int(candidates.get("partial_backfill_candidates") or 0)
+            else "CANONICAL"
+        ),
+        "candidate_forward_outcomes": (
+            "AVAILABLE"
+            if int(candidates.get("forward_outcomes_complete") or 0)
+            else "UNAVAILABLE"
+        ),
+        "runtime_provenance": (
+            "AVAILABLE"
+            if inputs.get("runtime_instances")
+            else "HISTORICAL_UNAVAILABLE"
+        ),
+        "live_vs_offline_comparison": (
+            "AVAILABLE" if inputs.get("live_offline") else "UNAVAILABLE"
+        ),
+        "duplicate_groups_detected": duplicate_groups,
+        "data_cutoff": inputs.get("data_cutoff"),
+    }
+    performance["telemetry_completeness"] = telemetry_completeness
+
     negative_sessions = sum(
         1 for _, value in _daily_metric(records, "realized_pnl") if value < ZERO
     )
@@ -935,6 +970,7 @@ def build_weekly_report(
             ),
         },
         "operational_health": operations,
+        "telemetry_completeness": telemetry_completeness,
         "evidence_stability": findings,
         "research_questions": questions,
         "weekly_decisions": decisions,
