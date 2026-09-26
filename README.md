@@ -195,3 +195,47 @@ Safety behavior:
 - Ledger reconciliation does not modify strategy signals, sizing, or risk rules.
 
 Required persistence variables are documented in `.env.example`.
+
+
+## Edge discovery corpus
+
+The research-only Edge Discovery v1 pipeline searches for structural entry edge
+independently of the production BUY signal.
+
+The frozen corpus manifest is `research/edge-corpus-v1.json`. It contains:
+
+- 36 frozen candidate stocks/ETFs;
+- SPY, QQQ and SMH as frozen market-context references;
+- six development windows from January through early May 2026;
+- two validation windows from mid-May through June 2026;
+- a July historical holdout that is not fetched unless validation survivors exist;
+- August and September 2026 quarantine windows that are excluded from discovery
+  because earlier ANEVUM research already inspected them.
+
+Run the complete staged research pipeline with:
+
+```bash
+python scripts/edge_corpus.py --output edge-corpus-report.json
+```
+
+The first run downloads paginated Alpaca IEX one-minute history and caches it
+locally under `.edge_corpus/`. Later runs reuse the manifest-hashed cache.
+
+The pipeline evaluates five independent setup families under base, moderate and
+stress execution-cost assumptions. Development survivors are frozen before
+validation. Validation survivors are frozen before the holdout is opened.
+
+Possible terminal outcomes are explicit:
+
+- all families rejected in development;
+- all frozen families rejected in validation;
+- all validation survivors rejected by the holdout;
+- historical survivor requiring forward shadow validation.
+
+A historical survivor does not authorize live promotion, added capital or more
+simultaneous exposure. PR #28 remains gated until forward shadow and subsequent
+clean live evidence pass separately.
+
+If all five families are rejected, the report includes a next-generation
+research slate based on genuinely different information sources rather than
+retuning the rejected thresholds.
