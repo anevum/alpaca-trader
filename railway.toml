@@ -3,7 +3,5 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-healthcheckPath = "/health"
-healthcheckTimeout = 30
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 3
+startCommand = "python -m scripts.residual_downshock_rebound_v2_1 --stage development --execute --source-commit 46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc --output /tmp/rdr21-development.json --human-output /tmp/rdr21-development.md --emit-log-chunks"
+restartPolicyType = "NEVER"
