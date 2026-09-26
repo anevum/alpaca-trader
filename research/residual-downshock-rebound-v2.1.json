@@ -446,7 +446,7 @@
     "frozen_at": "2026-09-26T17:17:00Z",
     "manifest_checksum_algorithm": "sha256 exact UTF-8 file after blanking freeze.manifest_checksum_sha256 and freeze.source_commit_sha values",
     "manifest_checksum_sha256": "92f8bad6362144805cc262c9188d199111a7f9c088caec56c0b0e6d579ffef7a",
-    "source_commit_sha": null
+    "source_commit_sha": "88bbc7389a45f7eaa66573809789bb1395eb3f26"
   },
   "holdout_gates": {
     "STRESS_day_cluster_bootstrap_95pct_lower_bound_must_be_positive": true,
