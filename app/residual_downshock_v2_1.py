@@ -9,33 +9,35 @@ from pathlib import Path
 from typing import Any, Iterable
 
 MANIFEST_PATH = Path("research/residual-downshock-rebound-v2.1.json")
-CHECKSUM_EXCLUDED = {"manifest_checksum_sha256", "source_commit_sha"}
+def _normalized_manifest_text(raw: str) -> str:
+    import re
+    raw = re.sub(
+        r'"manifest_checksum_sha256":\\s*"(?:[0-9a-f]{64})?"',
+        '"manifest_checksum_sha256": ""',
+        raw,
+        count=1,
+    )
+    raw = re.sub(
+        r'"source_commit_sha":\\s*(?:"[0-9a-f]{40}"|null)',
+        '"source_commit_sha": ""',
+        raw,
+        count=1,
+    )
+    return raw
 
 
-def canonical_manifest_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    clone = json.loads(json.dumps(payload))
-    freeze = dict(clone.get("freeze") or {})
-    for key in CHECKSUM_EXCLUDED:
-        freeze.pop(key, None)
-    clone["freeze"] = freeze
-    return clone
-
-
-def manifest_checksum(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(
-        canonical_manifest_payload(payload),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+def manifest_checksum(path: str | Path = MANIFEST_PATH) -> str:
+    raw = Path(path).read_text(encoding="utf-8")
+    return hashlib.sha256(_normalized_manifest_text(raw).encode("utf-8")).hexdigest()
 
 
 def load_manifest(path: str | Path = MANIFEST_PATH, *, verify: bool = True) -> dict[str, Any]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    path = Path(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
     validate_manifest(payload)
     if verify:
         expected = str(payload["freeze"]["manifest_checksum_sha256"])
-        actual = manifest_checksum(payload)
+        actual = manifest_checksum(path)
         if actual != expected:
             raise ValueError(f"manifest checksum mismatch: expected {expected}, got {actual}")
     return payload
