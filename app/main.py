@@ -317,6 +317,20 @@ async def command_snapshot() -> dict:
         "open_orders": [public_order(order) for order in open_orders],
         "recent_orders": [public_order(order) for order in bot_orders[:30]],
         "last_order": runtime_state.last_order,
+        "research": {
+            "status": research_reports.status(),
+            "current_focus": (
+                research_reports.last_daily_report.get("next_offline_research_action")
+                if research_reports.last_daily_report
+                else (
+                    research_reports.last_weekly_report.get("next_offline_research_action")
+                    if research_reports.last_weekly_report
+                    else None
+                )
+            ),
+            "latest_daily": research_reports.last_daily_report,
+            "latest_weekly": research_reports.last_weekly_report,
+        },
     }
 
 

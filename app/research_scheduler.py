@@ -78,8 +78,12 @@ class ResearchReportScheduler:
             self.task = None
 
     async def _run(self) -> None:
+        catch_up_done = False
         while not self.stop_event.is_set():
             try:
+                if not catch_up_done:
+                    await self._catch_up_latest_completed()
+                    catch_up_done = True
                 await self._tick()
             except Exception as exc:
                 message = f"research reporting {type(exc).__name__}: {exc}"
@@ -94,6 +98,47 @@ class ResearchReportScheduler:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
+
+    async def _catch_up_latest_completed(
+        self,
+        now: datetime | None = None,
+    ) -> None:
+        """Backfill the latest completed session after restarts or downtime."""
+
+        current = (now or datetime.now(NY)).astimezone(NY)
+        sessions = await self.market_data.market_calendar(
+            start=current.date() - timedelta(days=10),
+            end=current.date(),
+        )
+        completed = [
+            session
+            for session in sessions
+            if session < current.date()
+            or (
+                session == current.date()
+                and current.timetz().replace(tzinfo=None) >= REPORT_AFTER
+            )
+        ]
+        if not completed:
+            return
+
+        latest = completed[-1]
+        if latest not in self.daily_done:
+            await self.generate_daily(latest)
+            self.daily_done.add(latest)
+
+        if latest in self.weekly_done:
+            return
+
+        future_sessions = await self.market_data.market_calendar(
+            start=latest + timedelta(days=1),
+            end=latest + timedelta(days=10),
+        )
+        next_session = future_sessions[0] if future_sessions else None
+        if is_last_session_of_week(latest, next_session):
+            week_start = latest - timedelta(days=latest.weekday())
+            await self.generate_weekly(week_start, latest)
+            self.weekly_done.add(latest)
 
     async def _tick(self, now: datetime | None = None) -> None:
         current = (now or datetime.now(NY)).astimezone(NY)
@@ -234,6 +279,9 @@ class ResearchReportScheduler:
         payload = serialize(
             {
                 "report_type": "daily",
+                "title": f"Daily review — {session.isoformat()}",
+                "summary": classification.get("reason"),
+                "focus": action,
                 "session": session.isoformat(),
                 "generated_at": datetime.now(NY),
                 "trading_run_id": getattr(self.settings, "trading_run_id", "") or None,
@@ -284,8 +332,8 @@ class ResearchReportScheduler:
         self.event_sink.emit(
             event_type="research_daily_report",
             event_key=(
-                f"{getattr(self.settings, 'trading_run_id', '')}:"
-                f"research_daily_report:{session.isoformat()}"
+                f"research_daily_report:{session.isoformat()}:"
+                f"{getattr(self.settings, 'strategy_version_id', '') or 'unversioned'}"
             ),
             occurred_at=datetime.now(NY).isoformat(),
             payload=payload,
@@ -299,9 +347,30 @@ class ResearchReportScheduler:
     ) -> dict[str, Any]:
         evidence = await self._collect(start_date, end_date)
         runtime = self._runtime_snapshot()
+        classification = classify_daily(evidence["metrics"], runtime)
+        if (
+            evidence["data_quality_warnings"]
+            and classification.get("classification") == "KEEP"
+        ):
+            classification = {
+                "classification": "INVESTIGATE",
+                "reason": "broker evidence may be truncated; completeness must be resolved first",
+                "defects": [],
+                "data_quality_warnings": list(evidence["data_quality_warnings"]),
+            }
+        action = next_research_action(
+            evidence["metrics"],
+            evidence["funnel"],
+            classification,
+        )
         payload = serialize(
             {
                 "report_type": "weekly",
+                "title": f"Weekly review — {end_date.isoformat()}",
+                "summary": classification.get("reason"),
+                "focus": action,
+                "classification": classification,
+                "next_offline_research_action": action,
                 "week_start": start_date.isoformat(),
                 "week_end": end_date.isoformat(),
                 "generated_at": datetime.now(NY),
@@ -345,8 +414,8 @@ class ResearchReportScheduler:
         self.event_sink.emit(
             event_type="research_weekly_report",
             event_key=(
-                f"{getattr(self.settings, 'trading_run_id', '')}:"
-                f"research_weekly_report:{end_date.isoformat()}"
+                f"research_weekly_report:{end_date.isoformat()}:"
+                f"{getattr(self.settings, 'strategy_version_id', '') or 'unversioned'}"
             ),
             occurred_at=datetime.now(NY).isoformat(),
             payload=payload,
