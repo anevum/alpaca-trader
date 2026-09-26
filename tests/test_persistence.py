@@ -338,3 +338,62 @@ def test_replaced_hardstop_inherits_bot_ownership_and_protective_semantics():
     assert [event["payload"]["activity"]["id"] for event in broker_fills] == [
         "replacement-fill"
     ]
+
+
+def test_decision_cycle_event_is_deterministic_and_preserves_unavailable_quote():
+    sink = CapturingSink()
+    started = datetime(2026, 9, 28, 13, 30, tzinfo=timezone.utc)
+    sink.record_decision_cycle(
+        correlation_id="cycle-telemetry-1",
+        cycle_started_at=started,
+        cycle_ended_at=started,
+        market_is_open=True,
+        active_universe=["SPY"],
+        scan={
+            "SPY": {
+                "action": "hold",
+                "symbol": "SPY",
+                "reference_price": "100",
+                "reason": "latest quote is missing or invalid",
+                "metadata": {"checks": {"momentum_ok": True}, "market_quality": {}},
+            }
+        },
+        cycle_outcome="no_qualified_candidates",
+    )
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event["event_type"] == "decision_cycle"
+    assert event["event_key"] == "run-1:decision-cycle:cycle-telemetry-1"
+    candidate = event["payload"]["candidates"][0]
+    assert candidate["qualified"] is False
+    assert candidate["candidate_state"] == "rejected"
+    assert candidate["quote"]["bid"] is None
+    assert candidate["quote"]["ask"] is None
+    assert candidate["quote"]["midpoint"] is None
+    assert candidate["forward_outcomes_status"] == "pending"
+
+
+def test_entry_intent_carries_cycle_and_decision_evidence():
+    sink = CapturingSink()
+    signal = SimpleNamespace(
+        symbol="SPY",
+        reference_price="100",
+        stop_price="99.65",
+        take_profit_price="100.50",
+        notional="20",
+        reason="qualified",
+        metadata={"market_quality": {"bid": "99.99", "ask": "100.01", "midpoint": "100.00", "spread_pct": "0.0002"}},
+    )
+    sink.emit_critical = lambda **kwargs: asyncio.sleep(0, result=(sink.events.append(kwargs) is None))
+    result = asyncio.run(sink.persist_entry_intent(
+        signal=signal,
+        qty="0.2",
+        client_order_id="anevum-spy-buy-test",
+        correlation_id="cycle-2",
+        intended_at=datetime(2026, 9, 28, 13, 31, tzinfo=timezone.utc),
+    ))
+    assert result is not None
+    payload = sink.events[0]["payload"]
+    assert payload["intent"]["payload"]["cycle_key"] == "run-1:cycle-2"
+    assert payload["intent"]["payload"]["decision_quote"]["midpoint"] == "100.00"
+    assert payload["intent"]["payload"]["decision_reference_price"] == "100"
