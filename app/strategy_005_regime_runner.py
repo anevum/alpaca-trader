@@ -30,7 +30,7 @@ def parse_symbols(raw: str) -> tuple[str, ...]:
 
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:
-    settings = get_settings()
+    settings = apply_strategy_005_entry_profile(get_settings())
     strategy = build_strategy(settings)
     entry_study = EntryFeatureStudy(settings, strategy)
     market_data = MarketDataClient(settings)
@@ -80,7 +80,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "status": "research_only",
-        "strategy": settings.strategy_name,
+        "strategy": settings.strategy_name,\n        "research_profile": strategy_005_profile_manifest(),\n        "research_profile_hash": strategy_005_profile_hash(),
         "scan_symbols": list(settings.scan_symbols),
         "entry_confirmation_symbols": list(settings.confirmation_symbols),
         "regime_reference_symbols": list(args.regime_references),
@@ -90,7 +90,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "promotion_authorized": False,
         "scalable_capital_merge_allowed": False,
         "notes": [
-            "This phase performs regime-conditioned diagnosis only.",
+            "This phase performs regime-conditioned diagnosis only.",\n            "Entry-study settings are locked by a named profile instead of inheriting ambient deployment variables.",
             "No Strategy 005 entry rule is selected automatically.",
             "No Railway variables, live strategy parameters, or exposure limits are changed.",
         ],
