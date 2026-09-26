@@ -365,7 +365,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--min-trades", type=int, default=20)
     value.add_argument(
         "--candidate-name",
-        default="strategy_004_candidate_c_controlled",
+        default="strategy_005_candidate_d_delay_open",
         help="Research candidate evaluated by the Strategy 004 promotion gate.",
     )
     return value
