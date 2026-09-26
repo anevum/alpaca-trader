@@ -190,6 +190,7 @@ async def command_snapshot() -> dict:
     last_equity = Decimal(str(account.get("last_equity", "0")))
     allocator = sizing_snapshot(settings, account, positions)
     return {
+        "system": "RHEN",
         "observed_at": runtime_state.last_poll_at,
         "mode": settings.trading_mode,
         "market": {
@@ -625,7 +626,7 @@ async def lifespan(app: FastAPI):
     await event_sink.stop()
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.8.1", lifespan=lifespan)
+app = FastAPI(title="RHEN", version="0.8.1", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -634,6 +635,7 @@ async def health():
     order = runtime_state.last_order or {}
     return {
         "ok": True,
+        "system": "RHEN",
         "trading_mode": settings.trading_mode,
         "order_execution_present": True,
         "execution_enabled": settings.execution_enabled,
@@ -671,6 +673,7 @@ async def health():
 async def status(authorization: str | None = Header(default=None)):
     require_admin(authorization)
     return {
+        "system": "RHEN",
         "trading_mode": settings.trading_mode,
         "execution_enabled": settings.execution_enabled,
         "execution_authorized": settings.execution_authorized,
