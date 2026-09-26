@@ -292,6 +292,12 @@ def replay_settings(configuration: dict[str, Any], entry_symbols: list[str]) -> 
         "max_daily_loss",
         "stop_pct",
         "target_pct",
+        "min_momentum_pct",
+        "min_vwap_edge_pct",
+        "regime_min_return_pct",
+        "max_vwap_extension_pct",
+        "volatility_stop_multiplier",
+        "max_dynamic_stop_pct",
     )
     for key in decimal_keys:
         values[key] = _decimal(values.get(key))
@@ -573,7 +579,10 @@ def reconstruct_cycle(
     planned: set[str] = set()
     final_reasons: dict[str, str] = dict(stage_reasons)
     if global_block is None:
-        entry_count = engine._entry_orders_today(recent_orders)
+        entry_count = engine._entry_orders_today(
+            recent_orders,
+            now=decision_at,
+        )
         if settings.portfolio_limit_mode == "risk":
             cycle_limit = (
                 int(settings.max_new_entries_per_cycle)
