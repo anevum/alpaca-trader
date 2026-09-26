@@ -1,0 +1,127 @@
+{
+  "audit_schema_version": "rhen-rdr21-recovery-audit-v1",
+  "audit_date": "2026-09-26",
+  "experiment_id": "1e0e2f4a-6fef-4b2b-923f-630fa830c458",
+  "experiment_key": "edge-discovery-v2-residual-downshock-rebound-v2.1",
+  "audit_verdict": "INVALID_NONCANONICAL_RESEARCH_ARTIFACT",
+  "canonical_development_state_after_audit": "NOT_RUN",
+  "canonicalization_performed": false,
+  "rerun_performed": false,
+  "report_reconstruction": {
+    "deployment_id": "ded64342-ee58-47db-8378-8bc8dfa8b6ba",
+    "chunk_count": 1,
+    "raw_json_bytes": 139731,
+    "reported_sha256": "173cdf9d86a129ddb02bde6c1e60f896d1a4db5c6a88e898a25c63a8162bdf7f",
+    "recovered_sha256": "173cdf9d86a129ddb02bde6c1e60f896d1a4db5c6a88e898a25c63a8162bdf7f",
+    "checksum_match": true
+  },
+  "identity": {
+    "manifest_checksum": "92f8bad6362144805cc262c9188d199111a7f9c088caec56c0b0e6d579ffef7a",
+    "manifest_checksum_match": true,
+    "execution_code_commit": "46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc",
+    "stage": "development",
+    "methodology_version": "residual-downshock-rebound-v2.1",
+    "provider": "Alpaca",
+    "feed": "iex",
+    "raw_interval": "1Min",
+    "primary_horizon_minutes": 30,
+    "secondary_horizons_minutes": [5, 15, 60],
+    "tradable_symbol_count": 23,
+    "development_window_ids": ["dev-01", "dev-02", "dev-03", "dev-04", "dev-05", "dev-06"]
+  },
+  "access_boundary_audit": {
+    "fetch_start": "2025-12-04",
+    "fetch_end": "2026-05-08",
+    "development_opened": true,
+    "validation_opened": false,
+    "holdout_opened": false,
+    "quarantine_accessed": false,
+    "boundary_verdict": "MATCH"
+  },
+  "material_mismatches": [
+    {
+      "requirement": "The data-quality gate must run before performance evaluation, and a failed corpus must stop before forward outcomes are calculated.",
+      "manifest_fields": [
+        "data_quality_gate.must_run_before_performance",
+        "data_quality_gate.failure_action"
+      ],
+      "implementation_evidence": "run_development calls build_observations before corpus_diagnostics. build_observations calls _observation_outcomes for each eligible observation. _observation_outcomes calculates 5/15/30/60-minute returns, forward residual returns, and 30-minute MFE/MAE.",
+      "report_evidence": "facts.observation_count is 128943 while corpus_integrity.verdict is FAIL.",
+      "classification": "MISMATCH",
+      "material": true
+    }
+  ],
+  "methodology_fidelity": [
+    {"item": "tradable universe", "classification": "MATCH"},
+    {"item": "SPY market benchmark", "classification": "MATCH"},
+    {"item": "sector mappings", "classification": "MATCH"},
+    {"item": "Alpaca IEX raw 1-minute bars", "classification": "MATCH"},
+    {"item": "fixed ET five-minute aggregation", "classification": "MATCH"},
+    {"item": "no forward fill/interpolation/synthetic bars", "classification": "MATCH"},
+    {"item": "residual formula and OLS intercept", "classification": "MATCH"},
+    {"item": "prior completed 20-session training", "classification": "MATCH"},
+    {"item": "minimum 600 observations and 10 sessions", "classification": "MATCH"},
+    {"item": "time-of-day median/MAD standardization and scale floor", "classification": "MATCH"},
+    {"item": "residual thresholds and floors", "classification": "MATCH"},
+    {"item": "six deterministic configuration IDs", "classification": "MATCH"},
+    {"item": "30-minute same-symbol cooldown", "classification": "MATCH"},
+    {"item": "next-interval exact raw one-minute open entry", "classification": "MATCH"},
+    {"item": "5/15/30/60-minute forward horizons", "classification": "MATCH"},
+    {"item": "BASE/NORMAL/STRESS cost formulas including 22 bps STRESS", "classification": "MATCH"},
+    {"item": "day-cluster bootstrap, 10000 resamples, seed 21020261", "classification": "MATCH"},
+    {"item": "day-cluster sign flip, 10000 resamples, seed 21020262", "classification": "MATCH"},
+    {"item": "negative controls and seed 21020263", "classification": "MATCH"},
+    {"item": "Bonferroni alpha 0.05/6", "classification": "MATCH"},
+    {"item": "development rejection gates", "classification": "MATCH"},
+    {"item": "expected-session and synchronization completeness logic", "classification": "MATCH"},
+    {"item": "survivor ordering", "classification": "MATCH"},
+    {"item": "corpus gate execution order", "classification": "MISMATCH"}
+  ],
+  "corpus_integrity": {
+    "artifact_verdict": "FAIL",
+    "coverage_rows": 138,
+    "coverage_rows_passed": 136,
+    "coverage_rows_failed": 2,
+    "expected_symbol_sessions": 2001,
+    "represented_symbol_sessions": 2001,
+    "missing_symbol_sessions": 0,
+    "raw_one_minute_bar_count": 726277,
+    "five_minute_observation_count": 155604,
+    "partial_symbol_sessions": 163,
+    "pagination_complete_for_all_rows": true,
+    "failed_rows": [
+      {
+        "window": "dev-04",
+        "symbol": "COST",
+        "synchronization_completeness": 0.8789743589743589,
+        "model_availability_ratio": 0.8789743589743589,
+        "required_minimum": 0.9
+      },
+      {
+        "window": "dev-06",
+        "symbol": "COST",
+        "synchronization_completeness": 0.84,
+        "model_availability_ratio": 0.84,
+        "required_minimum": 0.9
+      }
+    ]
+  },
+  "configurations": [
+    {"configuration_id": "RDR21-01", "residual_z_threshold": 2.0, "absolute_residual_floor": 0.003, "evaluation_status": "NOT_EVALUATED", "reason": "artifact corpus gate failed"},
+    {"configuration_id": "RDR21-02", "residual_z_threshold": 2.0, "absolute_residual_floor": 0.005, "evaluation_status": "NOT_EVALUATED", "reason": "artifact corpus gate failed"},
+    {"configuration_id": "RDR21-03", "residual_z_threshold": 2.5, "absolute_residual_floor": 0.003, "evaluation_status": "NOT_EVALUATED", "reason": "artifact corpus gate failed"},
+    {"configuration_id": "RDR21-04", "residual_z_threshold": 2.5, "absolute_residual_floor": 0.005, "evaluation_status": "NOT_EVALUATED", "reason": "artifact corpus gate failed"},
+    {"configuration_id": "RDR21-05", "residual_z_threshold": 3.0, "absolute_residual_floor": 0.003, "evaluation_status": "NOT_EVALUATED", "reason": "artifact corpus gate failed"},
+    {"configuration_id": "RDR21-06", "residual_z_threshold": 3.0, "absolute_residual_floor": 0.005, "evaluation_status": "NOT_EVALUATED", "reason": "artifact corpus gate failed"}
+  ],
+  "artifact_reported_decision": "DEVELOPMENT CORPUS FAIL; performance evaluation not run",
+  "accepted_development_decision": null,
+  "survivor_configuration_id": null,
+  "validation_eligible": false,
+  "canonical_database_writes": {
+    "trading_experiments": 0,
+    "trading_experiment_windows": 0,
+    "trading_experiment_results": 0,
+    "trading_research_decisions": 0
+  }
+}
