@@ -9,7 +9,7 @@ from statistics import median
 from zoneinfo import ZoneInfo
 from typing import Any
 
-REPORT_VERSION = "rhen-weekly-v1.1"
+REPORT_VERSION = "rhen-weekly-v1.2"
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 
@@ -79,14 +79,31 @@ def _session(payload: dict[str, Any]) -> str | None:
 
 
 def _daily_records(inputs: dict[str, Any]) -> list[dict[str, Any]]:
-    records = []
+    """Use only the newest versioned report for each session.
+
+    Historical report events remain immutable; a regenerated report supersedes
+    evidence for aggregation without deleting the older conclusion.
+    """
+    latest: dict[str, tuple[str, dict[str, Any]]] = {}
     for item in inputs.get("daily_reports") or []:
         if not isinstance(item, dict):
             continue
         payload = item.get("payload")
-        if not isinstance(payload, dict) or not _session(payload):
+        if not isinstance(payload, dict):
             continue
-        records.append(item)
+        session = _session(payload)
+        if not session:
+            continue
+        stamp = str(
+            payload.get("generated_at")
+            or item.get("occurred_at")
+            or item.get("received_at")
+            or ""
+        )
+        previous = latest.get(session)
+        if previous is None or stamp >= previous[0]:
+            latest[session] = (stamp, item)
+    records = [item for _, item in latest.values()]
     records.sort(key=lambda item: str(item["payload"]["session"]))
     return records
 
@@ -473,7 +490,12 @@ def _candidate_analysis(inputs: dict[str, Any]) -> dict[str, Any]:
         )
 
     forward = list(inputs.get("forward_outcomes") or [])
-    complete_forward = sum(int(row.get("complete") or 0) for row in forward)
+    forward_by_horizon = list(inputs.get("forward_outcomes_by_horizon") or [])
+    complete_forward = (
+        sum(int(row.get("complete") or 0) for row in forward_by_horizon)
+        if forward_by_horizon
+        else sum(int(row.get("complete") or 0) for row in forward)
+    )
 
     population = [
         {
@@ -514,8 +536,11 @@ def _candidate_analysis(inputs: dict[str, Any]) -> dict[str, Any]:
             else "compare the per-session counts directly; no cross-session conclusion is inferred automatically"
         ),
         "forward_outcomes": forward,
+        "forward_outcomes_by_horizon": forward_by_horizon,
+        "forward_outcome_status": inputs.get("forward_outcome_status") or {},
         "forward_outcomes_complete": complete_forward,
         "post_event_only": True,
+        "counterfactual_not_realized_trades": True,
     }
 
 
@@ -963,6 +988,16 @@ def build_weekly_report(
         warnings.append(
             "Candidate counterfactual analysis is incomplete because forward outcomes are not available."
         )
+    live_offline_summary = inputs.get("live_offline_summary") or []
+    if any(int(row.get("unreconstructable") or 0) for row in live_offline_summary):
+        warnings.append(
+            "Some live-vs-offline decisions are explicitly UNRECONSTRUCTABLE because historical decision-time inputs were not retained."
+        )
+    forward_status = inputs.get("forward_outcome_status") or {}
+    if int(forward_status.get("incomplete_rows") or 0) or int(forward_status.get("error_rows") or 0):
+        warnings.append(
+            "Forward-outcome evidence contains incomplete or error rows; those observations are excluded from completed-outcome interpretation."
+        )
     if len(strategy_versions) > 1:
         warnings.append(
             "Multiple strategy versions operated during the period; strategy-specific results are kept separate."
@@ -996,7 +1031,9 @@ def build_weekly_report(
             else "HISTORICAL_UNAVAILABLE"
         ),
         "live_vs_offline_comparison": (
-            "AVAILABLE" if inputs.get("live_offline") else "UNAVAILABLE"
+            "AVAILABLE"
+            if inputs.get("live_offline_summary") or inputs.get("live_offline")
+            else "UNAVAILABLE"
         ),
         "duplicate_groups_detected": duplicate_groups,
         "data_cutoff": inputs.get("data_cutoff"),
@@ -1071,12 +1108,17 @@ def build_weekly_report(
         "daily_vs_canonical_consistency": consistency,
         "candidate_analysis": candidates,
         "live_vs_offline_consistency": {
-            "status": "not_available" if not inputs.get("live_offline") else "available",
+            "status": (
+                "available"
+                if inputs.get("live_offline_summary") or inputs.get("live_offline")
+                else "not_available"
+            ),
+            "summary": inputs.get("live_offline_summary") or [],
             "daily_evidence": inputs.get("live_offline") or [],
             "interpretation": (
-                "No canonical daily live-vs-offline comparison was stored for the included sessions."
-                if not inputs.get("live_offline")
-                else "Repeated discrepancies should be evaluated across sessions; no production behavior is changed automatically."
+                "No canonical live-vs-offline comparison was stored for the included sessions."
+                if not inputs.get("live_offline_summary") and not inputs.get("live_offline")
+                else "Matches, mismatches, and unreconstructable decisions are descriptive verification evidence only; no production behavior is changed automatically."
             ),
         },
         "operational_health": operations,
