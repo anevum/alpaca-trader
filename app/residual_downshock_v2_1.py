@@ -12,13 +12,13 @@ MANIFEST_PATH = Path("research/residual-downshock-rebound-v2.1.json")
 def _normalized_manifest_text(raw: str) -> str:
     import re
     raw = re.sub(
-        r'"manifest_checksum_sha256":\\s*"(?:[0-9a-f]{64})?"',
+        r'"manifest_checksum_sha256":\s*"(?:[0-9a-f]{64})?"',
         '"manifest_checksum_sha256": ""',
         raw,
         count=1,
     )
     raw = re.sub(
-        r'"source_commit_sha":\\s*(?:"[0-9a-f]{40}"|null)',
+        r'"source_commit_sha":\s*(?:"[0-9a-f]{40}"|null)',
         '"source_commit_sha": ""',
         raw,
         count=1,
