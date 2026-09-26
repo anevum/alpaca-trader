@@ -281,6 +281,90 @@ class TradingEventSink:
                 await asyncio.sleep(0.25 * (2 ** attempt))
         return False
 
+    def _comparison_configuration(self) -> dict[str, Any]:
+        """Non-secret values required to reconstruct the live decision later."""
+        s = self.settings
+
+        def value(name: str, default: Any = None) -> Any:
+            raw = getattr(s, name, default)
+            if isinstance(raw, Decimal):
+                return str(raw)
+            if isinstance(raw, (tuple, set)):
+                return list(raw)
+            return raw
+
+        return {
+            "strategy_name": value("strategy_name"),
+            "fast_window": value("fast_window"),
+            "slow_window": value("slow_window"),
+            "min_momentum_pct": value("min_momentum_pct"),
+            "min_vwap_edge_pct": value("min_vwap_edge_pct"),
+            "stop_pct": value("stop_pct"),
+            "target_pct": value("target_pct"),
+            "entry_start": value("entry_start_raw"),
+            "entry_cutoff": value("entry_cutoff_raw"),
+            "confirmation_symbols": list(value("confirmation_symbols", ()) or ()),
+            "min_confirmations": value("min_confirmations"),
+            "regime_window": value("regime_window"),
+            "regime_min_confirmations": value("regime_min_confirmations"),
+            "regime_min_return_pct": value("regime_min_return_pct"),
+            "max_vwap_extension_pct": value("max_vwap_extension_pct"),
+            "volatility_stop_enabled": value("volatility_stop_enabled"),
+            "volatility_stop_multiplier": value("volatility_stop_multiplier"),
+            "volatility_stop_lookback_bars": value("volatility_stop_lookback_bars"),
+            "max_dynamic_stop_pct": value("max_dynamic_stop_pct"),
+            "max_bar_age_seconds": value("max_bar_age_seconds"),
+            "max_spread_pct": value("max_spread_pct"),
+            "min_quality_score": value("min_quality_score"),
+            "max_pairwise_correlation": value("max_pairwise_correlation"),
+            "correlation_lookback_bars": value("correlation_lookback_bars"),
+            "correlation_min_observations": value("correlation_min_observations"),
+            "loss_streak_limit": value("loss_streak_limit"),
+            "loss_streak_cooldown_minutes": value("loss_streak_cooldown_minutes"),
+            "reentry_cooldown_minutes": value("reentry_cooldown_minutes"),
+            "order_notional": value("order_notional"),
+            "sizing_mode": value("sizing_mode"),
+            "risk_per_trade_pct": value("risk_per_trade_pct"),
+            "max_gross_exposure_pct": value("max_gross_exposure_pct"),
+            "min_order_notional": value("min_order_notional"),
+            "max_order_notional": value("max_order_notional"),
+            "max_position_notional": value("max_position_notional"),
+            "max_total_position_notional": value("max_total_position_notional"),
+            "portfolio_limit_mode": value("portfolio_limit_mode"),
+            "max_position_gross_pct": value("max_position_gross_pct"),
+            "max_portfolio_stop_risk_pct": value("max_portfolio_stop_risk_pct"),
+            "max_concurrent_positions": value("max_concurrent_positions"),
+            "max_new_entries_per_cycle": value("max_new_entries_per_cycle"),
+            "max_daily_orders": value("max_daily_orders"),
+            "max_daily_loss": value("max_daily_loss"),
+            "dynamic_universe_enabled": value("dynamic_universe_enabled"),
+            "allowed_symbols": sorted(value("allowed_symbols", set()) or []),
+            "execution_authorized": value("execution_authorized", False),
+            "data_feed": value("data_feed"),
+            "bar_timeframe": value("bar_timeframe"),
+        }
+
+    @staticmethod
+    def _candidate_final_decision(
+        symbol: str,
+        qualified: bool,
+        execution_result: dict[str, Any] | None,
+    ) -> str:
+        if not qualified:
+            return "rejected"
+        result = execution_result or {}
+        normalized = symbol.upper()
+        for order in result.get("orders") or []:
+            if str(order.get("symbol") or "").upper() == normalized:
+                return "submitted"
+        for skipped in result.get("skipped") or []:
+            if str(skipped.get("symbol") or "").upper() == normalized:
+                return "qualified_not_selected"
+        action = str(result.get("action") or "").lower()
+        if action in {"blocked", "hold", "error"}:
+            return action
+        return "qualified"
+
     def record_decision_cycle(
         self,
         *,
@@ -295,6 +379,8 @@ class TradingEventSink:
         degraded: bool = False,
         error: str | None = None,
         runtime: dict[str, Any] | None = None,
+        comparison_context: dict[str, Any] | None = None,
+        execution_result: dict[str, Any] | None = None,
     ) -> None:
         """Persist one complete strategy-evaluation cycle without affecting execution."""
         duration_ms = max(
@@ -307,6 +393,7 @@ class TradingEventSink:
                 if cycle_outcome
                 else None
             )
+        cycle_key = f"{self.settings.trading_run_id}:{correlation_id}"
         candidates: list[dict[str, Any]] = []
         qualified_count = 0
         for rank, (symbol, signal) in enumerate(scan.items(), start=1):
@@ -326,12 +413,20 @@ class TradingEventSink:
             candidates.append(
                 {
                     "symbol": symbol.upper(),
+                    "candidate_key": f"{cycle_key}:{symbol.upper()}",
                     "observed_at": cycle_ended_at.isoformat(),
                     "action": str(signal.get("action") or "hold"),
                     "qualified": qualified,
                     "candidate_state": "qualified" if qualified else "rejected",
+                    "qualification_status": "qualified" if qualified else "rejected",
+                    "final_decision": self._candidate_final_decision(
+                        symbol,
+                        qualified,
+                        execution_result,
+                    ),
                     "reason": reason or None,
                     "rejection_reasons": [] if qualified else ([reason] if reason else []),
+                    "rejection_reason_codes": [] if qualified else ([reason] if reason else []),
                     "candidate_rank": rank if qualified else None,
                     "data_quality_state": (
                         "unavailable"
@@ -341,7 +436,11 @@ class TradingEventSink:
                     "decision_reference_price": (
                         str(signal.get("reference_price"))
                         if signal.get("reference_price") not in {None, "", "0", 0}
-                        else None
+                        else (
+                            str(metadata.get("current_close"))
+                            if metadata.get("current_close") not in {None, "", "0", 0}
+                            else None
+                        )
                     ),
                     "quote": {
                         "bid": bid,
@@ -361,12 +460,32 @@ class TradingEventSink:
                     "stop_price": str(signal.get("stop_price") or "") or None,
                     "target_price": str(signal.get("take_profit_price") or "") or None,
                     "forward_outcomes_status": "pending",
+                    "market_context": {
+                        "confirmations": metadata.get("confirmations") or {},
+                        "regime_confirmations": metadata.get("regime_confirmations") or {},
+                    },
+                    "eligibility": {
+                        "active_universe": symbol.upper() in {item.upper() for item in active_universe},
+                    },
+                    "constraints": {
+                        "correlation": metadata.get("correlation") or {},
+                        "sizing": metadata.get("sizing") or {},
+                    },
+                    "methodology_version": "live-decision-v1",
+                    "strategy_family": getattr(self.settings, "strategy_name", None),
+                    "data_source": "alpaca",
+                    "data_feed": getattr(self.settings, "data_feed", None),
+                    "bar_interval": getattr(self.settings, "bar_timeframe", None),
                     "research_attribution": {
                         "live_strategy_version": self.settings.strategy_version_id,
                     },
                 }
             )
-        cycle_key = f"{self.settings.trading_run_id}:{correlation_id}"
+        replay_context = {
+            "configuration": self._comparison_configuration(),
+            "execution_context": comparison_context or {},
+            "execution_result": execution_result or {},
+        }
         self.emit(
             event_type="decision_cycle",
             event_key=f"{self.settings.trading_run_id}:decision-cycle:{correlation_id}",
@@ -379,7 +498,15 @@ class TradingEventSink:
                 "market_is_open": market_is_open,
                 "active_universe_size": len(active_universe),
                 "active_universe": list(active_universe),
+                "symbols_expected": list(active_universe),
                 "symbols_evaluated": list(scan),
+                "execution_mode": getattr(self.settings, "trading_mode", None),
+                "market_session": "regular" if market_is_open else "closed",
+                "data_source": "alpaca",
+                "data_feed": getattr(self.settings, "data_feed", None),
+                "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                "methodology_version": "live-decision-v1",
+                "strategy_family": getattr(self.settings, "strategy_name", None),
                 "candidate_count": len(candidates),
                 "qualified_count": qualified_count,
                 "rejected_count": len(candidates) - qualified_count,
@@ -389,6 +516,7 @@ class TradingEventSink:
                 "error": error,
                 "cycle_duration_ms": duration_ms,
                 "runtime": runtime or {},
+                "comparison_context": replay_context,
                 "candidates": candidates,
             },
         )
