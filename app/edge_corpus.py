@@ -71,14 +71,18 @@ def load_manifest(path: str | Path) -> CorpusManifest:
         for item in payload["windows"]
     )
     research = payload.get("research") or {}
-    cost_scenarios = tuple(
-        (
-            str(item["name"]),
-            str(item["spread_bps"]),
-            str(item["slippage_bps_per_side"]),
+    configured_cost_scenarios = research.get("cost_scenarios")
+    if configured_cost_scenarios:
+        cost_scenarios = tuple(
+            (
+                str(item["name"]),
+                str(item["spread_bps"]),
+                str(item["slippage_bps_per_side"]),
+            )
+            for item in configured_cost_scenarios
         )
-        for item in (research.get("cost_scenarios") or DEFAULT_RESEARCH_COST_SCENARIOS)
-    )
+    else:
+        cost_scenarios = DEFAULT_RESEARCH_COST_SCENARIOS
     manifest = CorpusManifest(
         version=str(payload["version"]),
         created_at=str(payload["created_at"]),
