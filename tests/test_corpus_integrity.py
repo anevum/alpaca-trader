@@ -33,7 +33,11 @@ def test_window_integrity_reports_symbol_level_coverage_and_sessions():
             {"t": "2026-01-05T14:32:00Z"},
             {"t": "2026-01-06T14:31:00Z"},
         ],
-        "MSFT": [{"t": "2026-01-05T14:31:00Z"}],
+        "MSFT": [
+            {"t": "2026-01-05T14:31:00Z"},
+            {"t": "2026-01-06T14:31:00Z"},
+            {"t": "2026-01-07T14:31:00Z"},
+        ],
         "SPY": [
             {"t": "2026-01-05T14:31:00Z"},
             {"t": "2026-01-05T14:32:00Z"},
@@ -80,12 +84,13 @@ def test_window_integrity_reports_symbol_level_coverage_and_sessions():
     assert symbols["AAPL"]["first_timestamp"] == "2026-01-05T14:31:00Z"
     assert symbols["AAPL"]["last_timestamp"] == "2026-01-06T14:31:00Z"
     assert symbols["AAPL"]["pagination_complete"] is True
-    assert symbols["AAPL"]["current_coverage_ratio"] == 0.75
+    assert symbols["AAPL"]["current_coverage_ratio"] == 0.666667
 
-    assert symbols["MSFT"]["current_coverage_ratio"] == 0.25
+    assert symbols["MSFT"]["current_coverage_ratio"] == 1.0
+    assert symbols["MSFT"]["iex_bar_density_ratio"] == 0.75
     assert symbols["SPY"]["pagination_complete"] is False
     assert symbols["SPY"]["missing_sessions"] == []
-    assert result["coverage_reference_bar_count"] == 4
+    assert result["iex_bar_density_reference_count"] == 4
     assert result["summary"]["pagination_complete"] is False
 
 
@@ -118,3 +123,4 @@ def test_corpus_report_counts_every_window_symbol_record():
     assert report["scope"]["record_count"] == 6
     assert report["summary"]["pagination_complete"] is True
     assert report["summary"]["records_with_missing_sessions"] == 2
+    assert report["corpus"]["iex_bar_density_is_diagnostic_only"] is True

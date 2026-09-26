@@ -14,7 +14,8 @@ from .market_data import MarketDataClient
 
 NY = ZoneInfo("America/New_York")
 ALLOWED_ROLES = {"development", "validation", "holdout", "quarantine"}
-MIN_SYMBOL_COVERAGE = 0.80
+REQUIRED_SESSION_COVERAGE = 1.0
+CACHE_SCHEMA_VERSION = 2
 DEFAULT_RESEARCH_COST_SCENARIOS = (("base", "5", "2"), ("moderate", "8", "3"), ("stress", "12", "5"))
 
 
@@ -222,8 +223,8 @@ def _cache_key(manifest: CorpusManifest, window: CorpusWindow) -> str:
         ).encode("utf-8")
     ).hexdigest()[:12]
     return (
-        f"{window.window_id}-{manifest.data_feed}-"
-        f"{manifest.timeframe}-{symbol_hash}.json.gz"
+        f"{window.window_id}-integrity-v{CACHE_SCHEMA_VERSION}-"
+        f"{manifest.data_feed}-{manifest.timeframe}-{symbol_hash}.json.gz"
     )
 
 
@@ -249,11 +250,39 @@ def _window_bounds(window: CorpusWindow) -> tuple[datetime, datetime]:
     return start, end
 
 
+def _bar_timestamp(bar: dict[str, Any]) -> datetime | None:
+    value = bar.get("t") or bar.get("timestamp")
+    if not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(NY)
+
+
+def _regular_session_dates(
+    bars: list[dict[str, Any]],
+) -> set[date]:
+    dates: set[date] = set()
+    for bar in bars:
+        stamp = _bar_timestamp(bar)
+        if stamp is None:
+            continue
+        local_time = stamp.timetz().replace(tzinfo=None)
+        if time(9, 30) <= local_time < time(16, 0):
+            dates.add(stamp.date())
+    return dates
+
+
 def _coverage(
     bars_by_symbol: dict[str, list[dict[str, Any]]],
     *,
     candidate_symbols: tuple[str, ...],
     confirmation_symbols: tuple[str, ...],
+    expected_sessions: tuple[date, ...],
 ) -> dict[str, Any]:
     all_symbols = list(
         dict.fromkeys([*candidate_symbols, *confirmation_symbols])
@@ -262,35 +291,74 @@ def _coverage(
         symbol: len(bars_by_symbol.get(symbol, []))
         for symbol in all_symbols
     }
+
     nonzero = [value for value in counts.values() if value > 0]
-    expected = max(nonzero) if nonzero else 0
-    ratios = {
+    density_reference = max(nonzero) if nonzero else 0
+    density_ratios = {
         symbol: (
-            round(count / expected, 6)
-            if expected > 0
+            round(count / density_reference, 6)
+            if density_reference > 0
             else 0.0
         )
         for symbol, count in counts.items()
     }
+
+    expected = tuple(sorted(dict.fromkeys(expected_sessions)))
+    expected_set = set(expected)
+    observed_sessions = {
+        symbol: _regular_session_dates(bars_by_symbol.get(symbol, []))
+        for symbol in all_symbols
+    }
+    represented_sessions = {
+        symbol: observed_sessions[symbol] & expected_set
+        for symbol in all_symbols
+    }
+    missing_sessions = {
+        symbol: sorted(expected_set - observed_sessions[symbol])
+        for symbol in all_symbols
+    }
+    session_counts = {
+        symbol: len(represented_sessions[symbol])
+        for symbol in all_symbols
+    }
+    session_ratios = {
+        symbol: (
+            round(session_counts[symbol] / len(expected), 6)
+            if expected
+            else 0.0
+        )
+        for symbol in all_symbols
+    }
+
     eligible = [
         symbol
         for symbol in candidate_symbols
-        if ratios.get(symbol, 0.0) >= MIN_SYMBOL_COVERAGE
+        if session_ratios.get(symbol, 0.0) >= REQUIRED_SESSION_COVERAGE
     ]
     missing_confirmations = [
         symbol
         for symbol in confirmation_symbols
-        if ratios.get(symbol, 0.0) < MIN_SYMBOL_COVERAGE
+        if session_ratios.get(symbol, 0.0) < REQUIRED_SESSION_COVERAGE
     ]
+
     return {
-        "expected_bar_count_reference": expected,
+        "coverage_rule": "all_expected_regular_trading_sessions_present",
+        "expected_session_count": len(expected),
+        "expected_sessions": [item.isoformat() for item in expected],
+        "session_counts": session_counts,
+        "coverage_ratio": session_ratios,
+        "missing_sessions": {
+            symbol: [item.isoformat() for item in values]
+            for symbol, values in missing_sessions.items()
+        },
+        "required_session_coverage": REQUIRED_SESSION_COVERAGE,
         "bar_counts": counts,
-        "coverage_ratio": ratios,
+        "iex_bar_density_reference_count": density_reference,
+        "iex_bar_density_ratio": density_ratios,
         "eligible_candidate_symbols": eligible,
         "eligible_candidate_count": len(eligible),
         "candidate_count": len(candidate_symbols),
         "missing_or_incomplete_confirmations": missing_confirmations,
-        "minimum_symbol_coverage": MIN_SYMBOL_COVERAGE,
     }
 
 
@@ -298,6 +366,9 @@ def _cache_payload(
     manifest: CorpusManifest,
     window: CorpusWindow,
     bars_by_symbol: dict[str, list[dict[str, Any]]],
+    *,
+    expected_sessions: tuple[date, ...],
+    fetch_integrity: dict[str, Any],
 ) -> dict[str, Any]:
     normalized = {
         symbol.upper(): list(bars or [])
@@ -307,9 +378,10 @@ def _cache_payload(
         normalized,
         candidate_symbols=manifest.candidate_symbols,
         confirmation_symbols=manifest.confirmation_symbols,
+        expected_sessions=expected_sessions,
     )
     return {
-        "schema_version": 1,
+        "schema_version": CACHE_SCHEMA_VERSION,
         "manifest_version": manifest.version,
         "manifest_sha256": manifest_sha256(manifest),
         "window": {
@@ -320,6 +392,7 @@ def _cache_payload(
         },
         "data_feed": manifest.data_feed,
         "timeframe": manifest.timeframe,
+        "fetch_integrity": fetch_integrity,
         "coverage": coverage,
         "bars": normalized,
     }
@@ -341,6 +414,8 @@ def validate_cached_window(
     manifest: CorpusManifest,
     window: CorpusWindow,
 ) -> None:
+    if payload.get("schema_version") != CACHE_SCHEMA_VERSION:
+        raise ValueError("cached corpus schema version does not match")
     if payload.get("manifest_sha256") != manifest_sha256(manifest):
         raise ValueError("cached corpus manifest hash does not match")
     cached = payload.get("window") or {}
@@ -348,7 +423,14 @@ def validate_cached_window(
         raise ValueError("cached corpus window id does not match")
     if cached.get("role") != window.role:
         raise ValueError("cached corpus role does not match")
+
+    fetch_integrity = payload.get("fetch_integrity") or {}
+    if fetch_integrity.get("pagination_complete") is not True:
+        raise ValueError("cached corpus pagination is incomplete")
+
     coverage = payload.get("coverage") or {}
+    if coverage.get("expected_session_count", 0) <= 0:
+        raise ValueError("cached corpus has no expected trading sessions")
     if coverage.get("missing_or_incomplete_confirmations"):
         raise ValueError(
             "cached corpus window has incomplete confirmation data: "
@@ -364,6 +446,17 @@ async def fetch_or_load_window(
     cache_dir: str | Path = ".edge_corpus",
     refresh: bool = False,
 ) -> dict[str, Any]:
+    expected_sessions = tuple(
+        await market_data.market_calendar(
+            start=window.start,
+            end=window.end,
+        )
+    )
+    if not expected_sessions:
+        raise RuntimeError(
+            f"Alpaca calendar returned no sessions for {window.window_id}"
+        )
+
     path = window_cache_path(cache_dir, manifest, window)
     if path.exists() and not refresh:
         payload = _read_cache(path)
@@ -380,12 +473,18 @@ async def fetch_or_load_window(
             [*manifest.candidate_symbols, *manifest.confirmation_symbols]
         )
     )
-    bars = await market_data.historical_bars_many(
+    fetch = await market_data.historical_bars_many_with_metadata(
         symbols,
         start=start,
         end=end,
     )
-    payload = _cache_payload(manifest, window, bars)
+    payload = _cache_payload(
+        manifest,
+        window,
+        fetch["bars"],
+        expected_sessions=expected_sessions,
+        fetch_integrity=fetch["pagination"],
+    )
     validate_cached_window(payload, manifest, window)
     _write_cache(path, payload)
     payload["cache"] = {

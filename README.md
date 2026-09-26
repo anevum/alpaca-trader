@@ -239,3 +239,13 @@ clean live evidence pass separately.
 If all five families are rejected, the report includes a next-generation
 research slate based on genuinely different information sources rather than
 retuning the rejected thresholds.
+
+
+### Corpus integrity rule
+
+Historical-corpus completeness is not defined by raw IEX one-minute bar count.
+A symbol is complete only when the historical fetch finishes pagination and
+regular-session data is present on every expected Alpaca trading-calendar
+session in that window. The old densest-symbol bar-count ratio is retained only
+as `iex_bar_density_ratio` for sampling diagnostics. The independent 80%
+shared-panel requirement remains in force.

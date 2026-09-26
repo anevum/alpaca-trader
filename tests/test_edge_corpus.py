@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from app.edge_corpus import (
     CorpusManifest,
     CorpusWindow,
+    _coverage,
     load_manifest,
     manifest_sha256,
     validate_manifest,
@@ -99,20 +101,20 @@ def test_window_fetch_limit_is_enforced():
         windows=(
             CorpusWindow(
                 window_id="too-long",
-                start=__import__("datetime").date(2026, 1, 1),
-                end=__import__("datetime").date(2026, 1, 31),
+                start=date(2026, 1, 1),
+                end=date(2026, 1, 31),
                 role="development",
             ),
             CorpusWindow(
                 window_id="val",
-                start=__import__("datetime").date(2026, 2, 2),
-                end=__import__("datetime").date(2026, 2, 6),
+                start=date(2026, 2, 2),
+                end=date(2026, 2, 6),
                 role="validation",
             ),
             CorpusWindow(
                 window_id="holdout",
-                start=__import__("datetime").date(2026, 3, 2),
-                end=__import__("datetime").date(2026, 3, 6),
+                start=date(2026, 3, 2),
+                end=date(2026, 3, 6),
                 role="holdout",
             ),
         ),
@@ -121,3 +123,81 @@ def test_window_fetch_limit_is_enforced():
 
     with pytest.raises(ValueError, match="21-calendar-day"):
         validate_manifest(manifest)
+
+
+def test_sparse_iex_density_does_not_mean_incomplete_history():
+    expected = (
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+        date(2026, 1, 7),
+    )
+    bars = {
+        "AAPL": [
+            {"t": "2026-01-05T14:30:00Z"},
+            {"t": "2026-01-05T14:31:00Z"},
+            {"t": "2026-01-06T14:30:00Z"},
+            {"t": "2026-01-06T14:31:00Z"},
+            {"t": "2026-01-07T14:30:00Z"},
+            {"t": "2026-01-07T14:31:00Z"},
+        ],
+        "MSFT": [
+            {"t": "2026-01-05T14:30:00Z"},
+            {"t": "2026-01-06T14:30:00Z"},
+            {"t": "2026-01-07T14:30:00Z"},
+        ],
+        "SPY": [
+            {"t": "2026-01-05T14:30:00Z"},
+            {"t": "2026-01-06T14:30:00Z"},
+            {"t": "2026-01-07T14:30:00Z"},
+        ],
+    }
+
+    result = _coverage(
+        bars,
+        candidate_symbols=("AAPL", "MSFT"),
+        confirmation_symbols=("SPY",),
+        expected_sessions=expected,
+    )
+
+    assert result["iex_bar_density_ratio"]["MSFT"] == 0.5
+    assert result["coverage_ratio"]["MSFT"] == 1.0
+    assert result["eligible_candidate_symbols"] == ["AAPL", "MSFT"]
+
+
+def test_missing_regular_session_is_incomplete_even_with_high_bar_count():
+    expected = (
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+        date(2026, 1, 7),
+    )
+    bars = {
+        "AAPL": [
+            {"t": "2026-01-05T14:30:00Z"},
+            {"t": "2026-01-06T14:30:00Z"},
+            {"t": "2026-01-07T14:30:00Z"},
+        ],
+        "MSFT": [
+            {"t": "2026-01-05T14:30:00Z"},
+            {"t": "2026-01-05T14:31:00Z"},
+            {"t": "2026-01-06T14:30:00Z"},
+            {"t": "2026-01-06T14:31:00Z"},
+            {"t": "2026-01-07T02:00:00Z"},
+        ],
+        "SPY": [
+            {"t": "2026-01-05T14:30:00Z"},
+            {"t": "2026-01-06T14:30:00Z"},
+            {"t": "2026-01-07T14:30:00Z"},
+        ],
+    }
+
+    result = _coverage(
+        bars,
+        candidate_symbols=("AAPL", "MSFT"),
+        confirmation_symbols=("SPY",),
+        expected_sessions=expected,
+    )
+
+    assert result["iex_bar_density_ratio"]["MSFT"] > 1.0
+    assert result["coverage_ratio"]["MSFT"] == 0.666667
+    assert result["missing_sessions"]["MSFT"] == ["2026-01-07"]
+    assert result["eligible_candidate_symbols"] == ["AAPL"]

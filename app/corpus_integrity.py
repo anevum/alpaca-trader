@@ -69,13 +69,14 @@ def build_window_integrity(
         symbol.upper(): list(bars or [])
         for symbol, bars in bars_by_symbol.items()
     }
+    expected = tuple(sorted(dict.fromkeys(expected_sessions)))
+    expected_set = set(expected)
     coverage = _coverage(
         normalized,
         candidate_symbols=manifest.candidate_symbols,
         confirmation_symbols=manifest.confirmation_symbols,
+        expected_sessions=expected,
     )
-    expected = tuple(sorted(dict.fromkeys(expected_sessions)))
-    expected_set = set(expected)
     pagination_map = _pagination_by_symbol(pagination)
     records: list[dict[str, Any]] = []
 
@@ -89,9 +90,9 @@ def build_window_integrity(
         timestamps.sort()
         observed_dates = {stamp.astimezone(NY).date() for stamp in timestamps}
         represented = tuple(sorted(observed_dates & expected_set))
-        missing = tuple(sorted(expected_set - observed_dates))
         unexpected = tuple(sorted(observed_dates - expected_set))
         pagination_item = pagination_map.get(symbol, {})
+        missing = list((coverage.get("missing_sessions") or {}).get(symbol, []))
 
         records.append(
             {
@@ -104,7 +105,9 @@ def build_window_integrity(
                     else "confirmation"
                 ),
                 "bar_count": len(bars),
-                "trading_days_represented": len(represented),
+                "trading_days_represented": int(
+                    (coverage.get("session_counts") or {}).get(symbol, 0)
+                ),
                 "expected_trading_days": len(expected),
                 "first_timestamp": _iso_utc(timestamps[0]) if timestamps else None,
                 "last_timestamp": _iso_utc(timestamps[-1]) if timestamps else None,
@@ -114,10 +117,18 @@ def build_window_integrity(
                 "pagination_next_page_token_remaining": pagination_item.get(
                     "next_page_token_remaining"
                 ),
-                "missing_sessions": [item.isoformat() for item in missing],
+                "missing_sessions": missing,
                 "missing_session_count": len(missing),
                 "unexpected_sessions": [item.isoformat() for item in unexpected],
-                "current_coverage_ratio": coverage["coverage_ratio"].get(symbol, 0.0),
+                "current_coverage_ratio": (
+                    coverage.get("coverage_ratio") or {}
+                ).get(symbol, 0.0),
+                "iex_bar_density_ratio": (
+                    coverage.get("iex_bar_density_ratio") or {}
+                ).get(symbol, 0.0),
+                "session_complete": (
+                    coverage.get("coverage_ratio") or {}
+                ).get(symbol, 0.0) >= 1.0,
                 "unparseable_timestamp_count": len(bars) - len(timestamps),
             }
         )
@@ -131,7 +142,10 @@ def build_window_integrity(
         },
         "expected_sessions": [item.isoformat() for item in expected],
         "expected_trading_days": len(expected),
-        "coverage_reference_bar_count": coverage["expected_bar_count_reference"],
+        "coverage_rule": coverage["coverage_rule"],
+        "iex_bar_density_reference_count": coverage[
+            "iex_bar_density_reference_count"
+        ],
         "pagination": pagination,
         "symbols": records,
         "summary": {
@@ -182,6 +196,8 @@ def build_corpus_integrity_report(
             "data_feed": manifest.data_feed,
             "timeframe": manifest.timeframe,
             "session_calendar_source": "alpaca_trading_calendar",
+            "coverage_rule": "all_expected_regular_trading_sessions_present",
+            "iex_bar_density_is_diagnostic_only": True,
         },
         "summary": {
             "pagination_complete": all(
