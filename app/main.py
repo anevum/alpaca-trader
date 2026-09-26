@@ -117,6 +117,7 @@ def require_admin(authorization: str | None):
 SUPABASE_URL = "https://mfntzxheldzdvlokyntk.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_XfkgeXau2-6XOPzoXF-Nnw_FSnx0Sae"
 COMMAND_FOUNDER_EMAIL = "devon@anevum.com"
+SYSTEM_NAME = "RHEN"
 
 
 async def require_command_admin(authorization: str | None) -> dict:
@@ -199,6 +200,7 @@ async def command_snapshot() -> dict:
             "next_close": clock.get("next_close"),
         },
         "bot": {
+            "name": SYSTEM_NAME,
             "execution_enabled": settings.execution_enabled,
             "execution_authorized": settings.execution_authorized,
             "bot_armed": settings.bot_armed,
@@ -625,7 +627,7 @@ async def lifespan(app: FastAPI):
     await event_sink.stop()
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.8.1", lifespan=lifespan)
+app = FastAPI(title=f"{SYSTEM_NAME} Trading System", version="0.8.1", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -634,6 +636,7 @@ async def health():
     order = runtime_state.last_order or {}
     return {
         "ok": True,
+        "system_name": SYSTEM_NAME,
         "trading_mode": settings.trading_mode,
         "order_execution_present": True,
         "execution_enabled": settings.execution_enabled,
@@ -671,6 +674,7 @@ async def health():
 async def status(authorization: str | None = Header(default=None)):
     require_admin(authorization)
     return {
+        "system_name": SYSTEM_NAME,
         "trading_mode": settings.trading_mode,
         "execution_enabled": settings.execution_enabled,
         "execution_authorized": settings.execution_authorized,
