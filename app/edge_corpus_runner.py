@@ -26,6 +26,7 @@ from .edge_elimination import (
     research_outcome,
     validation_elimination,
 )
+from .edge_next_generation import next_generation_plan
 from .market_data import MarketDataClient
 
 
@@ -105,6 +106,7 @@ def _scenario_stage(
             result = EdgeDiscoveryStudy(
                 settings,
                 panel,
+                confirmation_symbols=confirmation_symbols,
                 event_cooldown_minutes=event_cooldown_minutes,
             ).run(
                 bars,
@@ -257,6 +259,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
     if not development_gate["survivors"]:
         report["outcome"] = research_outcome(development_gate)
+        report["next_generation"] = next_generation_plan(report["outcome"])
         return report
 
     frozen_families = list(development_gate["survivors"])
@@ -324,6 +327,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             development_gate,
             validation_gate,
         )
+        report["next_generation"] = next_generation_plan(report["outcome"])
         return report
 
     validation_survivors = list(validation_gate["survivors"])
@@ -388,6 +392,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         validation_gate,
         holdout_gate,
     )
+    report["next_generation"] = next_generation_plan(report["outcome"])
     return report
 
 
