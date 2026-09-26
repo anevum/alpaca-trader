@@ -14,7 +14,20 @@ from .replay import d, stamp
 
 DEFAULT_REGIME_REFERENCES = ("SPY", "QQQ", "SMH")
 DEFAULT_REGIME_WINDOW = 5
-DEFAULT_INTERACTION_HORIZON = 15\nDEFAULT_BENCHMARK_MAP = {\n    "AAPL": "QQQ",\n    "MSFT": "QQQ",\n    "TQQQ": "QQQ",\n    "SMCI": "SMH",\n    "SOXL": "SMH",\n}\nSTRATEGY_005_INTERACTION_FEATURES = (\n    *FEATURES_FOR_QUARTILES,\n    "benchmark_window_return_pct",\n    "benchmark_vwap_edge_pct",\n    "relative_strength_pct",\n)
+DEFAULT_INTERACTION_HORIZON = 15
+DEFAULT_BENCHMARK_MAP = {
+    "AAPL": "QQQ",
+    "MSFT": "QQQ",
+    "TQQQ": "QQQ",
+    "SMCI": "SMH",
+    "SOXL": "SMH",
+}
+STRATEGY_005_INTERACTION_FEATURES = (
+    *FEATURES_FOR_QUARTILES,
+    "benchmark_window_return_pct",
+    "benchmark_vwap_edge_pct",
+    "relative_strength_pct",
+)
 
 
 def _mean(values: list[Decimal]) -> Decimal:
