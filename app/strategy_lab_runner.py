@@ -334,6 +334,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "aggregate_leaderboard": aggregate,
         "strategy_004_gate": strategy_004_promotion_gate(
             aggregate,
+            candidate_name=args.candidate_name,
             min_trades=max(args.min_trades, 30),
         ),
         "periods": period_results,
@@ -362,6 +363,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--spread-bps", default="5")
     value.add_argument("--slippage-bps", default="2")
     value.add_argument("--min-trades", type=int, default=20)
+    value.add_argument(
+        "--candidate-name",
+        default="strategy_004_candidate_c_controlled",
+        help="Research candidate evaluated by the Strategy 004 promotion gate.",
+    )
     return value
 
 
