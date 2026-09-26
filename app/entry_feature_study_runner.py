@@ -10,6 +10,7 @@ from typing import Any
 from .config import get_settings
 from .entry_feature_study import (\n    DEFAULT_HORIZONS,\n    EntryFeatureStudy,\n    stable_rule_scan,\n)
 from .market_data import MarketDataClient
+from .regime_study import regime_conditioned_summary
 from .strategy_lab import build_strategy
 from .strategy_lab_runner import fetch_period, parse_period
 
@@ -108,6 +109,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_horizons,
         default=DEFAULT_HORIZONS,
         help="Comma-separated forward horizons in minutes, default 1,3,5,10,15",
+    )
+    parser.add_argument(
+        "--regime-horizon",
+        type=int,
+        default=15,
+        help="Forward horizon used for regime-conditioned diagnostics",
+    )
+    parser.add_argument(
+        "--min-regime-sample",
+        type=int,
+        default=8,
+        help="Minimum observations required to report a regime/time subgroup",
     )
     parser.add_argument(
         "--output",
