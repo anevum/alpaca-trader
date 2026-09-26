@@ -399,7 +399,7 @@ class ExecutionEngine:
         state["observed_peak_return_pct"] = str(observed_peak)
         state["observed_trough_return_pct"] = str(observed_trough)
 
-        if self.ledger is not None:
+        if self.ledger is not None and hasattr(self.ledger, "record_position_metrics"):
             peak_price = entry_price * (Decimal("1") + peak)
             trough_price = entry_price * (Decimal("1") + trough)
             peak_at = None
