@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import traceback
 from decimal import Decimal
 from pathlib import Path
@@ -337,6 +338,24 @@ async def run_development_only() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
+    if os.getenv("EDGE_CORPUS_RUN_DISABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        STATE.update({
+            "status": "disabled",
+            "stage": "development_only",
+            "validation_opened": False,
+            "holdout_opened": False,
+        })
+        print(json.dumps({
+            "event": "edge_corpus_research_disabled",
+            "validation_opened": False,
+            "holdout_opened": False,
+        }), flush=True)
+        return
     asyncio.create_task(run_development_only())
 
 
