@@ -16,6 +16,7 @@ from .config import get_settings
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
+from .research_scheduler import ResearchReportScheduler
 from .sizing import sizing_snapshot
 from .state import runtime_state
 from .scanner import ReadOnlyScanner
@@ -75,6 +76,13 @@ scanner = ReadOnlyScanner(
     strategy,
     runtime_state,
     universe=universe,
+)
+research_reports = ResearchReportScheduler(
+    settings,
+    client,
+    market_data,
+    runtime_state,
+    event_sink,
 )
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
@@ -607,15 +615,17 @@ async def lifespan(app: FastAPI):
             "persistence_configured": settings.persistence_configured,
         },
     )
+    await research_reports.start()
     task = asyncio.create_task(monitor_loop())
     yield
     _stop.set()
     await task
+    await research_reports.stop()
     event_sink.emit(event_type="runtime_stop", correlation_id=uuid4().hex)
     await event_sink.stop()
 
 
-app = FastAPI(title="Alpaca Trading Bot", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="Alpaca Trading Bot", version="0.8.1", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -653,6 +663,7 @@ async def health():
         },
         "last_error": runtime_state.last_error,
         "persistence": event_sink.status(),
+        "research_reporting": research_reports.status(),
     }
 
 
@@ -717,6 +728,7 @@ async def status(authorization: str | None = Header(default=None)):
             "min_order_notional": str(settings.min_order_notional),
         },
         "persistence": event_sink.status(),
+        "research_reporting": research_reports.status(),
         "runtime": {
             "started_at": runtime_state.started_at,
             "last_poll_at": runtime_state.last_poll_at,

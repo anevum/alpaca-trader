@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -85,6 +85,38 @@ class MarketDataClient:
 
         return output
 
+
+    async def market_calendar(
+        self,
+        *,
+        start: date,
+        end: date,
+    ) -> list[date]:
+        """Return Alpaca trading sessions for an inclusive date range."""
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+        if end < start:
+            raise ValueError("calendar end must not be before start")
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(
+                f"{self.settings.base_url}/v2/calendar",
+                headers=self.headers,
+                params={
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        return sorted(
+            {
+                date.fromisoformat(str(item["date"]))
+                for item in payload
+                if item.get("date")
+            }
+        )
 
     async def historical_bars_many(
         self,
