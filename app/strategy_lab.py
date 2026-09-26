@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import time
 from decimal import Decimal
 from collections.abc import Callable
 from typing import Any
@@ -24,6 +25,15 @@ DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
         name="production",
         description="Current live rolling momentum/VWAP parameters.",
         overrides={},
+    ),
+    StrategyVariant(
+        name="strategy_005_candidate_d_delay_open",
+        description=(
+            "Frozen Candidate D: keep all production logic unchanged but "
+            "delay new entries until 10:30 ET. Research only until holdout "
+            "and forward-shadow validation pass."
+        ),
+        overrides={"entry_start": time(10, 30)},
     ),
     StrategyVariant(
         name="strategy_004_candidate_c_controlled",
