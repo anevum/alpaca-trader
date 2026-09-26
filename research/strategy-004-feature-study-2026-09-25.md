@@ -213,3 +213,34 @@ bars so that the holdout process remains auditable.
 
 Scalable-capital PR #28 remains blocked. No production exposure increase is
 authorized by this research.
+
+
+## Production-parity audit: QQQ/SMH confirmation set
+
+A later source-control review found that the live rolling strategy was introduced
+with `CONFIRMATION_SYMBOLS=QQQ,SMH`, while the earlier Strategy 004 manual
+research notes had included SPY as an additional confirmation reference. That
+was a research/live parity defect.
+
+Candidate C was therefore rerun **unchanged** as a parity audit using QQQ/SMH
+only. The already-opened Aug 31–Sep 4 holdout was not treated as fresh evidence
+and no threshold was changed.
+
+| Period | Sample | N | Target before stop | Stop before target | Mean MFE | Mean MAE | Mean 15m close |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Aug 17–21 development | production-like | 73 | 10.96% | 56.16% | +0.2428% | -0.6272% | -0.2736% |
+| Aug 17–21 development | Candidate C | 17 | 17.65% | 29.41% | +0.2333% | -0.4348% | -0.1367% |
+| Sep 8–11 development | production-like | 65 | 23.08% | 46.15% | +0.3991% | -0.3816% | +0.0200% |
+| Sep 8–11 development | Candidate C | 16 | 31.25% | 31.25% | +0.3018% | -0.2889% | -0.0223% |
+| Aug 31–Sep 4 opened holdout | production-like | 101 | 28.71% | 40.59% | +0.4763% | -0.4449% | +0.0145% |
+| Aug 31–Sep 4 opened holdout | Candidate C | 34 | 17.65% | 50.00% | +0.3251% | -0.4144% | -0.0393% |
+
+The parity-corrected audit reaches the same decision: Candidate C is rejected.
+It improved barrier balance in the two development samples but failed the
+opened holdout on target-before-stop, stop-before-target, MFE, and final
+15-minute return.
+
+Future Strategy 005 work must use the production confirmation set explicitly or
+record any deliberate alternative as a separate experiment. Historical
+research output that uses a different confirmation universe cannot be treated
+as exact production replay.
