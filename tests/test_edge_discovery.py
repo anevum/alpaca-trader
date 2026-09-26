@@ -185,3 +185,14 @@ def test_robust_edge_gate_requires_every_cost_scenario():
         is False
     )
     assert result["promotion_authorized"] is False
+
+
+
+def test_confirmation_context_can_be_frozen_independently_of_runtime_settings():
+    study = EdgeDiscoveryStudy(
+        settings(),
+        ("AAPL",),
+        confirmation_symbols=("SPY", "QQQ", "SMH"),
+    )
+
+    assert study.confirmation_symbols == ("SPY", "QQQ", "SMH")
