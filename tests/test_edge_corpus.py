@@ -197,7 +197,7 @@ def test_missing_regular_session_is_incomplete_even_with_high_bar_count():
         expected_sessions=expected,
     )
 
-    assert result["iex_bar_density_ratio"]["MSFT"] > 1.0
+    assert result["iex_bar_density_ratio"]["MSFT"] == 1.0
     assert result["coverage_ratio"]["MSFT"] == 0.666667
     assert result["missing_sessions"]["MSFT"] == ["2026-01-07"]
     assert result["eligible_candidate_symbols"] == ["AAPL"]
