@@ -3,6 +3,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from app.regime_feature_study import (
+    attach_benchmark_alignment,
     attach_regimes,
     classify_broad_market_regime,
     summarize_regimes,
