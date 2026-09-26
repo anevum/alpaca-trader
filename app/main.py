@@ -507,8 +507,6 @@ async def monitor_loop():
         market_is_open: bool | None = None
         try:
             if settings.credentials_configured:
-                clock_snapshot = await client.clock()
-                market_is_open = bool(clock_snapshot.get("is_open"))
                 if settings.scan_only:
                     runtime_state.mark_poll()
                     runtime_state.funding_ready = False
