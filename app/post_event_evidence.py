@@ -326,6 +326,8 @@ def _live_candidate_result(
     execution_result: dict[str, Any],
 ) -> tuple[str, str]:
     symbol = str(candidate.get("symbol") or "").upper()
+    if bool(candidate.get("submitted")) or candidate.get("intent_id"):
+        return "submitted", str(candidate.get("final_decision") or "submitted")
     for order in execution_result.get("orders") or []:
         if str(order.get("symbol") or "").upper() == symbol:
             return "submitted", str(execution_result.get("reason") or "submitted")
@@ -335,6 +337,9 @@ def _live_candidate_result(
     action = str(candidate.get("action") or "hold").lower()
     if action != "buy":
         return "rejected", str(candidate.get("reason") or "strategy rejected")
+    recorded_final = str(candidate.get("final_decision") or "").lower()
+    if recorded_final in {"blocked", "hold", "error", "qualified_not_selected"}:
+        return recorded_final, str(candidate.get("reason") or recorded_final)
     overall = str(execution_result.get("action") or "").lower()
     if overall in {"hold", "blocked", "error"}:
         return overall, str(execution_result.get("reason") or overall)
@@ -677,6 +682,12 @@ def reconstruct_cycle(
         for order in execution_result.get("orders") or []
         if order.get("symbol")
     }
+    if not submitted:
+        submitted = {
+            str(row.get("symbol") or "").upper()
+            for row in candidates
+            if bool(row.get("submitted")) or row.get("intent_id")
+        }
     for candidate in candidates:
         symbol = str(candidate.get("symbol") or "").upper()
         live_result, live_reason = _live_candidate_result(candidate, execution_result)
@@ -727,3 +738,210 @@ def reconstruct_cycle(
             }
         )
     return results
+
+
+@dataclass
+class PostEventRunSummary:
+    session: str
+    candidates: int = 0
+    outcome_events: int = 0
+    comparison_events: int = 0
+    complete_outcomes: int = 0
+    incomplete_outcomes: int = 0
+    error_outcomes: int = 0
+
+
+class PostEventEvidenceRunner:
+    """Post-close analytics runner. It has no broker order or strategy-state writes."""
+
+    def __init__(
+        self,
+        *,
+        settings: Any,
+        market_data: Any,
+        event_sink: Any,
+        evidence_reader: Any,
+    ) -> None:
+        self.settings = settings
+        self.market_data = market_data
+        self.event_sink = event_sink
+        self.evidence_reader = evidence_reader
+
+    @staticmethod
+    def _cycle_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+        scan = dict(candidate.get("scan_cycle") or {})
+        source = candidate.get("decision_cycle_payload")
+        if isinstance(source, dict):
+            scan["comparison_context"] = source.get("comparison_context") or {}
+            scan["cycle_key"] = source.get("cycle_key") or scan.get("cycle_key")
+        return scan
+
+    async def run_session(self, session: date) -> PostEventRunSummary:
+        source = await self.evidence_reader(evidence_session=session.isoformat())
+        candidates = [
+            dict(row)
+            for row in (source.get("candidates") or [])
+            if isinstance(row, dict)
+        ]
+        summary = PostEventRunSummary(
+            session=session.isoformat(),
+            candidates=len(candidates),
+        )
+        if not candidates:
+            return summary
+
+        calendar = await self.market_data.market_calendar_details(
+            start=session,
+            end=session,
+        )
+        if not calendar:
+            raise RuntimeError(f"{session.isoformat()} is not a trading session")
+        detail = calendar[0]
+        session_open = session_boundary(session, detail.get("open"), time(9, 30))
+        session_close = session_boundary(session, detail.get("close"), time(16, 0))
+
+        symbols: set[str] = {
+            str(row.get("symbol") or "").upper()
+            for row in candidates
+            if row.get("symbol")
+        }
+        for row in candidates:
+            payload = row.get("decision_cycle_payload")
+            if not isinstance(payload, dict):
+                continue
+            comparison = payload.get("comparison_context") or {}
+            config = comparison.get("configuration") or {}
+            context = comparison.get("execution_context") or {}
+            symbols.update(str(x).upper() for x in (config.get("confirmation_symbols") or []))
+            symbols.update(str(x).upper() for x in (context.get("entry_symbols") or []))
+
+        bars_by_symbol: dict[str, list[dict[str, Any]]]
+        bar_error: str | None = None
+        try:
+            bars_by_symbol = await self.market_data.historical_bars_many(
+                sorted(symbols),
+                start=session_open,
+                end=session_close + timedelta(minutes=1),
+            )
+        except Exception as exc:
+            bars_by_symbol = {}
+            bar_error = f"{type(exc).__name__}: {exc}"
+
+        computed_at = datetime.now(UTC).isoformat()
+        for candidate in candidates:
+            provider = str(
+                candidate.get("data_feed")
+                or (candidate.get("scan_cycle") or {}).get("data_feed")
+                or getattr(self.settings, "data_feed", "unknown")
+            )
+            interval = str(
+                candidate.get("bar_interval")
+                or (candidate.get("scan_cycle") or {}).get("bar_interval")
+                or getattr(self.settings, "bar_timeframe", "1Min")
+            )
+            for horizon in FORWARD_HORIZONS_MINUTES:
+                if bar_error:
+                    outcome = {
+                        "candidate_id": candidate.get("candidate_id"),
+                        "horizon_minutes": horizon,
+                        "observation_end_at": None,
+                        "reference_price": candidate.get("decision_reference_price"),
+                        "forward_price": None,
+                        "forward_return": None,
+                        "max_favorable_return": None,
+                        "max_adverse_return": None,
+                        "provider": provider,
+                        "bar_interval": interval,
+                        "methodology_version": FORWARD_METHODOLOGY_VERSION,
+                        "status": "error",
+                        "details": {
+                            "reason": "historical_market_data_fetch_failed",
+                            "error": bar_error,
+                            "analytics_only": True,
+                        },
+                    }
+                else:
+                    outcome = calculate_forward_outcome(
+                        candidate,
+                        bars_by_symbol.get(str(candidate.get("symbol") or "").upper(), []),
+                        horizon_minutes=horizon,
+                        session_close=session_close,
+                        provider=provider,
+                        bar_interval=interval,
+                    )
+                outcome["session"] = session.isoformat()
+                outcome["computed_at"] = computed_at
+                status = str(outcome["status"])
+                event_key = (
+                    f"candidate-forward:{candidate.get('candidate_id')}:"
+                    f"{horizon}:{FORWARD_METHODOLOGY_VERSION}:{status}"
+                )
+                self.event_sink.emit(
+                    event_type="candidate_forward_outcome",
+                    event_key=event_key,
+                    occurred_at=computed_at,
+                    symbol=str(candidate.get("symbol") or ""),
+                    payload=outcome,
+                )
+                summary.outcome_events += 1
+                if status == "complete":
+                    summary.complete_outcomes += 1
+                elif status == "insufficient_future_data":
+                    summary.incomplete_outcomes += 1
+                else:
+                    summary.error_outcomes += 1
+
+        grouped: dict[Any, list[dict[str, Any]]] = {}
+        for candidate in candidates:
+            grouped.setdefault(candidate.get("scan_cycle_id"), []).append(candidate)
+
+        for rows in grouped.values():
+            cycle = self._cycle_payload(rows[0])
+            if bar_error:
+                comparisons = [
+                    {
+                        "scan_cycle_id": candidate.get("scan_cycle_id"),
+                        "candidate_id": candidate.get("candidate_id"),
+                        "strategy_version_id": candidate.get("strategy_version_id"),
+                        "run_id": candidate.get("run_id"),
+                        "runtime_instance_id": cycle.get("runtime_instance_id"),
+                        "deployment_id": cycle.get("deployment_id"),
+                        "symbol": candidate.get("symbol"),
+                        "live_result": _live_candidate_result(candidate, {})[0],
+                        "offline_result": None,
+                        "match_state": "UNRECONSTRUCTABLE",
+                        "mismatch_category": "MARKET_DATA_MISMATCH",
+                        "methodology_version": COMPARISON_METHODOLOGY_VERSION,
+                        "source_data_completeness": "market_data_unavailable",
+                        "comparison_timestamp": computed_at,
+                        "details": {
+                            "error": bar_error,
+                            "future_data_used": False,
+                        },
+                    }
+                    for candidate in rows
+                ]
+            else:
+                comparisons = reconstruct_cycle(cycle, rows, bars_by_symbol)
+
+            for comparison in comparisons:
+                candidate_id = comparison.get("candidate_id")
+                key = (
+                    f"{comparison.get('scan_cycle_id')}:{candidate_id}:"
+                    f"{COMPARISON_METHODOLOGY_VERSION}"
+                )
+                comparison["comparison_key"] = key
+                comparison["session"] = session.isoformat()
+                comparison["analytics_only"] = True
+                category = str(comparison.get("mismatch_category") or "UNKNOWN")
+                state = str(comparison.get("match_state") or "UNKNOWN")
+                self.event_sink.emit(
+                    event_type="live_offline_comparison",
+                    event_key=f"live-offline:{key}:{state}:{category}",
+                    occurred_at=computed_at,
+                    symbol=str(comparison.get("symbol") or ""),
+                    payload=comparison,
+                )
+                summary.comparison_events += 1
+
+        return summary
