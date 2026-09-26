@@ -535,3 +535,238 @@ class EntryFeatureStudy:
             "feature_quartiles": quartiles,
             "observations": observations,
         }
+
+
+
+def _feature_quantiles(
+    rows: list[dict[str, Any]],
+    feature: str,
+) -> list[Decimal]:
+    values = sorted(
+        {
+            _numeric_feature(row, feature)
+            for row in rows
+            if feature in (row.get("features") or {})
+        }
+    )
+    if len(values) < 4:
+        return []
+    indexes = {
+        int((len(values) - 1) * fraction)
+        for fraction in (0.25, 0.50, 0.75)
+    }
+    return [values[index] for index in sorted(indexes)]
+
+
+def _condition_pass(
+    row: dict[str, Any],
+    condition: dict[str, Any],
+) -> bool:
+    value = _numeric_feature(row, str(condition["feature"]))
+    threshold = Decimal(str(condition["threshold"]))
+    if condition["operator"] == ">=":
+        return value >= threshold
+    return value <= threshold
+
+
+def _barrier_metrics(
+    rows: list[dict[str, Any]],
+    *,
+    horizon: int,
+) -> dict[str, Any]:
+    key = str(horizon)
+    labeled = [
+        (row.get("forward") or {}).get(key) or {}
+        for row in rows
+    ]
+    if not labeled:
+        return {
+            "n": 0,
+            "target_before_stop_rate": 0.0,
+            "stop_before_target_rate": 0.0,
+            "mean_mfe_pct": "0",
+            "mean_mae_pct": "0",
+            "mean_close_return_pct": "0",
+        }
+
+    targets = sum(bool(item.get("target_before_stop")) for item in labeled)
+    stops = sum(bool(item.get("stop_before_target")) for item in labeled)
+    mfes = [d(item.get("mfe_pct")) for item in labeled]
+    maes = [d(item.get("mae_pct")) for item in labeled]
+    closes = [d(item.get("close_return_pct")) for item in labeled]
+    return {
+        "n": len(labeled),
+        "target_before_stop_rate": targets / len(labeled),
+        "stop_before_target_rate": stops / len(labeled),
+        "mean_mfe_pct": str(_mean(mfes)),
+        "mean_mae_pct": str(_mean(maes)),
+        "mean_close_return_pct": str(_mean(closes)),
+    }
+
+
+def stable_rule_scan(
+    period_results: list[dict[str, Any]],
+    *,
+    horizon: int = 15,
+    min_per_period: int = 15,
+    top_n: int = 25,
+) -> dict[str, Any]:
+    """Find low-complexity entry filters that improve every development period.
+
+    Thresholds are limited to pooled quartiles and rule complexity to one or two
+    conditions. A rule is retained only when every supplied development period
+    has enough observations, target-before-stop is no worse than baseline,
+    stop-before-target is no worse than baseline, and the target-minus-stop
+    balance improves. This is a discovery aid, not an automatic promotion step.
+    """
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    if min_per_period <= 0:
+        raise ValueError("min_per_period must be positive")
+    if top_n <= 0:
+        raise ValueError("top_n must be positive")
+
+    periods: list[dict[str, Any]] = []
+    pooled: list[dict[str, Any]] = []
+    for index, result in enumerate(period_results):
+        label = str(
+            result.get("period")
+            or result.get("label")
+            or f"period_{index + 1}"
+        )
+        rows = [
+            row
+            for row in (result.get("observations") or [])
+            if row.get("quality_allowed")
+        ]
+        baseline = _barrier_metrics(rows, horizon=horizon)
+        periods.append(
+            {
+                "label": label,
+                "rows": rows,
+                "baseline": baseline,
+            }
+        )
+        pooled.extend(rows)
+
+    if len(periods) < 2:
+        return {
+            "status": "insufficient_periods",
+            "horizon_minutes": horizon,
+            "minimum_sample_per_period": min_per_period,
+            "rules": [],
+            "reason": "stable rule scan requires at least two development periods",
+        }
+
+    conditions: list[dict[str, Any]] = []
+    for feature in FEATURES_FOR_QUARTILES:
+        for threshold in _feature_quantiles(pooled, feature):
+            for operator in (">=", "<="):
+                condition = {
+                    "feature": feature,
+                    "operator": operator,
+                    "threshold": str(threshold),
+                }
+                if condition not in conditions:
+                    conditions.append(condition)
+
+    candidates: list[list[dict[str, Any]]] = [
+        [condition] for condition in conditions
+    ]
+    for left_index, left in enumerate(conditions):
+        for right in conditions[left_index + 1:]:
+            if left["feature"] == right["feature"]:
+                continue
+            candidates.append([left, right])
+
+    accepted: list[dict[str, Any]] = []
+    for rule in candidates:
+        by_period: dict[str, Any] = {}
+        minimum_improvement: float | None = None
+        minimum_support = 1.0
+        valid = True
+
+        for period in periods:
+            selected = [
+                row
+                for row in period["rows"]
+                if all(_condition_pass(row, condition) for condition in rule)
+            ]
+            metrics = _barrier_metrics(selected, horizon=horizon)
+            baseline = period["baseline"]
+            by_period[period["label"]] = metrics
+
+            if metrics["n"] < min_per_period:
+                valid = False
+                break
+
+            target_rate = float(metrics["target_before_stop_rate"])
+            stop_rate = float(metrics["stop_before_target_rate"])
+            base_target = float(baseline["target_before_stop_rate"])
+            base_stop = float(baseline["stop_before_target_rate"])
+
+            improvement = (
+                (target_rate - stop_rate)
+                - (base_target - base_stop)
+            )
+            support = (
+                metrics["n"] / baseline["n"]
+                if baseline["n"]
+                else 0.0
+            )
+            minimum_support = min(minimum_support, support)
+            minimum_improvement = (
+                improvement
+                if minimum_improvement is None
+                else min(minimum_improvement, improvement)
+            )
+
+            if (
+                target_rate < base_target
+                or stop_rate > base_stop
+                or improvement <= 0
+            ):
+                valid = False
+                break
+
+        if valid and minimum_improvement is not None:
+            accepted.append(
+                {
+                    "conditions": rule,
+                    "complexity": len(rule),
+                    "minimum_balance_improvement": minimum_improvement,
+                    "minimum_support_rate": minimum_support,
+                    "periods": by_period,
+                }
+            )
+
+    accepted.sort(
+        key=lambda item: (
+            item["minimum_balance_improvement"],
+            item["minimum_support_rate"],
+            -item["complexity"],
+        ),
+        reverse=True,
+    )
+
+    return {
+        "status": "research_only",
+        "horizon_minutes": horizon,
+        "minimum_sample_per_period": min_per_period,
+        "development_periods": {
+            period["label"]: period["baseline"]
+            for period in periods
+        },
+        "condition_count": len(conditions),
+        "tested_rule_count": len(candidates),
+        "passing_rule_count": len(accepted),
+        "rules": accepted[:top_n],
+        "candidate_frozen": False,
+        "promotion_authorized": False,
+        "notes": [
+            "Thresholds come only from pooled development-period quartiles.",
+            "Rules contain at most two conditions.",
+            "Every retained rule improves target-minus-stop balance in every development period.",
+            "A retained rule still requires full replay, a frozen untouched holdout, and forward shadow validation.",
+        ],
+    }
