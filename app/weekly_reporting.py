@@ -177,7 +177,15 @@ def _performance(
     completed = sum(int(d((record["payload"].get("metrics") or {}).get("trade_count"))) for record in records)
     session_pnl = _daily_metric(records, "realized_pnl")
 
-    equity_rows = list(inputs.get("account_equity_by_session") or [])
+    included_sessions = {
+        str(record["payload"]["session"])
+        for record in records
+    }
+    equity_rows = [
+        row
+        for row in (inputs.get("account_equity_by_session") or [])
+        if str(row.get("session") or "") in included_sessions
+    ]
     equity_rows.sort(key=lambda row: str(row.get("session") or ""))
     starting_equity = d(equity_rows[0].get("starting_equity")) if equity_rows else None
     ending_equity = d(equity_rows[-1].get("ending_equity")) if equity_rows else None
@@ -437,7 +445,19 @@ def _operational_health(inputs: dict[str, Any]) -> dict[str, Any]:
         "incidents": incidents,
         "incident_count": len(incidents),
         "failed_report_generations": sum(int(row.get("report_failures") or 0) for row in runtime),
-        "reconciliation_failures": sum(int(row.get("reconciliation_failures") or 0) for row in runtime),
+        "reconciliation_failure_events": sum(
+            int(
+                row.get("reconciliation_failure_events")
+                or row.get("reconciliation_failures")
+                or 0
+            )
+            for row in runtime
+        ),
+        "reconciliation_incidents": sum(
+            1
+            for incident in incidents
+            if str(incident.get("incident_type") or "") == "reconciliation_mismatch"
+        ),
         "runtime_errors": sum(int(row.get("runtime_errors") or 0) for row in runtime),
         "execution_failures": sum(int(row.get("execution_failures") or 0) for row in runtime),
         "stale_market_data_events": sum(int(row.get("stale_market_data_events") or 0) for row in runtime),
