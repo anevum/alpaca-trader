@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -5,6 +6,7 @@ from zoneinfo import ZoneInfo
 from app.post_event_evidence import (
     COMPARISON_METHODOLOGY_VERSION,
     FORWARD_HORIZONS_MINUTES,
+    PostEventEvidenceRunner,
     calculate_forward_outcome,
     reconstruct_cycle,
     truncate_bars,
@@ -340,3 +342,127 @@ def test_missing_forward_replay_context_is_insufficient_input():
     assert result[0]["match_state"] == "UNRECONSTRUCTABLE"
     assert result[0]["mismatch_category"] == "INSUFFICIENT_INPUT"
     assert result[0]["methodology_version"] == COMPARISON_METHODOLOGY_VERSION
+
+
+def test_rejected_candidate_reconstructs_as_match_when_same_strategy_rejects():
+    cycle, live_candidate, rows = replay_cycle_and_candidate()
+    cycle["comparison_context"]["configuration"]["min_momentum_pct"] = "0.04"
+    live_candidate.update(
+        {
+            "action": "hold",
+            "qualified": False,
+            "final_decision": "rejected",
+            "submitted": False,
+            "intent_id": None,
+            "features": {
+                "strategy_evaluation": {
+                    "action": "hold",
+                    "reason": "momentum below threshold",
+                }
+            },
+        }
+    )
+    result = reconstruct_cycle(cycle, [live_candidate], rows)
+    assert result[0]["match_state"] == "MATCH"
+    assert result[0]["mismatch_category"] == "MATCH"
+    assert result[0]["live_result"] == "rejected"
+    assert result[0]["offline_result"] == "rejected"
+
+
+def test_replay_detects_action_mismatch_after_matching_strategy_gate():
+    cycle, live_candidate, rows = replay_cycle_and_candidate()
+    cycle["comparison_context"]["execution_context"]["assets"]["SPY"]["fractionable"] = False
+    result = reconstruct_cycle(cycle, [live_candidate], rows)
+    assert result[0]["match_state"] == "MISMATCH"
+    assert result[0]["mismatch_category"] == "ACTION_MISMATCH"
+    assert result[0]["details"]["offline_reason"] == (
+        "asset is not active, tradable, and fractionable"
+    )
+
+
+def test_replay_invalid_configuration_is_explicitly_unreconstructable():
+    cycle, live_candidate, rows = replay_cycle_and_candidate()
+    del cycle["comparison_context"]["configuration"]["fast_window"]
+    result = reconstruct_cycle(cycle, [live_candidate], rows)
+    assert result[0]["match_state"] == "UNRECONSTRUCTABLE"
+    assert result[0]["mismatch_category"] == "CONFIGURATION_MISMATCH"
+
+
+def test_replay_invalid_decision_timestamp_is_stale_input():
+    cycle, live_candidate, rows = replay_cycle_and_candidate()
+    cycle["comparison_context"]["execution_context"]["decision_at"] = "not-a-timestamp"
+    result = reconstruct_cycle(cycle, [live_candidate], rows)
+    assert result[0]["match_state"] == "UNRECONSTRUCTABLE"
+    assert result[0]["mismatch_category"] == "STALE_INPUT"
+
+
+def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
+    reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
+    row = {
+        **candidate(reference_bar),
+        "data_feed": "iex",
+        "bar_interval": "1Min",
+        "scan_cycle": {
+            "scan_cycle_id": 10,
+            "cycle_key": "run:cycle",
+            "data_status": "partial_backfill",
+            "strategy_version_id": "LIVE-2026-09-25-003",
+            "run_id": "11111111-1111-1111-1111-111111111111",
+        },
+        "decision_cycle_payload": None,
+        "submitted": True,
+        "intent_id": "historical-intent",
+    }
+    rows = [
+        bar(
+            reference_bar + timedelta(minutes=minute),
+            str(Decimal("100") + Decimal(minute) / Decimal("100")),
+        )
+        for minute in range(1, 61)
+    ]
+
+    class MarketData:
+        async def market_calendar_details(self, *, start, end):
+            return [{"date": start, "open": "09:30", "close": "16:00"}]
+
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {"SPY": rows}
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def reader(**params):
+        assert params == {"evidence_session": "2026-09-25"}
+        return {"candidates": [row]}
+
+    sink = Sink()
+    runner = PostEventEvidenceRunner(
+        settings=type("Settings", (), {"data_feed": "iex", "bar_timeframe": "1Min"})(),
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=reader,
+    )
+
+    first = asyncio.run(runner.run_session(date(2026, 9, 25)))
+    first_keys = [event["event_key"] for event in sink.events]
+    sink.events.clear()
+    second = asyncio.run(runner.run_session(date(2026, 9, 25)))
+    second_keys = [event["event_key"] for event in sink.events]
+
+    assert first.complete_outcomes == 4
+    assert first.incomplete_outcomes == 0
+    assert first.error_outcomes == 0
+    assert first.comparison_events == 1
+    assert second.complete_outcomes == first.complete_outcomes
+    assert second_keys == first_keys
+    assert len(first_keys) == len(set(first_keys)) == 5
+    comparison = next(
+        event for event in sink.events
+        if event["event_type"] == "live_offline_comparison"
+    )
+    assert comparison["payload"]["match_state"] == "UNRECONSTRUCTABLE"
+    assert comparison["payload"]["mismatch_category"] == "UNRECONSTRUCTABLE"
