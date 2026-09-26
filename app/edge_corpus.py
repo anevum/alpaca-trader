@@ -15,6 +15,7 @@ from .market_data import MarketDataClient
 NY = ZoneInfo("America/New_York")
 ALLOWED_ROLES = {"development", "validation", "holdout", "quarantine"}
 MIN_SYMBOL_COVERAGE = 0.80
+DEFAULT_RESEARCH_COST_SCENARIOS = (("base", "5", "2"), ("moderate", "8", "3"), ("stress", "12", "5"))
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,13 @@ class CorpusManifest:
     confirmation_symbols: tuple[str, ...]
     windows: tuple[CorpusWindow, ...]
     notes: tuple[str, ...]
+    research_horizon_minutes: int = 15
+    research_event_cooldown_minutes: int = 15
+    research_stop_pct: str = "0.0035"
+    research_target_pct: str = "0.005"
+    research_entry_start: str = "09:31"
+    research_entry_cutoff: str = "15:30"
+    research_cost_scenarios: tuple[tuple[str, str, str], ...] = DEFAULT_RESEARCH_COST_SCENARIOS
 
 
 def _symbols(values: list[str]) -> tuple[str, ...]:
@@ -62,6 +70,15 @@ def load_manifest(path: str | Path) -> CorpusManifest:
         )
         for item in payload["windows"]
     )
+    research = payload.get("research") or {}
+    cost_scenarios = tuple(
+        (
+            str(item["name"]),
+            str(item["spread_bps"]),
+            str(item["slippage_bps_per_side"]),
+        )
+        for item in (research.get("cost_scenarios") or DEFAULT_RESEARCH_COST_SCENARIOS)
+    )
     manifest = CorpusManifest(
         version=str(payload["version"]),
         created_at=str(payload["created_at"]),
@@ -71,6 +88,13 @@ def load_manifest(path: str | Path) -> CorpusManifest:
         confirmation_symbols=_symbols(payload["confirmation_symbols"]),
         windows=windows,
         notes=tuple(str(note) for note in payload.get("notes") or []),
+        research_horizon_minutes=int(research.get("horizon_minutes", 15)),
+        research_event_cooldown_minutes=int(research.get("event_cooldown_minutes", 15)),
+        research_stop_pct=str(research.get("stop_pct", "0.0035")),
+        research_target_pct=str(research.get("target_pct", "0.005")),
+        research_entry_start=str(research.get("entry_start", "09:31")),
+        research_entry_cutoff=str(research.get("entry_cutoff", "15:30")),
+        research_cost_scenarios=cost_scenarios,
     )
     validate_manifest(manifest)
     return manifest
@@ -83,6 +107,19 @@ def validate_manifest(manifest: CorpusManifest) -> None:
         raise ValueError("candidate symbol panel cannot be empty")
     if not manifest.confirmation_symbols:
         raise ValueError("confirmation symbol panel cannot be empty")
+    if manifest.research_horizon_minutes <= 0:
+        raise ValueError("research horizon must be positive")
+    if manifest.research_event_cooldown_minutes <= 0:
+        raise ValueError("research event cooldown must be positive")
+    if float(manifest.research_stop_pct) <= 0 or float(manifest.research_target_pct) <= 0:
+        raise ValueError("research stop and target must be positive")
+    time.fromisoformat(manifest.research_entry_start)
+    time.fromisoformat(manifest.research_entry_cutoff)
+    if not manifest.research_cost_scenarios:
+        raise ValueError("at least one research cost scenario is required")
+    for name, spread, slippage in manifest.research_cost_scenarios:
+        if not name or float(spread) < 0 or float(slippage) < 0:
+            raise ValueError("invalid research cost scenario")
 
     ids: set[str] = set()
     ordered = sorted(manifest.windows, key=lambda item: item.start)
@@ -140,6 +177,18 @@ def manifest_payload(manifest: CorpusManifest) -> dict[str, Any]:
         "timeframe": manifest.timeframe,
         "candidate_symbols": list(manifest.candidate_symbols),
         "confirmation_symbols": list(manifest.confirmation_symbols),
+        "research": {
+            "horizon_minutes": manifest.research_horizon_minutes,
+            "event_cooldown_minutes": manifest.research_event_cooldown_minutes,
+            "stop_pct": manifest.research_stop_pct,
+            "target_pct": manifest.research_target_pct,
+            "entry_start": manifest.research_entry_start,
+            "entry_cutoff": manifest.research_entry_cutoff,
+            "cost_scenarios": [
+                {"name": name, "spread_bps": spread, "slippage_bps_per_side": slippage}
+                for name, spread, slippage in manifest.research_cost_scenarios
+            ],
+        },
         "windows": [
             {
                 "id": window.window_id,
