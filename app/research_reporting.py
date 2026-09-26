@@ -101,10 +101,10 @@ def reconstruct_closed_trades(
     *,
     owner_tag: str = "",
 ) -> dict[str, Any]:
-    """Reconstruct long-only ANEVUM round trips from broker fills.
+    """Reconstruct long-only RHEN round trips from broker fills.
 
     Manual orders are excluded by requiring each fill's order_id to map to an
-    ANEVUM client_order_id. Buys are matched FIFO to later sells per symbol.
+    RHEN-owned client_order_id. Buys are matched FIFO to later sells per symbol.
     """
 
     indexed = bot_order_index(orders, owner_tag)
