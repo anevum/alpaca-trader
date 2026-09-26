@@ -189,3 +189,65 @@ def test_manual_regeneration_rejects_non_session_week_end():
         assert "actual US equity trading session" in str(exc)
     else:
         raise AssertionError("Saturday regeneration should be rejected")
+
+
+def test_manual_regeneration_uses_actual_trading_week_boundary():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    class MarketData:
+        async def market_calendar(self, start, end):
+            return [date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 25)]
+
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        MarketData(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    observed = []
+
+    async def weekly(start, end):
+        observed.append((start, end))
+        return {"period_start": start.isoformat(), "period_end": end.isoformat()}
+
+    scheduler.generate_weekly = weekly
+    report = asyncio.run(scheduler.regenerate_weekly(date(2026, 9, 25)))
+
+    assert observed == [(date(2026, 9, 21), date(2026, 9, 25))]
+    assert report["period_end"] == "2026-09-25"
+
+
+def test_weekly_report_read_uses_durable_report_api():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    calls = []
+
+    async def api_get(**params):
+        calls.append(params)
+        return {
+            "ok": True,
+            "report": {
+                "report_key": "2026-09-21:2026-09-25:rhen-weekly-v1:test",
+                "completeness_state": "PARTIAL",
+            },
+        }
+
+    scheduler._report_api_get = api_get
+    report = asyncio.run(scheduler.fetch_weekly_report(end_date=date(2026, 9, 25)))
+
+    assert calls == [{"latest": "weekly", "week_end": "2026-09-25"}]
+    assert report["completeness_state"] == "PARTIAL"
