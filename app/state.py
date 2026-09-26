@@ -48,12 +48,39 @@ class RuntimeState:
         at: datetime | None = None,
         error: str | None = None,
     ) -> None:
-        self.universe_active_symbols = list(symbols)
+        next_symbols = list(symbols)
+        changed = (
+            next_symbols != self.universe_active_symbols
+            or candidate_count != self.universe_candidate_count
+            or eligible_count != self.universe_eligible_count
+            or source != self.universe_source
+            or error != self.universe_error
+        )
+        stamp = at or datetime.now(timezone.utc)
+        self.universe_active_symbols = next_symbols
         self.universe_candidate_count = candidate_count
         self.universe_eligible_count = eligible_count
         self.universe_source = source
-        self.universe_updated_at = at or datetime.now(timezone.utc)
+        self.universe_updated_at = stamp
         self.universe_error = error
+
+        if changed:
+            self.record_event(
+                kind="universe",
+                action="snapshot",
+                message="active universe changed",
+                reason=error or "active universe changed",
+                at=stamp,
+                payload={
+                    "active_symbols": next_symbols,
+                    "active_count": len(next_symbols),
+                    "candidate_count": candidate_count,
+                    "eligible_count": eligible_count,
+                    "source": source,
+                    "error": error,
+                    "updated_at": stamp.isoformat(),
+                },
+            )
 
     def begin_cycle(self, correlation_id: str) -> None:
         self.current_correlation_id = correlation_id
