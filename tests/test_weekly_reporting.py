@@ -476,4 +476,4 @@ def test_canonical_input_hash_versions_regeneration_when_underlying_telemetry_ch
 
     assert first["canonical_input_hash"] != second["canonical_input_hash"]
     assert first["report_key"] != second["report_key"]
-    assert first["report_version"] == REPORT_VERSION == "rhen-weekly-v1.1"
+    assert first["report_version"] == REPORT_VERSION == "rhen-weekly-v1.2"
