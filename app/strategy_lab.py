@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any
 
 from .config import Settings
 from .replay import ReplayEngine
-from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
+from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
+from .strategy_004_candidate_c import strategy_004_candidate_c_gate
 
 
 @dataclass(frozen=True)
@@ -14,6 +16,7 @@ class StrategyVariant:
     name: str
     description: str
     overrides: dict[str, Any]
+    entry_gate: Callable[[Signal], Any] | None = None
 
 
 DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
@@ -21,6 +24,16 @@ DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
         name="production",
         description="Current live rolling momentum/VWAP parameters.",
         overrides={},
+    ),
+    StrategyVariant(
+        name="strategy_004_candidate_c_controlled",
+        description=(
+            "Frozen Candidate C: controlled continuation. Preserve production "
+            "entry floors but reject 3-bar momentum above 0.29% and trend "
+            "persistence above 5/8. Research only until holdout and shadow pass."
+        ),
+        overrides={},
+        entry_gate=strategy_004_candidate_c_gate,
     ),
     StrategyVariant(
         name="fast_2_6",
@@ -224,7 +237,11 @@ class StrategyTournament:
         for variant in self.variants:
             settings = variant_settings(self.base_settings, variant)
             strategy = build_strategy(settings)
-            replay = ReplayEngine(settings, strategy)
+            replay = ReplayEngine(
+                settings,
+                strategy,
+                entry_gate=variant.entry_gate,
+            )
             result = replay.run(
                 bars_by_symbol,
                 initial_equity=initial_equity,
@@ -247,6 +264,7 @@ class StrategyTournament:
                         "stop_pct": str(settings.stop_pct),
                         "target_pct": str(settings.target_pct),
                         "max_hold_minutes": settings.max_hold_minutes,
+                        "research_entry_gate": bool(variant.entry_gate),
                     },
                     "summary": result["summary"],
                     "assumptions": result["assumptions"],
