@@ -18,7 +18,11 @@ def canonical_fixture():
             "session": "2026-09-25",
             "generated_at": "2026-09-26T16:22:24Z",
             "candidate_forward_evidence": {
-                "status": {"incomplete_rows": 2, "error_rows": 0}
+                "status": {
+                    "complete_rows": 135,
+                    "incomplete_rows": 9,
+                    "error_rows": 0
+                }
             },
             "live_vs_offline_consistency": {
                 "summary": [{"unreconstructable": 1}]
@@ -66,11 +70,15 @@ def canonical_fixture():
                 "research_question_id": "RQ-STRATEGY",
                 "created_on": "2026-09-27",
                 "source_weekly_report_id": "weekly-new",
-                "evidence_summary": {"thesis_exit_count": 9},
+                "evidence_summary": {
+                    "thesis_exit_count": 9,
+                    "sessions_observed": 1,
+                    "evidence_strength": "observed once"
+                },
                 "sample_size": 9,
                 "question": "fixture",
                 "why_it_matters": "fixture",
-                "required_data": [],
+                "required_data": ["multiple independent sessions"],
                 "status": "MONITOR",
                 "created_at": "2026-09-27T00:00:00Z",
             },
@@ -145,34 +153,53 @@ def test_daily_and_weekly_dry_runs_have_no_mutations_or_model_calls():
         }
         assert len(result["queue"]) == 2
     assert daily["semantic_review_warranted"] is False
-    assert daily["queue_blocker_count"] == 1
-    assert daily["report_integrity_blocker"] is True
-    assert daily["blocker_count"] == 2
+    assert daily["queue_blocker_count"] == 0
+    assert daily["report_integrity_blocker"] is False
+    assert daily["blocker_count"] == 0
+    assert daily["ready_strategy_question_count"] == 0
+    assert daily["waiting_strategy_question_count"] == 1
     assert weekly["semantic_review_warranted"] is False
-    assert weekly["queue_blocker_count"] == 1
+    assert weekly["queue_blocker_count"] == 0
     assert weekly["report_integrity_blocker"] is True
-    assert weekly["blocker_count"] == 2
+    assert weekly["blocker_count"] == 1
 
 
-def test_readiness_exposes_current_blockers_without_model_or_mutation():
+def test_readiness_exposes_waiting_state_and_nonblocking_limitations():
     readiness = runner().readiness(cadence="daily")
-    assert readiness["state"] == "BLOCKED"
+    assert readiness["state"] == "WAITING"
     assert readiness["gpt_would_run_now"] is False
-    assert readiness["blocker_count"] == 2
+    assert readiness["blocker_count"] == 0
+    assert readiness["limitation_count"] == 1
+    assert readiness["monitor_count"] == 1
     assert readiness["strategy_question_count"] == 1
+    assert readiness["ready_strategy_question_count"] == 0
+    assert readiness["waiting_strategy_question_count"] == 1
     assert readiness["read_only"] is True
     assert readiness["model_invoked"] is False
     assert readiness["persisted"] is False
-    scopes = {row["scope"] for row in readiness["blockers"]}
-    assert scopes == {"report", "research_question"}
-    assert any(
-        row.get("research_question_id") == "RQ-OP"
-        for row in readiness["blockers"]
+    assert readiness["limitations"][0]["code"] == "KNOWN_EVIDENCE_LIMITATION"
+    assert readiness["monitors"][0]["research_question_id"] == "RQ-OP"
+    strategy = readiness["strategy_questions"][0]
+    assert strategy["research_question_id"] == "RQ-STRATEGY"
+    assert strategy["semantic_readiness"] == "WAITING"
+    assert strategy["missing_requirements"] == ["MULTIPLE_INDEPENDENT_SESSIONS"]
+
+
+def test_strategy_question_becomes_ready_after_second_independent_session():
+    fixture = canonical_fixture()
+    strategy = next(
+        row for row in fixture["research_questions"]
+        if row["research_question_id"] == "RQ-STRATEGY"
     )
-    assert any(
-        row.get("research_question_id") == "RQ-STRATEGY"
-        for row in readiness["strategy_questions"]
-    )
+    strategy["evidence_summary"]["sessions_observed"] = 2
+    value = ResearchAgentRunner(CanonicalEvidenceReader(fixture).read())
+    review = value.daily_review(dry_run=True)
+    readiness = value.readiness(cadence="daily")
+    assert review["semantic_review_warranted"] is True
+    assert review["ready_strategy_question_count"] == 1
+    assert review["waiting_strategy_question_count"] == 0
+    assert readiness["state"] == "READY"
+    assert readiness["gpt_would_run_now"] is True
 
 
 def test_duplicate_fingerprint_is_recognized_without_duplicate_state():
