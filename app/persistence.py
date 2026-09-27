@@ -24,8 +24,6 @@ class TradingEventSink:
         self.last_reconcile_at: datetime | None = None
         self.sent_count = 0
         self.dropped_count = 0
-        self.quarantined_count = 0
-        self.last_quarantined_event: dict[str, Any] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -179,8 +177,6 @@ class TradingEventSink:
             "queued": self.queue.qsize(),
             "sent_count": self.sent_count,
             "dropped_count": self.dropped_count,
-            "quarantined_count": self.quarantined_count,
-            "last_quarantined_event": self.last_quarantined_event,
             "last_sent_at": self.last_sent_at.isoformat() if self.last_sent_at else None,
             "last_reconcile_at": (
                 self.last_reconcile_at.isoformat() if self.last_reconcile_at else None
@@ -285,6 +281,270 @@ class TradingEventSink:
                 await asyncio.sleep(0.25 * (2 ** attempt))
         return False
 
+    def _comparison_configuration(self) -> dict[str, Any]:
+        """Non-secret values required to reconstruct the live decision later."""
+        s = self.settings
+
+        def value(name: str, default: Any = None) -> Any:
+            raw = getattr(s, name, default)
+            if isinstance(raw, Decimal):
+                return str(raw)
+            if isinstance(raw, (tuple, set)):
+                return list(raw)
+            return raw
+
+        return {
+            "strategy_name": value("strategy_name"),
+            "fast_window": value("fast_window"),
+            "slow_window": value("slow_window"),
+            "min_momentum_pct": value("min_momentum_pct"),
+            "min_vwap_edge_pct": value("min_vwap_edge_pct"),
+            "stop_pct": value("stop_pct"),
+            "target_pct": value("target_pct"),
+            "entry_start": value("entry_start_raw"),
+            "entry_cutoff": value("entry_cutoff_raw"),
+            "confirmation_symbols": list(value("confirmation_symbols", ()) or ()),
+            "min_confirmations": value("min_confirmations"),
+            "regime_window": value("regime_window"),
+            "regime_min_confirmations": value("regime_min_confirmations"),
+            "regime_min_return_pct": value("regime_min_return_pct"),
+            "max_vwap_extension_pct": value("max_vwap_extension_pct"),
+            "volatility_stop_enabled": value("volatility_stop_enabled"),
+            "volatility_stop_multiplier": value("volatility_stop_multiplier"),
+            "volatility_stop_lookback_bars": value("volatility_stop_lookback_bars"),
+            "max_dynamic_stop_pct": value("max_dynamic_stop_pct"),
+            "max_bar_age_seconds": value("max_bar_age_seconds"),
+            "max_spread_pct": value("max_spread_pct"),
+            "min_quality_score": value("min_quality_score"),
+            "max_pairwise_correlation": value("max_pairwise_correlation"),
+            "correlation_lookback_bars": value("correlation_lookback_bars"),
+            "correlation_min_observations": value("correlation_min_observations"),
+            "loss_streak_limit": value("loss_streak_limit"),
+            "loss_streak_cooldown_minutes": value("loss_streak_cooldown_minutes"),
+            "reentry_cooldown_minutes": value("reentry_cooldown_minutes"),
+            "order_notional": value("order_notional"),
+            "sizing_mode": value("sizing_mode"),
+            "risk_per_trade_pct": value("risk_per_trade_pct"),
+            "max_gross_exposure_pct": value("max_gross_exposure_pct"),
+            "min_order_notional": value("min_order_notional"),
+            "max_order_notional": value("max_order_notional"),
+            "max_position_notional": value("max_position_notional"),
+            "max_total_position_notional": value("max_total_position_notional"),
+            "portfolio_limit_mode": value("portfolio_limit_mode"),
+            "max_position_gross_pct": value("max_position_gross_pct"),
+            "max_portfolio_stop_risk_pct": value("max_portfolio_stop_risk_pct"),
+            "max_concurrent_positions": value("max_concurrent_positions"),
+            "max_new_entries_per_cycle": value("max_new_entries_per_cycle"),
+            "max_daily_orders": value("max_daily_orders"),
+            "max_daily_loss": value("max_daily_loss"),
+            "dynamic_universe_enabled": value("dynamic_universe_enabled"),
+            "allowed_symbols": sorted(value("allowed_symbols", set()) or []),
+            "execution_authorized": value("execution_authorized", False),
+            "data_feed": value("data_feed"),
+            "bar_timeframe": value("bar_timeframe"),
+        }
+
+    @staticmethod
+    def _candidate_final_decision(
+        symbol: str,
+        qualified: bool,
+        execution_result: dict[str, Any] | None,
+    ) -> str:
+        if not qualified:
+            return "rejected"
+        result = execution_result or {}
+        normalized = symbol.upper()
+        for order in result.get("orders") or []:
+            if str(order.get("symbol") or "").upper() == normalized:
+                return "submitted"
+        for skipped in result.get("skipped") or []:
+            if str(skipped.get("symbol") or "").upper() == normalized:
+                return "qualified_not_selected"
+        action = str(result.get("action") or "").lower()
+        if action in {"blocked", "hold", "error"}:
+            return action
+        return "qualified"
+
+    def record_decision_cycle(
+        self,
+        *,
+        correlation_id: str,
+        cycle_started_at: datetime,
+        cycle_ended_at: datetime,
+        market_is_open: bool | None,
+        active_universe: list[str],
+        scan: dict[str, dict[str, Any]],
+        cycle_outcome: str,
+        data_status: str = "ok",
+        degraded: bool = False,
+        error: str | None = None,
+        runtime: dict[str, Any] | None = None,
+        comparison_context: dict[str, Any] | None = None,
+        execution_result: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one complete strategy-evaluation cycle without affecting execution."""
+        duration_ms = max(
+            int((cycle_ended_at - cycle_started_at).total_seconds() * 1000),
+            0,
+        )
+        if market_is_open is None:
+            market_is_open = (
+                cycle_outcome != "market is closed"
+                if cycle_outcome
+                else None
+            )
+        cycle_key = f"{self.settings.trading_run_id}:{correlation_id}"
+        candidates: list[dict[str, Any]] = []
+        embedded_comparison_context: dict[str, Any] = {}
+        qualified_count = 0
+        for rank, (symbol, signal) in enumerate(scan.items(), start=1):
+            metadata = dict(signal.get("metadata") or {})
+            candidate_comparison_context = metadata.pop("_comparison_context", None)
+            if isinstance(candidate_comparison_context, dict) and not embedded_comparison_context:
+                embedded_comparison_context = candidate_comparison_context
+            quality = dict(metadata.get("market_quality") or {})
+            bid = quality.get("bid")
+            ask = quality.get("ask")
+            midpoint = None
+            try:
+                if bid not in {None, ""} and ask not in {None, ""}:
+                    midpoint = str((Decimal(str(bid)) + Decimal(str(ask))) / Decimal("2"))
+            except Exception:
+                midpoint = None
+            qualified = str(signal.get("action") or "").lower() == "buy"
+            qualified_count += int(qualified)
+            reason = str(signal.get("reason") or "")
+            candidates.append(
+                {
+                    "symbol": symbol.upper(),
+                    "candidate_key": f"{cycle_key}:{symbol.upper()}",
+                    "observed_at": cycle_ended_at.isoformat(),
+                    "action": str(signal.get("action") or "hold"),
+                    "qualified": qualified,
+                    "candidate_state": "qualified" if qualified else "rejected",
+                    "qualification_status": "qualified" if qualified else "rejected",
+                    "final_decision": self._candidate_final_decision(
+                        symbol,
+                        qualified,
+                        execution_result,
+                    ),
+                    "reason": reason or None,
+                    "rejection_reasons": [] if qualified else ([reason] if reason else []),
+                    "rejection_reason_codes": [] if qualified else ([reason] if reason else []),
+                    "candidate_rank": rank if qualified else None,
+                    "data_quality_state": (
+                        "unavailable"
+                        if "missing" in reason.lower() or "not enough" in reason.lower()
+                        else ("degraded" if "stale" in reason.lower() else "available")
+                    ),
+                    "decision_reference_price": (
+                        str(signal.get("reference_price"))
+                        if signal.get("reference_price") not in {None, "", "0", 0}
+                        else (
+                            str(metadata.get("current_close"))
+                            if metadata.get("current_close") not in {None, "", "0", 0}
+                            else None
+                        )
+                    ),
+                    "quote": {
+                        "bid": bid,
+                        "ask": ask,
+                        "midpoint": midpoint,
+                        "spread_pct": quality.get("spread_pct"),
+                        "observed_at": quality.get("quote_timestamp"),
+                    },
+                    "features": metadata,
+                    "checks": {
+                        "strategy": metadata.get("checks") or {},
+                        "confirmations": metadata.get("confirmations") or {},
+                        "regime_confirmations": metadata.get("regime_confirmations") or {},
+                        "market_quality": quality,
+                        "correlation": metadata.get("correlation") or {},
+                    },
+                    "stop_price": str(signal.get("stop_price") or "") or None,
+                    "target_price": str(signal.get("take_profit_price") or "") or None,
+                    "forward_outcomes_status": "pending",
+                    "market_context": {
+                        "confirmations": metadata.get("confirmations") or {},
+                        "regime_confirmations": metadata.get("regime_confirmations") or {},
+                    },
+                    "eligibility": {
+                        "active_universe": symbol.upper() in {item.upper() for item in active_universe},
+                    },
+                    "constraints": {
+                        "correlation": metadata.get("correlation") or {},
+                        "sizing": metadata.get("sizing") or {},
+                    },
+                    "methodology_version": "live-decision-v1",
+                    "strategy_family": getattr(self.settings, "strategy_name", None),
+                    "data_source": "alpaca",
+                    "data_feed": getattr(self.settings, "data_feed", None),
+                    "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                    "research_attribution": {
+                        "live_strategy_version": self.settings.strategy_version_id,
+                    },
+                }
+            )
+        replay_context = {
+            "configuration": self._comparison_configuration(),
+            "execution_context": comparison_context or embedded_comparison_context,
+            "execution_result": execution_result or {},
+        }
+        self.emit(
+            event_type="decision_cycle",
+            event_key=f"{self.settings.trading_run_id}:decision-cycle:{correlation_id}",
+            correlation_id=correlation_id,
+            occurred_at=cycle_ended_at.isoformat(),
+            payload={
+                "cycle_key": cycle_key,
+                "cycle_started_at": cycle_started_at.isoformat(),
+                "cycle_ended_at": cycle_ended_at.isoformat(),
+                "market_is_open": market_is_open,
+                "active_universe_size": len(active_universe),
+                "active_universe": list(active_universe),
+                "symbols_expected": list(active_universe),
+                "symbols_evaluated": list(scan),
+                "execution_mode": getattr(self.settings, "trading_mode", None),
+                "market_session": "regular" if market_is_open else "closed",
+                "data_source": "alpaca",
+                "data_feed": getattr(self.settings, "data_feed", None),
+                "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                "methodology_version": "live-decision-v1",
+                "strategy_family": getattr(self.settings, "strategy_name", None),
+                "candidate_count": len(candidates),
+                "qualified_count": qualified_count,
+                "rejected_count": len(candidates) - qualified_count,
+                "cycle_outcome": cycle_outcome,
+                "data_status": data_status,
+                "degraded": degraded,
+                "error": error,
+                "cycle_duration_ms": duration_ms,
+                "runtime": runtime or {},
+                "comparison_context": replay_context,
+                "candidates": candidates,
+            },
+        )
+
+    def record_position_metrics(
+        self,
+        *,
+        symbol: str,
+        metrics: dict[str, Any],
+        correlation_id: str | None,
+        observed_at: datetime,
+    ) -> None:
+        if not metrics:
+            return
+        bucket = observed_at.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+        self.emit(
+            event_type="position_metrics",
+            event_key=f"{self.settings.trading_run_id}:position-metrics:{symbol.upper()}:{bucket}",
+            symbol=symbol.upper(),
+            correlation_id=correlation_id,
+            occurred_at=observed_at.isoformat(),
+            payload=metrics,
+        )
+
     async def persist_entry_intent(
         self,
         *,
@@ -297,6 +557,19 @@ class TradingEventSink:
         signal_id = str(uuid4())
         intent_id = str(uuid4())
         position_id = str(uuid4())
+        metadata = dict(signal.metadata or {})
+        cycle_key = (
+            f"{self.settings.trading_run_id}:{correlation_id}"
+            if correlation_id else None
+        )
+        market_quality = dict(metadata.get("market_quality") or {})
+        decision_quote = {
+            "bid": market_quality.get("bid"),
+            "ask": market_quality.get("ask"),
+            "midpoint": market_quality.get("midpoint"),
+            "spread_pct": market_quality.get("spread_pct"),
+            "observed_at": market_quality.get("quote_timestamp"),
+        }
         payload = {
             "signal": {
                 "signal_id": signal_id,
@@ -309,6 +582,7 @@ class TradingEventSink:
                 "payload": {
                     "reason": signal.reason,
                     "metadata": signal.metadata or {},
+                    "cycle_key": cycle_key,
                 },
             },
             "intent": {
@@ -327,6 +601,10 @@ class TradingEventSink:
                 "payload": {
                     "client_order_id": client_order_id,
                     "position_id": position_id,
+                    "decision_at": intended_at.isoformat(),
+                    "decision_reference_price": str(signal.reference_price),
+                    "decision_quote": decision_quote,
+                    "cycle_key": cycle_key,
                 },
             },
         }
@@ -577,7 +855,6 @@ class TradingEventSink:
         fills: list[dict[str, Any]],
         correlation_id: str | None,
         observed_at: datetime,
-        position_metrics: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         observed_utc = observed_at.astimezone(timezone.utc)
         owned_order_ids = self._owned_order_ids_from_snapshot(orders)
@@ -691,7 +968,6 @@ class TradingEventSink:
                     "drawdown_pct": str(drawdown_pct),
                     "open_positions": len(positions),
                     "positions": positions,
-                    "position_metrics": position_metrics or {},
                 },
             )
         )
@@ -708,7 +984,6 @@ class TradingEventSink:
         managed_symbols: list[str],
         correlation_id: str | None,
         observed_at: datetime,
-        position_metrics: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not self.enabled:
             raise RuntimeError("canonical trading persistence is not configured")
@@ -720,7 +995,6 @@ class TradingEventSink:
             fills=fills,
             correlation_id=correlation_id,
             observed_at=observed_at,
-            position_metrics=position_metrics,
         )
         async with httpx.AsyncClient(timeout=8.0) as http:
             if not await self._send_batch(http, events):
@@ -830,86 +1104,6 @@ class TradingEventSink:
         async with httpx.AsyncClient(timeout=8.0) as http:
             return await self._send_batch(http, [event])
 
-    @staticmethod
-    def _critical_ingest_event(event: dict[str, Any]) -> bool:
-        return str(event.get("event_type") or "") in {
-            "order_intent",
-            "broker_order",
-            "broker_fill",
-        }
-
-    @staticmethod
-    def _response_detail(response: httpx.Response) -> str:
-        try:
-            payload = response.json()
-            return str(payload)
-        except Exception:
-            return response.text[:500]
-
-    async def _send_chunk(
-        self,
-        http: httpx.AsyncClient,
-        chunk: list[dict[str, Any]],
-    ) -> bool:
-        if not chunk:
-            return True
-
-        try:
-            response = await http.post(
-                self.settings.trading_ingest_url,
-                headers={
-                    "content-type": "application/json",
-                    "x-anevum-ingest-token": self.settings.trading_ingest_token,
-                },
-                json={"events": chunk},
-            )
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return False
-
-        if 200 <= response.status_code < 300:
-            self.sent_count += len(chunk)
-            return True
-
-        detail = self._response_detail(response)
-        if response.status_code != 400:
-            self.last_error = (
-                f"ingest HTTP {response.status_code}: {detail}"
-            )
-            return False
-
-        # A 400 normally means one event in an otherwise valid reconciliation
-        # snapshot was rejected by schema validation. Bisect the batch so valid
-        # records are not repeatedly poisoned by the same malformed event.
-        if len(chunk) > 1:
-            midpoint = len(chunk) // 2
-            left_ok = await self._send_chunk(http, chunk[:midpoint])
-            if not left_ok:
-                return False
-            return await self._send_chunk(http, chunk[midpoint:])
-
-        event = chunk[0]
-        event_type = str(event.get("event_type") or "unknown")
-        event_key = str(event.get("event_key") or "unknown")
-        rejected = {
-            "event_type": event_type,
-            "event_key": event_key,
-            "status_code": response.status_code,
-            "response": detail,
-        }
-        if self._critical_ingest_event(event):
-            self.last_error = (
-                "critical ingest event rejected: "
-                f"{event_type} {event_key}: {detail}"
-            )
-            return False
-
-        # Noncritical telemetry is quarantined so accounting/order integrity can
-        # keep reconciling. The exact rejected event remains visible in status.
-        self.quarantined_count += 1
-        self.last_quarantined_event = rejected
-        return True
-
     async def _send_batch(
         self,
         http: httpx.AsyncClient,
@@ -918,14 +1112,30 @@ class TradingEventSink:
         if not events:
             return True
 
-        # The Edge Function accepts at most 100 events per request.
-        for start in range(0, len(events), 100):
-            if not await self._send_chunk(http, events[start : start + 100]):
-                return False
+        try:
+            # The trading-ingest Edge Function accepts at most 100 events per
+            # request. Reconciliation can legitimately exceed that once a run
+            # has accumulated enough broker orders and fills, so keep the
+            # transport bounded while preserving idempotent event keys.
+            for start in range(0, len(events), 100):
+                chunk = events[start : start + 100]
+                response = await http.post(
+                    self.settings.trading_ingest_url,
+                    headers={
+                        "content-type": "application/json",
+                        "x-anevum-ingest-token": self.settings.trading_ingest_token,
+                    },
+                    json={"events": chunk},
+                )
+                response.raise_for_status()
+                self.sent_count += len(chunk)
 
-        self.last_sent_at = datetime.now(timezone.utc)
-        self.last_error = None
-        return True
+            self.last_sent_at = datetime.now(timezone.utc)
+            self.last_error = None
+            return True
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return False
 
     async def _run(self) -> None:
         async with httpx.AsyncClient(timeout=5.0) as http:

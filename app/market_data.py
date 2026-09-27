@@ -85,13 +85,14 @@ class MarketDataClient:
 
         return output
 
-    async def market_calendar(
+
+    async def market_calendar_details(
         self,
         *,
         start: date,
         end: date,
-    ) -> list[date]:
-        """Return Alpaca trading sessions for an inclusive date range."""
+    ) -> list[dict[str, Any]]:
+        """Return Alpaca session dates and published open/close boundaries."""
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
         if end < start:
@@ -109,22 +110,41 @@ class MarketDataClient:
             response.raise_for_status()
             payload = response.json()
 
-        return sorted(
-            {
-                date.fromisoformat(str(item["date"]))
-                for item in payload
-                if item.get("date")
-            }
-        )
+        details: list[dict[str, Any]] = []
+        for item in payload:
+            if not item.get("date"):
+                continue
+            details.append(
+                {
+                    "date": date.fromisoformat(str(item["date"])),
+                    "open": item.get("open"),
+                    "close": item.get("close"),
+                    "session_open": item.get("session_open"),
+                    "session_close": item.get("session_close"),
+                }
+            )
+        return sorted(details, key=lambda item: item["date"])
 
-    async def historical_bars_many_with_metadata(
+    async def market_calendar(
+        self,
+        *,
+        start: date,
+        end: date,
+    ) -> list[date]:
+        """Return Alpaca trading-session dates for an inclusive date range."""
+        return [
+            item["date"]
+            for item in await self.market_calendar_details(start=start, end=end)
+        ]
+
+    async def historical_bars_many(
         self,
         symbols: list[str],
         *,
         start: datetime,
         end: datetime,
-    ) -> dict[str, Any]:
-        """Fetch historical bars plus explicit pagination-completion metadata."""
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Fetch time-bounded bars for replay/research. This method is read-only."""
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
         if end <= start:
@@ -132,22 +152,13 @@ class MarketDataClient:
 
         batches = self._batches(symbols)
         if not batches:
-            return {
-                "bars": {},
-                "pagination": {
-                    "pagination_complete": True,
-                    "batch_count": 0,
-                    "batches": [],
-                },
-            }
+            return {}
 
         output: dict[str, list[dict[str, Any]]] = {
             symbol: [] for batch in batches for symbol in batch
         }
-        batch_reports: list[dict[str, Any]] = []
-
         async with httpx.AsyncClient(timeout=30.0) as client:
-            for batch_index, batch in enumerate(batches):
+            for batch in batches:
                 params = {
                     "symbols": ",".join(batch),
                     "timeframe": self.settings.bar_timeframe,
@@ -158,9 +169,6 @@ class MarketDataClient:
                     "feed": self.settings.data_feed,
                 }
                 page_token: str | None = None
-                pages_fetched = 0
-                pagination_complete = False
-
                 for _ in range(50):
                     request_params = dict(params)
                     if page_token:
@@ -172,55 +180,18 @@ class MarketDataClient:
                     )
                     response.raise_for_status()
                     data = response.json()
-                    pages_fetched += 1
                     for symbol, bars in (data.get("bars") or {}).items():
                         output.setdefault(symbol.upper(), []).extend(bars or [])
                     page_token = data.get("next_page_token")
                     if not page_token:
-                        pagination_complete = True
                         break
+                else:
+                    raise RuntimeError(
+                        "historical replay pagination exceeded safety limit"
+                    )
 
-                batch_reports.append(
-                    {
-                        "batch_index": batch_index,
-                        "symbols": list(batch),
-                        "pages_fetched": pages_fetched,
-                        "pagination_complete": pagination_complete,
-                        "next_page_token_remaining": bool(page_token),
-                        "page_limit": 50,
-                        "bar_limit_per_page": 10000,
-                    }
-                )
+        return output
 
-        return {
-            "bars": output,
-            "pagination": {
-                "pagination_complete": all(
-                    item["pagination_complete"] for item in batch_reports
-                ),
-                "batch_count": len(batch_reports),
-                "batches": batch_reports,
-            },
-        }
-
-    async def historical_bars_many(
-        self,
-        symbols: list[str],
-        *,
-        start: datetime,
-        end: datetime,
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Fetch time-bounded bars for replay/research. This method is read-only."""
-        result = await self.historical_bars_many_with_metadata(
-            symbols,
-            start=start,
-            end=end,
-        )
-        if not result["pagination"]["pagination_complete"]:
-            raise RuntimeError(
-                "historical replay pagination exceeded safety limit"
-            )
-        return result["bars"]
 
     async def daily_bars_many(
         self,
@@ -285,6 +256,7 @@ class MarketDataClient:
                     )
 
         return output
+
 
     async def latest_quotes_many(
         self,

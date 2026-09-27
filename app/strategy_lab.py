@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from collections.abc import Callable
 from typing import Any
 
 from .config import Settings
 from .replay import ReplayEngine
-from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy, Signal
-from .strategy_004_candidate_c import strategy_004_candidate_c_gate
+from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
 
 
 @dataclass(frozen=True)
@@ -16,7 +14,6 @@ class StrategyVariant:
     name: str
     description: str
     overrides: dict[str, Any]
-    entry_gate: Callable[[Signal], Any] | None = None
 
 
 DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
@@ -24,16 +21,6 @@ DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
         name="production",
         description="Current live rolling momentum/VWAP parameters.",
         overrides={},
-    ),
-    StrategyVariant(
-        name="strategy_004_candidate_c_controlled",
-        description=(
-            "Frozen Candidate C: controlled continuation. Preserve production "
-            "entry floors but reject 3-bar momentum above 0.29% and trend "
-            "persistence above 5/8. Research only until holdout and shadow pass."
-        ),
-        overrides={},
-        entry_gate=strategy_004_candidate_c_gate,
     ),
     StrategyVariant(
         name="fast_2_6",
@@ -87,32 +74,6 @@ DEFAULT_VARIANTS: tuple[StrategyVariant, ...] = (
             "max_hold_minutes": 25,
         },
     ),
-    StrategyVariant(
-        name="strategy_004_vwap_edge",
-        description=(
-            "Candidate A (rejected in pre-September-25 fixed-universe "
-            "validation): stronger 0.65%-0.80% VWAP edge with two "
-            "independent confirmations. Retained for reproducibility."
-        ),
-        overrides={
-            "min_vwap_edge_pct": Decimal("0.0065"),
-            "max_vwap_extension_pct": Decimal("0.0080"),
-            "min_confirmations": 2,
-            "min_quality_score": Decimal("80"),
-        },
-    ),
-    StrategyVariant(
-        name="strategy_004_followthrough",
-        description=(
-            "Candidate B: preserve the production thresholds but require the "
-            "core momentum/VWAP/trend setup to remain valid for two "
-            "consecutive completed bars before entry."
-        ),
-        overrides={
-            "signal_persistence_bars": 2,
-            "min_quality_score": Decimal("80"),
-        },
-    ),
 )
 
 
@@ -129,15 +90,6 @@ def build_strategy(settings: Settings):
             entry_cutoff=settings.entry_cutoff,
             confirmation_symbols=settings.confirmation_symbols,
             min_confirmations=settings.min_confirmations,
-            regime_window=settings.regime_window,
-            regime_min_confirmations=settings.regime_min_confirmations,
-            regime_min_return_pct=settings.regime_min_return_pct,
-            max_vwap_extension_pct=settings.max_vwap_extension_pct,
-            signal_persistence_bars=settings.signal_persistence_bars,
-            volatility_stop_enabled=settings.volatility_stop_enabled,
-            volatility_stop_multiplier=settings.volatility_stop_multiplier,
-            volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
-            max_dynamic_stop_pct=settings.max_dynamic_stop_pct,
         )
     return OpeningRangeVwapStrategy(
         opening_range_minutes=settings.opening_range_minutes,
@@ -237,11 +189,7 @@ class StrategyTournament:
         for variant in self.variants:
             settings = variant_settings(self.base_settings, variant)
             strategy = build_strategy(settings)
-            replay = ReplayEngine(
-                settings,
-                strategy,
-                entry_gate=variant.entry_gate,
-            )
+            replay = ReplayEngine(settings, strategy)
             result = replay.run(
                 bars_by_symbol,
                 initial_equity=initial_equity,
@@ -257,14 +205,9 @@ class StrategyTournament:
                         "slow_window": settings.slow_window,
                         "min_momentum_pct": str(settings.min_momentum_pct),
                         "min_vwap_edge_pct": str(settings.min_vwap_edge_pct),
-                        "max_vwap_extension_pct": str(settings.max_vwap_extension_pct),
-                        "signal_persistence_bars": settings.signal_persistence_bars,
-                        "min_confirmations": settings.min_confirmations,
-                        "min_quality_score": str(settings.min_quality_score),
                         "stop_pct": str(settings.stop_pct),
                         "target_pct": str(settings.target_pct),
                         "max_hold_minutes": settings.max_hold_minutes,
-                        "research_entry_gate": bool(variant.entry_gate),
                     },
                     "summary": result["summary"],
                     "assumptions": result["assumptions"],

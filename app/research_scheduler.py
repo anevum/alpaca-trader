@@ -1,0 +1,619 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+
+import httpx
+from datetime import date, datetime, time, timedelta
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from .post_event_evidence import PostEventEvidenceRunner
+from .research_reporting import (
+    classify_daily,
+    enrich_excursions,
+    next_research_action,
+    reconstruct_closed_trades,
+    scan_funnel,
+    serialize,
+    trade_metrics,
+)
+from .weekly_reporting import REPORT_VERSION, build_weekly_report
+
+NY = ZoneInfo("America/New_York")
+REPORT_AFTER = time(16, 20)
+DAILY_REPORT_VERSION = "rhen-daily-v1.1"
+
+
+def is_last_session_of_week(current: date, next_session: date | None) -> bool:
+    if next_session is None:
+        return True
+    return current.isocalendar()[:2] != next_session.isocalendar()[:2]
+
+
+class ResearchReportScheduler:
+    """Read-only post-close research reporter embedded in the trading service."""
+
+    def __init__(
+        self,
+        settings: Any,
+        client: Any,
+        market_data: Any,
+        state: Any,
+        event_sink: Any,
+    ) -> None:
+        self.settings = settings
+        self.client = client
+        self.market_data = market_data
+        self.state = state
+        self.event_sink = event_sink
+        self.stop_event = asyncio.Event()
+        self.task: asyncio.Task | None = None
+        self.daily_done: set[date] = set()
+        self.weekly_done: set[date] = set()
+        self.last_daily_report: dict[str, Any] | None = None
+        self.last_weekly_report: dict[str, Any] | None = None
+        self.last_post_event_summary: dict[str, Any] | None = None
+        self.last_error: str | None = None
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "running": self.task is not None and not self.task.done(),
+            "report_after_et": REPORT_AFTER.strftime("%H:%M"),
+            "last_daily_session": (
+                self.last_daily_report.get("session")
+                if self.last_daily_report
+                else None
+            ),
+            "last_weekly_end": (
+                self.last_weekly_report.get("week_end")
+                if self.last_weekly_report
+                else None
+            ),
+            "last_error": self.last_error,
+            "daily_report_version": DAILY_REPORT_VERSION,
+            "weekly_report_version": REPORT_VERSION,
+            "last_post_event_summary": self.last_post_event_summary,
+            "last_weekly_completeness": (
+                self.last_weekly_report.get("completeness_state")
+                if self.last_weekly_report
+                else None
+            ),
+            "live_configuration_changes_allowed": False,
+        }
+
+    async def start(self) -> None:
+        if self.task is None:
+            self.task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        self.stop_event.set()
+        if self.task is not None:
+            await self.task
+            self.task = None
+
+    async def _run(self) -> None:
+        catch_up_done = False
+        while not self.stop_event.is_set():
+            try:
+                if not catch_up_done:
+                    await self._catch_up_latest_completed()
+                    catch_up_done = True
+                await self._tick()
+            except Exception as exc:
+                message = f"research reporting {type(exc).__name__}: {exc}"
+                self.last_error = message
+                self.state.record_event(
+                    kind="research_reporting",
+                    action="warning",
+                    message="post-close research report failed",
+                    reason=message,
+                )
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _catch_up_latest_completed(
+        self,
+        now: datetime | None = None,
+    ) -> None:
+        """Backfill the latest completed session after restarts or downtime."""
+
+        current = (now or datetime.now(NY)).astimezone(NY)
+        sessions = await self.market_data.market_calendar(
+            start=current.date() - timedelta(days=10),
+            end=current.date(),
+        )
+        completed = [
+            session
+            for session in sessions
+            if session < current.date()
+            or (
+                session == current.date()
+                and current.timetz().replace(tzinfo=None) >= REPORT_AFTER
+            )
+        ]
+        if not completed:
+            return
+
+        latest = completed[-1]
+        if latest not in self.daily_done:
+            if getattr(self.event_sink, "enabled", False):
+                await self.generate_post_event_evidence(latest)
+            await self.generate_daily(latest)
+            self.daily_done.add(latest)
+
+        if latest in self.weekly_done:
+            return
+
+        future_sessions = await self.market_data.market_calendar(
+            start=latest + timedelta(days=1),
+            end=latest + timedelta(days=10),
+        )
+        next_session = future_sessions[0] if future_sessions else None
+        if is_last_session_of_week(latest, next_session):
+            week_start = latest - timedelta(days=latest.weekday())
+            await self.generate_weekly(week_start, latest)
+            self.weekly_done.add(latest)
+
+    async def _tick(self, now: datetime | None = None) -> None:
+        current = (now or datetime.now(NY)).astimezone(NY)
+        if current.timetz().replace(tzinfo=None) < REPORT_AFTER:
+            return
+        if not self.settings.credentials_configured:
+            return
+
+        sessions = await self.market_data.market_calendar(
+            start=current.date(),
+            end=current.date(),
+        )
+        if current.date() not in sessions:
+            return
+
+        if current.date() not in self.daily_done:
+            if getattr(self.event_sink, "enabled", False):
+                await self.generate_post_event_evidence(current.date())
+            await self.generate_daily(current.date())
+            self.daily_done.add(current.date())
+
+        if current.date() in self.weekly_done:
+            return
+
+        future_sessions = await self.market_data.market_calendar(
+            start=current.date() + timedelta(days=1),
+            end=current.date() + timedelta(days=10),
+        )
+        next_session = future_sessions[0] if future_sessions else None
+        if is_last_session_of_week(current.date(), next_session):
+            week_start = current.date() - timedelta(days=current.weekday())
+            await self.generate_weekly(week_start, current.date())
+            self.weekly_done.add(current.date())
+
+    async def _collect(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, Any]:
+        sessions = await self.market_data.market_calendar(
+            start=start_date,
+            end=end_date,
+        )
+        if not sessions:
+            return {
+                "sessions": [],
+                "orders": [],
+                "fills": [],
+                "trades": [],
+                "metrics": trade_metrics([]),
+                "funnel": scan_funnel(self.state.decision_history),
+            }
+
+        orders = await self.client.recent_orders(limit=500)
+        data_quality_warnings: list[str] = []
+        if len(orders) >= 500:
+            data_quality_warnings.append(
+                "recent order response reached the 500-order request limit"
+            )
+
+        fills: list[dict[str, Any]] = []
+        for session in sessions:
+            session_fills = await self.client.fill_activities(
+                date=session.isoformat(),
+                limit=100,
+            )
+            if len(session_fills) >= 100:
+                data_quality_warnings.append(
+                    f"{session.isoformat()} fill activity reached the 100-record request limit"
+                )
+            fills.extend(session_fills)
+
+        positions = await self.client.positions()
+
+        rebuilt = reconstruct_closed_trades(
+            fills,
+            orders,
+            owner_tag=str(getattr(self.settings, "order_owner_tag", "") or ""),
+        )
+        trades = rebuilt["trades"]
+
+        symbols = sorted({trade["symbol"] for trade in trades})
+        if symbols:
+            start = datetime.combine(sessions[0], time(9, 30), tzinfo=NY)
+            end = datetime.combine(sessions[-1], time(16, 0), tzinfo=NY)
+            bars = await self.market_data.historical_bars_many(
+                symbols,
+                start=start,
+                end=end,
+            )
+            enrich_excursions(trades, bars)
+
+        return {
+            "sessions": [session.isoformat() for session in sessions],
+            "orders": orders,
+            "fills": fills,
+            "positions": positions,
+            "data_quality_warnings": data_quality_warnings,
+            "trades": trades,
+            "reconstruction": {
+                key: value
+                for key, value in rebuilt.items()
+                if key != "trades"
+            },
+            "metrics": trade_metrics(trades),
+            "funnel": scan_funnel(self.state.decision_history),
+        }
+
+    def _runtime_snapshot(self) -> dict[str, Any]:
+        persistence = self.event_sink.status()
+        return {
+            "last_error": self.state.last_error,
+            "reconciliation_safe": self.state.reconciliation_safe,
+            "startup_reconciled": self.state.startup_reconciled,
+            "last_reconciliation": self.state.last_reconciliation,
+            "persistence_error": persistence.get("last_error"),
+            "persistence": persistence,
+        }
+
+    async def generate_post_event_evidence(self, session: date) -> dict[str, Any]:
+        """Compute analytics only after the session and all requested horizons mature."""
+        runner = PostEventEvidenceRunner(
+            settings=self.settings,
+            market_data=self.market_data,
+            event_sink=self.event_sink,
+            evidence_reader=self._report_api_get,
+        )
+        summary = await runner.run_session(session)
+        if getattr(self.event_sink, "enabled", False):
+            await self.event_sink.queue.join()
+        payload = {
+            "session": summary.session,
+            "candidates": summary.candidates,
+            "outcome_events": summary.outcome_events,
+            "comparison_events": summary.comparison_events,
+            "complete_outcomes": summary.complete_outcomes,
+            "incomplete_outcomes": summary.incomplete_outcomes,
+            "error_outcomes": summary.error_outcomes,
+            "analytics_only": True,
+        }
+        self.last_post_event_summary = payload
+        return payload
+
+    async def _daily_post_event_inputs(self, session: date) -> dict[str, Any]:
+        try:
+            payload = await self._report_api_get(
+                evidence_session=session.isoformat(),
+            )
+        except Exception as exc:
+            return {
+                "post_event": {},
+                "latest_daily_report": None,
+                "warning": f"canonical post-event evidence unavailable: {type(exc).__name__}: {exc}",
+            }
+        return {
+            "post_event": payload.get("post_event") or {},
+            "latest_daily_report": payload.get("latest_daily_report"),
+            "warning": None,
+        }
+
+    async def generate_daily(self, session: date) -> dict[str, Any]:
+        evidence = await self._collect(session, session)
+        account = await self.client.account()
+        canonical = await self._daily_post_event_inputs(session)
+        post_event = canonical.get("post_event") or {}
+        runtime = self._runtime_snapshot()
+        classification = classify_daily(evidence["metrics"], runtime)
+        if (
+            evidence["data_quality_warnings"]
+            and classification.get("classification") == "KEEP"
+        ):
+            classification = {
+                "classification": "INVESTIGATE",
+                "reason": "broker evidence may be truncated; completeness must be resolved first",
+                "defects": [],
+                "data_quality_warnings": list(evidence["data_quality_warnings"]),
+            }
+        action = next_research_action(
+            evidence["metrics"],
+            evidence["funnel"],
+            classification,
+        )
+        daily_warnings = list(evidence["data_quality_warnings"])
+        if canonical.get("warning"):
+            daily_warnings.append(str(canonical["warning"]))
+        outcome_status = post_event.get("forward_outcome_status") or {}
+        if int(outcome_status.get("incomplete_rows") or 0):
+            daily_warnings.append(
+                "Some candidate horizons are incomplete because the requested window did not have sufficient regular-session data."
+            )
+        if int(outcome_status.get("error_rows") or 0):
+            daily_warnings.append(
+                "One or more candidate forward-outcome measurements failed and remain explicitly recorded as errors."
+            )
+        live_offline = post_event.get("live_offline_summary") or []
+        if any(int(row.get("unreconstructable") or 0) for row in live_offline):
+            daily_warnings.append(
+                "Some live-vs-offline decisions are unreconstructable because required decision-time evidence was not historically retained."
+            )
+
+        fingerprint_material = {
+            "version": DAILY_REPORT_VERSION,
+            "session": session.isoformat(),
+            "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
+            "metrics": serialize(evidence["metrics"]),
+            "forward_outcomes": post_event.get("forward_outcomes_by_horizon") or [],
+            "live_offline": live_offline,
+        }
+        source_fingerprint = hashlib.sha256(
+            json.dumps(
+                fingerprint_material,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        report_key = (
+            f"{session.isoformat()}:{DAILY_REPORT_VERSION}:"
+            f"{source_fingerprint[:16]}"
+        )
+        previous = canonical.get("latest_daily_report")
+        previous_payload = (
+            previous.get("payload")
+            if isinstance(previous, dict) and isinstance(previous.get("payload"), dict)
+            else {}
+        )
+        supersedes = (
+            previous.get("event_id")
+            if isinstance(previous, dict)
+            and previous_payload.get("report_key") != report_key
+            else None
+        )
+
+        payload = serialize(
+            {
+                "report_type": "daily",
+                "report_version": DAILY_REPORT_VERSION,
+                "report_key": report_key,
+                "source_fingerprint": source_fingerprint,
+                "supersedes_report_event_id": supersedes,
+                "title": f"Daily review — {session.isoformat()}",
+                "summary": classification.get("reason"),
+                "focus": action,
+                "session": session.isoformat(),
+                "generated_at": datetime.now(NY),
+                "trading_run_id": getattr(self.settings, "trading_run_id", "") or None,
+                "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
+                "account": {
+                    "equity": account.get("equity"),
+                    "last_equity": account.get("last_equity"),
+                    "cash": account.get("cash"),
+                    "buying_power": account.get("buying_power"),
+                },
+                "metrics": evidence["metrics"],
+                "trades": evidence["trades"],
+                "open_positions": [
+                    {
+                        key: position.get(key)
+                        for key in (
+                            "symbol",
+                            "qty",
+                            "avg_entry_price",
+                            "current_price",
+                            "market_value",
+                            "unrealized_pl",
+                            "unrealized_plpc",
+                        )
+                    }
+                    for position in evidence["positions"]
+                ],
+                "data_quality_warnings": daily_warnings,
+                "candidate_forward_evidence": {
+                    "by_horizon": post_event.get("forward_outcomes_by_horizon") or [],
+                    "status": outcome_status,
+                    "post_event_only": True,
+                    "counterfactual_not_realized_trades": True,
+                },
+                "live_vs_offline_consistency": {
+                    "summary": live_offline,
+                    "methodology": "live-offline-v1",
+                    "post_event_only": True,
+                },
+                "reconstruction": evidence["reconstruction"],
+                "candidate_funnel": evidence["funnel"],
+                "runtime": runtime,
+                "classification": classification,
+                "next_offline_research_action": action,
+                "slippage_vs_signal_reference": {
+                    "available": False,
+                    "reason": (
+                        "broker fills are available, but this reporter does not yet read "
+                        "the canonical signal-reference export; no slippage estimate is fabricated"
+                    ),
+                },
+                "live_configuration_changed": False,
+                "promotion_authorized": False,
+                "capital_scaling_authorized": False,
+            }
+        )
+        self.last_daily_report = payload
+        self.last_error = None
+        self.event_sink.emit(
+            event_type="research_daily_report",
+            event_key=f"research_daily_report:{report_key}",
+            occurred_at=datetime.now(NY).isoformat(),
+            payload=payload,
+        )
+        return payload
+
+    @property
+    def _report_read_url(self) -> str:
+        ingest_url = str(getattr(self.settings, "trading_ingest_url", "") or "")
+        if not ingest_url:
+            raise RuntimeError("canonical trading persistence is not configured")
+        return f"{ingest_url.rsplit('/', 1)[0]}/trading-report-read"
+
+    async def _report_api_get(self, **params: str) -> dict[str, Any]:
+        token = str(getattr(self.settings, "trading_ingest_token", "") or "")
+        if not token:
+            raise RuntimeError("canonical trading persistence token is not configured")
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            response = await http.get(
+                self._report_read_url,
+                headers={"x-anevum-ingest-token": token},
+                params=params,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError("canonical report read returned no result")
+        return payload
+
+    async def _canonical_weekly_inputs(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, Any]:
+        payload = await self._report_api_get(
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        )
+        inputs = payload.get("inputs")
+        if not isinstance(inputs, dict):
+            raise RuntimeError("canonical weekly reporting inputs are unavailable")
+        return inputs
+
+    async def fetch_weekly_report(
+        self,
+        *,
+        end_date: date | None = None,
+    ) -> dict[str, Any] | None:
+        params = {"latest": "weekly"}
+        if end_date is not None:
+            params["week_end"] = end_date.isoformat()
+        payload = await self._report_api_get(**params)
+        report = payload.get("report")
+        return report if isinstance(report, dict) else None
+
+    async def fetch_daily_report(
+        self,
+        *,
+        session: date | None = None,
+    ) -> dict[str, Any] | None:
+        params = {"latest": "daily"}
+        if session is not None:
+            params["session"] = session.isoformat()
+        payload = await self._report_api_get(**params)
+        report = payload.get("report")
+        return report if isinstance(report, dict) else None
+
+    async def fetch_command_evidence(self) -> dict[str, Any]:
+        payload = await self._report_api_get(latest="command")
+        if not isinstance(payload, dict):
+            raise RuntimeError("canonical Command evidence is unavailable")
+        return payload
+
+    async def generate_weekly(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, Any]:
+        """Build the canonical weekly report from durable daily reports + telemetry."""
+        if self.event_sink.enabled:
+            # A daily close report is queued immediately before the weekly report
+            # on the final session. Drain that queue first so the weekly read
+            # cannot race the authoritative daily-report write.
+            await self.event_sink.queue.join()
+
+        if hasattr(self.market_data, "market_calendar_details"):
+            calendar = await self.market_data.market_calendar_details(
+                start=start_date,
+                end=end_date,
+            )
+        else:
+            sessions = await self.market_data.market_calendar(
+                start=start_date,
+                end=end_date,
+            )
+            calendar = [{"date": session, "open": None, "close": None} for session in sessions]
+
+        inputs = await self._canonical_weekly_inputs(start_date, end_date)
+        persistence = self.event_sink.status()
+        report = build_weekly_report(
+            inputs,
+            calendar,
+            period_start=start_date,
+            period_end=end_date,
+            generation_provenance={
+                "report_version": REPORT_VERSION,
+                "generator": "alpaca-trader",
+                "trading_run_id": getattr(self.settings, "trading_run_id", "") or None,
+                "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
+                "runtime_git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA"),
+                "runtime_deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+                "runtime_service_id": os.environ.get("RAILWAY_SERVICE_ID"),
+                "runtime_environment_id": os.environ.get("RAILWAY_ENVIRONMENT_ID"),
+                "source": "canonical_daily_reports_plus_telemetry",
+            },
+        )
+        report_key = str(report.get("report_key") or "")
+        if not report_key:
+            raise RuntimeError("canonical weekly report has no report key")
+
+        persisted = await self.event_sink.emit_critical(
+            event_type="research_weekly_report",
+            event_key=f"research_weekly_report:{report_key}",
+            occurred_at=datetime.now(NY).isoformat(),
+            payload=report,
+        )
+        if not persisted:
+            raise RuntimeError(
+                self.event_sink.last_error
+                or "canonical weekly report could not be durably persisted"
+            )
+
+        stored = await self.fetch_weekly_report(end_date=end_date)
+        self.last_weekly_report = stored or report
+        completeness = str(
+            self.last_weekly_report.get("completeness_state") or "INCOMPLETE"
+        )
+        self.last_error = (
+            None
+            if completeness in {"COMPLETE", "PARTIAL"}
+            else (
+                "canonical weekly report is INCOMPLETE; "
+                "one or more required daily reports are missing"
+            )
+        )
+        return self.last_weekly_report
+
+    async def regenerate_weekly(self, end_date: date) -> dict[str, Any]:
+        """Manual, read-only regeneration for the ISO trading week containing end_date."""
+        start_date = end_date - timedelta(days=end_date.weekday())
+        sessions = await self.market_data.market_calendar(
+            start=start_date,
+            end=end_date,
+        )
+        if end_date not in sessions:
+            raise ValueError("week_end must be an actual US equity trading session")
+        return await self.generate_weekly(start_date, end_date)

@@ -1,0 +1,1 @@
+create index if not exists trading_scan_cycles_version_idx on private.trading_scan_cycles(strategy_version_id);

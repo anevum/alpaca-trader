@@ -163,7 +163,7 @@ def aggregate_periods(
                         else round(float(profit_factor), 4)
                     ),
                     "expectancy_per_trade": str(
-                        expectancy.quantize(Decimal("0.0001"))
+                        expectancy.quantize(Decimal("0.01"))
                     ),
                     "average_period_return": str(average_return),
                     "positive_periods": bucket["positive_periods"],
@@ -203,91 +203,6 @@ def aggregate_periods(
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
     return rows
-
-
-def strategy_004_promotion_gate(
-    aggregate_rows: list[dict[str, Any]],
-    *,
-    candidate_name: str = "strategy_004_candidate_c_controlled",
-    min_trades: int = 30,
-    min_profit_factor: Decimal = Decimal("1.25"),
-    max_drawdown_pct: Decimal = Decimal("0.05"),
-    min_positive_periods: int = 2,
-    forward_shadow_validated: bool = False,
-) -> dict[str, Any]:
-    candidate = next(
-        (
-            row for row in aggregate_rows
-            if row.get("variant") == candidate_name
-        ),
-        None,
-    )
-    if candidate is None:
-        return {
-            "candidate": candidate_name,
-            "historical_gate_passed": False,
-            "forward_shadow_validated": forward_shadow_validated,
-            "scalable_capital_merge_allowed": False,
-            "reason": "Strategy 004 candidate missing from aggregate results",
-            "criteria": {},
-        }
-
-    summary = candidate["summary"]
-    trades = int(summary.get("trades") or 0)
-    expectancy = Decimal(str(summary.get("expectancy_per_trade") or "0"))
-    pf_raw = summary.get("profit_factor")
-    profit_factor = (
-        Decimal(str(pf_raw))
-        if pf_raw is not None
-        else Decimal("999")
-    )
-    drawdown = Decimal(str(summary.get("max_drawdown_pct") or "0"))
-    positive_periods = int(summary.get("positive_periods") or 0)
-    periods = int(summary.get("periods") or 0)
-
-    criteria = {
-        "minimum_trades": {
-            "passed": trades >= min_trades,
-            "actual": trades,
-            "required": min_trades,
-        },
-        "positive_expectancy": {
-            "passed": expectancy > 0,
-            "actual": str(expectancy),
-            "required": "> 0",
-        },
-        "profit_factor": {
-            "passed": profit_factor >= min_profit_factor,
-            "actual": str(profit_factor),
-            "required": f">= {min_profit_factor}",
-        },
-        "period_consistency": {
-            "passed": positive_periods >= min_positive_periods,
-            "actual": f"{positive_periods}/{periods}",
-            "required": f">= {min_positive_periods} positive periods",
-        },
-        "drawdown": {
-            "passed": drawdown <= max_drawdown_pct,
-            "actual": str(drawdown),
-            "required": f"<= {max_drawdown_pct}",
-        },
-    }
-    historical_gate_passed = all(
-        item["passed"] for item in criteria.values()
-    )
-    return {
-        "candidate": candidate_name,
-        "historical_gate_passed": historical_gate_passed,
-        "forward_shadow_validated": forward_shadow_validated,
-        "scalable_capital_merge_allowed": (
-            historical_gate_passed and forward_shadow_validated
-        ),
-        "criteria": criteria,
-        "rule": (
-            "Scalable-capital changes remain blocked until historical "
-            "positive expectancy and a separate forward shadow sample both pass."
-        ),
-    }
 
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -332,11 +247,6 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     return {
         "aggregate_leaderboard": aggregate,
-        "strategy_004_gate": strategy_004_promotion_gate(
-            aggregate,
-            candidate_name=args.candidate_name,
-            min_trades=max(args.min_trades, 30),
-        ),
         "periods": period_results,
         "assumptions": {
             "initial_equity_per_period": args.initial_equity,
@@ -363,11 +273,6 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--spread-bps", default="5")
     value.add_argument("--slippage-bps", default="2")
     value.add_argument("--min-trades", type=int, default=20)
-    value.add_argument(
-        "--candidate-name",
-        default="strategy_004_candidate_c_controlled",
-        help="Research candidate evaluated by the Strategy 004 promotion gate.",
-    )
     return value
 
 

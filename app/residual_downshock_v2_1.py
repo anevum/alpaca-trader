@@ -236,7 +236,6 @@ def data_quality_pass(report: dict[str, Any], m: dict[str, Any]) -> bool:
         and float(report.get("synchronization_completeness", 0)) >= g["minimum_synchronized_five_minute_ratio_per_symbol_window"]
         and float(report.get("market_benchmark_completeness", 0)) >= g["minimum_market_benchmark_five_minute_ratio"]
         and float(report.get("sector_benchmark_completeness", 0)) >= g["minimum_sector_benchmark_five_minute_ratio"]
-        and float(report.get("model_availability_ratio", 0)) >= g["minimum_symbol_session_model_availability_ratio"]
     )
 
 

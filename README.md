@@ -1,6 +1,6 @@
-# Alpaca Trading Bot
+# RHEN
 
-Private ANEVUM service for Alpaca account monitoring and deterministic automated execution.
+RHEN is ANEVUM's private market-research and deterministic automated-execution service.
 
 ## Current build
 
@@ -97,7 +97,7 @@ New entries are blocked when:
 - equity-risk sizing would take gross exposure above `MAX_GROSS_EXPOSURE_PCT` of prior-close equity;
 - enough return observations exist and pairwise correlation with an open/planned position is at or above `MAX_PAIRWISE_CORRELATION`;
 - the candidate bar/confirmation data is stale or its quoted spread exceeds `MAX_SPREAD_PCT`;
-- the account-wide daily ANEVUM entry limit has been reached;
+- the account-wide daily RHEN entry limit has been reached;
 - cash is insufficient;
 - equity decline versus Alpaca `last_equity` reaches `MAX_DAILY_LOSS`;
 - the asset is not active, tradable and fractionable;
@@ -171,9 +171,39 @@ python scripts/strategy_lab.py \
 
 The tournament does not modify live configuration. Historical ranking is research evidence only; promotion to live parameters should require out-of-sample and shadow validation.
 
+## Automated improvement loop
+
+The production service includes a read-only post-close research reporter. It is
+separate from order execution and cannot change strategy parameters, capital,
+position limits, deployment settings, or promotion state.
+
+After 4:20 PM America/New_York on each completed Alpaca trading-calendar
+session, the reporter reconstructs RHEN-owned round trips from broker fills
+and bot client-order IDs; manual trades are excluded. It calculates measured
+realized P&L, wins/losses, win rate, expectancy, profit factor, average/median
+hold time, realized drawdown, symbol and exit-reason breakdowns, and MFE/MAE
+from paginated historical one-minute bars when available. Capped broker
+responses are explicitly flagged as data-quality warnings rather than treated
+as complete.
+
+On the final trading session of each ISO week, the same engine emits a weekly
+aggregate. Daily evidence is classified as KEEP, INVESTIGATE, or CHANGE, where
+CHANGE is reserved for implementation/safety defects; a small or weak trading
+sample remains INVESTIGATE rather than automatically rewriting the strategy.
+
+Reports flow through the canonical trading event sink with deterministic event
+keys. Historical or weekly results never authorize live promotion. A candidate
+strategy must still pass the separate offline development, validation, holdout,
+and forward-shadow gates that apply to its research path.
+
+Known evidence boundaries are explicit rather than estimated: signal-to-fill
+slippage is marked unavailable until the reporter has a canonical
+signal-reference read path, and the in-memory rejection funnel is identified as
+bounded when its 200-event runtime buffer is saturated.
+
 ## Deployment
 
-The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader`.
+The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader` (RHEN runtime).
 
 
 ## Durable canonical trading ledger
@@ -195,52 +225,3 @@ Safety behavior:
 - Ledger reconciliation does not modify strategy signals, sizing, or risk rules.
 
 Required persistence variables are documented in `.env.example`.
-
-
-## Edge discovery corpus
-
-The research-only Edge Discovery v1 pipeline searches for structural entry edge
-independently of the production BUY signal.
-
-The frozen corpus manifest is `research/edge-corpus-v1.json`. It contains:
-
-- 36 frozen candidate stocks/ETFs;
-- SPY, QQQ and SMH as frozen market-context references;
-- six development windows from January through early May 2026;
-- two validation windows from mid-May through June 2026;
-- a July historical holdout that is not fetched unless validation survivors exist;
-- August and September 2026 quarantine windows that are excluded from discovery
-  because earlier ANEVUM research already inspected them.
-
-Run the complete staged research pipeline with:
-
-```bash
-python scripts/edge_corpus.py --output edge-corpus-report.json
-```
-
-The first run downloads paginated Alpaca IEX one-minute history and caches it
-locally under `.edge_corpus/`. Later runs reuse the manifest-hashed cache.
-
-The pipeline evaluates five independent setup families under base, moderate and
-stress execution-cost assumptions. Development survivors are frozen before
-validation. Validation survivors are frozen before the holdout is opened.
-
-Possible terminal outcomes are explicit:
-
-- all families rejected in development;
-- all frozen families rejected in validation;
-- all validation survivors rejected by the holdout;
-- historical survivor requiring forward shadow validation.
-
-A historical survivor does not authorize live promotion, added capital or more
-simultaneous exposure. PR #28 remains gated until forward shadow and subsequent
-clean live evidence pass separately.
-
-If all five families are rejected, the report includes a next-generation
-research slate based on genuinely different information sources rather than
-retuning the rejected thresholds.
-
-
-<!-- Railway edge-corpus-v1 source refresh -->
-
-<!-- Railway edge-corpus-v1 module launch -->

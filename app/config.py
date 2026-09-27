@@ -129,9 +129,6 @@ class Settings(BaseSettings):
     max_vwap_extension_pct: Decimal = Field(
         default=Decimal("0.008"), alias="MAX_VWAP_EXTENSION_PCT"
     )
-    signal_persistence_bars: int = Field(
-        default=1, alias="SIGNAL_PERSISTENCE_BARS"
-    )
     loss_streak_limit: int = Field(default=2, alias="LOSS_STREAK_LIMIT")
     loss_streak_cooldown_minutes: int = Field(
         default=10, alias="LOSS_STREAK_COOLDOWN_MINUTES"
@@ -292,12 +289,6 @@ class Settings(BaseSettings):
         return hashlib.sha256(source).hexdigest()[:8]
 
     @property
-    def persistence_environment(self) -> str:
-        if self.scan_only:
-            return "shadow"
-        return self.trading_mode
-
-    @property
     def paper_execution_authorized(self) -> bool:
         return self.trading_mode == "paper" and self.execution_enabled and self.bot_armed
 
@@ -338,14 +329,6 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "TRADING_RUN_STARTED_AT must be an ISO-8601 timestamp with timezone"
                 ) from exc
-            if (
-                self.trading_mode == "live"
-                and not self.scan_only
-                and not self.strategy_version_id.upper().startswith("LIVE-")
-            ):
-                raise ValueError(
-                    "live execution runtime requires STRATEGY_VERSION_ID prefixed LIVE-"
-                )
         if self.bar_timeframe != "1Min":
             raise ValueError("BAR_TIMEFRAME must be 1Min for the opening-range strategy")
         if self.lookback_bars < 50:
@@ -356,8 +339,6 @@ class Settings(BaseSettings):
             raise ValueError("MIN_MOMENTUM_PCT must be between 0 and 0.05")
         if not Decimal("0") <= self.min_vwap_edge_pct < Decimal("0.05"):
             raise ValueError("MIN_VWAP_EDGE_PCT must be between 0 and 0.05")
-        if not 1 <= self.signal_persistence_bars <= 5:
-            raise ValueError("SIGNAL_PERSISTENCE_BARS must be between 1 and 5")
         if self.lookback_days < 1:
             raise ValueError("LOOKBACK_DAYS must be positive")
         if not 1 <= self.opening_range_minutes <= 30:

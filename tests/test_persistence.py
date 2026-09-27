@@ -341,109 +341,60 @@ def test_replaced_hardstop_inherits_bot_ownership_and_protective_semantics():
     ]
 
 
-class FakeResponse:
-    def __init__(self, status_code, payload):
-        self.status_code = status_code
-        self._payload = payload
-        self.text = str(payload)
-
-    def json(self):
-        return self._payload
-
-
-class RejectingHTTP:
-    def __init__(self, rejected_keys):
-        self.rejected_keys = set(rejected_keys)
-        self.calls = []
-
-    async def post(self, url, headers=None, json=None):
-        events = list((json or {}).get("events") or [])
-        keys = [str(event.get("event_key") or "") for event in events]
-        self.calls.append(keys)
-        if any(key in self.rejected_keys for key in keys):
-            return FakeResponse(
-                400,
-                {"error": "invalid_events", "rejected": keys},
-            )
-        return FakeResponse(202, {"ok": True, "received": len(events)})
-
-
-def test_reconciliation_snapshot_carries_position_excursions():
+def test_decision_cycle_event_is_deterministic_and_preserves_unavailable_quote():
     sink = CapturingSink()
-    events = sink._build_reconciliation_events(
-        account={
-            "equity": "100",
-            "last_equity": "100",
-            "cash": "80",
-            "buying_power": "80",
-        },
-        positions=[
-            {
-                "symbol": "SPY",
-                "qty": "0.2",
-                "market_value": "20",
-                "unrealized_pl": "0.1",
-            }
-        ],
-        orders=[],
-        fills=[],
-        correlation_id="cycle-metrics",
-        observed_at=datetime(2026, 9, 25, 18, 0, tzinfo=timezone.utc),
-        position_metrics={
+    started = datetime(2026, 9, 28, 13, 30, tzinfo=timezone.utc)
+    sink.record_decision_cycle(
+        correlation_id="cycle-telemetry-1",
+        cycle_started_at=started,
+        cycle_ended_at=started,
+        market_is_open=True,
+        active_universe=["SPY"],
+        scan={
             "SPY": {
-                "peak_return_pct": "0.0032",
-                "trough_return_pct": "-0.0014",
+                "action": "hold",
+                "symbol": "SPY",
+                "reference_price": "100",
+                "reason": "latest quote is missing or invalid",
+                "metadata": {"checks": {"momentum_ok": True}, "market_quality": {}},
             }
         },
+        cycle_outcome="no_qualified_candidates",
     )
-    snapshot = next(
-        event for event in events if event["event_type"] == "account_snapshot"
-    )
-    assert snapshot["payload"]["position_metrics"]["SPY"]["peak_return_pct"] == "0.0032"
-    assert snapshot["payload"]["position_metrics"]["SPY"]["trough_return_pct"] == "-0.0014"
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event["event_type"] == "decision_cycle"
+    assert event["event_key"] == "run-1:decision-cycle:cycle-telemetry-1"
+    candidate = event["payload"]["candidates"][0]
+    assert candidate["qualified"] is False
+    assert candidate["candidate_state"] == "rejected"
+    assert candidate["quote"]["bid"] is None
+    assert candidate["quote"]["ask"] is None
+    assert candidate["quote"]["midpoint"] is None
+    assert candidate["forward_outcomes_status"] == "pending"
 
 
-def test_invalid_noncritical_event_is_quarantined_without_poisoning_batch():
+def test_entry_intent_carries_cycle_and_decision_evidence():
     sink = CapturingSink()
-    events = [
-        sink._event(
-            event_type="runtime_start",
-            event_key="good-runtime-start",
-        ),
-        sink._event(
-            event_type="account_snapshot",
-            event_key="bad-account-snapshot",
-            payload={"equity": "100"},
-        ),
-        sink._event(
-            event_type="runtime_stop",
-            event_key="good-runtime-stop",
-        ),
-    ]
-    http = RejectingHTTP({"bad-account-snapshot"})
-
-    ok = asyncio.run(sink._send_batch(http, events))
-
-    assert ok is True
-    assert sink.sent_count == 2
-    assert sink.quarantined_count == 1
-    assert sink.last_quarantined_event["event_key"] == "bad-account-snapshot"
-    assert sink.last_error is None
-    assert any(call == ["bad-account-snapshot"] for call in http.calls)
-
-
-def test_invalid_critical_broker_event_fails_closed():
-    sink = CapturingSink()
-    event = sink._event(
-        event_type="broker_fill",
-        event_key="bad-broker-fill",
-        payload={"activity": {"id": "fill-1"}},
+    signal = SimpleNamespace(
+        symbol="SPY",
+        reference_price="100",
+        stop_price="99.65",
+        take_profit_price="100.50",
+        notional="20",
+        reason="qualified",
+        metadata={"market_quality": {"bid": "99.99", "ask": "100.01", "midpoint": "100.00", "spread_pct": "0.0002"}},
     )
-    http = RejectingHTTP({"bad-broker-fill"})
-
-    ok = asyncio.run(sink._send_batch(http, [event]))
-
-    assert ok is False
-    assert sink.quarantined_count == 0
-    assert "critical ingest event rejected" in sink.last_error
-    assert "bad-broker-fill" in sink.last_error
+    sink.emit_critical = lambda **kwargs: asyncio.sleep(0, result=(sink.events.append(kwargs) is None))
+    result = asyncio.run(sink.persist_entry_intent(
+        signal=signal,
+        qty="0.2",
+        client_order_id="anevum-spy-buy-test",
+        correlation_id="cycle-2",
+        intended_at=datetime(2026, 9, 28, 13, 31, tzinfo=timezone.utc),
+    ))
+    assert result is not None
+    payload = sink.events[0]["payload"]
+    assert payload["intent"]["payload"]["cycle_key"] == "run-1:cycle-2"
+    assert payload["intent"]["payload"]["decision_quote"]["midpoint"] == "100.00"
+    assert payload["intent"]["payload"]["decision_reference_price"] == "100"

@@ -99,8 +99,12 @@ class ExecutionEngine:
         )
 
     @staticmethod
-    def _entry_orders_today(orders: list[dict[str, Any]]) -> int:
-        today = datetime.now(NY).date()
+    def _entry_orders_today(
+        orders: list[dict[str, Any]],
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        today = (now or datetime.now(NY)).astimezone(NY).date()
         count = 0
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
@@ -172,8 +176,10 @@ class ExecutionEngine:
     def _latest_bot_exit_today(
         orders: list[dict[str, Any]],
         symbol: str,
+        *,
+        now: datetime | None = None,
     ) -> datetime | None:
-        today = datetime.now(NY).date()
+        today = (now or datetime.now(NY)).astimezone(NY).date()
         prefix = f"anevum-{symbol.lower()}-"
         latest: datetime | None = None
         for order in orders:
@@ -399,6 +405,51 @@ class ExecutionEngine:
         state["observed_peak_return_pct"] = str(observed_peak)
         state["observed_trough_return_pct"] = str(observed_trough)
 
+        if self.ledger is not None and hasattr(self.ledger, "record_position_metrics"):
+            peak_price = entry_price * (Decimal("1") + peak)
+            trough_price = entry_price * (Decimal("1") + trough)
+            peak_at = None
+            trough_at = None
+            if bars and entry_time is not None:
+                best_peak = Decimal("-Infinity")
+                best_trough = Decimal("Infinity")
+                for bar in bars:
+                    stamp = self._timestamp(bar.get("t"))
+                    if stamp is None or stamp < entry_time:
+                        continue
+                    high = Decimal(str(bar.get("h", "0") or "0"))
+                    low = Decimal(str(bar.get("l", "0") or "0"))
+                    if high > 0 and high > best_peak:
+                        best_peak = high
+                        peak_at = stamp
+                    if low > 0 and low < best_trough:
+                        best_trough = low
+                        trough_at = stamp
+            metrics = {
+                "max_favorable_excursion": str(peak),
+                "max_adverse_excursion": str(trough),
+                "peak_favorable_price": str(peak_price),
+                "peak_adverse_price": str(trough_price),
+                "peak_favorable_at": peak_at.isoformat() if peak_at else None,
+                "peak_adverse_at": trough_at.isoformat() if trough_at else None,
+                "time_to_mfe_ms": (
+                    max(int((peak_at - entry_time).total_seconds() * 1000), 0)
+                    if peak_at is not None and entry_time is not None else None
+                ),
+                "time_to_mae_ms": (
+                    max(int((trough_at - entry_time).total_seconds() * 1000), 0)
+                    if trough_at is not None and entry_time is not None else None
+                ),
+                "entry_reference_price": None,
+                "source": "live_observed_bars" if bars and entry_time is not None else "live_position_snapshot",
+            }
+            self.ledger.record_position_metrics(
+                symbol=symbol,
+                metrics=metrics,
+                correlation_id=self.state.current_correlation_id,
+                observed_at=datetime.now(NY),
+            )
+
         if (
             self.settings.profit_protect_enabled
             and peak >= self.settings.profit_protect_activation_pct
@@ -586,6 +637,7 @@ class ExecutionEngine:
         spread_pct = (ask - bid) / midpoint if midpoint > 0 else Decimal("1")
         details["bid"] = str(bid)
         details["ask"] = str(ask)
+        details["midpoint"] = str(midpoint)
         details["spread_pct"] = str(spread_pct)
         if spread_pct > self.settings.max_spread_pct:
             return (
@@ -596,6 +648,7 @@ class ExecutionEngine:
             )
 
         quote_stamp = self._timestamp(quote.get("t", quote.get("timestamp")))
+        details["quote_timestamp"] = quote_stamp.isoformat() if quote_stamp is not None else None
         if quote_stamp is not None:
             quote_age_seconds = max((now - quote_stamp).total_seconds(), 0)
             details["quote_age_seconds"] = round(quote_age_seconds, 3)
@@ -1440,6 +1493,7 @@ class ExecutionEngine:
 
     async def run_once(self) -> dict[str, Any]:
         self.state.mark_strategy()
+        self.state.last_execution_context = {}
 
         if self.state.paused:
             self.state.last_decision = "runtime paused"
@@ -1554,6 +1608,63 @@ class ExecutionEngine:
                 ]
             )
         )
+        self.state.last_execution_context = {
+            "decision_at": now.isoformat(),
+            "entry_symbols": list(entry_symbols),
+            "account": {
+                key: account.get(key)
+                for key in (
+                    "cash",
+                    "equity",
+                    "last_equity",
+                    "buying_power",
+                    "account_blocked",
+                    "trading_blocked",
+                )
+            },
+            "positions": [
+                {
+                    key: position.get(key)
+                    for key in (
+                        "symbol",
+                        "qty",
+                        "market_value",
+                        "avg_entry_price",
+                        "current_price",
+                    )
+                }
+                for position in positions
+            ],
+            "open_order_symbols": sorted(
+                {
+                    str(order.get("symbol") or "").upper()
+                    for order in open_orders
+                    if order.get("symbol")
+                }
+            ),
+            "recent_orders": [
+                {
+                    key: order.get(key)
+                    for key in (
+                        "id",
+                        "client_order_id",
+                        "symbol",
+                        "side",
+                        "status",
+                        "filled_qty",
+                        "filled_avg_price",
+                        "filled_at",
+                        "submitted_at",
+                    )
+                }
+                for order in recent_orders
+            ],
+            "startup_reconciled": self.state.startup_reconciled,
+            "reconciliation_safe": self.state.reconciliation_safe,
+            "entries_enabled": self.state.entries_enabled,
+            "assets": {},
+        }
+
         market_bars = await self.market_data.bars_many(symbols)
 
         buy_signals: list[Signal] = []
@@ -1571,6 +1682,13 @@ class ExecutionEngine:
                 order_notional=self.settings.order_notional,
                 now=now,
             )
+            signal.metadata = dict(signal.metadata or {})
+            signal.metadata["strategy_evaluation"] = {
+                "action": signal.action,
+                "reason": signal.reason,
+            }
+            if not scan:
+                signal.metadata["_comparison_context"] = self.state.last_execution_context
             scan[symbol] = self._signal_payload(signal)
             if signal.action == "buy":
                 buy_signals.append(signal)
@@ -1736,7 +1854,7 @@ class ExecutionEngine:
             str(order.get("symbol", "")).upper()
             for order in open_orders
         }
-        entry_count = self._entry_orders_today(recent_orders)
+        entry_count = self._entry_orders_today(recent_orders, now=now)
         if self.settings.portfolio_limit_mode == "risk":
             cycle_limit: int | None = (
                 self.settings.max_new_entries_per_cycle
@@ -1804,7 +1922,11 @@ class ExecutionEngine:
                 continue
 
             if self.settings.reentry_cooldown_minutes > 0:
-                latest_exit = self._latest_bot_exit_today(recent_orders, symbol)
+                latest_exit = self._latest_bot_exit_today(
+                    recent_orders,
+                    symbol,
+                    now=now,
+                )
                 if latest_exit is not None:
                     minutes_since_exit = (now - latest_exit).total_seconds() / 60
                     if minutes_since_exit < self.settings.reentry_cooldown_minutes:
@@ -1868,6 +1990,11 @@ class ExecutionEngine:
                 continue
 
             asset = await self.client.asset(symbol)
+            self.state.last_execution_context.setdefault("assets", {})[symbol] = {
+                "status": asset.get("status"),
+                "tradable": asset.get("tradable"),
+                "fractionable": asset.get("fractionable"),
+            }
             if (
                 str(asset.get("status", "")).lower() != "active"
                 or not bool(asset.get("tradable"))

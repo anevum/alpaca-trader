@@ -371,7 +371,6 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         regime_min_confirmations: int = 1,
         regime_min_return_pct: Decimal = Decimal("0"),
         max_vwap_extension_pct: Decimal = Decimal("0.008"),
-        signal_persistence_bars: int = 1,
         volatility_stop_enabled: bool = False,
         volatility_stop_multiplier: Decimal = Decimal("2.0"),
         volatility_stop_lookback_bars: int = 8,
@@ -396,76 +395,10 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         self.regime_min_confirmations = regime_min_confirmations
         self.regime_min_return_pct = regime_min_return_pct
         self.max_vwap_extension_pct = max_vwap_extension_pct
-        self.signal_persistence_bars = signal_persistence_bars
         self.volatility_stop_enabled = volatility_stop_enabled
         self.volatility_stop_multiplier = volatility_stop_multiplier
         self.volatility_stop_lookback_bars = volatility_stop_lookback_bars
         self.max_dynamic_stop_pct = max_dynamic_stop_pct
-
-    def _candidate_setup_persistence(
-        self,
-        session: list[dict[str, Any]],
-    ) -> tuple[int, list[dict[str, Any]]]:
-        """Count consecutive completed bars that satisfy the core entry setup.
-
-        Production keeps SIGNAL_PERSISTENCE_BARS=1. Research variants can require
-        follow-through across multiple bars without changing confirmations,
-        ranking, risk, or exit behavior.
-        """
-        passes = 0
-        details: list[dict[str, Any]] = []
-
-        for offset in range(self.signal_persistence_bars):
-            end = len(session) - offset
-            prefix = session[:end]
-            if len(prefix) < self.slow_window + 1:
-                break
-
-            closes = [self._d(bar["c"]) for bar in prefix]
-            current_close = closes[-1]
-            previous_close = closes[-2]
-            fast_average = self._mean(closes[-self.fast_window:])
-            slow_average = self._mean(closes[-self.slow_window:])
-            momentum_anchor = closes[-(self.fast_window + 1)]
-            momentum_pct = (
-                (current_close - momentum_anchor) / momentum_anchor
-                if momentum_anchor > 0
-                else Decimal("0")
-            )
-            session_vwap = self._vwap(prefix)
-            vwap_edge_pct = (
-                (current_close - session_vwap) / session_vwap
-                if session_vwap > 0
-                else Decimal("0")
-            )
-
-            checks = {
-                "fast_above_slow": fast_average > slow_average,
-                "rising": current_close > previous_close,
-                "momentum_ok": momentum_pct >= self.min_momentum_pct,
-                "vwap_ok": (
-                    current_close > session_vwap
-                    and vwap_edge_pct >= self.min_vwap_edge_pct
-                ),
-                "vwap_extension_ok": (
-                    vwap_edge_pct <= self.max_vwap_extension_pct
-                ),
-            }
-            ok = all(checks.values())
-            details.append(
-                {
-                    "bar_time": self._timestamp(prefix[-1]).isoformat(),
-                    "ok": ok,
-                    "momentum_pct": str(momentum_pct),
-                    "vwap_edge_pct": str(vwap_edge_pct),
-                    "checks": checks,
-                }
-            )
-            if not ok:
-                break
-            passes += 1
-
-        return passes, details
 
     def _effective_stop_pct(
         self,
@@ -707,10 +640,6 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         momentum_ok = momentum_pct >= self.min_momentum_pct
         vwap_ok = current_close > session_vwap and vwap_edge_pct >= self.min_vwap_edge_pct
         vwap_extension_ok = vwap_edge_pct <= self.max_vwap_extension_pct
-        persistence_passes, persistence_details = self._candidate_setup_persistence(
-            session
-        )
-        persistence_ok = persistence_passes >= self.signal_persistence_bars
 
         metadata: dict[str, Any] = {
             "bar_time": self._timestamp(session[-1]).isoformat(),
@@ -727,16 +656,12 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
                 "momentum_ok": momentum_ok,
                 "vwap_ok": vwap_ok,
                 "vwap_extension_ok": vwap_extension_ok,
-                "persistence_ok": persistence_ok,
                 "confirmations_ok": False,
                 "regime_ok": False,
             },
             "confirmations": {},
             "regime_confirmations": {},
             "max_vwap_extension_pct": str(self.max_vwap_extension_pct),
-            "signal_persistence_bars": self.signal_persistence_bars,
-            "signal_persistence_passes": persistence_passes,
-            "signal_persistence": persistence_details,
         }
 
         confirmation_passes = 0
@@ -824,16 +749,6 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
                 action="hold",
                 symbol=symbol,
                 reason="price is too extended above session VWAP",
-                metadata=metadata,
-            )
-        if not persistence_ok:
-            return Signal(
-                action="hold",
-                symbol=symbol,
-                reason=(
-                    "candidate setup did not persist for required bars "
-                    f"({persistence_passes}/{self.signal_persistence_bars})"
-                ),
                 metadata=metadata,
             )
         if not confirmations_ok:

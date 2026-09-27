@@ -216,9 +216,3 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-
-# Local historical research corpus and generated reports
-.edge_corpus/
-edge-corpus-report*.json
-edge-discovery-report*.json

@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from .audit import deterministic_run_key, input_fingerprint
+from .classification import classify_structured_evidence, report_evidence
+from .evidence import (
+    current_strategy_identity,
+    experiment_by_key,
+    experiment_protected_state,
+)
+from .models import CanonicalEvidence, QueueItem, ResearchCategory, deterministic_dict
+from .policy import EDGE_DISCOVERY_V1_EXPERIMENT_KEY, RDR_V21_EXPERIMENT_KEY
+from .queue import build_queue
+
+
+def _queue_record(item: QueueItem) -> dict[str, Any]:
+    return {
+        "research_question_id": item.research_question_id,
+        "question_record_id": str(item.snapshot.question_record_id),
+        "status": item.snapshot.status,
+        "category": item.classification.category.value,
+        "priority_score": item.priority_score,
+        "evidence_integrity_blocker": (
+            item.classification.evidence_integrity_blocker
+        ),
+        "requires_semantic_review": item.classification.requires_semantic_review,
+        "priority_inputs": {
+            "severity": item.severity,
+            "recurrence": item.recurrence,
+            "research_value": item.research_value,
+            "readiness": item.readiness,
+            "estimated_compute_cost": item.estimated_compute_cost,
+            "estimated_llm_cost": item.estimated_llm_cost,
+        },
+    }
+
+
+class ResearchAgentRunner:
+    """Deterministic review coordinator with no execution or model dependencies."""
+
+    def __init__(self, evidence: CanonicalEvidence):
+        self.evidence = evidence
+        self._seen_run_keys = {
+            str(row.get("run_key"))
+            for row in evidence.agent_runs
+            if row.get("run_key")
+        }
+
+    def status(self) -> dict[str, Any]:
+        version, name = current_strategy_identity(self.evidence)
+        queue = build_queue(self.evidence.research_questions)
+        rdr = experiment_by_key(self.evidence, RDR_V21_EXPERIMENT_KEY)
+        edge = experiment_by_key(
+            self.evidence,
+            EDGE_DISCOVERY_V1_EXPERIMENT_KEY,
+        )
+        rdr_state = experiment_protected_state(rdr) if rdr else None
+        if rdr_state is not None:
+            rdr_state["interpretation"] = (
+                "CORPUS_QUALITY_FAILURE_NOT_STRATEGY_REJECTION"
+                if rdr_state.get("survivor_state")
+                == "corpus_quality_failed_pre_performance"
+                else "UNCLASSIFIED"
+            )
+        edge_closed = bool(
+            edge
+            and edge.get("status") == "rejected"
+            and edge.get("survivor_state") == "all_rejected"
+        )
+        return {
+            "agent_version": "rhen-research-agent-v1-foundation",
+            "mode": "DETERMINISTIC_ONLY",
+            "live_execution_connected": False,
+            "scheduler_configured": False,
+            "llm_usage": {"invoked": False},
+            "current_strategy": {"version_id": version, "strategy_name": name},
+            "question_history_count": len(self.evidence.research_questions),
+            "open_queue_count": len(queue),
+            "experiment_count": len(self.evidence.experiments),
+            "decision_count": len(self.evidence.research_decisions),
+            "rdr_v2_1": rdr_state,
+            "edge_discovery_v1": {
+                "closed": edge_closed,
+                "status": edge.get("status") if edge else None,
+                "survivor_state": edge.get("survivor_state") if edge else None,
+                "automatic_revival_allowed": False,
+            },
+        }
+
+    def daily_review(self, *, dry_run: bool) -> dict[str, Any]:
+        if not dry_run:
+            raise ValueError("foundation daily review is dry-run only")
+        report = self.evidence.latest_daily_report
+        if not report:
+            raise ValueError("no canonical daily report is available")
+        reference = str(report.get("session") or report.get("report_key") or "unknown")
+        return self._review("daily", reference, report)
+
+    def weekly_review(self, *, dry_run: bool) -> dict[str, Any]:
+        if not dry_run:
+            raise ValueError("foundation weekly review is dry-run only")
+        report = self.evidence.latest_weekly_report
+        if not report:
+            raise ValueError("no canonical weekly report is available")
+        reference = str(
+            report.get("period_end")
+            or report.get("week_end")
+            or report.get("report_key")
+            or "unknown"
+        )
+        return self._review("weekly", reference, report)
+
+    def _review(
+        self,
+        cadence: str,
+        reference: str,
+        report: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        queue = build_queue(self.evidence.research_questions)
+        evidence_material = {
+            "cadence": cadence,
+            "report": report,
+            "current_strategy": self.evidence.current_strategy,
+            "question_snapshots": [deterministic_dict(row) for row in self.evidence.research_questions],
+            "experiments": list(self.evidence.experiments),
+            "research_decisions": list(self.evidence.research_decisions),
+            "evidence_cutoff": self.evidence.evidence_cutoff,
+        }
+        fingerprint = input_fingerprint(evidence_material)
+        run_key = deterministic_run_key(
+            cadence=cadence,
+            trigger_reference=reference,
+            fingerprint=fingerprint,
+        )
+        duplicate = run_key in self._seen_run_keys
+        self._seen_run_keys.add(run_key)
+
+        classification = classify_structured_evidence(report_evidence(report))
+        queue_records = [_queue_record(item) for item in queue]
+        blockers = [
+            row for row in queue_records if row["evidence_integrity_blocker"]
+        ]
+        strategy_questions = [
+            row
+            for row in queue_records
+            if row["category"] == ResearchCategory.STRATEGY_HYPOTHESIS.value
+        ]
+        proposed_updates = [
+            {
+                "research_question_id": row["research_question_id"],
+                "category": row["category"],
+                "priority_score": row["priority_score"],
+                "evidence_cutoff": (
+                    self.evidence.evidence_cutoff.isoformat()
+                    if self.evidence.evidence_cutoff
+                    else None
+                ),
+                "write_performed": False,
+            }
+            for row in queue_records
+        ]
+        semantic_review_warranted = bool(strategy_questions) and not bool(blockers)
+        if cadence == "weekly" and classification.evidence_integrity_blocker:
+            semantic_review_warranted = False
+
+        return {
+            "mode": "DRY_RUN",
+            "cadence": cadence,
+            "run_key": run_key,
+            "input_fingerprint": fingerprint,
+            "duplicate": duplicate,
+            "trigger_reference": reference,
+            "evidence_cutoff": (
+                self.evidence.evidence_cutoff.isoformat()
+                if self.evidence.evidence_cutoff
+                else None
+            ),
+            "classification": deterministic_dict(classification),
+            "queue": queue_records,
+            "blocker_count": len(blockers),
+            "strategy_question_count": len(strategy_questions),
+            "semantic_review_warranted": semantic_review_warranted,
+            "proposed_state_updates": proposed_updates,
+            "experiment_recommendation": None,
+            "llm_usage": {"invoked": False, "provider": None, "model": None},
+            "mutations": {
+                "audit_record_persisted": False,
+                "research_questions_written": 0,
+                "experiments_written": 0,
+                "research_stages_opened": 0,
+                "strategy_changes": 0,
+                "broker_calls": 0,
+                "market_bar_reads": 0,
+            },
+        }
+

@@ -1,0 +1,160 @@
+{
+  "schema_version": "rhen-rdr21-development-current-state-v1",
+  "experiment": {
+    "experiment_id": "1e0e2f4a-6fef-4b2b-923f-630fa830c458",
+    "experiment_key": "edge-discovery-v2-residual-downshock-rebound-v2.1",
+    "status": "completed",
+    "stage_reached": "development_corpus_gate",
+    "terminal_decision": "DEVELOPMENT CORPUS FAIL; performance evaluation not run",
+    "terminal_reason": "corpus_quality_gate_failed_before_performance"
+  },
+  "methodology": {
+    "state": "frozen",
+    "version": "residual-downshock-rebound-v2.1",
+    "manifest_path": "research/residual-downshock-rebound-v2.1.json",
+    "manifest_checksum_sha256": "92f8bad6362144805cc262c9188d199111a7f9c088caec56c0b0e6d579ffef7a",
+    "corpus_gate_threshold": 0.9,
+    "changed_by_canonicalization": false
+  },
+  "execution": {
+    "state": "completed_at_corpus_gate",
+    "stage": "development",
+    "first_verified_deployment_created_at": "2026-09-26T20:19:01.390Z",
+    "last_verified_report_generated_at": "2026-09-26T20:56:54.814530Z",
+    "development_windows_processed": [
+      "dev-01",
+      "dev-02",
+      "dev-03",
+      "dev-04",
+      "dev-05",
+      "dev-06"
+    ],
+    "tradable_symbol_count": 23
+  },
+  "corpus_gate": {
+    "state": "failed",
+    "verdict": "FAIL",
+    "coverage_record_count": 138,
+    "exact_database_report_match_count": 138,
+    "missing_or_mismatched_database_report_count": 0,
+    "expected_sessions_fully_represented_record_count": 138,
+    "missing_session_record_count": 0,
+    "partial_session_record_count": 33,
+    "pagination_complete_record_count": 138,
+    "raw_one_minute_bar_count": 726277,
+    "expected_five_minute_capacity": 156078,
+    "represented_five_minute_observation_count": 155604,
+    "expected_model_observation_capacity": 130065,
+    "represented_model_observation_count": 128943,
+    "failing_symbol_windows": [
+      {
+        "window": "dev-04",
+        "symbol": "COST",
+        "synchronization_completeness": 0.8789743589743589,
+        "model_availability_ratio": 0.8789743589743589,
+        "model_observation_count": 857,
+        "expected_model_observation_count": 975
+      },
+      {
+        "window": "dev-06",
+        "symbol": "COST",
+        "synchronization_completeness": 0.84,
+        "model_availability_ratio": 0.84,
+        "model_observation_count": 819,
+        "expected_model_observation_count": 975
+      }
+    ]
+  },
+  "performance_evaluation": {
+    "state": "not_run",
+    "configurations_defined": 6,
+    "configurations_evaluated": 0,
+    "selected_configuration_id": null,
+    "performance_result_record_count": 0
+  },
+  "stage_access": {
+    "development": {
+      "opened": true,
+      "executed": true
+    },
+    "validation": {
+      "eligible": false,
+      "opened": false,
+      "state": "locked"
+    },
+    "holdout": {
+      "opened": false,
+      "state": "locked"
+    },
+    "quarantine": {
+      "accessed": false,
+      "state": "untouched"
+    },
+    "latest_performance_date_accessed": "2026-05-08"
+  },
+  "canonicalization": {
+    "state": "complete",
+    "completed_at": "2026-09-27T01:44:17.696014Z",
+    "supabase_migration_version": "20260927014417",
+    "supabase_migration_name": "canonicalize_rdr21_development_corpus_failure",
+    "source_branch": "rdr21-development-canonicalization-20260927",
+    "artifact_commit": "9767f56d457302d496b1b5f3245ca5e8282f0e7c",
+    "migration_commit": "dc380aec59e594616411a3b31c048ca394c54a5e",
+    "canonical_report_path": "research/artifacts/residual-downshock-rebound-v2.1/development-report-d408a930.json",
+    "dual_report_verification_path": "research/artifacts/residual-downshock-rebound-v2.1/dual-report-verification.json"
+  },
+  "provenance": {
+    "report_declared_source_commit": "46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc",
+    "actual_railway_source_commit": "4f42fbcae33526659b6336ecd68808c53ad351f1",
+    "canonical_report_deployment_id": "d408a930-6bb9-4f3b-b353-a832633f9cfd",
+    "corroborating_report_deployment_id": "ded64342-ee58-47db-8378-8bc8dfa8b6ba",
+    "canonical_report_sha256": "addf91840e07c94a564f5a00b0acf0ae3dfa6f2dda1d32b4dfd8a3250575e610",
+    "semantic_payload_sha256": "71a7636b6d31694899fd55b2d2d6d4f6f8f07452ec9204bbe1c09b1fc34edaa9",
+    "coverage_matrix_sha256": "91c34897e90e68e16d52f2a21eac428751d709d58cd886e0993a8529b9344fb1",
+    "symbol_window_ratio_matrix_sha256": "d2a4fb59417795989c59a5aba462cf34fad542346124f655f620189857605367",
+    "evaluator_and_manifest_blobs_verified_identical": true,
+    "future_provenance_fix_branch": "rdr21-provenance-fix-20260927",
+    "future_provenance_fix_commit": "1f5f84dc99017dd9dc28909cbf6151d3e4a4aced"
+  },
+  "production_impact": {
+    "behavior_changed": false,
+    "deployment_triggered": false,
+    "live_strategy_version": "LIVE-2026-09-25-003",
+    "live_strategy_name": "rolling_momentum_vwap"
+  },
+  "next_research_question": null,
+  "data_quality_closeout": {
+    "state": "closed",
+    "classification": "corpus_quality_failure_not_performance_rejection",
+    "cause_assessment": "Available evidence indicates the COST shortfall in dev-04 and dev-06 is attributable to sparsity in the frozen Alpaca IEX source data.",
+    "frozen_threshold": 0.9,
+    "evidence": {
+      "all_expected_sessions_represented": true,
+      "pagination_complete": true,
+      "spy_context_complete": true,
+      "xlp_context_complete": true,
+      "repeated_development_executions_substantively_deterministic": true,
+      "historical_cost_iex_materially_sparser_than_sip_on_inspected_dates": true
+    },
+    "hypothesis_interpretation": "No inference for or against the residual-rebound hypothesis is permitted because configuration performance evaluation did not occur.",
+    "methodology_changes_not_permitted": [
+      "switch IEX to SIP",
+      "forward fill",
+      "interpolation",
+      "synthetic bars",
+      "lower the 0.90 threshold",
+      "remove COST",
+      "replace COST",
+      "change synchronization requirements"
+    ],
+    "future_research_rule": "Any SIP-based or alternate corpus-rule research must be a new separately frozen experiment version, not a continuation of v2.1."
+  },
+  "source_control_closeout": {
+    "canonicalization_branch_head": "0664b17c941230df39d4c5da951561589e7033e9",
+    "integration_method": "fast-forward",
+    "provenance_fix_branch": "rdr21-provenance-fix-20260927",
+    "provenance_fix_branch_merged": false,
+    "provenance_fix_applicable_to_canonical_main": false,
+    "provenance_fix_reason": "The affected one-shot residual_downshock_service.py and residual_downshock_execution.py are not present on canonical main."
+  }
+}
