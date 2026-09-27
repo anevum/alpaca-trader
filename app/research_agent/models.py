@@ -44,6 +44,78 @@ class StageOutcome(str, Enum):
     EXECUTION_FAIL = "EXECUTION_FAIL"
 
 
+class DesignCheckStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    WARNING = "WARNING"
+
+
+class FeedEntitlement(str, Enum):
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+    UNAUTHORIZED = "UNAUTHORIZED"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchWindow:
+    window_id: str
+    stage: str
+    starts_on: date | str
+    ends_on: date | str
+    expected_sessions: tuple[date | str, ...]
+    access: str = "locked"
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentProposal:
+    proposal_version: str
+    proposal_id: str
+    revision: int
+    revision_reason: str
+    research_question_id: str
+    title: str
+    research_family: str
+    hypothesis: str
+    null_or_falsification_statement: str
+    rationale: Mapping[str, Any]
+    source_evidence: tuple[Mapping[str, Any], ...]
+    evidence_cutoff: datetime | str
+    economic_mechanism: str
+    primary_endpoint: str
+    secondary_diagnostics: tuple[str, ...]
+    tradable_universe: tuple[str, ...]
+    market_benchmark: str | None
+    sector_or_context_mapping: Mapping[str, str]
+    data_provider: str
+    data_feed: str
+    raw_interval: str
+    derived_interval: str
+    development_windows: tuple[ResearchWindow, ...]
+    validation_windows: tuple[ResearchWindow, ...]
+    holdout_windows: tuple[ResearchWindow, ...]
+    quarantine_rule: str
+    cost_scenarios: tuple[Mapping[str, Any], ...]
+    controls: tuple[Mapping[str, Any], ...]
+    configurations: tuple[Mapping[str, Any], ...]
+    sample_floors: Mapping[str, int]
+    corpus_quality_floors: Mapping[str, Any]
+    concentration_limits: Mapping[str, Any]
+    robustness_tests: tuple[str, ...]
+    uncertainty_method: Mapping[str, Any]
+    multiple_testing_method: Mapping[str, Any] | None
+    survivor_selection_rule: tuple[str, ...] | None
+    stage_gates: Mapping[str, Any]
+    terminal_rejection_criteria: tuple[str, ...]
+    created_from_agent_run: UUID | str
+    created_at: datetime | str
+    source_commit: str
+    design_warnings: tuple[str, ...] = ()
+    requires_holdout: bool = True
+    feasibility_required: bool = True
+    market_benchmark_required: bool = True
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceClassification:
     category: ResearchCategory
@@ -181,4 +253,3 @@ def canonical_json(value: Any) -> str:
         ensure_ascii=False,
         allow_nan=False,
     )
-

@@ -24,12 +24,11 @@ def test_terminal_rdr_and_rejected_edge_family_are_protected():
         policy.assert_family_may_be_proposed("controlled continuation")
 
 
-def test_only_validation_and_holdout_start_are_protected_targets():
+def test_development_validation_and_holdout_start_are_protected_targets():
+    assert SafetyPolicy.requires_authorization(
+        ExperimentWorkflowState.DEVELOPMENT_RUNNING
+    )
     assert SafetyPolicy.requires_authorization(
         ExperimentWorkflowState.VALIDATION_RUNNING
     )
     assert SafetyPolicy.requires_authorization(ExperimentWorkflowState.HOLDOUT_RUNNING)
-    assert not SafetyPolicy.requires_authorization(
-        ExperimentWorkflowState.DEVELOPMENT_RUNNING
-    )
-
