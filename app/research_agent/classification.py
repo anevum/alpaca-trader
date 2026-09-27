@@ -66,33 +66,36 @@ def classify_structured_evidence(
     completeness = _upper(item.get("completeness_state"))
     data_status = _upper(item.get("data_status"))
     missing_sessions = _integer(item, "missing_session_count")
+    complete_rows = _integer(item, "complete_rows")
     incomplete_rows = _integer(item, "incomplete_rows")
+    error_rows = _integer(item, "error_rows")
     unreconstructable = _integer(item, "unreconstructable_count")
     pagination_complete = item.get("pagination_complete")
     performance_evaluated = item.get("performance_evaluated")
 
-    if corpus_gate in {"FAIL", "FAILED", "CORPUS_FAIL"}:
-        reason_codes.append("CORPUS_GATE_FAILED")
-    if survivor_state == "CORPUS_QUALITY_FAILED_PRE_PERFORMANCE":
-        reason_codes.append("CORPUS_QUALITY_FAILED_PRE_PERFORMANCE")
-    if completeness in DATA_QUALITY_STATES or data_status in DATA_QUALITY_STATES:
-        reason_codes.append("INCOMPLETE_CANONICAL_EVIDENCE")
-    if missing_sessions:
-        reason_codes.append("MISSING_SESSIONS")
-    if incomplete_rows:
-        reason_codes.append("INCOMPLETE_FORWARD_OUTCOMES")
-    if unreconstructable:
-        reason_codes.append("UNRECONSTRUCTABLE_EVIDENCE")
-    if pagination_complete is False:
-        reason_codes.append("PAGINATION_INCOMPLETE")
+    blocking_reasons: list[str] = []
+    limitation_reasons: list[str] = []
 
-    if reason_codes:
-        return EvidenceClassification(
-            category=ResearchCategory.DATA_QUALITY,
-            reason_codes=tuple(dict.fromkeys(reason_codes)),
-            evidence_integrity_blocker=True,
-            requires_semantic_review=False,
-        )
+    if corpus_gate in {"FAIL", "FAILED", "CORPUS_FAIL"}:
+        blocking_reasons.append("CORPUS_GATE_FAILED")
+    if survivor_state == "CORPUS_QUALITY_FAILED_PRE_PERFORMANCE":
+        blocking_reasons.append("CORPUS_QUALITY_FAILED_PRE_PERFORMANCE")
+    if completeness in DATA_QUALITY_STATES or data_status in DATA_QUALITY_STATES:
+        blocking_reasons.append("INCOMPLETE_CANONICAL_EVIDENCE")
+    if missing_sessions:
+        blocking_reasons.append("MISSING_SESSIONS")
+    if error_rows:
+        blocking_reasons.append("FORWARD_OUTCOME_ERRORS")
+    if pagination_complete is False:
+        blocking_reasons.append("PAGINATION_INCOMPLETE")
+
+    # Missing exact forward bars and explicitly unreconstructable historical
+    # replay rows remain visible evidence limitations. They do not invalidate
+    # unrelated research unless a specific question requires those records.
+    if incomplete_rows:
+        limitation_reasons.append("INCOMPLETE_FORWARD_OUTCOMES")
+    if unreconstructable:
+        limitation_reasons.append("UNRECONSTRUCTABLE_EVIDENCE")
 
     operational_statuses = {
         _upper(item.get("status")),
@@ -113,8 +116,39 @@ def classify_structured_evidence(
     if operational_counts or operational_statuses.intersection(OPERATIONAL_STATES):
         return EvidenceClassification(
             category=ResearchCategory.OPERATIONAL_DEFECT,
-            reason_codes=("EXPLICIT_OPERATIONAL_FAILURE",),
+            reason_codes=tuple(
+                dict.fromkeys(["EXPLICIT_OPERATIONAL_FAILURE", *limitation_reasons])
+            ),
             evidence_integrity_blocker=True,
+        )
+
+    explicit_codes = {_upper(code) for code in _strings(item.get("warning_codes"))}
+    if explicit_codes.intersection(OPERATIONAL_STATES):
+        return EvidenceClassification(
+            category=ResearchCategory.OPERATIONAL_DEFECT,
+            reason_codes=tuple(
+                sorted(explicit_codes.intersection(OPERATIONAL_STATES))
+            ),
+            evidence_integrity_blocker=True,
+        )
+
+    if blocking_reasons or explicit_codes.intersection(DATA_QUALITY_STATES):
+        reasons = blocking_reasons + list(
+            sorted(explicit_codes.intersection(DATA_QUALITY_STATES))
+        ) + limitation_reasons
+        return EvidenceClassification(
+            category=ResearchCategory.DATA_QUALITY,
+            reason_codes=tuple(dict.fromkeys(reasons)),
+            evidence_integrity_blocker=True,
+            requires_semantic_review=False,
+        )
+
+    if limitation_reasons:
+        return EvidenceClassification(
+            category=ResearchCategory.DATA_QUALITY,
+            reason_codes=tuple(dict.fromkeys(limitation_reasons)),
+            evidence_integrity_blocker=False,
+            requires_semantic_review=False,
         )
 
     if bool(item.get("all_recorded_as_operational")):
@@ -153,20 +187,6 @@ def classify_structured_evidence(
             requires_semantic_review=True,
         )
 
-    explicit_codes = {_upper(code) for code in _strings(item.get("warning_codes"))}
-    if explicit_codes.intersection(DATA_QUALITY_STATES):
-        return EvidenceClassification(
-            category=ResearchCategory.DATA_QUALITY,
-            reason_codes=tuple(sorted(explicit_codes.intersection(DATA_QUALITY_STATES))),
-            evidence_integrity_blocker=True,
-        )
-    if explicit_codes.intersection(OPERATIONAL_STATES):
-        return EvidenceClassification(
-            category=ResearchCategory.OPERATIONAL_DEFECT,
-            reason_codes=tuple(sorted(explicit_codes.intersection(OPERATIONAL_STATES))),
-            evidence_integrity_blocker=True,
-        )
-
     return EvidenceClassification(
         category=ResearchCategory.NOISE_INSUFFICIENT,
         reason_codes=("AMBIGUOUS_OR_INSUFFICIENT_STRUCTURED_EVIDENCE",),
@@ -194,12 +214,27 @@ def report_evidence(report: Mapping[str, Any] | None) -> dict[str, Any]:
         for row in live_summary
         if isinstance(row, Mapping)
     )
+    runtime = (
+        report.get("runtime") or {}
+        if isinstance(report.get("runtime"), Mapping)
+        else {}
+    )
+    reconciliation_safe = runtime.get("reconciliation_safe")
     return {
         "completeness_state": report.get("completeness_state"),
         "missing_session_count": len(report.get("missing_trading_sessions") or []),
-        "incomplete_rows": _integer(forward_status, "incomplete_rows")
-        + _integer(forward_status, "error_rows"),
+        "complete_rows": _integer(forward_status, "complete_rows"),
+        "incomplete_rows": _integer(forward_status, "incomplete_rows"),
+        "error_rows": _integer(forward_status, "error_rows"),
         "unreconstructable_count": unreconstructable,
+        "runtime_error_count": int(bool(runtime.get("last_error"))),
+        "reconciliation_failure_count": int(reconciliation_safe is False),
+        "operational_incident_count": int(bool(runtime.get("persistence_error"))),
+        "reconciliation_status": (
+            "RECONCILIATION_FAILED"
+            if reconciliation_safe is False
+            else "SAFE" if reconciliation_safe is True else None
+        ),
         "warning_codes": report.get("warning_codes") or [],
         "performance_evaluated": report.get("performance_evaluated"),
     }

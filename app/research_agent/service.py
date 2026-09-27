@@ -165,22 +165,46 @@ async def verify_canonical_readiness():
 
 
 def _sanitized_readiness(readiness: dict) -> dict:
-    return {
-        "state": readiness.get("state"),
-        "cadence": readiness.get("cadence"),
-        "gpt_would_run_now": bool(readiness.get("gpt_would_run_now")),
-        "blocker_count": int(readiness.get("blocker_count") or 0),
-        "blockers": [
+    def rows(name: str) -> list[dict]:
+        return [
             {
                 "scope": row.get("scope"),
                 "code": row.get("code"),
                 "reason_codes": list(row.get("reason_codes") or []),
             }
-            for row in readiness.get("blockers") or []
-        ],
+            for row in readiness.get(name) or []
+        ]
+
+    waiting_requirements = sorted(
+        {
+            str(requirement)
+            for question in readiness.get("strategy_questions") or []
+            if question.get("semantic_readiness") == "WAITING"
+            for requirement in question.get("missing_requirements") or []
+            if requirement
+        }
+    )
+
+    return {
+        "state": readiness.get("state"),
+        "cadence": readiness.get("cadence"),
+        "gpt_would_run_now": bool(readiness.get("gpt_would_run_now")),
+        "blocker_count": int(readiness.get("blocker_count") or 0),
+        "blockers": rows("blockers"),
+        "limitation_count": int(readiness.get("limitation_count") or 0),
+        "limitations": rows("limitations"),
+        "monitor_count": int(readiness.get("monitor_count") or 0),
+        "monitors": rows("monitors"),
         "strategy_question_count": int(
             readiness.get("strategy_question_count") or 0
         ),
+        "ready_strategy_question_count": int(
+            readiness.get("ready_strategy_question_count") or 0
+        ),
+        "waiting_strategy_question_count": int(
+            readiness.get("waiting_strategy_question_count") or 0
+        ),
+        "waiting_requirements": waiting_requirements,
         "trigger_reference": readiness.get("trigger_reference"),
         "evidence_cutoff": readiness.get("evidence_cutoff"),
         "read_only": True,

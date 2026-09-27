@@ -15,17 +15,22 @@ from .railway import normalize_services
 def _bounded_readiness(value: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    blockers = value.get("blockers")
-    if isinstance(blockers, list):
-        blockers = [
-            {key: row.get(key) for key in ("scope", "code", "reason_codes")}
-            if isinstance(row, dict) else row
-            for row in blockers
-        ]
-    return {key: blockers if key == "blockers" else value.get(key) for key in (
-        "state", "cadence", "gpt_would_run_now", "blocker_count", "blockers",
-        "trigger_reference", "evidence_cutoff", "read_only", "model_invoked", "persisted",
-    )}
+    rows = {}
+    for name in ("blockers", "limitations", "monitors"):
+        source = value.get(name)
+        rows[name] = (
+            [{key: row.get(key) for key in ("scope", "code", "reason_codes")}
+             if isinstance(row, dict) else row for row in source]
+            if isinstance(source, list) else source
+        )
+    keys = (
+        "state", "cadence", "gpt_would_run_now", "blocker_count",
+        "limitation_count", "monitor_count", "strategy_question_count",
+        "ready_strategy_question_count", "waiting_strategy_question_count",
+        "waiting_requirements", "trigger_reference", "evidence_cutoff",
+        "read_only", "model_invoked", "persisted",
+    )
+    return {**{key: value.get(key) for key in keys}, **rows}
 
 
 def from_canonical_sources(

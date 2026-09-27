@@ -73,3 +73,38 @@ def test_deterministic_tie_breaking_prefers_integrity_severity_recurrence_then_o
 def test_closed_historical_snapshot_is_not_open_queue_work():
     rows = [snapshot("closed", "RQ-CLOSED", "2026-09-27T00:00:00Z", status="CLOSED")]
     assert build_queue(rows) == []
+
+
+def test_monitor_operational_question_is_visible_but_nonblocking():
+    queue = build_queue(
+        [
+            snapshot(
+                "monitor",
+                "RQ-OP",
+                "2026-09-27T00:00:00Z",
+                status="MONITOR",
+                evidence={"all_recorded_as_operational": True},
+            )
+        ]
+    )
+    assert len(queue) == 1
+    assert queue[0].classification.category.value == "OPERATIONAL_DEFECT"
+    assert queue[0].classification.evidence_integrity_blocker is False
+
+
+def test_monitor_with_explicit_active_failure_remains_blocking():
+    queue = build_queue(
+        [
+            snapshot(
+                "active",
+                "RQ-ACTIVE",
+                "2026-09-27T00:00:00Z",
+                status="MONITOR",
+                evidence={"runtime_error_count": 1},
+            )
+        ]
+    )
+    assert len(queue) == 1
+    assert queue[0].classification.category.value == "OPERATIONAL_DEFECT"
+    assert queue[0].classification.evidence_integrity_blocker is True
+    assert "EXPLICIT_OPERATIONAL_FAILURE" in queue[0].classification.reason_codes

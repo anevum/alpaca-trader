@@ -117,16 +117,27 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
         state = readiness.get("state")
         blockers = readiness.get("blockers")
         cutoff = stamp(readiness.get("evidence_cutoff"))
+        groups = ("blockers", "limitations", "monitors")
+        counts = ("blocker_count", "limitation_count", "monitor_count",
+                  "strategy_question_count", "ready_strategy_question_count",
+                  "waiting_strategy_question_count")
+        requirements = readiness.get("waiting_requirements")
         valid = (
-            isinstance(state, str) and state in {"IDLE", "READY", "BLOCKED"}
+            isinstance(state, str) and state in {"IDLE", "READY", "WAITING", "BLOCKED"}
             and readiness.get("cadence") == "daily"
             and readiness.get("read_only") is True
             and readiness.get("model_invoked") is False
             and readiness.get("persisted") is False
-            and isinstance(readiness.get("blocker_count"), int)
-            and not isinstance(readiness.get("blocker_count"), bool)
-            and isinstance(blockers, list)
-            and len(blockers) == readiness.get("blocker_count")
+            and type(readiness.get("gpt_would_run_now")) is bool
+            and all(type(readiness.get(key)) is int and readiness[key] >= 0 for key in counts)
+            and all(isinstance(readiness.get(group), list)
+                    and len(readiness[group]) == readiness[f"{group[:-1]}_count"]
+                    for group in groups)
+            and isinstance(requirements, list)
+            and all(isinstance(code, str) for code in requirements)
+            and readiness.get("ready_strategy_question_count", 0)
+                + readiness.get("waiting_strategy_question_count", 0)
+                <= readiness.get("strategy_question_count", -1)
             and cutoff is not None
         )
         if not valid:
@@ -136,13 +147,18 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
                 add("RESEARCH_READINESS_TIME_INVALID", "BLOCKED", "research_agent")
             if (state == "BLOCKED") != bool(blockers):
                 add("RESEARCH_READINESS_INCONSISTENT", "BLOCKED", "research_agent")
+            if (state == "READY") != readiness["gpt_would_run_now"]:
+                add("RESEARCH_READINESS_INCONSISTENT", "BLOCKED", "research_agent")
             if any(not isinstance(row, dict) or not isinstance(row.get("code"), str)
                    or not isinstance(row.get("reason_codes"), list)
                    or not all(isinstance(code, str) for code in row["reason_codes"])
-                   for row in blockers):
+                   for group in groups for row in readiness[group]):
                 add("RESEARCH_READINESS_MALFORMED", "BLOCKED", "research_agent")
             if state == "BLOCKED":
                 add("RESEARCH_READINESS_BLOCKED", "BLOCKED", "research_agent",
+                    str(readiness.get("trigger_reference") or ""))
+            elif state == "WAITING":
+                add("RESEARCH_READINESS_WAITING", "DEGRADED", "research_agent",
                     str(readiness.get("trigger_reference") or ""))
 
     runtime = evidence.get("production_runtime")

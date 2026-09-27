@@ -15,13 +15,18 @@ Agent's existing sanitized `GET /v1/readiness/public` response. It extracts
 only the fields the evaluator needs. The caller must supply a completed-session
 calendar; weekday guesses and raw 1-minute bar counts are not substitutes.
 
-The support layer consumes the Research Agent's `IDLE`, `READY`, or `BLOCKED`
-readiness verdict and its sanitized blocker/reason codes. It does not repeat
+The support layer consumes the Research Agent's `IDLE`, `READY`, `WAITING`, or
+`BLOCKED` readiness verdict and its sanitized blocker, limitation, monitor,
+and waiting-requirement codes. It does not repeat
 the Research Agent's report or queue classification, invoke its model, or treat
 `READY` as authority to run it. Missing, malformed, or inconsistent readiness
-fails closed. A `BLOCKED` verdict blocks the support context for agent use.
-The bounded snapshot includes only readiness state, counts, codes, trigger
-reference, and evidence cutoff; internal question identities are excluded.
+fails closed. A `BLOCKED` verdict blocks the support context for agent use;
+`WAITING` is degraded and preserves the Research Agent's nonblocking historical
+limitations and monitors separately from active blockers. The support layer
+does not decide which evidence limitation blocks a question or reorder active
+failure priority. The bounded snapshot includes only readiness state, counts,
+codes, waiting requirements, trigger reference, and evidence cutoff; internal
+question identities are excluded.
 
 `app/agent_support/railway_roles.json` is the explicitly maintained **current**
 RHEN project/environment role map. Each stable service ID is checked against its

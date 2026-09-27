@@ -34,8 +34,14 @@ def evidence():
         "production_runtime": {"service_id": "prod-id", "service_name": "current-production",
                                "deployment_id": "deploy-1", "git_commit": "a" * 40,
                                "strategy_name": "rolling_momentum_vwap", "strategy_version_id": "LIVE-1"},
-        "research_readiness": {"state": "IDLE", "cadence": "daily", "blocker_count": 0,
-                               "blockers": [], "trigger_reference": "2026-09-28",
+        "research_readiness": {"state": "IDLE", "cadence": "daily", "gpt_would_run_now": False,
+                               "blocker_count": 0, "blockers": [],
+                               "limitation_count": 0, "limitations": [],
+                               "monitor_count": 0, "monitors": [],
+                               "strategy_question_count": 0,
+                               "ready_strategy_question_count": 0,
+                               "waiting_strategy_question_count": 0,
+                               "waiting_requirements": [], "trigger_reference": "2026-09-28",
                                "evidence_cutoff": "2026-09-28T19:59:00Z",
                                "read_only": True, "model_invoked": False, "persisted": False},
         "telemetry": {"schema_version": "rhen-canonical-telemetry-v1",
@@ -148,13 +154,56 @@ class IntegrityTests(unittest.TestCase):
         item = evidence()
         item.pop("research_readiness")
         self.assertIn("RESEARCH_READINESS_UNAVAILABLE", codes(evaluate(item, now=NOW)))
-        item["research_readiness"] = {"state": "READY", "cadence": "daily", "blocker_count": 1,
-                                      "blockers": [{"code": "REPORT_INTEGRITY", "reason_codes": []}],
-                                      "evidence_cutoff": "2026-09-28T19:00:00Z",
-                                      "read_only": True, "model_invoked": False, "persisted": False}
+        item["research_readiness"] = {**evidence()["research_readiness"],
+                                      "state": "READY", "gpt_would_run_now": True,
+                                      "blocker_count": 1,
+                                      "blockers": [{"code": "REPORT_INTEGRITY", "reason_codes": []}]}
         self.assertIn("RESEARCH_READINESS_INCONSISTENT", codes(evaluate(item, now=NOW)))
         item["research_readiness"]["model_invoked"] = True
         self.assertIn("RESEARCH_READINESS_MALFORMED", codes(evaluate(item, now=NOW)))
+
+    def test_canonical_waiting_limitations_and_requirements_remain_nonblocking(self):
+        item = evidence()
+        item["research_readiness"].update({
+            "state": "WAITING",
+            "limitation_count": 1,
+            "limitations": [{"scope": "report", "code": "KNOWN_EVIDENCE_LIMITATION",
+                             "reason_codes": ["INCOMPLETE_FORWARD_OUTCOMES",
+                                              "UNRECONSTRUCTABLE_EVIDENCE"]}],
+            "monitor_count": 1,
+            "monitors": [{"scope": "research_question", "code": "NONBLOCKING_MONITOR",
+                          "reason_codes": ["CANONICAL_OPERATIONAL_INCIDENTS"]}],
+            "strategy_question_count": 1,
+            "waiting_strategy_question_count": 1,
+            "waiting_requirements": ["MULTIPLE_INDEPENDENT_SESSIONS"],
+            "strategy_questions": [{"research_question_id": "private-id"}],
+        })
+        result = evaluate(item, now=NOW)
+        self.assertEqual(result["state"], "DEGRADED")
+        self.assertIn("RESEARCH_READINESS_WAITING", codes(result))
+        self.assertNotIn("RESEARCH_READINESS_BLOCKED", codes(result))
+        snapshot = build_snapshot(item, now=NOW)["research_readiness"]
+        self.assertEqual(snapshot["limitation_codes"], ["KNOWN_EVIDENCE_LIMITATION"])
+        self.assertEqual(snapshot["monitor_reason_codes"], ["CANONICAL_OPERATIONAL_INCIDENTS"])
+        self.assertEqual(snapshot["waiting_requirements"], ["MULTIPLE_INDEPENDENT_SESSIONS"])
+        self.assertNotIn("private-id", json.dumps(snapshot))
+
+    def test_active_failure_priority_uses_canonical_blockers(self):
+        item = evidence()
+        item["research_readiness"].update({
+            "state": "BLOCKED", "blocker_count": 1,
+            "blockers": [{"scope": "report", "code": "REPORT_INTEGRITY",
+                          "reason_codes": ["EXPLICIT_OPERATIONAL_FAILURE"]}],
+            "limitation_count": 1,
+            "limitations": [{"scope": "report", "code": "KNOWN_EVIDENCE_LIMITATION",
+                             "reason_codes": ["UNRECONSTRUCTABLE_EVIDENCE"]}],
+        })
+        result = evaluate(item, now=NOW)
+        self.assertEqual(result["state"], "BLOCKED")
+        self.assertIn("RESEARCH_READINESS_BLOCKED", codes(result))
+        snapshot = build_snapshot(item, now=NOW)["research_readiness"]
+        self.assertEqual(snapshot["reason_codes"], ["EXPLICIT_OPERATIONAL_FAILURE"])
+        self.assertEqual(snapshot["limitation_reason_codes"], ["UNRECONSTRUCTABLE_EVIDENCE"])
 
     def test_malformed_context_still_yields_bounded_blocked_snapshot(self):
         item = evidence()
@@ -247,6 +296,26 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(adapted["production_runtime"]["strategy_name"], "rolling_momentum_vwap")
         self.assertNotIn("private-id", json.dumps(adapted))
         self.assertIn("SHADOW_SERVICE_UNRESOLVED", codes(evaluate(adapted, now=NOW)))
+
+        waiting = {**base["research_readiness"], "state": "WAITING",
+                   "waiting_strategy_question_count": 1, "strategy_question_count": 1,
+                   "waiting_requirements": ["MULTIPLE_INDEPENDENT_SESSIONS"],
+                   "strategy_questions": [{"research_question_id": "private-id"}]}
+        adapted_waiting = from_canonical_sources(
+            command_evidence={"evidence_version": "rhen-command-evidence-v1",
+                              "provenance": {"runtime": {**base["production_runtime"]},
+                                             "latest_scan_cycle": {"scan_cycle_id": "scan-1"}},
+                              "telemetry_health": {"latest_received_at": "2026-09-28T19:59:00Z"}},
+            period_inputs={"strategy_versions": [{"version_id": "LIVE-1", "strategy_name": "rolling_momentum_vwap"}],
+                           "daily_reports": base["daily_reports"], "duplicate_checks": {}},
+            expected_sessions=["2026-09-28"], railway_status=status, railway_configs=configs,
+            railway_project_id=mapping["project_id"], railway_environment_id=mapping["environment_id"],
+            research_readiness=waiting, preopen_health={"ok": True},
+            preopen_expected_after=None, market_session_active=False, weekly_report_due=False,
+        )
+        self.assertEqual(adapted_waiting["research_readiness"]["waiting_requirements"],
+                         ["MULTIPLE_INDEPENDENT_SESSIONS"])
+        self.assertNotIn("private-id", json.dumps(adapted_waiting))
 
     def test_registry_validation(self):
         registry = load_registry()

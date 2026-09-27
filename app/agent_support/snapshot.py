@@ -20,8 +20,14 @@ def build_snapshot(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, A
     telemetry = telemetry if isinstance(telemetry, dict) else {}
     readiness = evidence.get("research_readiness")
     readiness = readiness if isinstance(readiness, dict) else {}
-    blockers = readiness.get("blockers")
-    blockers = blockers if isinstance(blockers, list) else []
+    groups = {
+        name: readiness[name] if isinstance(readiness.get(name), list) else []
+        for name in ("blockers", "limitations", "monitors")
+    }
+    def codes(name: str, key: str) -> list[str]:
+        return sorted({code for row in groups[name] if isinstance(row, dict)
+                       for code in (row.get(key) if isinstance(row.get(key), list) else [row.get(key)])
+                       if isinstance(code, str)})
     services = evidence.get("railway_services")
     services = services if isinstance(services, list) else []
     daily_reports = evidence.get("daily_reports")
@@ -48,12 +54,19 @@ def build_snapshot(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, A
         "telemetry": {"last_received_at": _text(telemetry.get("last_received_at"))},
         "research_readiness": {
             "state": _text(readiness.get("state")), "cadence": _text(readiness.get("cadence")),
-            "blocker_count": readiness.get("blocker_count") if type(readiness.get("blocker_count")) is int else None,
-            "blocker_codes": sorted({row.get("code") for row in blockers
-                                     if isinstance(row, dict) and isinstance(row.get("code"), str)}),
-            "reason_codes": sorted({code for row in blockers if isinstance(row, dict)
-                                    for code in (row.get("reason_codes") if isinstance(row.get("reason_codes"), list) else [])
-                                    if isinstance(code, str)}),
+            **{key: readiness.get(key) if type(readiness.get(key)) is int else None
+               for key in ("blocker_count", "limitation_count", "monitor_count",
+                           "strategy_question_count", "ready_strategy_question_count",
+                           "waiting_strategy_question_count")},
+            "blocker_codes": codes("blockers", "code"),
+            "reason_codes": codes("blockers", "reason_codes"),
+            "limitation_codes": codes("limitations", "code"),
+            "limitation_reason_codes": codes("limitations", "reason_codes"),
+            "monitor_codes": codes("monitors", "code"),
+            "monitor_reason_codes": codes("monitors", "reason_codes"),
+            "waiting_requirements": sorted({code for code in readiness.get("waiting_requirements", [])
+                                             if isinstance(code, str)})
+                                    if isinstance(readiness.get("waiting_requirements"), list) else [],
             "trigger_reference": _text(readiness.get("trigger_reference")),
             "evidence_cutoff": _text(readiness.get("evidence_cutoff")),
         },
