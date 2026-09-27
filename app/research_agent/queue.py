@@ -59,11 +59,13 @@ def _bounded(value: Any, maximum: int, default: int = 0) -> int:
 
 def _classification(snapshot: ResearchQuestionSnapshot) -> EvidenceClassification:
     inferred = classify_structured_evidence(snapshot.evidence_summary)
+    historical_monitor = (
+        snapshot.status == "MONITOR"
+        and set(inferred.reason_codes).issubset({"CANONICAL_OPERATIONAL_INCIDENTS"})
+    )
+
     if snapshot.category is None:
-        if snapshot.status == "MONITOR" and inferred.category in {
-            ResearchCategory.OPERATIONAL_DEFECT,
-            ResearchCategory.DATA_QUALITY,
-        }:
+        if historical_monitor:
             return EvidenceClassification(
                 category=inferred.category,
                 reason_codes=inferred.reason_codes,
@@ -73,9 +75,7 @@ def _classification(snapshot: ResearchQuestionSnapshot) -> EvidenceClassificatio
             )
         return inferred
 
-    blocker = inferred.evidence_integrity_blocker
-    if snapshot.status == "MONITOR":
-        blocker = False
+    blocker = inferred.evidence_integrity_blocker and not historical_monitor
 
     return EvidenceClassification(
         category=snapshot.category,
