@@ -10,7 +10,11 @@ import httpx
 
 from .design_checks import DesignReview, validate_design
 from .models import CanonicalEvidence, deterministic_dict, canonical_json
-from .policy import (\n    EDGE_DISCOVERY_V1_REJECTED_FAMILIES,\n    RDR_V21_EXPERIMENT_KEY,\n    SafetyPolicyViolation,\n)
+from .policy import (
+    EDGE_DISCOVERY_V1_REJECTED_FAMILIES,
+    RDR_V21_EXPERIMENT_KEY,
+    SafetyPolicyViolation,
+)
 from .proposal import ProposalFormatError, proposal_artifact, proposal_from_dict
 
 
@@ -205,7 +209,13 @@ def apply_semantic_output(
         raise SemanticReviewError(f"proposal format rejected: {exc}") from exc
 
     family = _normalized_family(proposal.research_family)
-    SafetyPolicy().assert_family_may_be_proposed(family)
+    rejected_families = {
+        _normalized_family(item) for item in EDGE_DISCOVERY_V1_REJECTED_FAMILIES
+    }
+    if family in rejected_families:
+        raise SafetyPolicyViolation(
+            f"research family is terminal and may not be revived: {proposal.research_family}"
+        )
 
     terminal_text = _normalized_family(
         " ".join(
