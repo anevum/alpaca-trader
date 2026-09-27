@@ -29,3 +29,13 @@ def test_health_declares_no_control_plane_authority(monkeypatch):
     assert state["scheduler_configured"] is False
     assert state["autorun"] is False
     assert set(state["authority"].values()) == {False}
+
+
+def test_disabled_credentials_and_false_execution_flags_are_inert(monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "DISABLED")
+    monkeypatch.setenv("ALPACA_API_SECRET", "DISABLED")
+    monkeypatch.setenv("EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("BOT_ARMED", "false")
+    monkeypatch.setenv("LIVE_TRADING", "false")
+    monkeypatch.setenv("I_ACKNOWLEDGE_LIVE_TRADING", "false")
+    assert service._isolation_violations() == []
