@@ -97,6 +97,41 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
     if "shadow_comparison" not in by_role:
         add("SHADOW_SERVICE_UNRESOLVED", "DEGRADED", "railway", "shadow_comparison")
 
+    # Consume the Research Agent's canonical readiness verdict; never recreate
+    # its report/queue classification or turn READY into an invocation.
+    readiness = evidence.get("research_readiness")
+    if not isinstance(readiness, dict):
+        add("RESEARCH_READINESS_UNAVAILABLE", "BLOCKED", "research_agent")
+    else:
+        state = readiness.get("state")
+        blockers = readiness.get("blockers")
+        cutoff = stamp(readiness.get("evidence_cutoff"))
+        valid = (
+            state in {"IDLE", "READY", "BLOCKED"}
+            and readiness.get("cadence") == "daily"
+            and readiness.get("read_only") is True
+            and readiness.get("model_invoked") is False
+            and readiness.get("persisted") is False
+            and isinstance(readiness.get("blocker_count"), int)
+            and not isinstance(readiness.get("blocker_count"), bool)
+            and isinstance(blockers, list)
+            and len(blockers) == readiness.get("blocker_count")
+            and cutoff is not None
+        )
+        if not valid:
+            add("RESEARCH_READINESS_MALFORMED", "BLOCKED", "research_agent")
+        else:
+            if cutoff > now + timedelta(minutes=5):
+                add("RESEARCH_READINESS_TIME_INVALID", "BLOCKED", "research_agent")
+            if (state == "BLOCKED") != bool(blockers):
+                add("RESEARCH_READINESS_INCONSISTENT", "BLOCKED", "research_agent")
+            if any(not isinstance(row, dict) or not isinstance(row.get("code"), str)
+                   or not isinstance(row.get("reason_codes"), list) for row in blockers):
+                add("RESEARCH_READINESS_MALFORMED", "BLOCKED", "research_agent")
+            if state == "BLOCKED":
+                add("RESEARCH_READINESS_BLOCKED", "BLOCKED", "research_agent",
+                    str(readiness.get("trigger_reference") or ""))
+
     runtime = evidence.get("production_runtime")
     if not isinstance(runtime, dict):
         add("RUNTIME_EVIDENCE_UNAVAILABLE", "BLOCKED", "runtime")

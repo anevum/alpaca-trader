@@ -10,9 +10,18 @@ trading action. The Research Agent remains owned by its separate runtime.
 `adapter.from_canonical_sources` takes the existing authenticated
 `trading-report-read?latest=command` response, the existing period report
 inputs (`start`/`end`), the actual exchange calendar, Railway service status
-and configuration observed at check time, and pre-open health. It extracts
+and configuration observed at check time, pre-open health, and the Research
+Agent's existing sanitized `GET /v1/readiness/public` response. It extracts
 only the fields the evaluator needs. The caller must supply a completed-session
 calendar; weekday guesses and raw 1-minute bar counts are not substitutes.
+
+The support layer consumes the Research Agent's `IDLE`, `READY`, or `BLOCKED`
+readiness verdict and its sanitized blocker/reason codes. It does not repeat
+the Research Agent's report or queue classification, invoke its model, or treat
+`READY` as authority to run it. Missing, malformed, or inconsistent readiness
+fails closed. A `BLOCKED` verdict blocks the support context for agent use.
+The bounded snapshot includes only readiness state, counts, codes, trigger
+reference, and evidence cutoff; internal question identities are excluded.
 
 `app/agent_support/railway_roles.json` is the explicitly maintained **current**
 RHEN project/environment role map. Each stable service ID is checked against its

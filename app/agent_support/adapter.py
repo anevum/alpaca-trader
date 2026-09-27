@@ -12,6 +12,22 @@ from .integrity import SCHEMA_VERSION
 from .railway import normalize_services
 
 
+def _bounded_readiness(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    blockers = value.get("blockers")
+    if isinstance(blockers, list):
+        blockers = [
+            {key: row.get(key) for key in ("scope", "code", "reason_codes")}
+            if isinstance(row, dict) else row
+            for row in blockers
+        ]
+    return {key: blockers if key == "blockers" else value.get(key) for key in (
+        "state", "cadence", "gpt_would_run_now", "blocker_count", "blockers",
+        "trigger_reference", "evidence_cutoff", "read_only", "model_invoked", "persisted",
+    )}
+
+
 def from_canonical_sources(
     *,
     command_evidence: dict[str, Any],
@@ -21,6 +37,7 @@ def from_canonical_sources(
     railway_configs: dict[str, dict[str, Any]],
     railway_project_id: str,
     railway_environment_id: str,
+    research_readiness: dict[str, Any] | None,
     preopen_health: dict[str, Any],
     preopen_expected_after: str | None,
     market_session_active: bool,
@@ -42,6 +59,7 @@ def from_canonical_sources(
             railway_status, railway_configs,
             project_id=railway_project_id, environment_id=railway_environment_id,
         ),
+        "research_readiness": _bounded_readiness(research_readiness),
         "production_runtime": {
             "service_id": runtime.get("service_id"), "service_name": runtime.get("service_name"),
             "deployment_id": runtime.get("deployment_id"), "git_commit": runtime.get("git_commit"),

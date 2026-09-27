@@ -11,6 +11,10 @@ def build_snapshot(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, A
     result = evaluate(evidence, now=now)
     runtime = evidence.get("production_runtime") or {}
     telemetry = evidence.get("telemetry") or {}
+    readiness = evidence.get("research_readiness")
+    readiness = readiness if isinstance(readiness, dict) else {}
+    blockers = readiness.get("blockers")
+    blockers = blockers if isinstance(blockers, list) else []
     services = evidence.get("railway_services") or []
     # A deliberately narrow allowlist. Never copy arbitrary service config, payloads or tokens.
     return {
@@ -30,6 +34,17 @@ def build_snapshot(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, A
             for service in services if isinstance(service, dict)
         ],
         "telemetry": {"last_received_at": telemetry.get("last_received_at")},
+        "research_readiness": {
+            "state": readiness.get("state"), "cadence": readiness.get("cadence"),
+            "blocker_count": readiness.get("blocker_count"),
+            "blocker_codes": sorted({row.get("code") for row in blockers
+                                     if isinstance(row, dict) and isinstance(row.get("code"), str)}),
+            "reason_codes": sorted({code for row in blockers if isinstance(row, dict)
+                                    for code in (row.get("reason_codes") if isinstance(row.get("reason_codes"), list) else [])
+                                    if isinstance(code, str)}),
+            "trigger_reference": readiness.get("trigger_reference"),
+            "evidence_cutoff": readiness.get("evidence_cutoff"),
+        },
         "reports": {
             "daily_sessions": sorted({row.get("payload", {}).get("session")
                                       for row in evidence.get("daily_reports", [])

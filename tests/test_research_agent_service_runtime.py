@@ -39,3 +39,46 @@ def test_disabled_credentials_and_false_execution_flags_are_inert(monkeypatch):
     monkeypatch.setenv("LIVE_TRADING", "false")
     monkeypatch.setenv("I_ACKNOWLEDGE_LIVE_TRADING", "false")
     assert service._isolation_violations() == []
+
+
+def test_public_readiness_sanitizes_internal_question_identity():
+    payload = service._sanitized_readiness(
+        {
+            "state": "BLOCKED",
+            "cadence": "daily",
+            "gpt_would_run_now": False,
+            "blocker_count": 2,
+            "blockers": [
+                {
+                    "scope": "research_question",
+                    "code": "QUEUE_EVIDENCE_INTEGRITY",
+                    "research_question_id": "RQ-INTERNAL",
+                    "status": "MONITOR",
+                    "category": "OPERATIONAL_DEFECT",
+                    "priority_score": 10,
+                    "reason_codes": ["CANONICAL_OPERATIONAL_INCIDENTS"],
+                }
+            ],
+            "strategy_question_count": 1,
+            "strategy_questions": [
+                {"research_question_id": "RQ-PRIVATE-STRATEGY"}
+            ],
+            "trigger_reference": "2026-09-25",
+            "evidence_cutoff": "2026-09-27T02:27:26Z",
+        }
+    )
+    assert payload["state"] == "BLOCKED"
+    assert payload["blocker_count"] == 2
+    assert payload["gpt_would_run_now"] is False
+    assert payload["strategy_question_count"] == 1
+    assert payload["blockers"] == [
+        {
+            "scope": "research_question",
+            "code": "QUEUE_EVIDENCE_INTEGRITY",
+            "reason_codes": ["CANONICAL_OPERATIONAL_INCIDENTS"],
+        }
+    ]
+    assert "strategy_questions" not in payload
+    assert "research_question_id" not in payload["blockers"][0]
+    assert payload["model_invoked"] is False
+    assert payload["persisted"] is False

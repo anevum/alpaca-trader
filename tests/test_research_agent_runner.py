@@ -154,6 +154,27 @@ def test_daily_and_weekly_dry_runs_have_no_mutations_or_model_calls():
     assert weekly["blocker_count"] == 2
 
 
+def test_readiness_exposes_current_blockers_without_model_or_mutation():
+    readiness = runner().readiness(cadence="daily")
+    assert readiness["state"] == "BLOCKED"
+    assert readiness["gpt_would_run_now"] is False
+    assert readiness["blocker_count"] == 2
+    assert readiness["strategy_question_count"] == 1
+    assert readiness["read_only"] is True
+    assert readiness["model_invoked"] is False
+    assert readiness["persisted"] is False
+    scopes = {row["scope"] for row in readiness["blockers"]}
+    assert scopes == {"report", "research_question"}
+    assert any(
+        row.get("research_question_id") == "RQ-OP"
+        for row in readiness["blockers"]
+    )
+    assert any(
+        row.get("research_question_id") == "RQ-STRATEGY"
+        for row in readiness["strategy_questions"]
+    )
+
+
 def test_duplicate_fingerprint_is_recognized_without_duplicate_state():
     value = runner()
     first = value.daily_review(dry_run=True)

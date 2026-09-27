@@ -34,6 +34,10 @@ def evidence():
         "production_runtime": {"service_id": "prod-id", "service_name": "current-production",
                                "deployment_id": "deploy-1", "git_commit": "a" * 40,
                                "strategy_name": "rolling_momentum_vwap", "strategy_version_id": "LIVE-1"},
+        "research_readiness": {"state": "IDLE", "cadence": "daily", "blocker_count": 0,
+                               "blockers": [], "trigger_reference": "2026-09-28",
+                               "evidence_cutoff": "2026-09-28T19:59:00Z",
+                               "read_only": True, "model_invoked": False, "persisted": False},
         "telemetry": {"schema_version": "rhen-canonical-telemetry-v1",
                       "last_received_at": "2026-09-28T19:59:00Z", "duplicate_identities": 0},
         "preopen_state": {"health": True, "expected_after": "2026-09-28T12:00:00Z",
@@ -119,7 +123,38 @@ class IntegrityTests(unittest.TestCase):
         item = evidence()
         item["production_runtime"]["admin_token"] = "secret-value"
         item["railway_services"][0]["variables"] = {"ALPACA_API_SECRET": "secret-value"}
+        item["research_readiness"]["research_question_id"] = "secret-value"
         self.assertNotIn("secret-value", json.dumps(build_snapshot(item, now=NOW)))
+
+    def test_canonical_research_readiness_is_consumed_without_reclassification(self):
+        item = evidence()
+        item["research_readiness"].update({
+            "state": "BLOCKED", "blocker_count": 2,
+            "blockers": [
+                {"scope": "report", "code": "REPORT_INTEGRITY",
+                 "reason_codes": ["INCOMPLETE_FORWARD_OUTCOMES"]},
+                {"scope": "research_question", "code": "QUEUE_EVIDENCE_INTEGRITY",
+                 "reason_codes": ["CANONICAL_OPERATIONAL_INCIDENTS"]},
+            ],
+        })
+        result = evaluate(item, now=NOW)
+        self.assertIn("RESEARCH_READINESS_BLOCKED", codes(result))
+        snapshot = build_snapshot(item, now=NOW)["research_readiness"]
+        self.assertEqual(snapshot["blocker_codes"], ["QUEUE_EVIDENCE_INTEGRITY", "REPORT_INTEGRITY"])
+        self.assertEqual(snapshot["reason_codes"], ["CANONICAL_OPERATIONAL_INCIDENTS", "INCOMPLETE_FORWARD_OUTCOMES"])
+        self.assertNotIn("research_question_id", snapshot)
+
+    def test_research_readiness_missing_or_inconsistent_fails_closed(self):
+        item = evidence()
+        item.pop("research_readiness")
+        self.assertIn("RESEARCH_READINESS_UNAVAILABLE", codes(evaluate(item, now=NOW)))
+        item["research_readiness"] = {"state": "READY", "cadence": "daily", "blocker_count": 1,
+                                      "blockers": [{"code": "REPORT_INTEGRITY", "reason_codes": []}],
+                                      "evidence_cutoff": "2026-09-28T19:00:00Z",
+                                      "read_only": True, "model_invoked": False, "persisted": False}
+        self.assertIn("RESEARCH_READINESS_INCONSISTENT", codes(evaluate(item, now=NOW)))
+        item["research_readiness"]["model_invoked"] = True
+        self.assertIn("RESEARCH_READINESS_MALFORMED", codes(evaluate(item, now=NOW)))
 
     def test_current_role_map_verifies_source_and_command(self):
         mapping = load_role_map()
@@ -187,11 +222,13 @@ class ContractTests(unittest.TestCase):
                            "daily_reports": base["daily_reports"], "duplicate_checks": {}},
             expected_sessions=["2026-09-28"], railway_status=status, railway_configs=configs,
             railway_project_id=mapping["project_id"], railway_environment_id=mapping["environment_id"],
+            research_readiness={**base["research_readiness"], "research_question_id": "private-id"},
             preopen_health={"ok": True}, preopen_expected_after=None,
             market_session_active=False, weekly_report_due=False,
         )
         self.assertEqual(adapted["railway_services"][0]["id"], prod_id)
         self.assertEqual(adapted["production_runtime"]["strategy_name"], "rolling_momentum_vwap")
+        self.assertNotIn("private-id", json.dumps(adapted))
         self.assertIn("SHADOW_SERVICE_UNRESOLVED", codes(evaluate(adapted, now=NOW)))
 
     def test_registry_validation(self):
