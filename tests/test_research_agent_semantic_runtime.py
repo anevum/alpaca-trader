@@ -102,3 +102,21 @@ def test_terminal_edge_discovery_families_cannot_be_revived(proposal_data, famil
             evidence_cutoff=None,
             created_at=NOW,
         )
+
+
+def test_rdr_v2_1_cannot_be_reopened_under_variant_identity(proposal_data):
+    proposal_data["research_family"] = "new-label"
+    proposal_data["title"] = "Residual Downshock Rebound v2.1 continuation"
+    payload = wrapper(
+        action="PROPOSE_EXPERIMENT",
+        selected_question_id=proposal_data["research_question_id"],
+        proposal_json=json.dumps(proposal_data),
+    )
+    with pytest.raises(SafetyPolicyViolation):
+        apply_semantic_output(
+            payload,
+            run_id=RUN_ID,
+            source_commit=SOURCE_COMMIT,
+            evidence_cutoff=None,
+            created_at=NOW,
+        )
