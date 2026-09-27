@@ -26,6 +26,7 @@ def _queue_record(item: QueueItem) -> dict[str, Any]:
             item.classification.evidence_integrity_blocker
         ),
         "requires_semantic_review": item.classification.requires_semantic_review,
+        "reason_codes": list(item.classification.reason_codes),
         "priority_inputs": {
             "severity": item.severity,
             "recurrence": item.recurrence,
@@ -87,6 +88,77 @@ class ResearchAgentRunner:
                 "survivor_state": edge.get("survivor_state") if edge else None,
                 "automatic_revival_allowed": False,
             },
+        }
+
+    def readiness(self, *, cadence: str = "daily") -> dict[str, Any]:
+        if cadence not in {"daily", "weekly"}:
+            raise ValueError("readiness cadence must be daily or weekly")
+        review = (
+            self.daily_review(dry_run=True)
+            if cadence == "daily"
+            else self.weekly_review(dry_run=True)
+        )
+
+        blockers: list[dict[str, Any]] = []
+        classification = review.get("classification") or {}
+        if review.get("report_integrity_blocker"):
+            blockers.append(
+                {
+                    "scope": "report",
+                    "code": "REPORT_INTEGRITY",
+                    "trigger_reference": review.get("trigger_reference"),
+                    "reason_codes": list(classification.get("reason_codes") or []),
+                }
+            )
+
+        strategy_questions: list[dict[str, Any]] = []
+        for row in review.get("queue") or []:
+            if row.get("evidence_integrity_blocker"):
+                blockers.append(
+                    {
+                        "scope": "research_question",
+                        "code": "QUEUE_EVIDENCE_INTEGRITY",
+                        "research_question_id": row.get("research_question_id"),
+                        "status": row.get("status"),
+                        "category": row.get("category"),
+                        "priority_score": row.get("priority_score"),
+                        "reason_codes": list(row.get("reason_codes") or []),
+                    }
+                )
+            if row.get("category") == ResearchCategory.STRATEGY_HYPOTHESIS.value:
+                strategy_questions.append(
+                    {
+                        "research_question_id": row.get("research_question_id"),
+                        "status": row.get("status"),
+                        "priority_score": row.get("priority_score"),
+                        "requires_semantic_review": bool(
+                            row.get("requires_semantic_review")
+                        ),
+                    }
+                )
+
+        if blockers:
+            state = "BLOCKED"
+        elif review.get("semantic_review_warranted"):
+            state = "READY"
+        else:
+            state = "IDLE"
+
+        return {
+            "state": state,
+            "cadence": cadence,
+            "gpt_would_run_now": bool(review.get("semantic_review_warranted")),
+            "blocker_count": len(blockers),
+            "blockers": blockers,
+            "strategy_question_count": len(strategy_questions),
+            "strategy_questions": strategy_questions,
+            "trigger_reference": review.get("trigger_reference"),
+            "evidence_cutoff": review.get("evidence_cutoff"),
+            "input_fingerprint": review.get("input_fingerprint"),
+            "duplicate_run_key": bool(review.get("duplicate")),
+            "read_only": True,
+            "model_invoked": False,
+            "persisted": False,
         }
 
     def daily_review(self, *, dry_run: bool) -> dict[str, Any]:
