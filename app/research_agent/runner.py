@@ -169,14 +169,27 @@ class ResearchAgentRunner:
         )
 
         blockers: list[dict[str, Any]] = []
+        limitations: list[dict[str, Any]] = []
+        monitors: list[dict[str, Any]] = []
         classification = review.get("classification") or {}
+        report_reason_codes = list(classification.get("reason_codes") or [])
+
         if review.get("report_integrity_blocker"):
             blockers.append(
                 {
                     "scope": "report",
                     "code": "REPORT_INTEGRITY",
                     "trigger_reference": review.get("trigger_reference"),
-                    "reason_codes": list(classification.get("reason_codes") or []),
+                    "reason_codes": report_reason_codes,
+                }
+            )
+        elif report_reason_codes:
+            limitations.append(
+                {
+                    "scope": "report",
+                    "code": "KNOWN_EVIDENCE_LIMITATION",
+                    "trigger_reference": review.get("trigger_reference"),
+                    "reason_codes": report_reason_codes,
                 }
             )
 
@@ -194,6 +207,22 @@ class ResearchAgentRunner:
                         "reason_codes": list(row.get("reason_codes") or []),
                     }
                 )
+            elif row.get("category") in {
+                ResearchCategory.OPERATIONAL_DEFECT.value,
+                ResearchCategory.DATA_QUALITY.value,
+            }:
+                monitors.append(
+                    {
+                        "scope": "research_question",
+                        "code": "NONBLOCKING_MONITOR",
+                        "research_question_id": row.get("research_question_id"),
+                        "status": row.get("status"),
+                        "category": row.get("category"),
+                        "priority_score": row.get("priority_score"),
+                        "reason_codes": list(row.get("reason_codes") or []),
+                    }
+                )
+
             if row.get("category") == ResearchCategory.STRATEGY_HYPOTHESIS.value:
                 strategy_questions.append(
                     {
@@ -203,13 +232,31 @@ class ResearchAgentRunner:
                         "requires_semantic_review": bool(
                             row.get("requires_semantic_review")
                         ),
+                        "semantic_readiness": row.get("semantic_readiness"),
+                        "semantic_readiness_reason_codes": list(
+                            row.get("semantic_readiness_reason_codes") or []
+                        ),
+                        "missing_requirements": list(
+                            row.get("missing_requirements") or []
+                        ),
                     }
                 )
 
+        ready_questions = [
+            row for row in strategy_questions
+            if row.get("semantic_readiness") == "READY"
+        ]
+        waiting_questions = [
+            row for row in strategy_questions
+            if row.get("semantic_readiness") == "WAITING"
+        ]
+
         if blockers:
             state = "BLOCKED"
-        elif review.get("semantic_review_warranted"):
+        elif ready_questions and review.get("semantic_review_warranted"):
             state = "READY"
+        elif waiting_questions or monitors or limitations:
+            state = "WAITING"
         else:
             state = "IDLE"
 
@@ -219,7 +266,13 @@ class ResearchAgentRunner:
             "gpt_would_run_now": bool(review.get("semantic_review_warranted")),
             "blocker_count": len(blockers),
             "blockers": blockers,
+            "limitation_count": len(limitations),
+            "limitations": limitations,
+            "monitor_count": len(monitors),
+            "monitors": monitors,
             "strategy_question_count": len(strategy_questions),
+            "ready_strategy_question_count": len(ready_questions),
+            "waiting_strategy_question_count": len(waiting_questions),
             "strategy_questions": strategy_questions,
             "trigger_reference": review.get("trigger_reference"),
             "evidence_cutoff": review.get("evidence_cutoff"),
