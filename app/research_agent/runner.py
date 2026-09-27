@@ -15,7 +15,73 @@ from .policy import EDGE_DISCOVERY_V1_EXPERIMENT_KEY, RDR_V21_EXPERIMENT_KEY
 from .queue import build_queue
 
 
+def _normalized_requirement(value: Any) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _question_readiness(item: QueueItem) -> dict[str, Any]:
+    if item.classification.evidence_integrity_blocker:
+        return {
+            "state": "BLOCKED",
+            "reason_codes": ["ACTIVE_EVIDENCE_INTEGRITY_BLOCKER"],
+            "missing_requirements": [],
+        }
+
+    if item.classification.category is not ResearchCategory.STRATEGY_HYPOTHESIS:
+        return {
+            "state": "MONITOR",
+            "reason_codes": list(item.classification.reason_codes),
+            "missing_requirements": [],
+        }
+
+    evidence = item.snapshot.evidence_summary
+    required = [_normalized_requirement(value) for value in item.snapshot.required_data]
+    missing: list[str] = []
+
+    if any("multiple independent sessions" in value for value in required):
+        try:
+            sessions_observed = int(evidence.get("sessions_observed") or 0)
+        except (TypeError, ValueError):
+            sessions_observed = 0
+        if sessions_observed < 2:
+            missing.append("MULTIPLE_INDEPENDENT_SESSIONS")
+
+    if evidence.get("ready_for_semantic_review") is False:
+        missing.append("EXPLICIT_SEMANTIC_READINESS_FALSE")
+
+    if missing:
+        return {
+            "state": "WAITING",
+            "reason_codes": ["REQUIRED_EVIDENCE_NOT_READY"],
+            "missing_requirements": missing,
+        }
+
+    if item.snapshot.status == "READY_FOR_RESEARCH":
+        return {
+            "state": "READY",
+            "reason_codes": ["QUESTION_STATUS_READY_FOR_RESEARCH"],
+            "missing_requirements": [],
+        }
+
+    if item.classification.requires_semantic_review and item.snapshot.status in {
+        "OPEN",
+        "MONITOR",
+    }:
+        return {
+            "state": "READY",
+            "reason_codes": ["DETERMINISTIC_REQUIREMENTS_SATISFIED"],
+            "missing_requirements": [],
+        }
+
+    return {
+        "state": "WAITING",
+        "reason_codes": ["SEMANTIC_REVIEW_NOT_YET_WARRANTED"],
+        "missing_requirements": [],
+    }
+
+
 def _queue_record(item: QueueItem) -> dict[str, Any]:
+    readiness = _question_readiness(item)
     return {
         "research_question_id": item.research_question_id,
         "question_record_id": str(item.snapshot.question_record_id),
@@ -26,6 +92,9 @@ def _queue_record(item: QueueItem) -> dict[str, Any]:
             item.classification.evidence_integrity_blocker
         ),
         "requires_semantic_review": item.classification.requires_semantic_review,
+        "semantic_readiness": readiness["state"],
+        "semantic_readiness_reason_codes": readiness["reason_codes"],
+        "missing_requirements": readiness["missing_requirements"],
         "reason_codes": list(item.classification.reason_codes),
         "priority_inputs": {
             "severity": item.severity,
@@ -219,6 +288,12 @@ class ResearchAgentRunner:
             for row in queue_records
             if row["category"] == ResearchCategory.STRATEGY_HYPOTHESIS.value
         ]
+        ready_strategy_questions = [
+            row for row in strategy_questions if row["semantic_readiness"] == "READY"
+        ]
+        waiting_strategy_questions = [
+            row for row in strategy_questions if row["semantic_readiness"] == "WAITING"
+        ]
         proposed_updates = [
             {
                 "research_question_id": row["research_question_id"],
@@ -235,7 +310,7 @@ class ResearchAgentRunner:
         ]
         report_integrity_blocker = bool(classification.evidence_integrity_blocker)
         semantic_review_warranted = (
-            bool(strategy_questions)
+            bool(ready_strategy_questions)
             and not bool(blockers)
             and not report_integrity_blocker
         )
@@ -258,6 +333,8 @@ class ResearchAgentRunner:
             "queue_blocker_count": len(blockers),
             "report_integrity_blocker": report_integrity_blocker,
             "strategy_question_count": len(strategy_questions),
+            "ready_strategy_question_count": len(ready_strategy_questions),
+            "waiting_strategy_question_count": len(waiting_strategy_questions),
             "semantic_review_warranted": semantic_review_warranted,
             "proposed_state_updates": proposed_updates,
             "experiment_recommendation": None,
