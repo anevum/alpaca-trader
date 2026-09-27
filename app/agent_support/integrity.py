@@ -18,6 +18,7 @@ ROLE_COMMANDS = {
     "research_agent": "app.research_agent.service:app",
     "research_scheduler": "./run.sh",
 }
+KNOWN_ROLES = set(ROLE_COMMANDS) | {"shadow_comparison"}
 RANK = {"HEALTHY": 0, "DEGRADED": 1, "BLOCKED": 2}
 
 
@@ -47,6 +48,15 @@ def _list(value: Any) -> list | None:
     return value if isinstance(value, list) else None
 
 
+def _day(value: Any) -> date | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
     if now.tzinfo is None:
         raise ValueError("evaluation time must have a timezone")
@@ -66,17 +76,18 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
     by_id: dict[str, dict] = {}
     by_role: dict[str, dict] = {}
     for item in services:
-        if not isinstance(item, dict) or not all(item.get(key) for key in ("id", "name", "role")):
+        if not isinstance(item, dict) or not all(isinstance(item.get(key), str) and item[key]
+                                                 for key in ("id", "name", "role")):
             add("MALFORMED_SERVICE", "BLOCKED", "railway")
             continue
         service_id, role = item["id"], item["role"]
         if item.get("mapping_mismatch"):
             add("SERVICE_ROLE_MAPPING_DRIFT", "BLOCKED", "railway", str(service_id))
-        elif role == "unclassified":
+        elif role not in KNOWN_ROLES:
             add("SERVICE_ROLE_UNMAPPED", "DEGRADED", "railway", str(service_id))
         if item.get("mapped_name") and item["name"] != item["mapped_name"]:
             add("SERVICE_NAME_DRIFT", "DEGRADED", "railway", str(service_id))
-        if service_id in by_id or (role != "unclassified" and role in by_role):
+        if service_id in by_id or (role in KNOWN_ROLES and role in by_role):
             add("DUPLICATE_SERVICE_IDENTITY", "BLOCKED", "railway", str(service_id))
         by_id[service_id] = item
         by_role[role] = item
@@ -107,7 +118,7 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
         blockers = readiness.get("blockers")
         cutoff = stamp(readiness.get("evidence_cutoff"))
         valid = (
-            state in {"IDLE", "READY", "BLOCKED"}
+            isinstance(state, str) and state in {"IDLE", "READY", "BLOCKED"}
             and readiness.get("cadence") == "daily"
             and readiness.get("read_only") is True
             and readiness.get("model_invoked") is False
@@ -126,7 +137,9 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
             if (state == "BLOCKED") != bool(blockers):
                 add("RESEARCH_READINESS_INCONSISTENT", "BLOCKED", "research_agent")
             if any(not isinstance(row, dict) or not isinstance(row.get("code"), str)
-                   or not isinstance(row.get("reason_codes"), list) for row in blockers):
+                   or not isinstance(row.get("reason_codes"), list)
+                   or not all(isinstance(code, str) for code in row["reason_codes"])
+                   for row in blockers):
                 add("RESEARCH_READINESS_MALFORMED", "BLOCKED", "research_agent")
             if state == "BLOCKED":
                 add("RESEARCH_READINESS_BLOCKED", "BLOCKED", "research_agent",
@@ -217,7 +230,8 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
         else:
             expected = weekly.get("expected_trading_sessions")
             included = weekly.get("included_trading_sessions")
-            if not isinstance(expected, list) or not isinstance(included, list):
+            if (not isinstance(expected, list) or not isinstance(included, list)
+                or not all(_day(day) is not None for day in [*expected, *included])):
                 add("WEEKLY_SESSION_EVIDENCE_MISSING", "BLOCKED", "reports")
             elif set(expected) - set(included) or weekly.get("completeness_state") != "COMPLETE":
                 add("WEEKLY_REPORT_INCOMPLETE", "DEGRADED", "reports", str(weekly.get("week_end") or ""))
@@ -232,7 +246,7 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
             add("WEEKLY_REPORT_STALE", "DEGRADED", "reports", str(required_end))
 
     for artifact in _list(evidence.get("required_research_artifacts")) or []:
-        if not isinstance(artifact, dict) or not artifact.get("reference"):
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("reference"), str) or not artifact["reference"]:
             add("RESEARCH_ARTIFACT_REFERENCE_MALFORMED", "BLOCKED", "research")
         elif artifact.get("available") is not True:
             add("RESEARCH_ARTIFACT_UNAVAILABLE", "DEGRADED", "research", artifact["reference"])

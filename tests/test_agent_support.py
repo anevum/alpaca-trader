@@ -156,6 +156,23 @@ class IntegrityTests(unittest.TestCase):
         item["research_readiness"]["model_invoked"] = True
         self.assertIn("RESEARCH_READINESS_MALFORMED", codes(evaluate(item, now=NOW)))
 
+    def test_malformed_context_still_yields_bounded_blocked_snapshot(self):
+        item = evidence()
+        item["production_runtime"] = "malformed"
+        item["telemetry"] = "malformed"
+        item["daily_reports"] = None
+        item["weekly_report"] = {"report_key": "weekly", "report_version": "v1",
+                                 "expected_trading_sessions": [{"bad": "date"}],
+                                 "included_trading_sessions": [],
+                                 "generated_at": "2026-09-28T19:00:00Z"}
+        item["railway_services"][0]["id"] = ["not-hashable"]
+        item["research_readiness"]["state"] = ["not-hashable"]
+        item["required_research_artifacts"] = [{"reference": {"not": "hashable"}}]
+        snapshot = build_snapshot(item, now=NOW)
+        self.assertEqual(snapshot["integrity"]["state"], "BLOCKED")
+        self.assertIn("WEEKLY_SESSION_EVIDENCE_MISSING", codes(snapshot["integrity"]))
+        self.assertEqual(build_snapshot(None, now=NOW)["integrity"]["state"], "BLOCKED")
+
     def test_current_role_map_verifies_source_and_command(self):
         mapping = load_role_map()
         status = [{"id": row["service_id"], "name": row["expected_name"],

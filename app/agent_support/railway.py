@@ -55,9 +55,15 @@ def normalize_services(
             normalized.append({"id": None, "name": None, "role": "unclassified", "mapping_mismatch": True})
             continue
         service_id = item.get("id")
+        if not isinstance(service_id, str) or not service_id:
+            normalized.append({"id": None, "name": item.get("name"), "role": "unclassified", "mapping_mismatch": True})
+            continue
         config = configs.get(service_id, {})
+        config = config if isinstance(config, dict) else {}
         deploy = config.get("deploy") or {}
         source = config.get("source") or {}
+        deploy = deploy if isinstance(deploy, dict) else {}
+        source = source if isinstance(source, dict) else {}
         command = str(config.get("start_command") or deploy.get("startCommand") or "")
         repo = config.get("source_repo") or source.get("repo")
         image = config.get("source_image") or source.get("image")
