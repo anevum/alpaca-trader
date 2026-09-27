@@ -14,11 +14,20 @@ and configuration observed at check time, and pre-open health. It extracts
 only the fields the evaluator needs. The caller must supply a completed-session
 calendar; weekday guesses and raw 1-minute bar counts are not substitutes.
 
-Railway roles derive from start commands and, if there are two `app.main`
-services, an observed `scan_only` boolean. A missing value leaves those roles
-unclassified. No current service name is pinned into the registry. Compare the
-observed stable ID and current name with canonical runtime provenance. A
-historical domain or alias is not proof of a current service role.
+`app/agent_support/railway_roles.json` is the explicitly maintained **current**
+RHEN project/environment role map. Each stable service ID is checked against its
+live repository or image source and start command; the scheduler also requires
+a cron schedule. A repurposed ID loses its mapped role and blocks integrity.
+An unmapped service remains unclassified. A current name change is reported as
+name drift while the source-verified role stays intact. Compare production's
+observed ID and current name with canonical runtime provenance. Generated
+domains and old private-endpoint labels never assign roles.
+
+The current map records production trading, Research Agent, pre-open state and
+Research Agent scheduler. It has **no** shadow/comparison assignment: Railway
+currently has no separate service for that role. This yields
+`SHADOW_SERVICE_UNRESOLVED`, never an implicit reassignment of the Research
+Agent. Update the map only after verifying current live configuration.
 
 `integrity.evaluate` returns `HEALTHY`, `DEGRADED`, or `BLOCKED` with stable
 reason codes and evidence references. Missing critical evidence fails closed.

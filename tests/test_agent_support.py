@@ -7,7 +7,7 @@ from pathlib import Path
 from app.agent_support.escalation import reconcile
 from app.agent_support.adapter import from_canonical_sources
 from app.agent_support.integrity import SCHEMA_VERSION, evaluate
-from app.agent_support.railway import normalize_services
+from app.agent_support.railway import load_role_map, normalize_services
 from app.agent_support.registry import load_registry
 from app.agent_support.snapshot import build_snapshot
 
@@ -26,6 +26,10 @@ def evidence():
              "start_command": "uvicorn app.preopen_state.service:app", "status": "SUCCESS"},
             {"id": "shadow-id", "name": "current-comparison", "role": "shadow_comparison",
              "start_command": "uvicorn app.main:app", "status": "SUCCESS"},
+            {"id": "agent-id", "name": "current-agent", "role": "research_agent",
+             "start_command": "uvicorn app.research_agent.service:app", "status": "SUCCESS"},
+            {"id": "scheduler-id", "name": "current-scheduler", "role": "research_scheduler",
+             "start_command": "./run.sh encoded", "status": "SUCCESS"},
         ],
         "production_runtime": {"service_id": "prod-id", "service_name": "current-production",
                                "deployment_id": "deploy-1", "git_commit": "a" * 40,
@@ -117,26 +121,63 @@ class IntegrityTests(unittest.TestCase):
         item["railway_services"][0]["variables"] = {"ALPACA_API_SECRET": "secret-value"}
         self.assertNotIn("secret-value", json.dumps(build_snapshot(item, now=NOW)))
 
-    def test_railway_role_from_command_and_ambiguous_main(self):
-        status = [{"id": "one", "name": "renamed", "latestDeployment": {"status": "SUCCESS"}},
-                  {"id": "two", "name": "comparison", "latestDeployment": {"status": "SUCCESS"}}]
-        configs = {key: {"start_command": "uvicorn app.main:app"} for key in ("one", "two")}
-        self.assertEqual(normalize_services(status, configs)[0]["role"], "unclassified")
-        configs["one"]["scan_only"] = False
-        configs["two"]["scan_only"] = True
-        self.assertEqual([s["role"] for s in normalize_services(status, configs)],
-                         ["production_trading", "shadow_comparison"])
+    def test_current_role_map_verifies_source_and_command(self):
+        mapping = load_role_map()
+        status = [{"id": row["service_id"], "name": row["expected_name"],
+                   "latestDeployment": {"status": "SUCCESS"},
+                   "cronSchedule": "5 22 * * 1-5" if row["role"] == "research_scheduler" else None}
+                  for row in mapping["assignments"]]
+        configs = {row["service_id"]: {
+            "start_command": f"uvicorn {row['command_marker']}" if row["role"] != "research_scheduler" else "./run.sh encoded",
+            "source": {"repo": row["source_repo"]} if row.get("source_repo") else {"image": row["source_image"]},
+        } for row in mapping["assignments"]}
+        normalized = normalize_services(status, configs, project_id=mapping["project_id"],
+                                        environment_id=mapping["environment_id"])
+        self.assertEqual({row["role"] for row in normalized},
+                         {"production_trading", "research_agent", "preopen_state", "research_scheduler"})
+        self.assertIn("SHADOW_SERVICE_UNRESOLVED", codes(evaluate({**evidence(), "railway_services": normalized}, now=NOW)))
+        # The old private endpoint label does not override current source/command.
+        configs[status[1]["id"]]["privateNetworkEndpoint"] = "alpaca-trader-shadow"
+        self.assertEqual(normalize_services(status, configs)[1]["role"], "research_agent")
+        # A reused stable ID with a changed command loses the old mapped role.
+        configs[status[1]["id"]]["start_command"] = "uvicorn app.main:app"
+        repurposed = normalize_services(status, configs)
+        self.assertEqual(repurposed[1]["role"], "unclassified")
+        self.assertIn("SERVICE_ROLE_MAPPING_DRIFT", codes(evaluate({**evidence(), "railway_services": repurposed}, now=NOW)))
+        configs[status[1]["id"]]["start_command"] = "uvicorn app.research_agent.service:app"
+        status[1]["name"] = "renamed-current-agent"
+        renamed = normalize_services(status, configs)
+        self.assertEqual(renamed[1]["role"], "research_agent")
+        self.assertIn("SERVICE_NAME_DRIFT", codes(evaluate({**evidence(), "railway_services": renamed}, now=NOW)))
+
+    def test_role_map_rejects_duplicate_identity_and_wrong_project(self):
+        mapping = load_role_map()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "roles.json"
+            mapping["assignments"][1]["service_id"] = mapping["assignments"][0]["service_id"]
+            path.write_text(json.dumps(mapping))
+            with self.assertRaises(ValueError):
+                load_role_map(path)
+        with self.assertRaises(ValueError):
+            normalize_services([], {}, project_id="wrong-project")
 
 
 class ContractTests(unittest.TestCase):
     def test_adapter_uses_canonical_report_and_current_service_ids(self):
         base = evidence()
-        status = [{"id": "prod-id", "name": "current-production",
+        mapping = load_role_map()
+        prod_id = mapping["assignments"][0]["service_id"]
+        pre_id = mapping["assignments"][2]["service_id"]
+        base["production_runtime"]["service_id"] = prod_id
+        base["production_runtime"]["service_name"] = "alpaca-trader"
+        status = [{"id": prod_id, "name": "alpaca-trader",
                    "latestDeployment": {"id": "deploy-1", "status": "SUCCESS"}},
-                  {"id": "pre-id", "name": "current-preopen",
+                  {"id": pre_id, "name": "rhen-preopen-state",
                    "latestDeployment": {"status": "SUCCESS"}}]
-        configs = {"prod-id": {"start_command": "uvicorn app.main:app", "source_commit": "a" * 40},
-                   "pre-id": {"start_command": "uvicorn app.preopen_state.service:app"}}
+        configs = {prod_id: {"start_command": "uvicorn app.main:app", "source_commit": "a" * 40,
+                             "source_repo": "anevum/alpaca-trader"},
+                   pre_id: {"start_command": "uvicorn app.preopen_state.service:app",
+                            "source_repo": "anevum/alpaca-trader"}}
         adapted = from_canonical_sources(
             command_evidence={"evidence_version": "rhen-command-evidence-v1",
                               "provenance": {"runtime": {**base["production_runtime"]},
@@ -145,10 +186,11 @@ class ContractTests(unittest.TestCase):
             period_inputs={"strategy_versions": [{"version_id": "LIVE-1", "strategy_name": "rolling_momentum_vwap"}],
                            "daily_reports": base["daily_reports"], "duplicate_checks": {}},
             expected_sessions=["2026-09-28"], railway_status=status, railway_configs=configs,
+            railway_project_id=mapping["project_id"], railway_environment_id=mapping["environment_id"],
             preopen_health={"ok": True}, preopen_expected_after=None,
             market_session_active=False, weekly_report_due=False,
         )
-        self.assertEqual(adapted["railway_services"][0]["id"], "prod-id")
+        self.assertEqual(adapted["railway_services"][0]["id"], prod_id)
         self.assertEqual(adapted["production_runtime"]["strategy_name"], "rolling_momentum_vwap")
         self.assertIn("SHADOW_SERVICE_UNRESOLVED", codes(evaluate(adapted, now=NOW)))
 

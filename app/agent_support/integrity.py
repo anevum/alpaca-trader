@@ -16,6 +16,7 @@ ROLE_COMMANDS = {
     "production_trading": "app.main:app",
     "preopen_state": "app.preopen_state.service:app",
     "research_agent": "app.research_agent.service:app",
+    "research_scheduler": "./run.sh",
 }
 RANK = {"HEALTHY": 0, "DEGRADED": 1, "BLOCKED": 2}
 
@@ -69,7 +70,13 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
             add("MALFORMED_SERVICE", "BLOCKED", "railway")
             continue
         service_id, role = item["id"], item["role"]
-        if service_id in by_id or role in by_role:
+        if item.get("mapping_mismatch"):
+            add("SERVICE_ROLE_MAPPING_DRIFT", "BLOCKED", "railway", str(service_id))
+        elif role == "unclassified":
+            add("SERVICE_ROLE_UNMAPPED", "DEGRADED", "railway", str(service_id))
+        if item.get("mapped_name") and item["name"] != item["mapped_name"]:
+            add("SERVICE_NAME_DRIFT", "DEGRADED", "railway", str(service_id))
+        if service_id in by_id or (role != "unclassified" and role in by_role):
             add("DUPLICATE_SERVICE_IDENTITY", "BLOCKED", "railway", str(service_id))
         by_id[service_id] = item
         by_role[role] = item
@@ -84,6 +91,9 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
     for role in ("production_trading", "preopen_state"):
         if role not in by_role:
             add("REQUIRED_SERVICE_MISSING", "BLOCKED", "railway", role)
+    for role in ("research_agent", "research_scheduler"):
+        if role not in by_role:
+            add("REQUIRED_SERVICE_MISSING", "DEGRADED", "railway", role)
     if "shadow_comparison" not in by_role:
         add("SHADOW_SERVICE_UNRESOLVED", "DEGRADED", "railway", "shadow_comparison")
 

@@ -19,6 +19,8 @@ def from_canonical_sources(
     expected_sessions: list[str],
     railway_status: list[dict[str, Any]],
     railway_configs: dict[str, dict[str, Any]],
+    railway_project_id: str,
+    railway_environment_id: str,
     preopen_health: dict[str, Any],
     preopen_expected_after: str | None,
     market_session_active: bool,
@@ -36,7 +38,10 @@ def from_canonical_sources(
     last_snapshot = preopen_health.get("last_snapshot") or {}
     return {
         "schema_version": SCHEMA_VERSION,
-        "railway_services": normalize_services(railway_status, railway_configs),
+        "railway_services": normalize_services(
+            railway_status, railway_configs,
+            project_id=railway_project_id, environment_id=railway_environment_id,
+        ),
         "production_runtime": {
             "service_id": runtime.get("service_id"), "service_name": runtime.get("service_name"),
             "deployment_id": runtime.get("deployment_id"), "git_commit": runtime.get("git_commit"),
