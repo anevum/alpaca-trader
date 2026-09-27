@@ -173,3 +173,7 @@ python scripts/preopen_dataset.py \
 ```
 
 Training is optional and explicit. A model remains `RESEARCH_ONLY` when created. The Railway shadow service can load a checksum-bound artifact through `PREOPEN_MODEL_JSON`; an invalid or modified artifact is rejected.
+
+### Protected holdout rule
+
+The canonical training CLI evaluates validation by default and records the holdout as `LOCKED`. It will not score that holdout unless `--open-holdout` is supplied explicitly. That flag should be used only after the frozen validation gate has passed and the decision to open holdout has been recorded. Multi-year minute history is downloaded in bounded chunks so the research corpus does not silently fail on a single pagination ceiling.

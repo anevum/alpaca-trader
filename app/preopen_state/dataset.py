@@ -20,6 +20,49 @@ def _stamp(bar: dict[str, Any]) -> datetime:
     return datetime.fromisoformat(str(bar["t"]).replace("Z", "+00:00")).astimezone(NY)
 
 
+async def _bars_many_chunked(
+    client: AlpacaReadOnlyMarketData,
+    symbols: tuple[str, ...],
+    *,
+    start: datetime,
+    end: datetime,
+    timeframe: str = "1Min",
+    chunk_days: int = 20,
+) -> dict[str, list[dict[str, Any]]]:
+    """Fetch long research ranges in bounded windows.
+
+    A multi-year, multi-symbol minute corpus can exceed one request's pagination
+    safety bound. Chunking keeps each read bounded without changing point-in-time
+    semantics. Timestamp de-duplication protects adjacent chunk boundaries.
+    """
+    if chunk_days <= 0:
+        raise ValueError("chunk_days must be positive")
+    output: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+    cursor = start
+    while cursor < end:
+        chunk_end = min(cursor + timedelta(days=chunk_days), end)
+        chunk = await client.bars_many(
+            symbols,
+            start=cursor,
+            end=chunk_end,
+            timeframe=timeframe,
+        )
+        for symbol in symbols:
+            output[symbol].extend(chunk.get(symbol, []))
+        cursor = chunk_end
+
+    for symbol in symbols:
+        by_timestamp: dict[str, dict[str, Any]] = {}
+        for bar in output[symbol]:
+            stamp = str(bar.get("t") or "")
+            if stamp:
+                by_timestamp[stamp] = bar
+        output[symbol] = [
+            by_timestamp[key] for key in sorted(by_timestamp)
+        ]
+    return output
+
+
 def _prior_close(
     daily_bars: list[dict[str, Any]],
     *,
@@ -101,7 +144,8 @@ async def build_dataset(
     minute_end = _dt(end + timedelta(days=1), 0, 0)
     daily_start = _dt(start - timedelta(days=45), 0, 0)
 
-    minute = await client.bars_many(
+    minute = await _bars_many_chunked(
+        client,
         symbols,
         start=minute_start,
         end=minute_end,

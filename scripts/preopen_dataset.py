@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.preopen_state.config import get_preopen_settings
 from app.preopen_state.dataset import build_dataset, chronological_split
+from app.preopen_state.model import artifact_checksum
 from app.preopen_state.research import fit_logistic, score_rows
 
 
@@ -28,6 +29,15 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--model-output")
     p.add_argument("--train-fraction", type=float, default=0.60)
     p.add_argument("--validation-fraction", type=float, default=0.20)
+    p.add_argument("--embargo-sessions", type=int, default=1)
+    p.add_argument(
+        "--open-holdout",
+        action="store_true",
+        help=(
+            "Explicitly score the protected holdout. Leave unset during ordinary "
+            "development and validation."
+        ),
+    )
     return p
 
 
@@ -58,6 +68,7 @@ def main() -> int:
         rows,
         train_fraction=args.train_fraction,
         validation_fraction=args.validation_fraction,
+        embargo_sessions=args.embargo_sessions,
     )
     feature_names = tuple(
         item.strip() for item in args.features.split(",") if item.strip()
@@ -70,23 +81,32 @@ def main() -> int:
         trained_through=str(train[-1]["trade_date"]),
     )
     validation_metrics = score_rows(validation, artifact)
-    holdout_metrics = score_rows(holdout, artifact)
-    artifact["evaluation"] = {
+    evaluation: dict[str, object] = {
         "validation": validation_metrics,
-        "holdout": holdout_metrics,
+        "holdout": {
+            "status": "LOCKED",
+            "rows_reserved": len(holdout),
+        },
         "split": {
             "train_rows": len(train),
             "validation_rows": len(validation),
             "holdout_rows": len(holdout),
             "chronological": True,
+            "embargo_sessions": args.embargo_sessions,
         },
     }
-    from app.preopen_state.model import artifact_checksum
+    if args.open_holdout:
+        evaluation["holdout"] = {
+            "status": "OPENED",
+            **score_rows(holdout, artifact),
+        }
+
+    artifact["evaluation"] = evaluation
     artifact["checksum"] = artifact_checksum(artifact)
     Path(args.model_output).write_text(
         json.dumps(artifact, indent=2, sort_keys=True) + "\n"
     )
-    print(json.dumps(artifact["evaluation"], indent=2))
+    print(json.dumps(evaluation, indent=2))
     return 0
 
 
