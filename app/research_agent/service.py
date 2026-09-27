@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 from dataclasses import replace
 from typing import Literal
@@ -125,6 +126,42 @@ def _health() -> dict:
 
 
 app = FastAPI(title="RHEN Research Agent v1", version="1.0")
+
+
+@app.on_event("startup")
+async def verify_canonical_readiness():
+    state = _health()
+    if not state["ok"]:
+        raise RuntimeError("research agent isolation/configuration check failed")
+    try:
+        evidence = await _gateway().fetch_evidence()
+        review = ResearchAgentRunner(evidence).daily_review(dry_run=True)
+    except ResearchGatewayError as exc:
+        raise RuntimeError(f"canonical research gateway readiness failed: {exc}") from exc
+    print(
+        json.dumps(
+            {
+                "event": "rhen_research_agent_ready",
+                "agent_version": RUNTIME_VERSION,
+                "evidence_cutoff": (
+                    evidence.evidence_cutoff.isoformat()
+                    if evidence.evidence_cutoff
+                    else None
+                ),
+                "blocker_count": int(review.get("blocker_count") or 0),
+                "strategy_question_count": int(
+                    review.get("strategy_question_count") or 0
+                ),
+                "semantic_review_warranted": bool(
+                    review.get("semantic_review_warranted")
+                ),
+                "dry_run": True,
+                "persisted": False,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
 
 @app.get("/health")
