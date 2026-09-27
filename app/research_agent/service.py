@@ -164,12 +164,50 @@ async def verify_canonical_readiness():
     )
 
 
+def _sanitized_readiness(readiness: dict) -> dict:
+    return {
+        "state": readiness.get("state"),
+        "cadence": readiness.get("cadence"),
+        "gpt_would_run_now": bool(readiness.get("gpt_would_run_now")),
+        "blocker_count": int(readiness.get("blocker_count") or 0),
+        "blockers": [
+            {
+                "scope": row.get("scope"),
+                "code": row.get("code"),
+                "reason_codes": list(row.get("reason_codes") or []),
+            }
+            for row in readiness.get("blockers") or []
+        ],
+        "strategy_question_count": int(
+            readiness.get("strategy_question_count") or 0
+        ),
+        "trigger_reference": readiness.get("trigger_reference"),
+        "evidence_cutoff": readiness.get("evidence_cutoff"),
+        "read_only": True,
+        "model_invoked": False,
+        "persisted": False,
+    }
+
+
 @app.get("/health")
 async def health():
     state = _health()
     if state["isolation_violations"]:
         raise HTTPException(status_code=503, detail=state)
     return state
+
+
+@app.get("/v1/readiness/public")
+async def public_readiness():
+    state = _health()
+    if not state["ok"]:
+        raise HTTPException(status_code=503, detail={"state": "UNAVAILABLE"})
+    try:
+        evidence = await _gateway().fetch_evidence()
+    except ResearchGatewayError as exc:
+        raise HTTPException(status_code=502, detail="canonical readiness unavailable") from exc
+    readiness = ResearchAgentRunner(evidence).readiness(cadence="daily")
+    return _sanitized_readiness(readiness)
 
 
 @app.get("/v1/status")
