@@ -66,31 +66,49 @@ def classify_structured_evidence(
     completeness = _upper(item.get("completeness_state"))
     data_status = _upper(item.get("data_status"))
     missing_sessions = _integer(item, "missing_session_count")
+    complete_rows = _integer(item, "complete_rows")
     incomplete_rows = _integer(item, "incomplete_rows")
+    error_rows = _integer(item, "error_rows")
     unreconstructable = _integer(item, "unreconstructable_count")
     pagination_complete = item.get("pagination_complete")
     performance_evaluated = item.get("performance_evaluated")
 
-    if corpus_gate in {"FAIL", "FAILED", "CORPUS_FAIL"}:
-        reason_codes.append("CORPUS_GATE_FAILED")
-    if survivor_state == "CORPUS_QUALITY_FAILED_PRE_PERFORMANCE":
-        reason_codes.append("CORPUS_QUALITY_FAILED_PRE_PERFORMANCE")
-    if completeness in DATA_QUALITY_STATES or data_status in DATA_QUALITY_STATES:
-        reason_codes.append("INCOMPLETE_CANONICAL_EVIDENCE")
-    if missing_sessions:
-        reason_codes.append("MISSING_SESSIONS")
-    if incomplete_rows:
-        reason_codes.append("INCOMPLETE_FORWARD_OUTCOMES")
-    if unreconstructable:
-        reason_codes.append("UNRECONSTRUCTABLE_EVIDENCE")
-    if pagination_complete is False:
-        reason_codes.append("PAGINATION_INCOMPLETE")
+    blocking_reasons: list[str] = []
+    limitation_reasons: list[str] = []
 
-    if reason_codes:
+    if corpus_gate in {"FAIL", "FAILED", "CORPUS_FAIL"}:
+        blocking_reasons.append("CORPUS_GATE_FAILED")
+    if survivor_state == "CORPUS_QUALITY_FAILED_PRE_PERFORMANCE":
+        blocking_reasons.append("CORPUS_QUALITY_FAILED_PRE_PERFORMANCE")
+    if completeness in DATA_QUALITY_STATES or data_status in DATA_QUALITY_STATES:
+        blocking_reasons.append("INCOMPLETE_CANONICAL_EVIDENCE")
+    if missing_sessions:
+        blocking_reasons.append("MISSING_SESSIONS")
+    if error_rows:
+        blocking_reasons.append("FORWARD_OUTCOME_ERRORS")
+    if pagination_complete is False:
+        blocking_reasons.append("PAGINATION_INCOMPLETE")
+
+    # Missing exact forward bars and explicitly unreconstructable historical
+    # replay rows remain visible evidence limitations. They do not invalidate
+    # unrelated research unless a specific question requires those records.
+    if incomplete_rows:
+        limitation_reasons.append("INCOMPLETE_FORWARD_OUTCOMES")
+    if unreconstructable:
+        limitation_reasons.append("UNRECONSTRUCTABLE_EVIDENCE")
+
+    if blocking_reasons:
         return EvidenceClassification(
             category=ResearchCategory.DATA_QUALITY,
-            reason_codes=tuple(dict.fromkeys(reason_codes)),
+            reason_codes=tuple(dict.fromkeys(blocking_reasons + limitation_reasons)),
             evidence_integrity_blocker=True,
+            requires_semantic_review=False,
+        )
+    if limitation_reasons:
+        return EvidenceClassification(
+            category=ResearchCategory.DATA_QUALITY,
+            reason_codes=tuple(dict.fromkeys(limitation_reasons)),
+            evidence_integrity_blocker=False,
             requires_semantic_review=False,
         )
 
@@ -197,8 +215,9 @@ def report_evidence(report: Mapping[str, Any] | None) -> dict[str, Any]:
     return {
         "completeness_state": report.get("completeness_state"),
         "missing_session_count": len(report.get("missing_trading_sessions") or []),
-        "incomplete_rows": _integer(forward_status, "incomplete_rows")
-        + _integer(forward_status, "error_rows"),
+        "complete_rows": _integer(forward_status, "complete_rows"),
+        "incomplete_rows": _integer(forward_status, "incomplete_rows"),
+        "error_rows": _integer(forward_status, "error_rows"),
         "unreconstructable_count": unreconstructable,
         "warning_codes": report.get("warning_codes") or [],
         "performance_evaluated": report.get("performance_evaluated"),
