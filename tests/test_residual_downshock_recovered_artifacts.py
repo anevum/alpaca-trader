@@ -141,5 +141,27 @@ class RecoveredDevelopmentArtifactTests(unittest.TestCase):
         self.assertFalse(state["production_impact"]["deployment_triggered"])
 
 
+    def test_cost_data_quality_closeout_is_explicit_and_methodology_remains_frozen(self) -> None:
+        state = json.loads(CURRENT_STATE.read_text())
+        closeout = state["data_quality_closeout"]
+        self.assertEqual(closeout["state"], "closed")
+        self.assertEqual(
+            closeout["classification"],
+            "corpus_quality_failure_not_performance_rejection",
+        )
+        self.assertEqual(closeout["frozen_threshold"], 0.9)
+        self.assertTrue(closeout["evidence"]["all_expected_sessions_represented"])
+        self.assertTrue(closeout["evidence"]["pagination_complete"])
+        self.assertTrue(closeout["evidence"]["spy_context_complete"])
+        self.assertTrue(closeout["evidence"]["xlp_context_complete"])
+        self.assertIn("switch IEX to SIP", closeout["methodology_changes_not_permitted"])
+        self.assertIn("lower the 0.90 threshold", closeout["methodology_changes_not_permitted"])
+        self.assertIsNone(state["next_research_question"])
+        self.assertFalse(state["source_control_closeout"]["provenance_fix_branch_merged"])
+        self.assertFalse(
+            state["source_control_closeout"]["provenance_fix_applicable_to_canonical_main"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

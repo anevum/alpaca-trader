@@ -122,5 +122,39 @@
     "live_strategy_version": "LIVE-2026-09-25-003",
     "live_strategy_name": "rolling_momentum_vwap"
   },
-  "next_research_question": "What caused the verified COST data-quality shortfalls in dev-04 and dev-06, and can the source data be repaired under a separately authorized task without changing the frozen v2.1 methodology?"
+  "next_research_question": null,
+  "data_quality_closeout": {
+    "state": "closed",
+    "classification": "corpus_quality_failure_not_performance_rejection",
+    "cause_assessment": "Available evidence indicates the COST shortfall in dev-04 and dev-06 is attributable to sparsity in the frozen Alpaca IEX source data.",
+    "frozen_threshold": 0.9,
+    "evidence": {
+      "all_expected_sessions_represented": true,
+      "pagination_complete": true,
+      "spy_context_complete": true,
+      "xlp_context_complete": true,
+      "repeated_development_executions_substantively_deterministic": true,
+      "historical_cost_iex_materially_sparser_than_sip_on_inspected_dates": true
+    },
+    "hypothesis_interpretation": "No inference for or against the residual-rebound hypothesis is permitted because configuration performance evaluation did not occur.",
+    "methodology_changes_not_permitted": [
+      "switch IEX to SIP",
+      "forward fill",
+      "interpolation",
+      "synthetic bars",
+      "lower the 0.90 threshold",
+      "remove COST",
+      "replace COST",
+      "change synchronization requirements"
+    ],
+    "future_research_rule": "Any SIP-based or alternate corpus-rule research must be a new separately frozen experiment version, not a continuation of v2.1."
+  },
+  "source_control_closeout": {
+    "canonicalization_branch_head": "0664b17c941230df39d4c5da951561589e7033e9",
+    "integration_method": "fast-forward",
+    "provenance_fix_branch": "rdr21-provenance-fix-20260927",
+    "provenance_fix_branch_merged": false,
+    "provenance_fix_applicable_to_canonical_main": false,
+    "provenance_fix_reason": "The affected one-shot residual_downshock_service.py and residual_downshock_execution.py are not present on canonical main."
+  }
 }
