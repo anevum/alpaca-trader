@@ -97,21 +97,6 @@ def classify_structured_evidence(
     if unreconstructable:
         limitation_reasons.append("UNRECONSTRUCTABLE_EVIDENCE")
 
-    if blocking_reasons:
-        return EvidenceClassification(
-            category=ResearchCategory.DATA_QUALITY,
-            reason_codes=tuple(dict.fromkeys(blocking_reasons + limitation_reasons)),
-            evidence_integrity_blocker=True,
-            requires_semantic_review=False,
-        )
-    if limitation_reasons:
-        return EvidenceClassification(
-            category=ResearchCategory.DATA_QUALITY,
-            reason_codes=tuple(dict.fromkeys(limitation_reasons)),
-            evidence_integrity_blocker=False,
-            requires_semantic_review=False,
-        )
-
     operational_statuses = {
         _upper(item.get("status")),
         _upper(item.get("operational_status")),
@@ -131,8 +116,39 @@ def classify_structured_evidence(
     if operational_counts or operational_statuses.intersection(OPERATIONAL_STATES):
         return EvidenceClassification(
             category=ResearchCategory.OPERATIONAL_DEFECT,
-            reason_codes=("EXPLICIT_OPERATIONAL_FAILURE",),
+            reason_codes=tuple(
+                dict.fromkeys(["EXPLICIT_OPERATIONAL_FAILURE", *limitation_reasons])
+            ),
             evidence_integrity_blocker=True,
+        )
+
+    explicit_codes = {_upper(code) for code in _strings(item.get("warning_codes"))}
+    if explicit_codes.intersection(OPERATIONAL_STATES):
+        return EvidenceClassification(
+            category=ResearchCategory.OPERATIONAL_DEFECT,
+            reason_codes=tuple(
+                sorted(explicit_codes.intersection(OPERATIONAL_STATES))
+            ),
+            evidence_integrity_blocker=True,
+        )
+
+    if blocking_reasons or explicit_codes.intersection(DATA_QUALITY_STATES):
+        reasons = blocking_reasons + list(
+            sorted(explicit_codes.intersection(DATA_QUALITY_STATES))
+        ) + limitation_reasons
+        return EvidenceClassification(
+            category=ResearchCategory.DATA_QUALITY,
+            reason_codes=tuple(dict.fromkeys(reasons)),
+            evidence_integrity_blocker=True,
+            requires_semantic_review=False,
+        )
+
+    if limitation_reasons:
+        return EvidenceClassification(
+            category=ResearchCategory.DATA_QUALITY,
+            reason_codes=tuple(dict.fromkeys(limitation_reasons)),
+            evidence_integrity_blocker=False,
+            requires_semantic_review=False,
         )
 
     if bool(item.get("all_recorded_as_operational")):
@@ -171,20 +187,6 @@ def classify_structured_evidence(
             requires_semantic_review=True,
         )
 
-    explicit_codes = {_upper(code) for code in _strings(item.get("warning_codes"))}
-    if explicit_codes.intersection(DATA_QUALITY_STATES):
-        return EvidenceClassification(
-            category=ResearchCategory.DATA_QUALITY,
-            reason_codes=tuple(sorted(explicit_codes.intersection(DATA_QUALITY_STATES))),
-            evidence_integrity_blocker=True,
-        )
-    if explicit_codes.intersection(OPERATIONAL_STATES):
-        return EvidenceClassification(
-            category=ResearchCategory.OPERATIONAL_DEFECT,
-            reason_codes=tuple(sorted(explicit_codes.intersection(OPERATIONAL_STATES))),
-            evidence_integrity_blocker=True,
-        )
-
     return EvidenceClassification(
         category=ResearchCategory.NOISE_INSUFFICIENT,
         reason_codes=("AMBIGUOUS_OR_INSUFFICIENT_STRUCTURED_EVIDENCE",),
@@ -212,6 +214,12 @@ def report_evidence(report: Mapping[str, Any] | None) -> dict[str, Any]:
         for row in live_summary
         if isinstance(row, Mapping)
     )
+    runtime = (
+        report.get("runtime") or {}
+        if isinstance(report.get("runtime"), Mapping)
+        else {}
+    )
+    reconciliation_safe = runtime.get("reconciliation_safe")
     return {
         "completeness_state": report.get("completeness_state"),
         "missing_session_count": len(report.get("missing_trading_sessions") or []),
@@ -219,6 +227,14 @@ def report_evidence(report: Mapping[str, Any] | None) -> dict[str, Any]:
         "incomplete_rows": _integer(forward_status, "incomplete_rows"),
         "error_rows": _integer(forward_status, "error_rows"),
         "unreconstructable_count": unreconstructable,
+        "runtime_error_count": int(bool(runtime.get("last_error"))),
+        "reconciliation_failure_count": int(reconciliation_safe is False),
+        "operational_incident_count": int(bool(runtime.get("persistence_error"))),
+        "reconciliation_status": (
+            "RECONCILIATION_FAILED"
+            if reconciliation_safe is False
+            else "SAFE" if reconciliation_safe is True else None
+        ),
         "warning_codes": report.get("warning_codes") or [],
         "performance_evaluated": report.get("performance_evaluated"),
     }
