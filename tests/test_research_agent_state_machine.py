@@ -10,15 +10,44 @@ from app.research_agent.state_machine import (
 )
 
 
-def auth(current: S, target: S) -> TransitionAuthorization:
-    return TransitionAuthorization(
-        reference="AUTH-TEST-1",
-        exact_transition=f"{current.value}->{target.value}",
-    )
+IDENTITY = {
+    "experiment_id": "experiment-id",
+    "experiment_key": "experiment-key",
+    "manifest_hash": "manifest-hash",
+    "source_commit": "source-commit",
+}
+
+
+def auth(stage_name: str, **changes) -> TransitionAuthorization:
+    values = {
+        "reference": "AUTH-TEST-1",
+        "experiment_id": IDENTITY["experiment_id"],
+        "experiment_key": IDENTITY["experiment_key"],
+        "stage": stage_name,
+        "manifest_hash": IDENTITY["manifest_hash"],
+        "source_commit": IDENTITY["source_commit"],
+        "authorized_by": "synthetic-operator",
+        "authorized_at": "2026-09-27T12:00:00Z",
+    }
+    values.update(changes)
+    return TransitionAuthorization(**values)
+
+
+def protected_request(current, target, stage, **changes):
+    values = {
+        "current": current,
+        "target": target,
+        "authorization": auth(stage),
+        **IDENTITY,
+    }
+    values.update(changes)
+    return TransitionRequest(**values)
 
 
 def test_all_legal_core_transitions():
-    assert transition(TransitionRequest(S.FROZEN, S.DEVELOPMENT_RUNNING)) is S.DEVELOPMENT_RUNNING
+    assert transition(
+        protected_request(S.FROZEN, S.DEVELOPMENT_RUNNING, "development")
+    ) is S.DEVELOPMENT_RUNNING
     assert transition(
         TransitionRequest(
             S.DEVELOPMENT_RUNNING,
@@ -27,11 +56,11 @@ def test_all_legal_core_transitions():
         )
     ) is S.DEVELOPMENT_COMPLETE
     assert transition(
-        TransitionRequest(
+        protected_request(
             S.DEVELOPMENT_COMPLETE,
             S.VALIDATION_RUNNING,
+            "validation",
             previous_outcome=O.PASS,
-            authorization=auth(S.DEVELOPMENT_COMPLETE, S.VALIDATION_RUNNING),
         )
     ) is S.VALIDATION_RUNNING
     assert transition(
@@ -42,11 +71,11 @@ def test_all_legal_core_transitions():
         )
     ) is S.VALIDATION_COMPLETE
     assert transition(
-        TransitionRequest(
+        protected_request(
             S.VALIDATION_COMPLETE,
             S.HOLDOUT_RUNNING,
+            "holdout",
             previous_outcome=O.PASS,
-            authorization=auth(S.VALIDATION_COMPLETE, S.HOLDOUT_RUNNING),
         )
     ) is S.HOLDOUT_RUNNING
     assert transition(
@@ -79,17 +108,43 @@ def test_prohibited_skips_and_backward_reopening(current, target):
         transition(TransitionRequest(current, target, previous_outcome=O.PASS))
 
 
+def test_development_without_authorization_fails_regression():
+    with pytest.raises(InvalidWorkflowTransition, match="exact authorization"):
+        transition(TransitionRequest(S.FROZEN, S.DEVELOPMENT_RUNNING))
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong"),
+    [
+        ("experiment_id", "wrong"),
+        ("experiment_key", "wrong"),
+        ("stage", "validation"),
+        ("manifest_hash", "wrong"),
+        ("source_commit", "wrong"),
+    ],
+)
+def test_development_authorization_must_match_every_exact_field(field, wrong):
+    request = protected_request(
+        S.FROZEN,
+        S.DEVELOPMENT_RUNNING,
+        "development",
+        authorization=auth("development", **{field: wrong}),
+    )
+    with pytest.raises(InvalidWorkflowTransition, match="exact authorization"):
+        transition(request)
+
+
 def test_failure_outcomes_checksum_and_semantic_only_block_progression():
     with pytest.raises(InvalidWorkflowTransition):
         transition(
-            TransitionRequest(
+            protected_request(
                 S.DEVELOPMENT_COMPLETE,
                 S.VALIDATION_RUNNING,
+                "validation",
                 previous_outcome=O.CORPUS_FAIL,
-                authorization=auth(S.DEVELOPMENT_COMPLETE, S.VALIDATION_RUNNING),
             )
         )
-    with pytest.raises(InvalidWorkflowTransition):
+    with pytest.raises(InvalidWorkflowTransition, match="checksum mismatch"):
         transition(
             TransitionRequest(
                 S.FROZEN,
@@ -98,23 +153,32 @@ def test_failure_outcomes_checksum_and_semantic_only_block_progression():
                 actual_checksum="b",
             )
         )
-    with pytest.raises(InvalidWorkflowTransition):
+    with pytest.raises(InvalidWorkflowTransition, match="semantic recommendation"):
         transition(
-            TransitionRequest(
+            protected_request(
                 S.FROZEN,
                 S.DEVELOPMENT_RUNNING,
+                "development",
                 semantic_recommendation_only=True,
             )
         )
 
 
-def test_protected_stage_requires_exact_authorization():
-    with pytest.raises(InvalidWorkflowTransition):
+@pytest.mark.parametrize(
+    ("current", "target", "outcome"),
+    [
+        (S.FROZEN, S.DEVELOPMENT_RUNNING, None),
+        (S.DEVELOPMENT_COMPLETE, S.VALIDATION_RUNNING, O.PASS),
+        (S.VALIDATION_COMPLETE, S.HOLDOUT_RUNNING, O.PASS),
+    ],
+)
+def test_every_protected_stage_rejects_missing_authorization(current, target, outcome):
+    with pytest.raises(InvalidWorkflowTransition, match="exact authorization"):
         transition(
             TransitionRequest(
-                S.DEVELOPMENT_COMPLETE,
-                S.VALIDATION_RUNNING,
-                previous_outcome=O.PASS,
-                authorization=TransitionAuthorization("AUTH", "wrong"),
+                current,
+                target,
+                previous_outcome=outcome,
+                **IDENTITY,
             )
         )

@@ -13,7 +13,13 @@ class InvalidWorkflowTransition(ValueError):
 @dataclass(frozen=True, slots=True)
 class TransitionAuthorization:
     reference: str
-    exact_transition: str
+    experiment_id: str
+    experiment_key: str
+    stage: str
+    manifest_hash: str
+    source_commit: str
+    authorized_by: str
+    authorized_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +32,10 @@ class TransitionRequest:
     expected_checksum: str | None = None
     actual_checksum: str | None = None
     semantic_recommendation_only: bool = False
+    experiment_id: str | None = None
+    experiment_key: str | None = None
+    manifest_hash: str | None = None
+    source_commit: str | None = None
 
 
 COMPLETION_TARGETS = frozenset(
@@ -35,6 +45,12 @@ COMPLETION_TARGETS = frozenset(
         ExperimentWorkflowState.HISTORICAL_COMPLETE,
     }
 )
+
+PROTECTED_STAGE_NAMES = {
+    ExperimentWorkflowState.DEVELOPMENT_RUNNING: "development",
+    ExperimentWorkflowState.VALIDATION_RUNNING: "validation",
+    ExperimentWorkflowState.HOLDOUT_RUNNING: "holdout",
+}
 
 
 def transition_name(
@@ -105,11 +121,26 @@ def validate_transition(request: TransitionRequest) -> None:
 
     if SafetyPolicy.requires_authorization(target):
         exact = transition_name(current, target)
-        if (
-            request.authorization is None
-            or not request.authorization.reference.strip()
-            or request.authorization.exact_transition != exact
-        ):
+        authorization = request.authorization
+        required = (
+            request.experiment_id,
+            request.experiment_key,
+            request.manifest_hash,
+            request.source_commit,
+        )
+        valid = (
+            authorization is not None
+            and all(value is not None and value.strip() for value in required)
+            and bool(authorization.reference.strip())
+            and authorization.experiment_id == request.experiment_id
+            and authorization.experiment_key == request.experiment_key
+            and authorization.stage == PROTECTED_STAGE_NAMES[target]
+            and authorization.manifest_hash == request.manifest_hash
+            and authorization.source_commit == request.source_commit
+            and bool(authorization.authorized_by.strip())
+            and bool(authorization.authorized_at.strip())
+        )
+        if not valid:
             raise InvalidWorkflowTransition(
                 f"exact authorization is required for {exact}"
             )

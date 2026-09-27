@@ -22,6 +22,7 @@ EDGE_DISCOVERY_V1_REJECTED_FAMILIES = frozenset(
 )
 PROTECTED_STAGE_TARGETS = frozenset(
     {
+        ExperimentWorkflowState.DEVELOPMENT_RUNNING,
         ExperimentWorkflowState.VALIDATION_RUNNING,
         ExperimentWorkflowState.HOLDOUT_RUNNING,
     }
