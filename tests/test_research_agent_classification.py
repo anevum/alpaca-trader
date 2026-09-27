@@ -40,3 +40,32 @@ def test_ambiguous_evidence_defaults_to_noise_and_review():
     assert result.ambiguous is True
     assert result.requires_semantic_review is True
 
+
+
+def test_historical_forward_and_replay_gaps_are_limitations_not_global_blockers():
+    result = classify_structured_evidence(
+        {
+            "complete_rows": 135,
+            "incomplete_rows": 9,
+            "error_rows": 0,
+            "unreconstructable_count": 36,
+        }
+    )
+    assert result.category is ResearchCategory.DATA_QUALITY
+    assert result.evidence_integrity_blocker is False
+    assert "INCOMPLETE_FORWARD_OUTCOMES" in result.reason_codes
+    assert "UNRECONSTRUCTABLE_EVIDENCE" in result.reason_codes
+
+
+def test_forward_outcome_errors_remain_active_integrity_blockers():
+    result = classify_structured_evidence(
+        {
+            "complete_rows": 135,
+            "incomplete_rows": 0,
+            "error_rows": 1,
+            "unreconstructable_count": 0,
+        }
+    )
+    assert result.category is ResearchCategory.DATA_QUALITY
+    assert result.evidence_integrity_blocker is True
+    assert "FORWARD_OUTCOME_ERRORS" in result.reason_codes
