@@ -44,14 +44,25 @@ def test_disabled_credentials_and_false_execution_flags_are_inert(monkeypatch):
 def test_public_readiness_sanitizes_internal_question_identity():
     payload = service._sanitized_readiness(
         {
-            "state": "BLOCKED",
+            "state": "WAITING",
             "cadence": "daily",
             "gpt_would_run_now": False,
-            "blocker_count": 2,
-            "blockers": [
+            "blocker_count": 0,
+            "blockers": [],
+            "limitation_count": 1,
+            "limitations": [
+                {
+                    "scope": "report",
+                    "code": "KNOWN_EVIDENCE_LIMITATION",
+                    "trigger_reference": "2026-09-25",
+                    "reason_codes": ["UNRECONSTRUCTABLE_EVIDENCE"],
+                }
+            ],
+            "monitor_count": 1,
+            "monitors": [
                 {
                     "scope": "research_question",
-                    "code": "QUEUE_EVIDENCE_INTEGRITY",
+                    "code": "NONBLOCKING_MONITOR",
                     "research_question_id": "RQ-INTERNAL",
                     "status": "MONITOR",
                     "category": "OPERATIONAL_DEFECT",
@@ -60,6 +71,8 @@ def test_public_readiness_sanitizes_internal_question_identity():
                 }
             ],
             "strategy_question_count": 1,
+            "ready_strategy_question_count": 0,
+            "waiting_strategy_question_count": 1,
             "strategy_questions": [
                 {"research_question_id": "RQ-PRIVATE-STRATEGY"}
             ],
@@ -67,18 +80,29 @@ def test_public_readiness_sanitizes_internal_question_identity():
             "evidence_cutoff": "2026-09-27T02:27:26Z",
         }
     )
-    assert payload["state"] == "BLOCKED"
-    assert payload["blocker_count"] == 2
+    assert payload["state"] == "WAITING"
+    assert payload["blocker_count"] == 0
+    assert payload["limitation_count"] == 1
+    assert payload["monitor_count"] == 1
     assert payload["gpt_would_run_now"] is False
     assert payload["strategy_question_count"] == 1
-    assert payload["blockers"] == [
+    assert payload["ready_strategy_question_count"] == 0
+    assert payload["waiting_strategy_question_count"] == 1
+    assert payload["limitations"] == [
+        {
+            "scope": "report",
+            "code": "KNOWN_EVIDENCE_LIMITATION",
+            "reason_codes": ["UNRECONSTRUCTABLE_EVIDENCE"],
+        }
+    ]
+    assert payload["monitors"] == [
         {
             "scope": "research_question",
-            "code": "QUEUE_EVIDENCE_INTEGRITY",
+            "code": "NONBLOCKING_MONITOR",
             "reason_codes": ["CANONICAL_OPERATIONAL_INCIDENTS"],
         }
     ]
     assert "strategy_questions" not in payload
-    assert "research_question_id" not in payload["blockers"][0]
+    assert "research_question_id" not in payload["monitors"][0]
     assert payload["model_invoked"] is False
     assert payload["persisted"] is False
