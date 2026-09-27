@@ -12,6 +12,7 @@ ARTIFACT_DIR = ROOT / "research" / "artifacts" / "residual-downshock-rebound-v2.
 EARLIER = ARTIFACT_DIR / "development-report-ded64342.json"
 LATER = ARTIFACT_DIR / "development-report-d408a930.json"
 VERIFICATION = ARTIFACT_DIR / "dual-report-verification.json"
+CURRENT_STATE = ROOT / "research" / "residual-downshock-rebound-v2.1-development-state.json"
 
 
 def sha256(path: Path) -> str:
@@ -123,6 +124,21 @@ class RecoveredDevelopmentArtifactTests(unittest.TestCase):
             provenance["actual_railway_source_commit"],
         )
         self.assertEqual(len(provenance["verified_identical_git_blobs"]), 3)
+
+    def test_current_state_is_explicitly_pre_performance_and_protected(self) -> None:
+        state = json.loads(CURRENT_STATE.read_text())
+        self.assertEqual(state["canonicalization"]["state"], "complete")
+        self.assertEqual(state["corpus_gate"]["verdict"], "FAIL")
+        self.assertEqual(state["corpus_gate"]["exact_database_report_match_count"], 138)
+        self.assertEqual(state["performance_evaluation"]["state"], "not_run")
+        self.assertEqual(state["performance_evaluation"]["configurations_evaluated"], 0)
+        self.assertIsNone(state["performance_evaluation"]["selected_configuration_id"])
+        self.assertFalse(state["stage_access"]["validation"]["eligible"])
+        self.assertFalse(state["stage_access"]["validation"]["opened"])
+        self.assertFalse(state["stage_access"]["holdout"]["opened"])
+        self.assertFalse(state["stage_access"]["quarantine"]["accessed"])
+        self.assertFalse(state["production_impact"]["behavior_changed"])
+        self.assertFalse(state["production_impact"]["deployment_triggered"])
 
 
 if __name__ == "__main__":
