@@ -1,0 +1,53 @@
+{
+  "schema_version": "rhen-agent-registry-v1",
+  "agents": [
+    {
+      "agent_id": "rhen.research.v1",
+      "canonical_name": "RHEN Research Agent",
+      "version": "1.0",
+      "role": "research",
+      "lifecycle_status": "active_separate_runtime",
+      "authority_boundary": "Research proposal and evidence review only; independent Research Agent policy remains authoritative",
+      "allowed_capabilities": ["read_authorized_research_evidence", "produce_research_proposals"],
+      "forbidden_capabilities": ["change_live_trading", "change_risk_or_sizing", "open_validation_or_holdout_without_authorization", "access_quarantine"],
+      "permitted_trigger_types": ["authorized_research_request", "research_schedule"],
+      "automatic_invocation_allowed": true,
+      "owning_subsystem": "app.research_agent",
+      "expected_inputs": ["authorized_manifest", "canonical_research_evidence"],
+      "expected_outputs": ["audited_research_run", "proposal_or_noop"],
+      "escalation_behavior": "Record a blocked or failed run through the Research Agent's own audit path; require operator approval for protected transitions"
+    },
+    {
+      "agent_id": "rhen.coordinator.v1",
+      "canonical_name": "RHEN Coordinator",
+      "version": "1.0",
+      "role": "coordination",
+      "lifecycle_status": "contract_only",
+      "authority_boundary": "Triage and coordinate evidence; no production control plane",
+      "allowed_capabilities": ["read_bounded_support_snapshot", "triage_open_support_alerts", "request_human_review"],
+      "forbidden_capabilities": ["place_or_cancel_orders", "change_strategy_risk_sizing_or_universe", "deploy_or_reconfigure_production", "access_protected_research_data"],
+      "permitted_trigger_types": ["meaningful_support_escalation", "operator_request"],
+      "automatic_invocation_allowed": false,
+      "owning_subsystem": "agent_support",
+      "expected_inputs": ["bounded_operational_snapshot", "open_escalations"],
+      "expected_outputs": ["triage_summary", "verification_request_or_operator_escalation"],
+      "escalation_behavior": "Escalate unresolved blocked evidence to an operator; do not infer permission to act"
+    },
+    {
+      "agent_id": "rhen.verifier.v1",
+      "canonical_name": "RHEN Verifier",
+      "version": "1.0",
+      "role": "independent_verification",
+      "lifecycle_status": "contract_only",
+      "authority_boundary": "Independent read-only verification of bounded canonical evidence",
+      "allowed_capabilities": ["read_bounded_support_snapshot", "compare_canonical_evidence_references", "report_disagreement"],
+      "forbidden_capabilities": ["place_or_cancel_orders", "change_strategy_risk_sizing_or_universe", "deploy_or_reconfigure_production", "access_protected_research_data"],
+      "permitted_trigger_types": ["verification_request", "meaningful_support_escalation", "operator_request"],
+      "automatic_invocation_allowed": false,
+      "owning_subsystem": "agent_support",
+      "expected_inputs": ["bounded_operational_snapshot", "evidence_references"],
+      "expected_outputs": ["verification_result", "disagreement_or_blocker"],
+      "escalation_behavior": "Report evidence gaps and discrepancies to an operator; never repair source evidence implicitly"
+    }
+  ]
+}
