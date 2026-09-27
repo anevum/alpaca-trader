@@ -74,7 +74,11 @@ def test_public_readiness_sanitizes_internal_question_identity():
             "ready_strategy_question_count": 0,
             "waiting_strategy_question_count": 1,
             "strategy_questions": [
-                {"research_question_id": "RQ-PRIVATE-STRATEGY"}
+                {
+                    "research_question_id": "RQ-PRIVATE-STRATEGY",
+                    "semantic_readiness": "WAITING",
+                    "missing_requirements": ["MULTIPLE_INDEPENDENT_SESSIONS"],
+                }
             ],
             "trigger_reference": "2026-09-25",
             "evidence_cutoff": "2026-09-27T02:27:26Z",
@@ -88,6 +92,7 @@ def test_public_readiness_sanitizes_internal_question_identity():
     assert payload["strategy_question_count"] == 1
     assert payload["ready_strategy_question_count"] == 0
     assert payload["waiting_strategy_question_count"] == 1
+    assert payload["waiting_requirements"] == ["MULTIPLE_INDEPENDENT_SESSIONS"]
     assert payload["limitations"] == [
         {
             "scope": "report",
