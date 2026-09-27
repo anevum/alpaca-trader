@@ -60,12 +60,27 @@ def _bounded(value: Any, maximum: int, default: int = 0) -> int:
 def _classification(snapshot: ResearchQuestionSnapshot) -> EvidenceClassification:
     inferred = classify_structured_evidence(snapshot.evidence_summary)
     if snapshot.category is None:
+        if snapshot.status == "MONITOR" and inferred.category in {
+            ResearchCategory.OPERATIONAL_DEFECT,
+            ResearchCategory.DATA_QUALITY,
+        }:
+            return EvidenceClassification(
+                category=inferred.category,
+                reason_codes=inferred.reason_codes,
+                evidence_integrity_blocker=False,
+                requires_semantic_review=False,
+                ambiguous=inferred.ambiguous,
+            )
         return inferred
+
+    blocker = inferred.evidence_integrity_blocker
+    if snapshot.status == "MONITOR":
+        blocker = False
+
     return EvidenceClassification(
         category=snapshot.category,
         reason_codes=inferred.reason_codes,
-        evidence_integrity_blocker=snapshot.category
-        in {ResearchCategory.OPERATIONAL_DEFECT, ResearchCategory.DATA_QUALITY},
+        evidence_integrity_blocker=blocker,
         requires_semantic_review=inferred.requires_semantic_review,
         ambiguous=inferred.ambiguous,
     )
