@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -9,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from app.residual_downshock_execution import emit_report_chunks, run_development
+from app.source_provenance import resolve_source_commit
 
 
 state: dict[str, Any] = {
@@ -27,10 +27,12 @@ async def _execute_once() -> None:
     state["status"] = "running"
     state["started_at"] = datetime.now(timezone.utc).isoformat()
     try:
+        source_commit = resolve_source_commit()
+        state["source_commit"] = source_commit
         report = await asyncio.to_thread(
             run_development,
             "research/residual-downshock-rebound-v2.1.json",
-            source_commit=os.environ.get("RDR21_SOURCE_COMMIT", "46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc"),
+            source_commit=source_commit,
         )
         emit_report_chunks(report)
         state["status"] = "completed"
