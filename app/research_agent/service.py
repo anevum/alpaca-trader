@@ -182,11 +182,28 @@ async def status(x_rhen_agent_admin_token: str | None = Header(default=None)):
         evidence = await _gateway().fetch_evidence()
     except ResearchGatewayError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    deterministic = ResearchAgentRunner(evidence).status()
+    runner = ResearchAgentRunner(evidence)
     return {
         "service": state,
-        "canonical_research_state": deterministic,
+        "canonical_research_state": runner.status(),
+        "research_readiness": runner.readiness(cadence="daily"),
     }
+
+
+@app.get("/v1/readiness")
+async def readiness(
+    cadence: Literal["daily", "weekly"] = "daily",
+    x_rhen_agent_admin_token: str | None = Header(default=None),
+):
+    _require_operator(x_rhen_agent_admin_token)
+    state = _health()
+    if not state["ok"]:
+        raise HTTPException(status_code=503, detail=state)
+    try:
+        evidence = await _gateway().fetch_evidence()
+    except ResearchGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ResearchAgentRunner(evidence).readiness(cadence=cadence)
 
 
 @app.post("/v1/review")
