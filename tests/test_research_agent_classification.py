@@ -69,3 +69,30 @@ def test_forward_outcome_errors_remain_active_integrity_blockers():
     assert result.category is ResearchCategory.DATA_QUALITY
     assert result.evidence_integrity_blocker is True
     assert "FORWARD_OUTCOME_ERRORS" in result.reason_codes
+
+
+def test_active_runtime_failure_outranks_historical_limitations():
+    result = classify_structured_evidence(
+        {
+            "complete_rows": 135,
+            "incomplete_rows": 9,
+            "unreconstructable_count": 36,
+            "runtime_error_count": 1,
+        }
+    )
+    assert result.category is ResearchCategory.OPERATIONAL_DEFECT
+    assert result.evidence_integrity_blocker is True
+    assert "EXPLICIT_OPERATIONAL_FAILURE" in result.reason_codes
+
+
+def test_active_reconciliation_failure_outranks_historical_limitations():
+    result = classify_structured_evidence(
+        {
+            "complete_rows": 135,
+            "incomplete_rows": 9,
+            "unreconstructable_count": 36,
+            "reconciliation_status": "RECONCILIATION_FAILED",
+        }
+    )
+    assert result.category is ResearchCategory.OPERATIONAL_DEFECT
+    assert result.evidence_integrity_blocker is True
