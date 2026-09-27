@@ -175,6 +175,16 @@ def _sanitized_readiness(readiness: dict) -> dict:
             for row in readiness.get(name) or []
         ]
 
+    waiting_requirements = sorted(
+        {
+            str(requirement)
+            for question in readiness.get("strategy_questions") or []
+            if question.get("semantic_readiness") == "WAITING"
+            for requirement in question.get("missing_requirements") or []
+            if requirement
+        }
+    )
+
     return {
         "state": readiness.get("state"),
         "cadence": readiness.get("cadence"),
@@ -194,6 +204,7 @@ def _sanitized_readiness(readiness: dict) -> dict:
         "waiting_strategy_question_count": int(
             readiness.get("waiting_strategy_question_count") or 0
         ),
+        "waiting_requirements": waiting_requirements,
         "trigger_reference": readiness.get("trigger_reference"),
         "evidence_cutoff": readiness.get("evidence_cutoff"),
         "read_only": True,
