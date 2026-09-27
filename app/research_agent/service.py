@@ -53,7 +53,20 @@ def _source_commit() -> str:
 
 
 def _isolation_violations() -> list[str]:
-    return [name for name in FORBIDDEN_RUNTIME_VARIABLES if os.environ.get(name)]
+    violations: list[str] = []
+    for name in ("ALPACA_API_KEY", "ALPACA_API_SECRET"):
+        value = os.environ.get(name, "").strip()
+        if value and value != "DISABLED":
+            violations.append(name)
+    for name in (
+        "EXECUTION_ENABLED",
+        "BOT_ARMED",
+        "LIVE_TRADING",
+        "I_ACKNOWLEDGE_LIVE_TRADING",
+    ):
+        if _truthy(name):
+            violations.append(name)
+    return violations
 
 
 def _gateway() -> ResearchGateway:
