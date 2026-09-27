@@ -161,9 +161,12 @@ class ResearchAgentRunner:
             }
             for row in queue_records
         ]
-        semantic_review_warranted = bool(strategy_questions) and not bool(blockers)
-        if cadence == "weekly" and classification.evidence_integrity_blocker:
-            semantic_review_warranted = False
+        report_integrity_blocker = bool(classification.evidence_integrity_blocker)
+        semantic_review_warranted = (
+            bool(strategy_questions)
+            and not bool(blockers)
+            and not report_integrity_blocker
+        )
 
         return {
             "mode": "DRY_RUN",
@@ -179,7 +182,9 @@ class ResearchAgentRunner:
             ),
             "classification": deterministic_dict(classification),
             "queue": queue_records,
-            "blocker_count": len(blockers),
+            "blocker_count": len(blockers) + int(report_integrity_blocker),
+            "queue_blocker_count": len(blockers),
+            "report_integrity_blocker": report_integrity_blocker,
             "strategy_question_count": len(strategy_questions),
             "semantic_review_warranted": semantic_review_warranted,
             "proposed_state_updates": proposed_updates,
