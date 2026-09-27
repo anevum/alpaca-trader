@@ -1,0 +1,129 @@
+{
+  "comparison": {
+    "classification": "SEMANTICALLY EQUIVALENT WITH DOCUMENTED PROVENANCE DIFFERENCES",
+    "coverage_matrix_sha256": "91c34897e90e68e16d52f2a21eac428751d709d58cd886e0993a8529b9344fb1",
+    "only_json_difference": {
+      "classification": "timestamp / run-instance metadata",
+      "earlier": "2026-09-26T20:20:07.065874+00:00",
+      "later": "2026-09-26T20:56:54.814530+00:00",
+      "path": "$.generated_at"
+    },
+    "semantic_hash_method": "remove top-level generated_at; UTF-8 JSON with sorted keys and separators ',' ':'",
+    "semantic_payload_sha256": "71a7636b6d31694899fd55b2d2d6d4f6f8f07452ec9204bbe1c09b1fc34edaa9",
+    "symbol_window_ratio_matrix_sha256": "d2a4fb59417795989c59a5aba462cf34fad542346124f655f620189857605367"
+  },
+  "experiment_id": "1e0e2f4a-6fef-4b2b-923f-630fa830c458",
+  "experiment_key": "edge-discovery-v2-residual-downshock-rebound-v2.1",
+  "provenance": {
+    "actual_railway_source_commit": "4f42fbcae33526659b6336ecd68808c53ad351f1",
+    "manifest_checksum_sha256": "92f8bad6362144805cc262c9188d199111a7f9c088caec56c0b0e6d579ffef7a",
+    "mismatch_cause": "one-shot service hard-coded RDR21_SOURCE_COMMIT fallback",
+    "report_declared_source_commit": "46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc",
+    "verified_identical_git_blobs": [
+      {
+        "commits": [
+          "46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc",
+          "4f42fbcae33526659b6336ecd68808c53ad351f1"
+        ],
+        "git_blob_sha1": "21031d8536189c035b59c8297bddcbda770dc9b7",
+        "path": "app/residual_downshock_execution.py"
+      },
+      {
+        "commits": [
+          "46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc",
+          "4f42fbcae33526659b6336ecd68808c53ad351f1"
+        ],
+        "git_blob_sha1": "d6c22e851821492b6cd34f29d4956a171c47c7c3",
+        "path": "app/residual_downshock_v2_1.py"
+      },
+      {
+        "commits": [
+          "46c2de0d84c736b12f8a3bbeb64ef4ad1d5305cc",
+          "4f42fbcae33526659b6336ecd68808c53ad351f1"
+        ],
+        "git_blob_sha1": "bdd38f0acedb60c0205fb542ade305a01a2d55be",
+        "path": "research/residual-downshock-rebound-v2.1.json"
+      }
+    ]
+  },
+  "reports": {
+    "earlier": {
+      "artifact_path": "research/artifacts/residual-downshock-rebound-v2.1/development-report-ded64342.json",
+      "byte_length": 139731,
+      "deployment_created_at": "2026-09-26T20:19:01.390Z",
+      "deployment_id": "ded64342-ee58-47db-8378-8bc8dfa8b6ba",
+      "deployment_snapshot_id": "eb9e6d99-562b-4861-8611-6d32f2ea029e",
+      "emitted_at": "2026-09-26T20:20:14.696Z",
+      "generated_at": "2026-09-26T20:20:07.065874+00:00",
+      "role": "corroborating_semantically_equivalent_emission",
+      "sha256": "173cdf9d86a129ddb02bde6c1e60f896d1a4db5c6a88e898a25c63a8162bdf7f"
+    },
+    "later": {
+      "artifact_path": "research/artifacts/residual-downshock-rebound-v2.1/development-report-d408a930.json",
+      "byte_length": 139731,
+      "deployment_created_at": "2026-09-26T20:54:41.876Z",
+      "deployment_id": "d408a930-6bb9-4f3b-b353-a832633f9cfd",
+      "deployment_snapshot_id": "9fe53699-1910-423f-8733-d071a3f2f8a3",
+      "emitted_at": "2026-09-26T20:56:58.554Z",
+      "generated_at": "2026-09-26T20:56:54.814530+00:00",
+      "role": "canonical_recovered_development_representation",
+      "sha256": "addf91840e07c94a564f5a00b0acf0ae3dfa6f2dda1d32b4dfd8a3250575e610"
+    }
+  },
+  "schema_version": "rhen-rdr21-dual-report-verification-v1",
+  "stage": "development",
+  "verified_outcome": {
+    "access_audit": {
+      "development_opened": true,
+      "holdout_opened": false,
+      "latest_performance_date_accessed": "2026-05-08",
+      "quarantine_accessed": false,
+      "validation_opened": false
+    },
+    "configurations_defined": 6,
+    "configurations_evaluated": 0,
+    "corpus_integrity": "FAIL",
+    "coverage_record_count": 138,
+    "decision": "DEVELOPMENT CORPUS FAIL; performance evaluation not run",
+    "development_windows": [
+      "dev-01",
+      "dev-02",
+      "dev-03",
+      "dev-04",
+      "dev-05",
+      "dev-06"
+    ],
+    "expected_five_minute_capacity": 156078,
+    "expected_model_observation_capacity": 130065,
+    "expected_sessions_fully_represented_record_count": 138,
+    "failing_symbol_windows": [
+      {
+        "expected_model_observation_count": 975,
+        "model_availability_ratio": 0.8789743589743589,
+        "model_observation_count": 857,
+        "symbol": "COST",
+        "synchronization_completeness": 0.8789743589743589,
+        "window": "dev-04"
+      },
+      {
+        "expected_model_observation_count": 975,
+        "model_availability_ratio": 0.84,
+        "model_observation_count": 819,
+        "symbol": "COST",
+        "synchronization_completeness": 0.84,
+        "window": "dev-06"
+      }
+    ],
+    "missing_session_record_count": 0,
+    "pagination_complete_record_count": 138,
+    "partial_session_record_count": 33,
+    "performance_evaluation": "not_run",
+    "raw_one_minute_bar_count": 726277,
+    "represented_five_minute_observation_count": 155604,
+    "represented_model_observation_count": 128943,
+    "selected_configuration_id": null,
+    "source_page_count": 131,
+    "tradable_symbol_count": 23,
+    "validation_eligible": false
+  }
+}
