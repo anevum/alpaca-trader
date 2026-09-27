@@ -144,7 +144,14 @@ def test_daily_and_weekly_dry_runs_have_no_mutations_or_model_calls():
             "market_bar_reads": 0,
         }
         assert len(result["queue"]) == 2
+    assert daily["semantic_review_warranted"] is False
+    assert daily["queue_blocker_count"] == 1
+    assert daily["report_integrity_blocker"] is True
+    assert daily["blocker_count"] == 2
     assert weekly["semantic_review_warranted"] is False
+    assert weekly["queue_blocker_count"] == 1
+    assert weekly["report_integrity_blocker"] is True
+    assert weekly["blocker_count"] == 2
 
 
 def test_duplicate_fingerprint_is_recognized_without_duplicate_state():
