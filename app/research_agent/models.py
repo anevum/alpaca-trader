@@ -211,6 +211,7 @@ class CanonicalEvidence:
     experiments: tuple[Mapping[str, Any], ...]
     research_decisions: tuple[Mapping[str, Any], ...]
     agent_runs: tuple[Mapping[str, Any], ...] = ()
+    search_ledger: Mapping[str, Any] = field(default_factory=dict)
     evidence_cutoff: datetime | None = None
 
 
