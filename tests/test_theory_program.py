@@ -48,3 +48,11 @@ def test_registry_rejects_authority_escalation(tmp_path: Path):
             raise AssertionError("authority escalation should fail closed")
     finally:
         load_theory_registry.cache_clear()
+
+
+def test_registered_result_is_application_not_original():
+    registry = load_theory_registry()
+    result = registry["problems"][0]["results"][0]
+    assert result["result_id"] == "ATP-001-P1"
+    assert result["claim_class"] == "APPLICATION"
+    assert result["novelty_state"] == "APPLICATION"
