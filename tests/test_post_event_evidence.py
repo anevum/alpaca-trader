@@ -412,6 +412,14 @@ def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
         "decision_cycle_payload": None,
         "submitted": True,
         "intent_id": "historical-intent",
+        "ads002_score": {
+            "methodology_version": "ads-shadow-v1",
+            "source_completeness": {"pretrade_complete": True},
+            "attention_score": 60,
+            "qualification_score": 70,
+            "timing_score": 80,
+            "pretrade_composite": 70,
+        },
     }
     rows = [
         bar(
@@ -466,3 +474,58 @@ def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
     )
     assert comparison["payload"]["match_state"] == "UNRECONSTRUCTABLE"
     assert comparison["payload"]["mismatch_category"] == "UNRECONSTRUCTABLE"
+
+
+def test_ads002_ineligible_candidate_skips_forward_outcomes_but_keeps_comparison():
+    reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
+    row = {
+        **candidate(reference_bar),
+        "data_feed": "iex",
+        "bar_interval": "1Min",
+        "scan_cycle": {
+            "scan_cycle_id": 10,
+            "cycle_key": "run:cycle",
+            "data_status": "partial_backfill",
+            "strategy_version_id": "LIVE-2026-09-25-003",
+            "run_id": "11111111-1111-1111-1111-111111111111",
+        },
+        "decision_cycle_payload": None,
+        "submitted": False,
+        "intent_id": None,
+        "ads002_score": {
+            "methodology_version": "ads-shadow-v1",
+            "source_completeness": {"pretrade_complete": False},
+        },
+    }
+
+    class MarketData:
+        async def market_calendar_details(self, *, start, end):
+            return [{"date": start, "open": "09:30", "close": "16:00"}]
+
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {"SPY": []}
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def reader(**params):
+        return {"candidates": [row]}
+
+    sink = Sink()
+    runner = PostEventEvidenceRunner(
+        settings=type("Settings", (), {"data_feed": "iex", "bar_timeframe": "1Min"})(),
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=reader,
+    )
+    summary = asyncio.run(runner.run_session(date(2026, 9, 25)))
+
+    assert summary.outcome_events == 0
+    assert summary.comparison_events == 1
+    assert [event["event_type"] for event in sink.events] == [
+        "live_offline_comparison"
+    ]
