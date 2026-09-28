@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 from uuid import UUID, uuid5
 
 from .models import ExperimentProposal, canonical_json
+from .proposal import proposal_hash
 
 
 MULTIPLICITY_VERSION = "math001-multiplicity-v1"
@@ -475,7 +476,7 @@ def multiplicity_plan_from_proposal(
             "plan_version": MULTIPLICITY_PLAN_VERSION,
             "proposal_id": proposal.proposal_id,
             "proposal_revision": proposal.revision,
-            "proposal_hash": None,
+            "proposal_hash": proposal_hash(proposal),
             "method": "none",
             "alpha": None,
             "family_scope": "PROPOSAL_CONFIGURATIONS",
@@ -517,7 +518,7 @@ def multiplicity_plan_from_proposal(
             "plan_version": MULTIPLICITY_PLAN_VERSION,
             "proposal_id": proposal.proposal_id,
             "proposal_revision": proposal.revision,
-            "proposal_hash": None,
+            "proposal_hash": proposal_hash(proposal),
             "method": name,
             "alpha": alpha,
             "family_scope": "PROPOSAL_CONFIGURATIONS",
