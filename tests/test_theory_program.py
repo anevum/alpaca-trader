@@ -71,6 +71,7 @@ def test_math001_is_registered_as_active_research_without_authority():
         "MATH-001-P1",
         "MATH-001-P2",
         "MATH-001-B1",
+        "MATH-001-A1",
     }
     assert all(
         row["novelty_state"] != "ORIGINAL_VERIFIED"
