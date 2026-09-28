@@ -66,3 +66,25 @@ def test_outcome_contingent_placeholder_and_unsupported_feed_fail(proposal_facto
         data_feed="silently-substituted-feed",
     )
     assert {"no_outcome_contingent_placeholders", "supported_feed"} <= failures(proposal)
+
+
+def test_incomplete_multiplicity_method_blocks_freeze(proposal_factory):
+    proposal = proposal_factory(
+        multiple_testing_method={"name": "holm"},
+    )
+    assert "multiplicity_plan_valid" in failures(proposal)
+    assert validate_design(proposal).freeze_eligible is False
+
+
+def test_bh_without_dependence_assumption_blocks_freeze(proposal_factory):
+    proposal = proposal_factory(
+        multiple_testing_method={"name": "bh", "alpha": 0.05},
+    )
+    assert "multiplicity_plan_valid" in failures(proposal)
+
+
+def test_frozen_holm_plan_passes(proposal_factory):
+    proposal = proposal_factory(
+        multiple_testing_method={"name": "holm", "alpha": 0.05},
+    )
+    assert "multiplicity_plan_valid" not in failures(proposal)
