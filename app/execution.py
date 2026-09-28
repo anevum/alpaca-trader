@@ -1762,6 +1762,26 @@ class ExecutionEngine:
             reason = str(payload.get("reason") or "unknown")
             hold_reasons[reason] = hold_reasons.get(reason, 0) + 1
 
+        qualified_symbols = [signal.symbol for signal in buy_signals]
+        completed_at = datetime.now(NY)
+        cycle_message = (
+            f"scan completed across {len(entry_symbols)} symbols; "
+            f"{len(qualified_symbols)} qualified"
+        )
+        self.state.record_event(
+            kind="scan_cycle",
+            action="qualified" if qualified_symbols else "hold",
+            message=cycle_message,
+            reason=cycle_message,
+            at=completed_at,
+            payload={
+                "symbol_count": len(entry_symbols),
+                "qualified_symbols": qualified_symbols,
+                "hold_reasons": hold_reasons,
+            },
+            emit=False,
+        )
+
         print(
             "LIVE_SCAN_CYCLE",
             {
