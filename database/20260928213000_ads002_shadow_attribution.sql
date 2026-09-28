@@ -324,6 +324,219 @@ execute function private.project_ads002_selected_candidate();
 comment on function private.project_ads002_selected_candidate() is
 'ADS-002 telemetry-only projection: persists exact selected candidate identity from the already-critical pre-broker order_intent event.';
 
+-- Complete the candidate<->signal identity repair in both insertion orders.
+-- The signal row may be projected after the order_intent event trigger has already
+-- persisted the candidate. This BEFORE trigger fills candidate_id by exact
+-- candidate_key only; it never time-matches or mutates execution behavior.
+create or replace function private.link_ads002_signal_candidate_by_key()
+returns trigger
+language plpgsql
+set search_path = private, pg_temp
+as $
+declare
+  v_candidate_key text;
+  v_candidate_id bigint;
+begin
+  v_candidate_key := nullif(new.payload->>'candidate_key','');
+  if v_candidate_key is null then
+    return new;
+  end if;
+
+  select candidate_id
+  into v_candidate_id
+  from private.trading_candidate_evaluations
+  where candidate_key = v_candidate_key;
+
+  if v_candidate_id is null then
+    return new;
+  end if;
+
+  if new.candidate_id is null then
+    new.candidate_id := v_candidate_id;
+  elsif new.candidate_id <> v_candidate_id then
+    new.payload := coalesce(new.payload,'{}'::jsonb)
+      || jsonb_build_object(
+        'ads002_identity_conflict', true,
+        'ads002_expected_candidate_id', v_candidate_id
+      );
+    return new;
+  end if;
+
+  update private.trading_candidate_evaluations
+  set signal_id = coalesce(signal_id, new.signal_id),
+      research_attribution = research_attribution || jsonb_build_object(
+        'ads002_identity_source', 'candidate_key_signal_trigger',
+        'identity_is_direct', true
+      )
+  where candidate_id = v_candidate_id
+    and (signal_id is null or signal_id = new.signal_id);
+
+  return new;
+end;
+$;
+
+drop trigger if exists trg_ads002_link_signal_candidate_by_key
+on private.trading_signals;
+
+create trigger trg_ads002_link_signal_candidate_by_key
+before insert or update of payload, candidate_id
+on private.trading_signals
+for each row
+execute function private.link_ads002_signal_candidate_by_key();
+
+comment on function private.link_ads002_signal_candidate_by_key() is
+'ADS-002 exact-key candidate/signal linker. No fuzzy or nearest-time attribution.';
+
+-- Project deterministic pretrade ADS-002 scores only after the canonical
+-- decision-cycle candidate rows have been created/enriched.
+create or replace function private.project_ads002_shadow_scores()
+returns trigger
+language plpgsql
+set search_path = private, pg_temp
+as $
+declare
+  v_cycle_key text;
+  v_scan_cycle_id bigint;
+  v_candidate jsonb;
+  v_ads jsonb;
+  v_candidate_id bigint;
+  v_candidate_key text;
+  v_observed_at timestamptz;
+  v_symbol text;
+  v_signal_id uuid;
+begin
+  if new.event_type <> 'decision_cycle' then
+    return new;
+  end if;
+
+  v_cycle_key := nullif(new.payload->>'cycle_key','');
+  if v_cycle_key is null
+     or jsonb_typeof(new.payload->'candidates') <> 'array' then
+    return new;
+  end if;
+
+  select scan_cycle_id
+  into v_scan_cycle_id
+  from private.trading_scan_cycles
+  where cycle_key = v_cycle_key;
+
+  if v_scan_cycle_id is null then
+    return new;
+  end if;
+
+  for v_candidate in
+    select value from jsonb_array_elements(new.payload->'candidates')
+  loop
+    v_ads := coalesce(v_candidate->'ads002','{}'::jsonb);
+    if jsonb_typeof(v_ads) <> 'object'
+       or coalesce(v_ads->>'methodology_version','') = '' then
+      continue;
+    end if;
+
+    v_symbol := upper(v_candidate->>'symbol');
+    v_candidate_key := coalesce(
+      nullif(v_candidate->>'candidate_key',''),
+      v_cycle_key || ':' || v_symbol
+    );
+
+    select candidate_id, observed_at, signal_id
+    into v_candidate_id, v_observed_at, v_signal_id
+    from private.trading_candidate_evaluations
+    where scan_cycle_id = v_scan_cycle_id
+      and symbol = v_symbol;
+
+    if v_candidate_id is null then
+      continue;
+    end if;
+
+    insert into private.trading_ads_shadow_scores (
+      candidate_id,
+      candidate_key,
+      run_id,
+      strategy_version_id,
+      session,
+      symbol,
+      observed_at,
+      attention_score,
+      qualification_score,
+      timing_score,
+      exit_health_score,
+      confidence_score,
+      pretrade_composite,
+      legacy_quality_score,
+      feature_vector,
+      score_components,
+      source_completeness,
+      attribution_state,
+      methodology_version,
+      forward_methodology_version,
+      computed_at
+    ) values (
+      v_candidate_id,
+      v_candidate_key,
+      new.run_id,
+      new.strategy_version_id,
+      (v_observed_at at time zone 'America/New_York')::date,
+      v_symbol,
+      v_observed_at,
+      nullif(v_ads#>>'{attention,score}','')::numeric,
+      nullif(v_ads#>>'{qualification,score}','')::numeric,
+      nullif(v_ads#>>'{timing,score}','')::numeric,
+      null,
+      null,
+      nullif(v_ads->>'pretrade_composite','')::numeric,
+      nullif(v_ads->>'legacy_quality_score','')::numeric,
+      coalesce(v_ads->'feature_vector','{}'::jsonb),
+      jsonb_build_object(
+        'attention', v_ads->'attention',
+        'qualification', v_ads->'qualification',
+        'timing', v_ads->'timing'
+      ),
+      coalesce(v_ads->'source_completeness','{}'::jsonb),
+      case
+        when v_signal_id is null then 'CANDIDATE_ONLY'
+        else 'DIRECT_PARTIAL'
+      end,
+      v_ads->>'methodology_version',
+      'candidate-forward-v2',
+      now()
+    )
+    on conflict (candidate_id, methodology_version) do update
+    set
+      candidate_key = excluded.candidate_key,
+      attention_score = excluded.attention_score,
+      qualification_score = excluded.qualification_score,
+      timing_score = excluded.timing_score,
+      pretrade_composite = excluded.pretrade_composite,
+      legacy_quality_score = excluded.legacy_quality_score,
+      feature_vector = excluded.feature_vector,
+      score_components = excluded.score_components,
+      source_completeness = excluded.source_completeness,
+      attribution_state = case
+        when private.trading_ads_shadow_scores.attribution_state = 'DIRECT_COMPLETE'
+          then private.trading_ads_shadow_scores.attribution_state
+        else excluded.attribution_state
+      end,
+      forward_methodology_version = excluded.forward_methodology_version,
+      computed_at = excluded.computed_at;
+  end loop;
+
+  return new;
+end;
+$;
+
+drop trigger if exists trg_zzz_ads002_shadow_scores
+on private.trading_events;
+
+create trigger trg_zzz_ads002_shadow_scores
+after insert on private.trading_events
+for each row
+when (new.event_type = 'decision_cycle')
+execute function private.project_ads002_shadow_scores();
+
+comment on function private.project_ads002_shadow_scores() is
+'Projects research-only ADS-002 A/Q/T shadow scores from decision-cycle telemetry.';
+
 -- Read-only chain audit used by the post-close research pipeline.
 create or replace function private.rhen_ads002_attribution_inputs(
   p_start date,
