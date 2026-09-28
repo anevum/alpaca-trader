@@ -21,8 +21,6 @@ class SlackNotifier:
         self._client: httpx.AsyncClient | None = None
         self._last_market_open: bool | None = None
         self._last_reconciliation_action: str | None = None
-        self._known_bot_positions: set[str] | None = None
-        self._seen_fill_ids: set[str] = set()
         self._dedupe: set[str] = set()
         self.last_error: str | None = None
         self.dropped_messages = 0
@@ -134,92 +132,6 @@ class SlackNotifier:
             f"*RHEN // {label}*\n{at}{symbol_text} | {message}",
             key=key,
         )
-
-    def observe_broker_snapshot(
-        self,
-        *,
-        positions: list[dict[str, Any]],
-        recent_orders: list[dict[str, Any]],
-        fills: list[dict[str, Any]],
-        observed_at: datetime | None = None,
-    ) -> None:
-        if not self.enabled:
-            return
-
-        bot_orders = [
-            order
-            for order in recent_orders
-            if str(order.get("client_order_id") or "").startswith("anevum-")
-        ]
-        bot_order_ids = {
-            str(order.get("id") or "")
-            for order in bot_orders
-            if order.get("id")
-        }
-        bot_symbols = {
-            str(order.get("symbol") or "").upper()
-            for order in bot_orders
-            if order.get("symbol")
-        }
-        active_positions = {
-            str(position.get("symbol") or "").upper()
-            for position in positions
-            if str(position.get("symbol") or "").upper() in bot_symbols
-            and float(position.get("qty") or 0) != 0
-        }
-
-        fill_rows: list[tuple[str, dict[str, Any]]] = []
-        for fill in fills:
-            fill_id = str(fill.get("id") or fill.get("activity_id") or "")
-            order_id = str(fill.get("order_id") or "")
-            if not fill_id or order_id not in bot_order_ids:
-                continue
-            fill_rows.append((fill_id, fill))
-
-        if self._known_bot_positions is None:
-            self._known_bot_positions = set(active_positions)
-            self._seen_fill_ids.update(fill_id for fill_id, _ in fill_rows)
-            if active_positions:
-                symbols = ", ".join(sorted(active_positions))
-                self._enqueue(
-                    f"*RHEN // POSITION STATE RESTORED*\nmanaged open positions: {symbols}",
-                    key=f"restored:{symbols}",
-                )
-            return
-
-        for fill_id, fill in fill_rows:
-            if fill_id in self._seen_fill_ids:
-                continue
-            self._seen_fill_ids.add(fill_id)
-            side = str(fill.get("side") or "").upper()
-            symbol = str(fill.get("symbol") or "").upper()
-            qty = str(fill.get("qty") or fill.get("quantity") or "")
-            price = str(fill.get("price") or fill.get("filled_avg_price") or "")
-            fill_time = str(
-                fill.get("transaction_time")
-                or fill.get("filled_at")
-                or observed_at
-                or datetime.now(timezone.utc).isoformat()
-            )
-            self._enqueue(
-                f"*RHEN // FILL*\n{fill_time} | `{symbol}` | {side} | qty {qty or '?'} | price {price or '?'}",
-                key=f"fill:{fill_id}",
-            )
-
-        opened = active_positions - self._known_bot_positions
-        closed = self._known_bot_positions - active_positions
-        stamp = (observed_at or datetime.now(timezone.utc)).isoformat()
-        for symbol in sorted(opened):
-            self._enqueue(
-                f"*RHEN // POSITION OPEN*\n{stamp} | `{symbol}`",
-                key=f"position-open:{symbol}:{stamp[:16]}",
-            )
-        for symbol in sorted(closed):
-            self._enqueue(
-                f"*RHEN // POSITION CLOSED*\n{stamp} | `{symbol}`",
-                key=f"position-closed:{symbol}:{stamp[:16]}",
-            )
-        self._known_bot_positions = set(active_positions)
 
     def _enqueue(self, text: str, *, key: str | None = None) -> None:
         if not self.enabled:
