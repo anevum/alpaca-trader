@@ -6,7 +6,7 @@ if (!connectionString) throw new Error("SUPABASE_DB_URL is not configured");
 const sql = postgres(connectionString, {
   prepare: false,
   max: 1,
-  idle_timeout: 20,
+  idle_timeout: 1,
   connect_timeout: 10,
 });
 
@@ -193,7 +193,7 @@ async function readEvidence() {
   return evidence;
 }
 
-async function recordRun(run: Record<string, unknown>) {
+async function recordRun(run: Record<string, unknown>, db: Pick<typeof sql, "unsafe"> = sql) {
   const required = [
     "run_id",
     "run_key",
@@ -260,7 +260,7 @@ async function recordRun(run: Record<string, unknown>) {
     run.operator_identity == null ? null : String(run.operator_identity),
   ];
 
-  const rows = await sql.unsafe<{ run_id: string; run_key: string }[]>(
+  const rows = await db.unsafe<{ run_id: string; run_key: string }[]>(
     query,
     parameters,
   );
@@ -270,14 +270,14 @@ async function recordRun(run: Record<string, unknown>) {
 }
 
 
-async function recordSearchLedger(ledger: Record<string, unknown>) {
+async function recordSearchLedger(ledger: Record<string, unknown>, db: Pick<typeof sql, "unsafe"> = sql) {
   if (containsForbiddenReasoning(ledger)) {
     throw new Error("hidden_reasoning_forbidden");
   }
   if (ledger.ledger_version !== "math001-search-ledger-v1") {
     throw new Error("invalid_search_ledger_version");
   }
-  const rows = await sql.unsafe<{ result: Record<string, unknown> }[]>(
+  const rows = await db.unsafe<{ result: Record<string, unknown> }[]>(
     "select private.rhen_research_record_search_ledger($1::jsonb) as result",
     [JSON.stringify(ledger)],
   );
@@ -286,7 +286,7 @@ async function recordSearchLedger(ledger: Record<string, unknown>) {
     throw new Error("search_ledger_write_failed");
   }
 
-  const planRows = await sql.unsafe<{ result: Record<string, unknown> }[]>(
+  const planRows = await db.unsafe<{ result: Record<string, unknown> }[]>(
     "select private.rhen_research_record_multiplicity_plan($1::jsonb) as result",
     [JSON.stringify(ledger)],
   );
@@ -295,7 +295,7 @@ async function recordSearchLedger(ledger: Record<string, unknown>) {
     throw new Error("multiplicity_plan_write_failed");
   }
 
-  const dependenceRows = await sql.unsafe<{ result: Record<string, unknown> }[]>(
+  const dependenceRows = await db.unsafe<{ result: Record<string, unknown> }[]>(
     "select private.rhen_research_record_dependence_plan($1::jsonb) as result",
     [JSON.stringify(ledger)],
   );
@@ -342,8 +342,8 @@ Deno.serve(async (req: Request) => {
       return json(400, { ok: false, error: "invalid_run_record" });
     }
 
-    const result = await recordRun(run as Record<string, unknown>);
     if (action === "record_run") {
+      const result = await recordRun(run as Record<string, unknown>);
       if (result.duplicate) {
         return json(409, { ok: false, error: "duplicate_run_key" });
       }
@@ -354,9 +354,12 @@ Deno.serve(async (req: Request) => {
     if (!ledger || typeof ledger !== "object" || Array.isArray(ledger)) {
       return json(400, { ok: false, error: "invalid_search_ledger" });
     }
-    const ledgerResult = await recordSearchLedger(
-      ledger as Record<string, unknown>,
-    );
+    const { result, ledgerResult } = await sql.begin(async (tx) => {
+      const result = await recordRun(run as Record<string, unknown>, tx);
+      if (result.duplicate) throw new Error("duplicate_run_key");
+      const ledgerResult = await recordSearchLedger(ledger as Record<string, unknown>, tx);
+      return { result, ledgerResult };
+    });
     return json(201, {
       ok: true,
       ...result,

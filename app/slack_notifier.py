@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,7 +22,7 @@ class SlackNotifier:
         self._client: httpx.AsyncClient | None = None
         self._last_market_open: bool | None = None
         self._last_reconciliation_action: str | None = None
-        self._dedupe: set[str] = set()
+        self._dedupe: dict[str, float] = {}
         self.last_error: str | None = None
         self.dropped_messages = 0
 
@@ -42,11 +43,14 @@ class SlackNotifier:
     async def stop(self) -> None:
         if self._task is None:
             return
-        try:
-            self._queue.put_nowait(None)
-        except asyncio.QueueFull:
+        async def drain():
             await self._queue.put(None)
-        await self._task
+            await self._task
+        try:
+            await asyncio.wait_for(drain(), timeout=15)
+        except TimeoutError:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
         self._task = None
         if self._client is not None:
             await self._client.aclose()
@@ -118,6 +122,8 @@ class SlackNotifier:
             or (kind == "control" and action in {"entries_disabled", "entries_enabled", "cancel_orders"})
             or (kind == "risk" and action in {"blocked", "warning"})
             or (kind == "runtime" and action in {"warning", "error"})
+            or (kind in {"research_agent", "research_reporting", "research_scheduler", "preopen_state"}
+                and action in {"completed", "recovered", "warning", "error"})
         )
         if not important:
             return
@@ -127,7 +133,7 @@ class SlackNotifier:
         at = str(event.get("at") or "")
         label = f"{kind.upper()} {action.upper()}".strip()
         symbol_text = f" | `{symbol}`" if symbol else ""
-        key = f"event:{kind}:{action}:{symbol}:{message}"
+        key = None if kind == "reconciliation" else f"event:{kind}:{action}:{symbol}:{message}"
         self._enqueue(
             f"*RHEN // {label}*\n{at}{symbol_text} | {message}",
             key=key,
@@ -137,11 +143,13 @@ class SlackNotifier:
         if not self.enabled:
             return
         if key is not None:
-            if key in self._dedupe:
+            now = time.monotonic()
+            if key in self._dedupe and now - self._dedupe[key] < 600:
                 return
-            self._dedupe.add(key)
+            self._dedupe.pop(key, None)
+            self._dedupe[key] = now
             if len(self._dedupe) > 1000:
-                self._dedupe = set(list(self._dedupe)[-500:])
+                self._dedupe.pop(next(iter(self._dedupe)))
         try:
             self._queue.put_nowait(text)
         except asyncio.QueueFull:
@@ -161,11 +169,21 @@ class SlackNotifier:
             try:
                 if self._client is None:
                     raise RuntimeError("Slack webhook client is not started")
-                response = await self._client.post(self.webhook_url, json={"text": text})
-                response.raise_for_status()
+                for attempt in range(3):
+                    try:
+                        response = await self._client.post(self.webhook_url, json={"text": text})
+                        response.raise_for_status()
+                        break
+                    except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+                        transient = not isinstance(exc, httpx.HTTPStatusError) or (
+                            exc.response.status_code == 429 or exc.response.status_code >= 500
+                        )
+                        if not transient or attempt == 2:
+                            raise
+                        await asyncio.sleep(2 ** attempt)
                 self.last_error = None
             except Exception as exc:
-                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.last_error = type(exc).__name__
                 print(
                     "SLACK_WEBHOOK_ERROR",
                     {"error": self.last_error},

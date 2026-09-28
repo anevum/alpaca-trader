@@ -13,9 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: pip install pytest
-      - run: PYTHONPATH=. pytest -q
+      - run: pip install pytest==8.3.5
+      - run: python -m scripts.staging_check

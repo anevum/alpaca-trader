@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
 from dataclasses import replace
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
+
+from app.slack_notifier import SlackNotifier
 
 from .audit import complete_run, create_run, run_record
 from .gateway import ResearchGateway, ResearchGatewayError
@@ -37,6 +42,7 @@ class ReviewRequest(BaseModel):
     cadence: Literal["daily", "weekly"] = "daily"
     invoke_model: bool = False
     persist: bool = True
+    expected_session: date | None = None
 
 
 def _truthy(name: str, default: bool = False) -> bool:
@@ -48,8 +54,8 @@ def _truthy(name: str, default: bool = False) -> bool:
 
 def _source_commit() -> str:
     return (
-        os.environ.get("RHEN_RESEARCH_SOURCE_COMMIT")
-        or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("RHEN_RESEARCH_SOURCE_COMMIT")
         or ""
     ).strip()
 
@@ -128,17 +134,33 @@ def _health() -> dict:
 
 
 app = FastAPI(title="RHEN Research Agent v1", version="1.0")
+review_lock = asyncio.Lock()
+notifications = SlackNotifier(SimpleNamespace(slack_webhook_url=os.environ.get("SLACK_WEBHOOK_URL", "")))
+operational_state = {"last_review_started_at": None, "last_review_completed_at": None,
+                     "last_review_status": None, "last_error": None}
+
+
+def _operation(action: str, message: str) -> None:
+    event = {"at": datetime.now(timezone.utc).isoformat(), "kind": "research_agent",
+             "action": action, "message": message}
+    print(json.dumps({"event": "rhen_research_operation", **event}), flush=True)
+    notifications.record_event(event)
 
 
 @app.on_event("startup")
 async def verify_canonical_readiness():
+    await notifications.start()
     state = _health()
     if not state["ok"]:
+        _operation("error", "Research agent startup failed its configuration/isolation check.")
+        await notifications.stop()
         raise RuntimeError("research agent isolation/configuration check failed")
     try:
         evidence = await _gateway().fetch_evidence()
         review = ResearchAgentRunner(evidence).daily_review(dry_run=True)
     except ResearchGatewayError as exc:
+        _operation("error", "Research startup could not read canonical evidence after bounded retries.")
+        await notifications.stop()
         raise RuntimeError(f"canonical research gateway readiness failed: {exc}") from exc
     print(
         json.dumps(
@@ -164,6 +186,11 @@ async def verify_canonical_readiness():
         ),
         flush=True,
     )
+
+
+@app.on_event("shutdown")
+async def stop_notifications():
+    await notifications.stop()
 
 
 def _sanitized_readiness(readiness: dict) -> dict:
@@ -218,8 +245,11 @@ def _sanitized_readiness(readiness: dict) -> dict:
 @app.get("/health")
 async def health():
     state = _health()
-    if state["isolation_violations"]:
+    if not state["ok"]:
         raise HTTPException(status_code=503, detail=state)
+    state["source_commit"] = _source_commit()
+    state["operations"] = {**operational_state, "review_in_progress": review_lock.locked()}
+    state["slack_notifications"] = notifications.status()
     return state
 
 
@@ -285,6 +315,33 @@ async def review(
     x_rhen_agent_admin_token: str | None = Header(default=None),
 ):
     _require_operator(x_rhen_agent_admin_token)
+    if review_lock.locked():
+        raise HTTPException(status_code=409, detail="review_in_progress")
+    async with review_lock:
+        operational_state["last_review_started_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            result = await asyncio.wait_for(_review(request, x_rhen_agent_admin_token), timeout=240)
+        except Exception as exc:
+            operational_state["last_error"] = type(exc).__name__
+            operational_state["last_review_status"] = "FAILED"
+            _operation("error", f"Research request failed ({type(exc).__name__}); completion is unconfirmed.")
+            if isinstance(exc, TimeoutError):
+                raise HTTPException(status_code=504, detail="research_review_timeout") from exc
+            raise
+        previous_error = operational_state["last_error"]
+        operational_state["last_error"] = "review_failed" if result["status"] == "FAILED" else None
+        operational_state["last_review_completed_at"] = datetime.now(timezone.utc).isoformat()
+        operational_state["last_review_status"] = result["status"]
+        if result.get("persisted"):
+            action = "error" if result["status"] == "FAILED" else "completed"
+            _operation(action, f"{request.cadence} research {result['status']}; audit persisted; run {result['run_id']}.")
+        if previous_error and result["status"] != "FAILED":
+            _operation("recovered", "Research review path recovered and completed.")
+        return result
+
+
+async def _review(request: ReviewRequest, x_rhen_agent_admin_token: str | None):
+    _require_operator(x_rhen_agent_admin_token)
     state = _health()
     if not state["ok"]:
         raise HTTPException(status_code=503, detail=state)
@@ -301,6 +358,9 @@ async def review(
         if request.cadence == "daily"
         else runner.weekly_review(dry_run=True)
     )
+
+    if request.expected_session and deterministic.get("trigger_reference") != request.expected_session.isoformat():
+        raise HTTPException(status_code=409, detail="canonical_report_not_current")
 
     if deterministic.get("duplicate"):
         return {
