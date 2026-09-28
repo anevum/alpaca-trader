@@ -150,6 +150,12 @@ Deno.serve(async (req) => {
         ) as inputs
       `;
 
+      const adsRows = await sql<{ inputs: Record<string, unknown> }[]>`
+        select private.rhen_ads002_daily_inputs(
+          ${evidenceSession}::date
+        ) as inputs
+      `;
+
       const dailyRows = await sql<{
         event_id: string;
         occurred_at: string;
@@ -181,6 +187,7 @@ Deno.serve(async (req) => {
           submitted: Boolean(row.intent_id),
         })),
         post_event: postRows[0]?.inputs ?? {},
+        ads002: adsRows[0]?.inputs ?? {},
         latest_daily_report: dailyRows[0] ?? null,
       });
     }
