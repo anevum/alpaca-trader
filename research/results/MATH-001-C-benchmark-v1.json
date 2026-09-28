@@ -1,0 +1,206 @@
+{
+  "project_id": "MATH-001",
+  "benchmark_version": "math001-c1-benchmark-v1",
+  "generated_from": "app/research_agent/multiplicity.py::simulate_multiplicity_benchmark",
+  "runner": "scripts/math001_c_multiplicity.py",
+  "parameters": {
+    "replicates": 2000,
+    "hypothesis_count": 40,
+    "nonnull_count": 5,
+    "effect": 2.5,
+    "rho": 0.65,
+    "alpha": 0.05,
+    "e_theta": 1,
+    "async_lag": 3,
+    "seed": 1002
+  },
+  "results": {
+    "independent_null": {
+      "bonferroni": {
+        "empirical_fdr": 0.0465,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.0465,
+        "mean_discoveries": 0.0495
+      },
+      "holm": {
+        "empirical_fdr": 0.0465,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.0465,
+        "mean_discoveries": 0.0495
+      },
+      "bh": {
+        "empirical_fdr": 0.0465,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.0465,
+        "mean_discoveries": 0.05
+      },
+      "by": {
+        "empirical_fdr": 0.01,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.01,
+        "mean_discoveries": 0.0105
+      },
+      "e_bh": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      },
+      "e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      },
+      "async_e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      }
+    },
+    "signed_dependence_null": {
+      "bonferroni": {
+        "empirical_fdr": 0.0255,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.0255,
+        "mean_discoveries": 0.038
+      },
+      "holm": {
+        "empirical_fdr": 0.0255,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.0255,
+        "mean_discoveries": 0.0395
+      },
+      "bh": {
+        "empirical_fdr": 0.029,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.029,
+        "mean_discoveries": 0.151
+      },
+      "by": {
+        "empirical_fdr": 0.0095,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0.0095,
+        "mean_discoveries": 0.0245
+      },
+      "e_bh": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      },
+      "e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      },
+      "async_e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      }
+    },
+    "independent_sparse_signal": {
+      "bonferroni": {
+        "empirical_fdr": 0.02019166666666666,
+        "empirical_power": 0.30519999999999875,
+        "familywise_false_discovery_rate": 0.042,
+        "mean_discoveries": 1.57
+      },
+      "holm": {
+        "empirical_fdr": 0.020358333333333332,
+        "empirical_power": 0.308899999999999,
+        "familywise_false_discovery_rate": 0.044,
+        "mean_discoveries": 1.5905
+      },
+      "bh": {
+        "empirical_fdr": 0.044294047619047636,
+        "empirical_power": 0.42420000000000113,
+        "familywise_false_discovery_rate": 0.137,
+        "mean_discoveries": 2.281
+      },
+      "by": {
+        "empirical_fdr": 0.011874999999999998,
+        "empirical_power": 0.22809999999999697,
+        "familywise_false_discovery_rate": 0.026,
+        "mean_discoveries": 1.168
+      },
+      "e_bh": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      },
+      "e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0.0017000000000000003,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0.0085
+      },
+      "async_e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0.0017000000000000003,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0.0085
+      }
+    },
+    "signed_dependence_sparse_signal": {
+      "bonferroni": {
+        "empirical_fdr": 0.013008286647992529,
+        "empirical_power": 0.29689999999999866,
+        "familywise_false_discovery_rate": 0.0295,
+        "mean_discoveries": 1.5415
+      },
+      "holm": {
+        "empirical_fdr": 0.013712820512820509,
+        "empirical_power": 0.29979999999999873,
+        "familywise_false_discovery_rate": 0.031,
+        "mean_discoveries": 1.563
+      },
+      "bh": {
+        "empirical_fdr": 0.04048676499369226,
+        "empirical_power": 0.4068999999999992,
+        "familywise_false_discovery_rate": 0.0835,
+        "mean_discoveries": 2.3325
+      },
+      "by": {
+        "empirical_fdr": 0.010353537690379794,
+        "empirical_power": 0.21479999999999844,
+        "familywise_false_discovery_rate": 0.0235,
+        "mean_discoveries": 1.1385
+      },
+      "e_bh": {
+        "empirical_fdr": 0,
+        "empirical_power": 0,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0
+      },
+      "e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0.0013,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0.0065
+      },
+      "async_e_lond": {
+        "empirical_fdr": 0,
+        "empirical_power": 0.0013,
+        "familywise_false_discovery_rate": 0,
+        "mean_discoveries": 0.0065
+      }
+    }
+  },
+  "interpretation": {
+    "status": "DIAGNOSTIC_NOT_POLICY",
+    "conclusion": "At this benchmark scale, p-value procedures retain usable power while the current single-statistic e-value baseline is too conservative to serve as a final RHEN discovery policy.",
+    "implications": [
+      "Do not freeze e-BH or e-LOND as RHEN's final multiplicity policy from this benchmark.",
+      "Study sequential evidence accumulation and betting-mixture power before comparing final e-value policy candidates.",
+      "Retain BY and Holm as conservative fixed-family comparators and BH only when its dependence assumptions are defensible."
+    ],
+    "production_authority": false,
+    "protected_stage_authority": false
+  }
+}
