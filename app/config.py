@@ -44,6 +44,13 @@ class Settings(BaseSettings):
 
     admin_token: str = Field(default="", alias="ADMIN_TOKEN")
 
+    # Optional outbound-only Slack Incoming Webhook for RHEN operational events.
+    # Delivery is best-effort and never participates in trading decisions.
+    slack_webhook_url: str = Field(default="", alias="SLACK_WEBHOOK_URL")
+    slack_webhook_timeout_seconds: float = Field(
+        default=5.0, alias="SLACK_WEBHOOK_TIMEOUT_SECONDS"
+    )
+
     trading_ingest_url: str = Field(default="", alias="TRADING_INGEST_URL")
     trading_ingest_token: str = Field(default="", alias="TRADING_INGEST_TOKEN")
     trading_run_id: str = Field(default="", alias="TRADING_RUN_ID")
@@ -328,6 +335,10 @@ class Settings(BaseSettings):
             raise ValueError("DATA_FEED must be iex, sip, or delayed_sip")
         if self.poll_seconds < 15:
             raise ValueError("POLL_SECONDS must be at least 15")
+        if not 0.5 <= self.slack_webhook_timeout_seconds <= 10.0:
+            raise ValueError(
+                "SLACK_WEBHOOK_TIMEOUT_SECONDS must be between 0.5 and 10 seconds"
+            )
         if not 30 <= self.ledger_reconcile_seconds <= 300:
             raise ValueError("LEDGER_RECONCILE_SECONDS must be between 30 and 300")
         if self.persistence_configured:
