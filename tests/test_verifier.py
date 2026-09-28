@@ -320,10 +320,10 @@ def test_operator_attestation_remains_noncanonical():
 
 
 def test_operator_evidence_cannot_override_canonical_broker_evidence():
-    value = result(changes={"broker_account": [broker_machine(), operator_broker(account_blocked=True)]},
+    value = result(changes={"broker_account": [broker_machine(account_blocked=True), operator_broker()]},
                    assertions={"broker_account_machine_verified": True})
-    assert value.verdict == "VERIFIED"
-    assert "BROKER_ACCOUNT_UNBLOCKED" not in value.failed_invariants
+    assert value.verdict == "BLOCKED"
+    assert "BROKER_ACCOUNT_UNBLOCKED" in value.failed_invariants
 
 
 def test_canonical_telemetry_and_operator_broker_check_remain_distinct():
@@ -343,6 +343,20 @@ def test_absent_evidence_differs_from_lower_authority_report():
     lower_row = next(row for row in lower.invariant_matrix if row.code == "BROKER_ACCOUNT_EVIDENCE_MISSING")
     assert absent_row.observed == "unavailable"
     assert lower_row.observed == "reported only"
+
+
+def test_stale_or_conflicting_canonical_identity_is_not_summarized_as_current():
+    stale = fixture()["github"]
+    stale["observed_at"] = (NOW - timedelta(days=3)).isoformat()
+    stale_value = result("repository", changes={"github": stale})
+    assert stale_value.verdict == "INCONCLUSIVE"
+    assert stale_value.repository_sha is None
+
+    rows = [fixture()["github"], fixture()["github"]]
+    rows[1]["data"]["main_sha"] = OTHER
+    conflicting_value = result("repository", changes={"github": rows})
+    assert conflicting_value.verdict == "INCONCLUSIVE"
+    assert conflicting_value.repository_sha is None
 
 
 def test_deployment_identity_alone_cannot_prove_runtime_health():

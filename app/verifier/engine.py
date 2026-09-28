@@ -25,6 +25,7 @@ class Checks:
     def __init__(self, request: VerificationRequest, now: datetime):
         self.request, self.now = request, now
         self.rows: list[Invariant] = []
+        self.selected: dict[str, Evidence] = {}
 
     def add(self, code: str, expected: Any, observed: Any, status: str,
             severity: str = "NONE", refs: tuple[str, ...] = ()) -> None:
@@ -40,6 +41,7 @@ class Checks:
                      "conflicting canonical observations", "CONTRADICTORY", refs=tuple(r.reference for r in canonical))
             return None
         if canonical:
+            self.selected[section] = canonical[0]
             return canonical[0]
         reason = "operator-attested only" if any(r.authority == "OPERATOR_ATTESTED" for r in rows) else (
             "reported only" if any(r.authority == "REPORTED" for r in rows) else (
@@ -199,6 +201,7 @@ def _broker_account(c: Checks) -> None:
     c.match("BROKER_ACCOUNT_UNBLOCKED", False, d["account_blocked"], row.reference)
     c.match("BROKER_TRADING_UNBLOCKED", False, d["trading_blocked"], row.reference)
     c.match("BROKER_TRADING_ELIGIBLE", True, d["trading_eligible"], row.reference)
+    c.match("BROKER_ACCOUNT_STATUS", "ACTIVE", d["status"], row.reference)
 
 
 def _readiness(c: Checks) -> None:
@@ -368,13 +371,16 @@ def verify(raw: VerificationRequest | Mapping[str, Any], *, now: datetime) -> Ve
     sources = tuple({"section": section, "source_id": r.source_id, "source_version": r.source_version,
                      "observed_at": r.observed_at, "authority": r.authority, "reference": r.reference}
                     for section, records in sorted(request.evidence.items()) for r in records)
-    github = next((r.data for r in request.evidence.get("github", ()) if r.authority == "CANONICAL"), {})
-    release = next((r.data for r in request.evidence.get("release", ()) if r.authority == "CANONICAL"), {})
+    github = c.selected.get("github")
+    release = c.selected.get("release")
+    github_data = github.data if github is not None else {}
+    release_data = release.data if release is not None else {}
     return VerificationResult(OUTPUT_VERSION, request.verification_id, now.isoformat(), request.environment,
                               request.profile, request.subject, request.assertions, verdict, rows, failed,
                               degraded, missing, contradictory,
                               tuple(sorted({ref for r in rows for ref in r.evidence_references})), sources,
-                              github.get("main_sha"), release.get("release_id"), release.get("strategy_version_id"),
+                              github_data.get("main_sha"), release_data.get("release_id"),
+                              release_data.get("strategy_version_id"),
                               tuple("Noncanonical evidence cannot prove live state." for _ in [0] if any(
                                   r.authority == "REPORTED" for records in request.evidence.values() for r in records)),
                               action, verdict != "VERIFIED")
