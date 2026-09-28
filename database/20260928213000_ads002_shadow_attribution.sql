@@ -947,7 +947,7 @@ begin
       select xx.exit_id,xx.broker_order_id
       from private.trading_exits xx
       where xx.position_id=p.position_id
-      order by xx.created_at desc
+      order by coalesce(xx.filled_at,xx.requested_at) desc
       limit 1
     ) x on true
     left join lateral (
