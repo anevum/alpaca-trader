@@ -77,3 +77,33 @@ class ResearchGateway:
         if not isinstance(payload, Mapping) or payload.get("ok") is not True:
             raise ResearchGatewayError("research audit gateway returned an invalid response")
         return payload
+
+    async def persist_run_with_search_ledger(
+        self,
+        record: Mapping[str, Any],
+        ledger: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if not self.configured:
+            raise ResearchGatewayError("research gateway is not configured")
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(
+                    self.url,
+                    headers=self._headers(),
+                    json={
+                        "action": "record_run_and_search_ledger",
+                        "run": dict(record),
+                        "search_ledger": dict(ledger),
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            raise ResearchGatewayError(
+                f"research audit/search-ledger write failed: {type(exc).__name__}"
+            ) from exc
+        if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+            raise ResearchGatewayError(
+                "research audit/search-ledger gateway returned an invalid response"
+            )
+        return payload
