@@ -214,9 +214,9 @@
         "observation": "normalized net candidate outcome Y_{h,i} in [-1,1]",
         "action": "continue observing, reject, confirm, replicate, or archive within protected research gates",
         "policy": "evidence policy pi",
-        "objective_latex": "\\\\min_{\\\\pi}\\\\; c_{FN}P_{\\\\pi}(\\\\text{miss real edge})+c_D\\\\mathbb{E}_{\\\\pi}[T_{decision}]",
-        "variation_latex": "N_t=|\\\\mathcal{R}_t|",
-        "dynamic_regret_latex": "\\\\operatorname{FDR}_{\\\\pi}\\\\le q^*,\\\\qquad P_{\\\\pi}(\\\\text{false replication})\\\\le\\\\alpha^*",
+        "objective_latex": "\\min_{\\pi}\\; c_{FN}P_{\\pi}(\\text{miss real edge})+c_D\\mathbb{E}_{\\pi}[T_{decision}]",
+        "variation_latex": "N_t=|\\mathcal{R}_t|",
+        "dynamic_regret_latex": "\\operatorname{FDR}_{\\pi}\\le q^*,\\qquad P_{\\pi}(\\text{false replication})\\le\\alpha^*",
         "target_bound": "Construct a search-aware, anytime-valid evidence policy with explicit false-discovery control, effect-size evidence, temporal replication, and quantified decision delay."
       },
       "assumptions": [
