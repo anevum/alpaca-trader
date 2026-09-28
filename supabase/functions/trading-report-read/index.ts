@@ -94,70 +94,108 @@ Deno.serve(async (req) => {
         order_status: string | null;
         ads002_score: Record<string, unknown> | null;
       }[]>`
+        with bounds as (
+          select
+            (${evidenceSession}::date::timestamp at time zone 'America/New_York') as starts_at,
+            ((${evidenceSession}::date + 1)::timestamp at time zone 'America/New_York') as ends_at
+        ),
+        session_candidates as materialized (
+          select
+            c.candidate_id,
+            c.signal_id,
+            c.observed_at,
+            c.symbol,
+            sc.cycle_key,
+            to_jsonb(c) as candidate,
+            to_jsonb(sc) as scan_cycle
+          from private.trading_candidate_evaluations c
+          join private.trading_scan_cycles sc using(scan_cycle_id)
+          cross join bounds b
+          where c.observed_at >= b.starts_at
+            and c.observed_at < b.ends_at
+        ),
+        cycle_keys as (
+          select distinct cycle_key
+          from session_candidates
+          where cycle_key is not null
+        ),
+        decision_events as (
+          select distinct on (k.cycle_key)
+            k.cycle_key,
+            e.payload
+          from cycle_keys k
+          join private.trading_events e
+            on e.event_type='decision_cycle'
+           and e.payload->>'cycle_key'=k.cycle_key
+          cross join bounds b
+          where e.occurred_at >= b.starts_at - interval '5 minutes'
+            and e.occurred_at < b.ends_at + interval '5 minutes'
+          order by k.cycle_key,e.received_at desc
+        ),
+        outcome_rows as (
+          select
+            o.candidate_id,
+            jsonb_agg(to_jsonb(o) order by o.horizon_minutes) as outcomes
+          from private.trading_candidate_forward_outcomes o
+          join session_candidates c using(candidate_id)
+          group by o.candidate_id
+        ),
+        signal_ids as (
+          select distinct signal_id
+          from session_candidates
+          where signal_id is not null
+        ),
+        intent_rows as (
+          select distinct on (i.signal_id)
+            i.signal_id,
+            i.intent_id
+          from private.trading_order_intents i
+          join signal_ids s using(signal_id)
+          order by i.signal_id,i.intended_at desc
+        ),
+        order_rows as (
+          select distinct on (o.order_intent_id)
+            o.order_intent_id,
+            o.broker_order_id,
+            o.status
+          from private.trading_orders o
+          join intent_rows i on i.intent_id=o.order_intent_id
+          order by o.order_intent_id,coalesce(o.submitted_at,o.updated_at) desc
+        )
         select
-          to_jsonb(c) as candidate,
-          to_jsonb(sc) as scan_cycle,
+          c.candidate,
+          c.scan_cycle,
           de.payload as decision_cycle_payload,
           coalesce(fo.outcomes,'[]'::jsonb) as outcomes,
-          sig.signal_id::text as signal_id,
+          c.signal_id::text as signal_id,
           intent.intent_id::text as intent_id,
           ord.broker_order_id,
           ord.status as order_status,
-          ads.score_payload as ads002_score
-        from private.trading_candidate_evaluations c
-        join private.trading_scan_cycles sc using(scan_cycle_id)
-        left join lateral (
-          select e.payload
-          from private.trading_events e
-          where e.event_type='decision_cycle'
-            and e.payload->>'cycle_key'=sc.cycle_key
-          order by e.received_at desc
-          limit 1
-        ) de on true
-        left join lateral (
-          select jsonb_agg(to_jsonb(o) order by o.horizon_minutes) as outcomes
-          from private.trading_candidate_forward_outcomes o
-          where o.candidate_id=c.candidate_id
-        ) fo on true
-        left join lateral (
-          select s.signal_id
-          from private.trading_signals s
-          where s.candidate_id=c.candidate_id
-             or (c.signal_id is not null and s.signal_id=c.signal_id)
-          order by s.signal_at desc
-          limit 1
-        ) sig on true
-        left join lateral (
-          select i.intent_id
-          from private.trading_order_intents i
-          where i.signal_id=sig.signal_id
-          order by i.intended_at desc
-          limit 1
-        ) intent on true
-        left join lateral (
-          select o.broker_order_id,o.status
-          from private.trading_orders o
-          where o.order_intent_id=intent.intent_id
-          order by coalesce(o.submitted_at,o.updated_at) desc
-          limit 1
-        ) ord on true
-        left join lateral (
-          select jsonb_build_object(
-            'attention_score', s.attention_score,
-            'qualification_score', s.qualification_score,
-            'timing_score', s.timing_score,
-            'pretrade_composite', s.pretrade_composite,
-            'source_completeness', s.source_completeness,
-            'methodology_version', s.methodology_version
-          ) as score_payload
-          from private.trading_ads_shadow_scores s
-          where s.candidate_id=c.candidate_id
-            and s.methodology_version='ads-shadow-v1'
-          limit 1
-        ) ads on true
-        where (c.observed_at at time zone 'America/New_York')::date=${evidenceSession}::date
+          case
+            when ads.candidate_id is null then null
+            else jsonb_build_object(
+              'attention_score', ads.attention_score,
+              'qualification_score', ads.qualification_score,
+              'timing_score', ads.timing_score,
+              'pretrade_composite', ads.pretrade_composite,
+              'source_completeness', ads.source_completeness,
+              'methodology_version', ads.methodology_version
+            )
+          end as ads002_score
+        from session_candidates c
+        left join decision_events de
+          on de.cycle_key=c.cycle_key
+        left join outcome_rows fo
+          on fo.candidate_id=c.candidate_id
+        left join intent_rows intent
+          on intent.signal_id=c.signal_id
+        left join order_rows ord
+          on ord.order_intent_id=intent.intent_id
+        left join private.trading_ads_shadow_scores ads
+          on ads.candidate_id=c.candidate_id
+         and ads.methodology_version='ads-shadow-v1'
         order by c.observed_at,c.symbol
-      `;
+      `
 
       const postRows = await sql<{ inputs: Record<string, unknown> }[]>`
         select private.rhen_post_event_evidence_inputs(
