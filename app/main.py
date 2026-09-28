@@ -20,6 +20,7 @@ from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
 from .research_scheduler import ResearchReportScheduler
 from .sizing import sizing_snapshot
+from .slack_notifier import SlackNotifier
 from .state import runtime_state
 from .scanner import ReadOnlyScanner
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
@@ -86,6 +87,7 @@ research_reports = ResearchReportScheduler(
     runtime_state,
     event_sink,
 )
+slack_notifier = SlackNotifier(settings)
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
 runtime_provenance = None
@@ -104,6 +106,7 @@ def emit_runtime_event(event: dict) -> None:
             **(event.get("payload") or {}),
         },
     )
+    slack_notifier.record_event(event)
 
 
 runtime_state.set_event_emitter(emit_runtime_event)
@@ -580,6 +583,28 @@ async def monitor_loop():
             pass
 
 
+async def slack_market_observer_loop():
+    """Read-only market-state observer used only for Slack transition notices."""
+    while not _stop.is_set():
+        if slack_notifier.enabled and settings.credentials_configured:
+            try:
+                clock = await client.clock()
+                slack_notifier.observe_market_state(
+                    bool(clock.get("is_open")),
+                    observed_at=datetime.now(NY),
+                )
+            except Exception as exc:
+                print(
+                    "SLACK_MARKET_OBSERVER_ERROR",
+                    {"error": f"{type(exc).__name__}: {exc}"},
+                    flush=True,
+                )
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            pass
+
+
 def _runtime_configuration_snapshot() -> dict:
     """Non-secret runtime configuration needed to reproduce deployment state."""
     return {
@@ -678,6 +703,7 @@ async def lifespan(app: FastAPI):
         flush=True,
     )
     await event_sink.start()
+    await slack_notifier.start()
 
     runtime_provenance = capture_runtime_provenance()
     runtime_start_payload = {
@@ -725,6 +751,12 @@ async def lifespan(app: FastAPI):
         runtime_provenance.as_dict(),
         flush=True,
     )
+    slack_notifier.notify_runtime_start(
+        trading_mode=settings.trading_mode,
+        strategy_name=settings.strategy_name,
+        strategy_version_id=settings.strategy_version_id,
+        execution_authorized=settings.execution_authorized,
+    )
 
     if settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
@@ -740,9 +772,11 @@ async def lifespan(app: FastAPI):
 
     await research_reports.start()
     task = asyncio.create_task(monitor_loop())
+    slack_market_task = asyncio.create_task(slack_market_observer_loop())
     yield
     _stop.set()
     await task
+    await slack_market_task
     await research_reports.stop()
     event_sink.emit(
         event_type="runtime_stop",
@@ -754,6 +788,7 @@ async def lifespan(app: FastAPI):
         },
     )
     await event_sink.stop()
+    await slack_notifier.stop()
 
 
 app = FastAPI(title="RHEN", version=RHEN_VERSION, lifespan=lifespan)
@@ -796,6 +831,7 @@ async def health():
         "last_error": runtime_state.last_error,
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
+        "slack_notifications": slack_notifier.status(),
     }
 
 
