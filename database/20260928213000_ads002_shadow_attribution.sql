@@ -340,7 +340,7 @@ create or replace function private.link_ads002_signal_candidate_by_key()
 returns trigger
 language plpgsql
 set search_path = private, pg_temp
-as $$
+as $ads002_link$
 declare
   v_candidate_key text;
   v_candidate_id bigint;
@@ -372,7 +372,7 @@ begin
 
   return new;
 end;
-$;
+$ads002_link$;
 
 drop trigger if exists trg_ads002_link_signal_candidate_by_key
 on private.trading_signals;
@@ -390,7 +390,7 @@ create or replace function private.finalize_ads002_signal_candidate_link()
 returns trigger
 language plpgsql
 set search_path = private, pg_temp
-as $
+as $ads002_finalize$
 begin
   if new.candidate_id is null then
     return new;
@@ -407,7 +407,7 @@ begin
 
   return new;
 end;
-$;
+$ads002_finalize$;
 
 drop trigger if exists trg_ads002_finalize_signal_candidate_link
 on private.trading_signals;
