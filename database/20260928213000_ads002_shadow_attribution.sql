@@ -248,7 +248,15 @@ begin
     nullif(v_snapshot->>'data_source',''),
     nullif(v_snapshot->>'data_feed',''),
     nullif(v_snapshot->>'bar_interval',''),
-    v_signal_id
+    case
+      when exists (
+        select 1
+        from private.trading_signals
+        where signal_id=v_signal_id
+      )
+      then v_signal_id
+      else null
+    end
   )
   on conflict (scan_cycle_id, symbol) do update
   set
@@ -362,18 +370,9 @@ begin
     return new;
   end if;
 
-  update private.trading_candidate_evaluations
-  set signal_id = coalesce(signal_id, new.signal_id),
-      research_attribution = research_attribution || jsonb_build_object(
-        'ads002_identity_source', 'candidate_key_signal_trigger',
-        'identity_is_direct', true
-      )
-  where candidate_id = v_candidate_id
-    and (signal_id is null or signal_id = new.signal_id);
-
   return new;
 end;
-$$;
+$;
 
 drop trigger if exists trg_ads002_link_signal_candidate_by_key
 on private.trading_signals;
@@ -386,6 +385,41 @@ execute function private.link_ads002_signal_candidate_by_key();
 
 comment on function private.link_ads002_signal_candidate_by_key() is
 'ADS-002 exact-key candidate/signal linker. No fuzzy or nearest-time attribution.';
+
+create or replace function private.finalize_ads002_signal_candidate_link()
+returns trigger
+language plpgsql
+set search_path = private, pg_temp
+as $
+begin
+  if new.candidate_id is null then
+    return new;
+  end if;
+
+  update private.trading_candidate_evaluations
+  set signal_id = coalesce(signal_id, new.signal_id),
+      research_attribution = research_attribution || jsonb_build_object(
+        'ads002_identity_source', 'candidate_key_signal_trigger',
+        'identity_is_direct', true
+      )
+  where candidate_id = new.candidate_id
+    and (signal_id is null or signal_id = new.signal_id);
+
+  return new;
+end;
+$;
+
+drop trigger if exists trg_ads002_finalize_signal_candidate_link
+on private.trading_signals;
+
+create trigger trg_ads002_finalize_signal_candidate_link
+after insert or update of candidate_id, payload
+on private.trading_signals
+for each row
+execute function private.finalize_ads002_signal_candidate_link();
+
+comment on function private.finalize_ads002_signal_candidate_link() is
+'ADS-002 post-signal FK finalizer. Runs only after the referenced signal row exists.';
 
 -- Project deterministic pretrade ADS-002 scores only after the canonical
 -- decision-cycle candidate rows have been created/enriched.
