@@ -13,6 +13,7 @@ from .audit import complete_run, create_run, run_record
 from .gateway import ResearchGateway, ResearchGatewayError
 from .models import AgentRunStatus
 from .runner import ResearchAgentRunner
+from .theory import public_theory_projection, theory_status
 from .semantic import (
     OpenAISemanticReviewer,
     RUNTIME_VERSION,
@@ -96,6 +97,7 @@ def _health() -> dict:
         "ok": enabled and gateway.configured and commit_bound and not violations,
         "service": "rhen-research-agent",
         "agent_version": RUNTIME_VERSION,
+        "theory_program": theory_status(),
         "enabled": enabled,
         "canonical_gateway_configured": gateway.configured,
         "source_commit_bound": commit_bound,
@@ -234,6 +236,14 @@ async def public_readiness():
     return _sanitized_readiness(readiness)
 
 
+@app.get("/v1/theory/public")
+async def public_theory():
+    state = _health()
+    if not state["ok"]:
+        raise HTTPException(status_code=503, detail={"state": "UNAVAILABLE"})
+    return public_theory_projection()
+
+
 @app.get("/v1/status")
 async def status(x_rhen_agent_admin_token: str | None = Header(default=None)):
     _require_operator(x_rhen_agent_admin_token)
@@ -249,6 +259,7 @@ async def status(x_rhen_agent_admin_token: str | None = Header(default=None)):
         "service": state,
         "canonical_research_state": runner.status(),
         "research_readiness": runner.readiness(cadence="daily"),
+        "mathematics_and_theory": theory_status(),
     }
 
 
