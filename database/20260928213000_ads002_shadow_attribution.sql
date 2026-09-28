@@ -332,7 +332,7 @@ create or replace function private.link_ads002_signal_candidate_by_key()
 returns trigger
 language plpgsql
 set search_path = private, pg_temp
-as $
+as $$
 declare
   v_candidate_key text;
   v_candidate_id bigint;
@@ -373,7 +373,7 @@ begin
 
   return new;
 end;
-$;
+$$;
 
 drop trigger if exists trg_ads002_link_signal_candidate_by_key
 on private.trading_signals;
@@ -393,7 +393,7 @@ create or replace function private.project_ads002_shadow_scores()
 returns trigger
 language plpgsql
 set search_path = private, pg_temp
-as $
+as $$
 declare
   v_cycle_key text;
   v_scan_cycle_id bigint;
@@ -523,7 +523,7 @@ begin
 
   return new;
 end;
-$;
+$$;
 
 drop trigger if exists trg_zzz_ads002_shadow_scores
 on private.trading_events;
