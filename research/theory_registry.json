@@ -234,7 +234,8 @@
         "MATH-001 does not authorize DEVELOPMENT, VALIDATION, HOLDOUT, quarantine access, or production changes.",
         "The implemented B1 confidence sequence is intentionally conservative and is not claimed to be optimal.",
         "No mathematical novelty is claimed for the fixed-lambda e-process, convex-mixture validity, or Ville/Hoeffding constructions.",
-        "The MATH-001 search ledger does not itself convert cumulative search exposure into a p-value, e-value penalty, FDR threshold, or production decision; that calibration belongs to later multiplicity work."
+        "The MATH-001 search ledger does not itself convert cumulative search exposure into a p-value, e-value penalty, FDR threshold, or production decision; that calibration belongs to later multiplicity work.",
+        "MATH-001-C does not freeze an organization-wide multiplicity policy, alpha level, or FDR target; implemented procedures remain study candidates until the reliability-policy workstream selects among them."
       ],
       "workstreams": [
         {
@@ -361,6 +362,17 @@
           "scope": "Research-accounting infrastructure only. The ledger does not itself impose a numerical multiple-testing penalty, confirm an edge, open a protected stage, access quarantine, or authorize production changes.",
           "artifact_path": "research/notes/MATH-001-A1-search-ledger.md",
           "model_path": "app/research_agent/search_ledger.py"
+        },
+        {
+          "result_id": "MATH-001-C-M1",
+          "title": "Multiplicity-control study engine",
+          "status": "IMPLEMENTED",
+          "claim_class": "APPLICATION",
+          "novelty_state": "APPLICATION",
+          "statement": "RHEN research now has deterministic implementations of Bonferroni, Holm, BH, BY, base e-BH, e-LOND, and asynchronous e-LOND, with proposal-bound freeze-time multiplicity plans and a known-truth simulation benchmark.",
+          "scope": "Research-only multiplicity infrastructure. Fixed-family and online procedures retain their stated dependence assumptions; the organization-wide alpha/FDR target and final reliability policy remain unfrozen.",
+          "artifact_path": "research/notes/MATH-001-C-multiplicity.md",
+          "model_path": "app/research_agent/multiplicity.py"
         }
       ]
     }
