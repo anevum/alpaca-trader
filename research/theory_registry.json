@@ -1,0 +1,83 @@
+{
+  "schema_version": "anevum-theory-registry-v1",
+  "program": {
+    "program_id": "ANEVUM-MATH-THEORY",
+    "name": "ANEVUM Mathematics & Theory",
+    "status": "ACTIVE",
+    "purpose": "Develop mathematically explicit, falsifiable models of adaptive decision-making and convert useful results into bounded RHEN research without granting theory any production authority.",
+    "standards": [
+      {"standard_id":"T1","name":"PROVENANCE","rule":"Every mathematical claim is labeled as known mathematics, an ANEVUM application, an extension candidate, a conjecture, or an independently verified original result."},
+      {"standard_id":"T2","name":"FALSIFIABILITY","rule":"Applied conjectures must state assumptions, measurable consequences, and a failure condition before experiment execution."},
+      {"standard_id":"T3","name":"SEPARATION","rule":"Theory may propose models and experiments but cannot mutate live strategy, risk, sizing, execution, broker state, validation gates, holdout access, or promotion state."},
+      {"standard_id":"T4","name":"REPRODUCIBILITY","rule":"Derivations, simulations, experiment links, source commits, and evidence references must be durable and reconstructable."},
+      {"standard_id":"T5","name":"NEGATIVE_RESULTS","rule":"Disproofs, failed derivations, null results, and rejected hypotheses remain part of the permanent research record."}
+    ],
+    "authority": {
+      "live_strategy_mutation": false,
+      "live_risk_or_sizing_mutation": false,
+      "broker_calls": false,
+      "stage_opening": false,
+      "methodology_freeze": false,
+      "quarantine_access": false,
+      "production_promotion": false
+    },
+    "tracks": [
+      {"track_id":"ADAPTIVE_SYSTEMS","name":"Adaptive Systems Mathematics","status":"ACTIVE","scope":"Stochastic processes, sequential inference, online learning, control, optimization, information theory, and market microstructure with RHEN as the first applied laboratory."},
+      {"track_id":"FOUNDATIONS","name":"Pure & Foundational Mathematics","status":"ACTIVE","scope":"Independent study and original problem work in areas such as number theory, combinatorics, geometry, topology, logic, and related foundations, without requiring an immediate trading application."},
+      {"track_id":"COMPUTATIONAL_MATH","name":"Computational Mathematics & Verification","status":"ACTIVE","scope":"Symbolic and numerical experimentation, proof assistance, counterexample search, reproducible simulation, and machine-verifiable checks where appropriate."}
+    ]
+  },
+  "problems": [
+    {
+      "problem_id": "ATP-001",
+      "title": "Adaptive Inference Under Nonstationarity",
+      "status": "ACTIVE",
+      "visibility": "PUBLIC",
+      "started_on": "2026-09-27",
+      "question": "Given a partially observed, nonstationary stochastic environment with switching costs, transaction costs, delay, noise, and finite capital, how should an adaptive system decide when apparent change is real enough to justify changing its decision policy?",
+      "domains": ["stochastic_processes","sequential_inference","bayesian_statistics","change_point_detection","online_learning","information_theory","optimal_stopping","control_theory","optimization","statistical_learning_theory","market_microstructure","dynamical_systems"],
+      "formalization": {
+        "latent_state": "z_t",
+        "observation": "x_t",
+        "action": "a_t",
+        "policy": "pi",
+        "objective_latex": "\\max_{\\pi}\\;\\mathbb{E}\\left[\\sum_{t=1}^{T} r(a_t,z_t)-c(a_t,a_{t-1})-\\lambda R_t\\right]",
+        "variation_latex": "V_T=\\sum_{t=2}^{T}\\lVert\\theta_t-\\theta_{t-1}\\rVert",
+        "dynamic_regret_latex": "\\mathcal{R}_T=\\sum_{t=1}^{T}L_t(a_t)-\\sum_{t=1}^{T}L_t(a_t^*)",
+        "target_bound": "Derive non-vacuous performance or regret bounds whose dependence on environmental variation, observation noise, switching cost, and market frictions is explicit."
+      },
+      "assumptions": [
+        "No universal market predictor is assumed to exist.",
+        "The latent state is only partially observed through noisy, delayed measurements.",
+        "The environment may change and the rate of change is not known in advance.",
+        "Changing policy has an explicit cost, including false regime changes.",
+        "Any trading application must include observable transaction costs, slippage assumptions, liquidity constraints, and finite-capital limits."
+      ],
+      "non_claims": [
+        "ATP-001 does not claim that markets are predictable in general.",
+        "ATP-001 does not claim that a mathematical proof implies profitability.",
+        "ATP-001 cannot authorize a live strategy change or bypass RHEN development, validation, holdout, shadow, or promotion gates."
+      ],
+      "workstreams": [
+        {"workstream_id":"ATP-001-W1","title":"Latent-state representation","status":"ACTIVE","objective":"Define state variables that capture exploitable structure without encoding future information or unstable retrospective labels."},
+        {"workstream_id":"ATP-001-W2","title":"Sequential change evidence","status":"ACTIVE","objective":"Measure evidence for persistent structural change while controlling false alarms under dependent, heteroskedastic observations."},
+        {"workstream_id":"ATP-001-W3","title":"Switching-cost control","status":"ACTIVE","objective":"Derive when the expected value of adapting exceeds transaction, model, operational, and false-switch costs."},
+        {"workstream_id":"ATP-001-W4","title":"Dynamic regret","status":"ACTIVE","objective":"Study regret relative to a changing comparator under unknown variation budgets and realistic feedback delays."},
+        {"workstream_id":"ATP-001-W5","title":"Information value","status":"ACTIVE","objective":"Quantify whether new observations materially reduce decision uncertainty before additional complexity is admitted."},
+        {"workstream_id":"ATP-001-W6","title":"Market frictions","status":"ACTIVE","objective":"Translate theoretical guarantees into bounds that explicitly degrade with spreads, slippage, liquidity, latency, and capital constraints."}
+      ],
+      "conjectures": [
+        {"conjecture_id":"ATP-001-C1","title":"Evidence-adjusted switching threshold","status":"OPEN","novelty_state":"UNASSESSED","statement":"For a bounded family of nonstationary latent-state models with positive switching cost, an optimal or near-optimal adaptation rule can be expressed as an evidence threshold that increases with switching cost and false-alarm loss and decreases with the expected persistence and value of the new regime.","falsification":"Disprove the threshold form in an admissible model class, or show that no threshold rule can match the best admissible non-threshold policy within a useful bound."},
+        {"conjecture_id":"ATP-001-C2","title":"Persistence-adjusted regime evidence","status":"OPEN","novelty_state":"UNASSESSED","statement":"When change-point evidence is discounted by estimated regime persistence, adaptation can reduce false switches relative to evidence-only detection without materially increasing delay across a defined nonstationary model class.","falsification":"Show that persistence adjustment cannot improve the false-switch versus detection-delay frontier under the frozen model class and loss function."},
+        {"conjecture_id":"ATP-001-C3","title":"Value-of-information gate","status":"OPEN","novelty_state":"UNASSESSED","statement":"A research or strategy-complexity increase should be admitted only when the expected decision value of the additional information exceeds its estimation, execution, and model-selection costs.","falsification":"Construct a valid setting in which the gate systematically rejects information that improves expected utility after all stated costs, or accepts information that cannot improve expected utility."}
+      ],
+      "success_criteria": [
+        "A precise model class with explicit assumptions and observability boundaries.",
+        "At least one theorem, impossibility result, or quantitatively useful bound that survives independent checking.",
+        "A simulation implementation that reproduces the theoretical result under controlled conditions.",
+        "A frozen RHEN experiment manifest linking any applied conjecture to canonical data without changing production behavior.",
+        "A permanent record of rejected conjectures and negative results."
+      ]
+    }
+  ]
+}
