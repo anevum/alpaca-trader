@@ -453,7 +453,7 @@ def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
     second = asyncio.run(runner.run_session(date(2026, 9, 25)))
     second_keys = [event["event_key"] for event in sink.events]
 
-    assert first.complete_outcomes == 4
+    assert first.complete_outcomes == 7
     assert first.incomplete_outcomes == 0
     assert first.error_outcomes == 0
     assert first.comparison_events == 1
