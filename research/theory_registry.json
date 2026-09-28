@@ -235,7 +235,9 @@
         "The implemented B1 confidence sequence is intentionally conservative and is not claimed to be optimal.",
         "No mathematical novelty is claimed for the fixed-lambda e-process, convex-mixture validity, or Ville/Hoeffding constructions.",
         "The MATH-001 search ledger does not itself convert cumulative search exposure into a p-value, e-value penalty, FDR threshold, or production decision; that calibration belongs to later multiplicity work.",
-        "MATH-001-C does not freeze an organization-wide multiplicity policy, alpha level, or FDR target; implemented procedures remain study candidates until the reliability-policy workstream selects among them."
+        "MATH-001-C does not freeze an organization-wide multiplicity policy, alpha level, or FDR target; implemented procedures remain study candidates until the reliability-policy workstream selects among them.",
+        "Unconditional zero mean is not sufficient for B1 validity; MATH-001-D requires the stated conditional-mean null relative to the global information filtration.",
+        "MATH-001-D dependence diagnostics do not by themselves certify the conditional null, independence, stationarity, or economic actionability."
       ],
       "workstreams": [
         {
@@ -373,6 +375,17 @@
           "scope": "Research-only multiplicity infrastructure. Fixed-family and online procedures retain their stated dependence assumptions; the organization-wide alpha/FDR target and final reliability policy remain unfrozen.",
           "artifact_path": "research/notes/MATH-001-C-multiplicity.md",
           "model_path": "app/research_agent/multiplicity.py"
+        },
+        {
+          "result_id": "MATH-001-D1",
+          "title": "Conditional-dependence validity framework",
+          "status": "IMPLEMENTED",
+          "claim_class": "APPLICATION",
+          "novelty_state": "APPLICATION",
+          "statement": "RHEN research now distinguishes dependent processes that preserve the B1 conditional-mean null from unconditional-zero processes that violate it, freezes dependence stress requirements before methodology eligibility, records deterministic dependence plans, and provides known-truth temporal and cross-candidate dependence benchmarks.",
+          "scope": "Research-only dependence infrastructure. Diagnostics do not prove martingale validity; raw unbounded outcomes remain outside the current B1 evidence contract; no final reliability policy is frozen.",
+          "artifact_path": "research/notes/MATH-001-D-dependence.md",
+          "model_path": "app/research_agent/dependence.py"
         }
       ]
     }
