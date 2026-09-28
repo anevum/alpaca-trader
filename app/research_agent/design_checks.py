@@ -6,6 +6,7 @@ from typing import Any, Iterable, Mapping
 
 from .models import DesignCheckStatus, ExperimentProposal, ResearchWindow
 from .multiplicity import MultiplicityError, multiplicity_plan_from_proposal
+from .dependence import DependenceError, assert_dependence_ready
 
 
 SUPPORTED_FEEDS: Mapping[str, frozenset[str]] = {
@@ -391,6 +392,22 @@ def validate_design(proposal: ExperimentProposal) -> DesignReview:
                 "multiple possible survivors require a fixed survivor-selection rule",
                 path="survivor_selection_rule",
             ),
+        )
+    )
+
+    dependence_valid = True
+    dependence_message = "dependence plan is fully specified"
+    try:
+        assert_dependence_ready(proposal)
+    except (DependenceError, MultiplicityError) as exc:
+        dependence_valid = False
+        dependence_message = str(exc)
+    results.append(
+        _result(
+            "dependence_plan_valid",
+            dependence_valid,
+            dependence_message,
+            path="robustness_tests",
         )
     )
 
