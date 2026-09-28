@@ -459,7 +459,7 @@ def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
     assert first.comparison_events == 1
     assert second.complete_outcomes == first.complete_outcomes
     assert second_keys == first_keys
-    assert len(first_keys) == len(set(first_keys)) == 5
+    assert len(first_keys) == len(set(first_keys)) == 8
     comparison = next(
         event for event in sink.events
         if event["event_type"] == "live_offline_comparison"
