@@ -70,6 +70,28 @@ def _validate_problem(problem: Mapping[str, Any]) -> None:
         _require_text(conjecture.get("statement"), f"{conjecture_id}.statement")
         _require_text(conjecture.get("falsification"), f"{conjecture_id}.falsification")
 
+    results = problem.get("results") or []
+    if not isinstance(results, list):
+        raise TheoryRegistryError(f"{problem_id}.results must be an array")
+    result_ids: set[str] = set()
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise TheoryRegistryError(f"{problem_id}.result must be an object")
+        result_id = _require_text(result.get("result_id"), "result_id")
+        if result_id in result_ids:
+            raise TheoryRegistryError(f"duplicate result_id: {result_id}")
+        result_ids.add(result_id)
+        if result.get("claim_class") not in {
+            "KNOWN", "APPLICATION", "POTENTIALLY_NOVEL", "ORIGINAL_VERIFIED"
+        }:
+            raise TheoryRegistryError(f"{result_id}.claim_class is invalid")
+        if result.get("novelty_state") not in {
+            "KNOWN", "APPLICATION", "POTENTIALLY_NOVEL", "ORIGINAL_VERIFIED"
+        }:
+            raise TheoryRegistryError(f"{result_id}.novelty_state is invalid")
+        _require_text(result.get("statement"), f"{result_id}.statement")
+        _require_text(result.get("scope"), f"{result_id}.scope")
+
 
 @lru_cache(maxsize=1)
 def load_theory_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
