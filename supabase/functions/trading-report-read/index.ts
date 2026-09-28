@@ -103,34 +103,46 @@ Deno.serve(async (req) => {
           select
             c.candidate_id,
             c.signal_id,
+            c.scan_cycle_id,
             c.observed_at,
             c.symbol,
             sc.cycle_key,
             to_jsonb(c) as candidate,
-            to_jsonb(sc) as scan_cycle
+            row_number() over (
+              partition by c.scan_cycle_id
+              order by c.observed_at,c.symbol,c.candidate_id
+            ) as cycle_row_number
           from private.trading_candidate_evaluations c
           join private.trading_scan_cycles sc using(scan_cycle_id)
           cross join bounds b
           where c.observed_at >= b.starts_at
             and c.observed_at < b.ends_at
         ),
-        cycle_keys as (
-          select distinct cycle_key
-          from session_candidates
-          where cycle_key is not null
+        cycle_rows as materialized (
+          select distinct on (c.scan_cycle_id)
+            c.scan_cycle_id,
+            c.cycle_key,
+            to_jsonb(sc) as scan_cycle
+          from session_candidates c
+          join private.trading_scan_cycles sc
+            on sc.scan_cycle_id=c.scan_cycle_id
+          order by c.scan_cycle_id
         ),
         decision_events as (
-          select distinct on (k.cycle_key)
-            k.cycle_key,
-            e.payload
-          from cycle_keys k
+          select distinct on (cr.scan_cycle_id)
+            cr.scan_cycle_id,
+            jsonb_build_object(
+              'cycle_key', e.payload->'cycle_key',
+              'comparison_context', e.payload->'comparison_context'
+            ) as payload
+          from cycle_rows cr
           join private.trading_events e
             on e.event_type='decision_cycle'
-           and e.payload->>'cycle_key'=k.cycle_key
+           and e.payload->>'cycle_key'=cr.cycle_key
           cross join bounds b
           where e.occurred_at >= b.starts_at - interval '5 minutes'
             and e.occurred_at < b.ends_at + interval '5 minutes'
-          order by k.cycle_key,e.received_at desc
+          order by cr.scan_cycle_id,e.received_at desc
         ),
         outcome_rows as (
           select
@@ -164,8 +176,14 @@ Deno.serve(async (req) => {
         )
         select
           c.candidate,
-          c.scan_cycle,
-          de.payload as decision_cycle_payload,
+          case
+            when c.cycle_row_number=1 then cr.scan_cycle
+            else '{}'::jsonb
+          end as scan_cycle,
+          case
+            when c.cycle_row_number=1 then de.payload
+            else null
+          end as decision_cycle_payload,
           coalesce(fo.outcomes,'[]'::jsonb) as outcomes,
           c.signal_id::text as signal_id,
           intent.intent_id::text as intent_id,
@@ -183,8 +201,10 @@ Deno.serve(async (req) => {
             )
           end as ads002_score
         from session_candidates c
+        left join cycle_rows cr
+          on cr.scan_cycle_id=c.scan_cycle_id
         left join decision_events de
-          on de.cycle_key=c.cycle_key
+          on de.scan_cycle_id=c.scan_cycle_id
         left join outcome_rows fo
           on fo.candidate_id=c.candidate_id
         left join intent_rows intent
