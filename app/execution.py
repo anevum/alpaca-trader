@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .alpaca_client import AlpacaClient
 from .config import Settings
+from .cash_flow import day_pnl, risk_reference_equity
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .opportunity import correlation_checks, score_opportunity
@@ -1507,7 +1508,10 @@ class ExecutionEngine:
         self.state.last_buying_power = str(account.get("buying_power", "0"))
         self.state.last_equity = str(equity)
         self.state.last_equity_reference = str(last_equity)
-        self.state.last_day_pnl = str(equity - last_equity)
+        self.state.last_day_pnl = str(day_pnl(account))
+        self.state.last_risk_reference_equity = str(risk_reference_equity(account))
+        self.state.last_cash_flow_accounting = account.get("cash_flow_accounting")
+        self.state.last_cash_flow_error = account.get("cash_flow_error")
         self.state.funding_ready = cash >= self.settings.min_ready_cash
 
         clock = await self.client.clock()
@@ -1620,6 +1624,9 @@ class ExecutionEngine:
                     "buying_power",
                     "account_blocked",
                     "trading_blocked",
+                    "risk_reference_equity",
+                    "cash_flow_accounting",
+                    "cash_flow_error",
                 )
             },
             "positions": [

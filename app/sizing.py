@@ -17,8 +17,8 @@ def d(value: Any) -> Decimal:
 
 
 def base_equity(account: dict[str, Any]) -> Decimal:
-    """Use prior-close equity for stable intraday sizing, then fall back to equity."""
-    prior = d(account.get("last_equity"))
+    """Use the cash-flow-adjusted prior close when explicitly reconciled."""
+    prior = d(account.get("risk_reference_equity", account.get("last_equity")))
     if prior > 0:
         return prior
     return d(account.get("equity"))

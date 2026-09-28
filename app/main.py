@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 from .alpaca_client import AlpacaClient
 from .config import get_settings
+from .cash_flow import day_pnl, risk_reference_equity
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
@@ -220,7 +221,11 @@ async def command_snapshot() -> dict:
         "account": {
             "equity": str(account.get("equity", "0")),
             "last_equity": str(account.get("last_equity", "0")),
-            "day_pnl": str(equity - last_equity),
+            "day_pnl": str(day_pnl(account)),
+            "raw_equity_change": str(equity - last_equity),
+            "risk_reference_equity": str(risk_reference_equity(account)),
+            "cash_flow_accounting": account.get("cash_flow_accounting"),
+            "cash_flow_error": account.get("cash_flow_error"),
             "cash": str(account.get("cash", "0")),
             "buying_power": str(account.get("buying_power", "0")),
             "trading_blocked": bool(account.get("trading_blocked")),
@@ -354,7 +359,10 @@ async def refresh_account_state() -> dict:
     runtime_state.last_buying_power = str(account.get("buying_power", "0"))
     runtime_state.last_equity = str(equity)
     runtime_state.last_equity_reference = str(last_equity)
-    runtime_state.last_day_pnl = str(equity - last_equity)
+    runtime_state.last_day_pnl = str(day_pnl(account))
+    runtime_state.last_risk_reference_equity = str(risk_reference_equity(account))
+    runtime_state.last_cash_flow_accounting = account.get("cash_flow_accounting")
+    runtime_state.last_cash_flow_error = account.get("cash_flow_error")
     runtime_state.funding_ready = cash >= settings.min_ready_cash
     runtime_state.last_error = None
     return account
@@ -864,6 +872,9 @@ async def status(authorization: str | None = Header(default=None)):
             "equity": runtime_state.last_equity,
             "last_equity": runtime_state.last_equity_reference,
             "day_pnl": runtime_state.last_day_pnl,
+            "risk_reference_equity": runtime_state.last_risk_reference_equity,
+            "cash_flow_accounting": runtime_state.last_cash_flow_accounting,
+            "cash_flow_error": runtime_state.last_cash_flow_error,
             "last_scan": runtime_state.last_scan,
             "last_completed_scan": runtime_state.last_completed_scan,
             "last_signal": runtime_state.last_signal,

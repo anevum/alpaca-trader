@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import httpx
 
 from .config import Settings
+from .cash_flow import annotate_account
 
 
 class AlpacaClient:
@@ -58,7 +60,13 @@ class AlpacaClient:
             return response.json()
 
     async def account(self) -> dict[str, Any]:
-        return await self._request("GET", "/v2/account")
+        raw = await self._request("GET", "/v2/account")
+        return annotate_account(
+            raw,
+            self.settings.session_cash_flow_adjustment,
+            run_id=self.settings.trading_run_id,
+            observed_at=datetime.now(timezone.utc),
+        )
 
     async def clock(self) -> dict[str, Any]:
         return await self._request("GET", "/v2/clock")
