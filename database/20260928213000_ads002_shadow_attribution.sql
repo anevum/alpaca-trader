@@ -616,6 +616,705 @@ comment on function private.rhen_ads002_attribution_inputs(date,date) is
 'Private read-only ADS-002 attribution inputs. No live trading dependency.';
 
 
+create unique index if not exists trading_ads_attribution_signal_method_uidx
+  on private.trading_ads_attribution(signal_id, methodology_version)
+  where signal_id is not null;
+
+create or replace function private.ads002_exit_health(
+  p_realized_return numeric,
+  p_mfe numeric,
+  p_mae numeric
+)
+returns numeric
+language sql
+immutable
+set search_path = private, pg_temp
+as $
+  select case
+    when p_mfe is null or p_mae is null or p_realized_return is null then null
+    else least(
+      100::numeric,
+      greatest(
+        0::numeric,
+        100::numeric * (
+          0.45::numeric * greatest(
+            0::numeric,
+            least(
+              1::numeric,
+              (
+                p_realized_return - least(p_mae, 0::numeric)
+              ) / greatest(
+                greatest(p_mfe, 0::numeric) - least(p_mae, 0::numeric),
+                0.000001::numeric
+              )
+            )
+          )
+          + 0.35::numeric * (
+            case
+              when greatest(p_mfe, 0::numeric) > 0 then greatest(
+                0::numeric,
+                least(
+                  1::numeric,
+                  p_realized_return / greatest(p_mfe, 0::numeric)
+                )
+              )
+              when p_realized_return >= 0 then 1::numeric
+              else 0::numeric
+            end
+          )
+          + 0.20::numeric * (
+            1::numeric - greatest(
+              0::numeric,
+              least(
+                1::numeric,
+                abs(least(p_realized_return, 0::numeric))
+                / greatest(abs(least(p_mae, 0::numeric)), 0.000001::numeric)
+              )
+            )
+          )
+        )
+      )
+    )
+  end;
+$;
+
+revoke all on function private.ads002_exit_health(numeric,numeric,numeric)
+from public, anon, authenticated;
+
+create or replace function private.rhen_ads002_confidence_state()
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = private, pg_temp
+as $
+with counts as (
+  select
+    count(distinct s.session)::integer as independent_sessions,
+    count(*) filter (
+      where s.pretrade_composite is not null
+    )::integer as research_eligible_candidates
+  from private.trading_ads_shadow_scores s
+  where s.methodology_version='ads-shadow-v1'
+),
+trade_counts as (
+  select
+    count(*) filter (
+      where a.attribution_state='DIRECT_COMPLETE'
+    )::integer as closed_direct_trades,
+    count(*) filter (
+      where a.signal_id is not null
+    )::integer as executable_signals,
+    count(*) filter (
+      where a.signal_id is not null
+        and a.attribution_state in ('DIRECT_COMPLETE','DIRECT_PARTIAL')
+    )::integer as directly_attributed_signals
+  from private.trading_ads_attribution a
+  where a.methodology_version='ads-attribution-v1'
+),
+completion as (
+  select
+    count(*)::integer as eligible,
+    count(*) filter (
+      where exists (
+        select 1
+        from private.trading_candidate_forward_outcomes fo
+        where fo.candidate_id=s.candidate_id
+          and fo.methodology_version='candidate-forward-v2'
+          and fo.horizon_minutes=15
+          and fo.status='complete'
+      )
+    )::integer as forward_complete
+  from private.trading_ads_shadow_scores s
+  where s.methodology_version='ads-shadow-v1'
+    and s.pretrade_composite is not null
+),
+primary_rows as (
+  select
+    s.session,
+    s.candidate_id,
+    s.qualification_score::double precision as q,
+    fo.forward_return::double precision as r
+  from private.trading_ads_shadow_scores s
+  join private.trading_candidate_forward_outcomes fo
+    on fo.candidate_id=s.candidate_id
+   and fo.methodology_version='candidate-forward-v2'
+   and fo.horizon_minutes=15
+   and fo.status='complete'
+  where s.methodology_version='ads-shadow-v1'
+    and s.qualification_score is not null
+    and fo.forward_return is not null
+),
+ranked as (
+  select
+    session,
+    candidate_id,
+    q,
+    r,
+    rank() over(partition by session order by q)::double precision as q_rank,
+    rank() over(partition by session order by r)::double precision as r_rank
+  from primary_rows
+),
+session_effects as (
+  select
+    session,
+    count(*)::integer as n,
+    corr(q_rank,r_rank) as rho
+  from ranked
+  group by session
+),
+stability as (
+  select
+    count(*) filter(where rho is not null)::integer as effect_sessions,
+    case
+      when count(*) filter(where rho is not null)=0 then 0::double precision
+      else greatest(
+        count(*) filter(where rho > 0)::double precision,
+        count(*) filter(where rho < 0)::double precision
+      ) / count(*) filter(where rho is not null)::double precision
+    end as sign_consistency,
+    coalesce(
+      percentile_cont(0.5) within group(order by abs(rho))
+        filter(where rho is not null),
+      0
+    )::double precision as median_abs_rho
+  from session_effects
+),
+base as (
+  select
+    counts.*,
+    trade_counts.*,
+    completion.eligible,
+    completion.forward_complete,
+    stability.effect_sessions,
+    stability.sign_consistency,
+    stability.median_abs_rho,
+    case
+      when trade_counts.executable_signals=0 then 0::double precision
+      else trade_counts.directly_attributed_signals::double precision
+        / trade_counts.executable_signals::double precision
+    end as c_attribution,
+    case
+      when completion.eligible=0 then 0::double precision
+      else completion.forward_complete::double precision
+        / completion.eligible::double precision
+    end as c_completeness,
+    least(counts.independent_sessions::double precision / 10.0,1.0) as sr,
+    least(counts.research_eligible_candidates::double precision / 100.0,1.0) as cr,
+    least(trade_counts.closed_direct_trades::double precision / 30.0,1.0) as tr,
+    case
+      when counts.independent_sessions < 2 then 0::double precision
+      else (
+        0.60 * least(greatest(stability.sign_consistency,0),1)
+        + 0.40 * least(greatest(stability.median_abs_rho / 0.20,0),1)
+      )
+    end as c_stability
+  from counts, trade_counts, completion, stability
+),
+scored as (
+  select
+    *,
+    case when sr <= 0 or cr <= 0 or tr <= 0 then 0::double precision
+      else power(sr*cr*tr, 1.0/3.0)
+    end as c_sample
+  from base
+),
+final as (
+  select
+    *,
+    least(
+      case
+        when independent_sessions < 10
+          or research_eligible_candidates < 100
+          or closed_direct_trades < 30
+        then 49.0
+        else 100.0
+      end,
+      100.0 * (
+        0.30 * least(greatest(c_attribution,0),1)
+        + 0.25 * least(greatest(c_completeness,0),1)
+        + 0.20 * least(greatest(c_sample,0),1)
+        + 0.15 * least(greatest(c_stability,0),1)
+        + 0.10 * 0.0
+      )
+    ) as confidence_score
+  from scored
+)
+select jsonb_build_object(
+  'methodology_version','ads-shadow-v1',
+  'score',round(confidence_score::numeric,4),
+  'hard_cap_active',(
+    independent_sessions < 10
+    or research_eligible_candidates < 100
+    or closed_direct_trades < 30
+  ),
+  'components',jsonb_build_object(
+    'attribution',round(c_attribution::numeric,6),
+    'completeness',round(c_completeness::numeric,6),
+    'sample',round(c_sample::numeric,6),
+    'stability',round(c_stability::numeric,6),
+    'regime',0
+  ),
+  'samples',jsonb_build_object(
+    'independent_sessions',independent_sessions,
+    'research_eligible_candidates',research_eligible_candidates,
+    'closed_direct_trades',closed_direct_trades,
+    'effect_sessions',effect_sessions
+  ),
+  'primary_effect',jsonb_build_object(
+    'sign_consistency',round(sign_consistency::numeric,6),
+    'median_abs_session_spearman',round(median_abs_rho::numeric,6)
+  ),
+  'missing_requirements',to_jsonb(array_remove(array[
+    case when independent_sessions < 10 then 'MIN_INDEPENDENT_SESSIONS' end,
+    case when research_eligible_candidates < 100 then 'MIN_RESEARCH_ELIGIBLE_CANDIDATES' end,
+    case when closed_direct_trades < 30 then 'MIN_CLOSED_DIRECT_TRADES' end,
+    'REGIME_CLASSIFIER_UNFROZEN'
+  ],null))
+)
+from final;
+$;
+
+revoke all on function private.rhen_ads002_confidence_state()
+from public, anon, authenticated;
+
+create or replace function private.rhen_ads002_refresh_session(
+  p_session date
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = private, pg_temp
+as $
+declare
+  r record;
+  v_state text;
+  v_reasons text[];
+  v_confidence jsonb;
+begin
+  for r in
+    select
+      s.signal_id,
+      s.payload->>'candidate_key' as signal_candidate_key,
+      c.candidate_id,
+      c.candidate_key,
+      i.intent_id,
+      o.broker_order_id as entry_order_id,
+      f.fill_id as entry_fill_id,
+      p.position_id,
+      p.status as position_status,
+      p.realized_return,
+      p.max_favorable_excursion,
+      p.max_adverse_excursion,
+      x.exit_id,
+      x.broker_order_id as exit_order_id,
+      xf.fill_id as exit_fill_id,
+      coalesce((s.payload->>'ads002_identity_conflict')::boolean,false) as identity_conflict
+    from private.trading_signals s
+    left join private.trading_candidate_evaluations c
+      on c.candidate_id=s.candidate_id
+      or (c.signal_id=s.signal_id and s.candidate_id is null)
+    left join lateral (
+      select ii.intent_id
+      from private.trading_order_intents ii
+      where ii.signal_id=s.signal_id and lower(ii.side)='buy'
+      order by ii.intended_at desc
+      limit 1
+    ) i on true
+    left join lateral (
+      select oo.broker_order_id
+      from private.trading_orders oo
+      where oo.order_intent_id=i.intent_id and lower(oo.side)='buy'
+      order by coalesce(oo.submitted_at,oo.updated_at) desc
+      limit 1
+    ) o on true
+    left join lateral (
+      select ff.fill_id
+      from private.trading_fills ff
+      where ff.broker_order_id=o.broker_order_id and lower(ff.side)='buy'
+      order by ff.filled_at
+      limit 1
+    ) f on true
+    left join lateral (
+      select pp.position_id,pp.status,pp.realized_return,
+             pp.max_favorable_excursion,pp.max_adverse_excursion
+      from private.trading_positions pp
+      where pp.payload->>'entry_order_id'=o.broker_order_id
+      order by pp.opened_at desc
+      limit 1
+    ) p on true
+    left join lateral (
+      select xx.exit_id,xx.broker_order_id
+      from private.trading_exits xx
+      where xx.position_id=p.position_id
+      order by xx.created_at desc
+      limit 1
+    ) x on true
+    left join lateral (
+      select ff.fill_id
+      from private.trading_fills ff
+      where ff.broker_order_id=x.broker_order_id and lower(ff.side)='sell'
+      order by ff.filled_at desc
+      limit 1
+    ) xf on true
+    where (s.signal_at at time zone 'America/New_York')::date=p_session
+  loop
+    v_reasons := '{}'::text[];
+    if r.identity_conflict then
+      v_state := 'AMBIGUOUS';
+      v_reasons := array_append(v_reasons,'IDENTITY_CONFLICT');
+    elsif r.candidate_id is null then
+      v_state := 'UNLINKED';
+      v_reasons := array_append(v_reasons,'CANDIDATE_ID_MISSING');
+    elsif r.intent_id is null then
+      v_state := 'DIRECT_PARTIAL';
+      v_reasons := array_append(v_reasons,'ENTRY_INTENT_MISSING');
+    elsif r.entry_order_id is null then
+      v_state := 'DIRECT_PARTIAL';
+      v_reasons := array_append(v_reasons,'ENTRY_ORDER_MISSING');
+    elsif r.entry_fill_id is null then
+      v_state := 'DIRECT_PARTIAL';
+      v_reasons := array_append(v_reasons,'ENTRY_FILL_MISSING');
+    elsif r.position_id is null then
+      v_state := 'DIRECT_PARTIAL';
+      v_reasons := array_append(v_reasons,'POSITION_MISSING');
+    elsif r.position_status='closed'
+      and r.exit_fill_id is not null then
+      v_state := 'DIRECT_COMPLETE';
+    else
+      v_state := 'DIRECT_PARTIAL';
+      if r.position_status='closed' and r.exit_fill_id is null then
+        v_reasons := array_append(v_reasons,'EXIT_FILL_MISSING');
+      else
+        v_reasons := array_append(v_reasons,'POSITION_NOT_CLOSED');
+      end if;
+    end if;
+
+    insert into private.trading_ads_attribution (
+      candidate_id,candidate_key,signal_id,intent_id,entry_order_id,
+      entry_fill_id,position_id,exit_id,exit_order_id,exit_fill_id,
+      attribution_state,link_method,link_confidence,reason_codes,
+      methodology_version,session,computed_at,details
+    ) values (
+      r.candidate_id,
+      coalesce(r.candidate_key,r.signal_candidate_key),
+      r.signal_id,r.intent_id,r.entry_order_id,r.entry_fill_id,
+      r.position_id,r.exit_id,r.exit_order_id,r.exit_fill_id,
+      v_state,
+      case when r.candidate_id is null then 'none' else 'direct_id_chain' end,
+      case when v_state in ('DIRECT_COMPLETE','DIRECT_PARTIAL') then 1 else 0 end,
+      v_reasons,
+      'ads-attribution-v1',
+      p_session,
+      now(),
+      jsonb_build_object('postclose_refresh',true)
+    )
+    on conflict (signal_id,methodology_version)
+      where signal_id is not null
+    do update set
+      candidate_id=excluded.candidate_id,
+      candidate_key=excluded.candidate_key,
+      intent_id=excluded.intent_id,
+      entry_order_id=excluded.entry_order_id,
+      entry_fill_id=excluded.entry_fill_id,
+      position_id=excluded.position_id,
+      exit_id=excluded.exit_id,
+      exit_order_id=excluded.exit_order_id,
+      exit_fill_id=excluded.exit_fill_id,
+      attribution_state=excluded.attribution_state,
+      link_method=excluded.link_method,
+      link_confidence=excluded.link_confidence,
+      reason_codes=excluded.reason_codes,
+      session=excluded.session,
+      computed_at=excluded.computed_at,
+      details=private.trading_ads_attribution.details || excluded.details;
+  end loop;
+
+  update private.trading_ads_shadow_scores ss
+  set
+    attribution_state=a.attribution_state,
+    exit_health_score=private.ads002_exit_health(
+      p.realized_return,
+      p.max_favorable_excursion,
+      p.max_adverse_excursion
+    ),
+    computed_at=now()
+  from private.trading_ads_attribution a
+  left join private.trading_positions p
+    on p.position_id=a.position_id
+  where ss.session=p_session
+    and ss.methodology_version='ads-shadow-v1'
+    and a.methodology_version='ads-attribution-v1'
+    and a.candidate_id=ss.candidate_id;
+
+  v_confidence := private.rhen_ads002_confidence_state();
+
+  update private.trading_ads_shadow_scores
+  set confidence_score=nullif(v_confidence->>'score','')::numeric,
+      computed_at=now()
+  where session=p_session
+    and methodology_version='ads-shadow-v1';
+
+  return private.rhen_ads002_daily_inputs(p_session);
+end;
+$;
+
+revoke all on function private.rhen_ads002_refresh_session(date)
+from public, anon, authenticated;
+
+create or replace function private.rhen_ads002_daily_inputs(
+  p_session date
+)
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = private, pg_temp
+as $
+with session_scores as (
+  select *
+  from private.trading_ads_shadow_scores
+  where session=p_session and methodology_version='ads-shadow-v1'
+),
+session_attr as (
+  select *
+  from private.trading_ads_attribution
+  where session=p_session and methodology_version='ads-attribution-v1'
+),
+coverage as (
+  select
+    (select count(*)::integer from session_scores) as score_rows,
+    (select count(*)::integer from session_scores where pretrade_composite is not null) as research_eligible,
+    (select count(*)::integer from session_scores where attention_score is not null) as attention_rows,
+    (select count(*)::integer from session_scores where qualification_score is not null) as qualification_rows,
+    (select count(*)::integer from session_scores where timing_score is not null) as timing_rows,
+    (select count(*)::integer from session_attr where signal_id is not null) as executable_signals,
+    (select count(*)::integer from session_attr where attribution_state in ('DIRECT_COMPLETE','DIRECT_PARTIAL')) as direct_signals,
+    (select count(*)::integer from session_attr where attribution_state='AMBIGUOUS') as ambiguous_signals,
+    (select count(*)::integer from session_attr where attribution_state='UNLINKED') as unlinked_signals,
+    (select count(*)::integer from session_attr where attribution_state='DIRECT_COMPLETE') as closed_direct_trades,
+    (
+      select count(*)::integer
+      from session_scores s
+      where s.pretrade_composite is not null
+        and exists (
+          select 1
+          from private.trading_candidate_forward_outcomes fo
+          where fo.candidate_id=s.candidate_id
+            and fo.methodology_version='candidate-forward-v2'
+            and fo.horizon_minutes=15
+            and fo.status='complete'
+        )
+    ) as forward_15_complete
+),
+primary_rows as (
+  select
+    s.session,
+    s.candidate_id,
+    s.qualification_score::double precision as q,
+    fo.forward_return::double precision as r
+  from private.trading_ads_shadow_scores s
+  join private.trading_candidate_forward_outcomes fo
+    on fo.candidate_id=s.candidate_id
+   and fo.methodology_version='candidate-forward-v2'
+   and fo.horizon_minutes=15
+   and fo.status='complete'
+  where s.methodology_version='ads-shadow-v1'
+    and s.qualification_score is not null
+    and fo.forward_return is not null
+),
+ranked as (
+  select
+    *,
+    rank() over(partition by session order by q)::double precision as q_rank,
+    rank() over(partition by session order by r)::double precision as r_rank,
+    ntile(4) over(partition by session order by q) as q_quartile
+  from primary_rows
+),
+per_session as (
+  select
+    session,
+    count(*)::integer as n,
+    corr(q_rank,r_rank) as rho,
+    avg(r) filter(where q_quartile=4)
+      - avg(r) filter(where q_quartile=1) as quartile_spread
+  from ranked
+  group by session
+),
+effect_summary as (
+  select
+    count(*) filter(where rho is not null)::integer as rho_sessions,
+    case when count(*) filter(where rho is not null)=0 then 0::double precision
+      else greatest(
+        count(*) filter(where rho>0)::double precision,
+        count(*) filter(where rho<0)::double precision
+      ) / count(*) filter(where rho is not null)::double precision
+    end as rho_sign_consistency,
+    count(*) filter(where quartile_spread is not null)::integer as quartile_sessions,
+    case when count(*) filter(where quartile_spread is not null)=0 then 0::double precision
+      else greatest(
+        count(*) filter(where quartile_spread>0)::double precision,
+        count(*) filter(where quartile_spread<0)::double precision
+      ) / count(*) filter(where quartile_spread is not null)::double precision
+    end as quartile_sign_consistency
+  from per_session
+),
+trade_share as (
+  select coalesce(max(n)::double precision / nullif(sum(n),0),0) as max_session_share
+  from (
+    select session,count(*)::integer as n
+    from private.trading_ads_attribution
+    where methodology_version='ads-attribution-v1'
+      and attribution_state='DIRECT_COMPLETE'
+    group by session
+  ) x
+),
+confidence as (
+  select private.rhen_ads002_confidence_state() as value
+),
+derived as (
+  select
+    coverage.*,
+    effect_summary.*,
+    trade_share.max_session_share,
+    confidence.value as confidence,
+    case when coverage.executable_signals=0 then 1::double precision
+      else coverage.direct_signals::double precision/coverage.executable_signals
+    end as direct_coverage,
+    case when coverage.research_eligible=0 then 0::double precision
+      else coverage.forward_15_complete::double precision/coverage.research_eligible
+    end as forward_coverage
+  from coverage,effect_summary,trade_share,confidence
+),
+readiness as (
+  select
+    *,
+    (
+      ambiguous_signals=0
+      and unlinked_signals=0
+      and direct_coverage >= 0.995
+      and forward_coverage >= 0.95
+    ) as data_valid,
+    (
+      coalesce((confidence#>>'{samples,independent_sessions}')::integer,0) >= 10
+      and coalesce((confidence#>>'{samples,research_eligible_candidates}')::integer,0) >= 100
+      and coalesce((confidence#>>'{samples,closed_direct_trades}')::integer,0) >= 30
+      and rho_sign_consistency >= 0.70
+      and quartile_sign_consistency >= 0.70
+      and max_session_share <= 0.25
+      and coalesce((confidence->>'score')::numeric,0) >= 60
+    ) as stable
+  from derived
+)
+select jsonb_build_object(
+  'methodology_version','ADS-002-v1',
+  'score_methodology_version','ads-shadow-v1',
+  'forward_methodology_version','candidate-forward-v2',
+  'primary_horizon_minutes',15,
+  'session',p_session,
+  'attribution',jsonb_build_object(
+    'executable_signals',executable_signals,
+    'direct_signals',direct_signals,
+    'ambiguous_signals',ambiguous_signals,
+    'unlinked_signals',unlinked_signals,
+    'closed_direct_trades',closed_direct_trades,
+    'direct_coverage',round(direct_coverage::numeric,6)
+  ),
+  'score_coverage',jsonb_build_object(
+    'score_rows',score_rows,
+    'research_eligible_candidates',research_eligible,
+    'attention_rows',attention_rows,
+    'qualification_rows',qualification_rows,
+    'timing_rows',timing_rows
+  ),
+  'forward_outcomes',jsonb_build_object(
+    'eligible_15m',research_eligible,
+    'complete_15m',forward_15_complete,
+    'coverage_15m',round(forward_coverage::numeric,6)
+  ),
+  'primary_effect',coalesce(
+    (
+      select jsonb_build_object(
+        'n',n,
+        'spearman_q_15m',rho,
+        'q4_minus_q1_return',quartile_spread
+      )
+      from per_session where session=p_session
+    ),
+    jsonb_build_object(
+      'n',0,
+      'spearman_q_15m',null,
+      'q4_minus_q1_return',null
+    )
+  ),
+  'cross_session',jsonb_build_object(
+    'rho_sessions',rho_sessions,
+    'rho_sign_consistency',round(rho_sign_consistency::numeric,6),
+    'quartile_sessions',quartile_sessions,
+    'quartile_sign_consistency',round(quartile_sign_consistency::numeric,6),
+    'max_single_session_closed_trade_share',round(max_session_share::numeric,6)
+  ),
+  'confidence',confidence,
+  'readiness',jsonb_build_object(
+    'state',case
+      when data_valid and stable then 'SHADOW_STABLE'
+      when data_valid then 'SHADOW_DATA_VALID'
+      else 'RESEARCH_ONLY'
+    end,
+    'data_valid',data_valid,
+    'stable',stable,
+    'frozen_validation_ready',false,
+    'reason_codes',to_jsonb(array_remove(array[
+      case when ambiguous_signals>0 then 'AMBIGUOUS_ATTRIBUTION' end,
+      case when unlinked_signals>0 then 'UNLINKED_EXECUTABLE_SIGNAL' end,
+      case when direct_coverage<0.995 then 'DIRECT_ATTRIBUTION_COVERAGE' end,
+      case when forward_coverage<0.95 then 'FORWARD_15M_COVERAGE' end,
+      case when not stable then 'STABILITY_GATES_NOT_MET' end,
+      'REGIME_CLASSIFIER_UNFROZEN'
+    ],null))
+  ),
+  'live_configuration_changed',false,
+  'promotion_authorized',false
+)
+from readiness;
+$;
+
+revoke all on function private.rhen_ads002_daily_inputs(date)
+from public, anon, authenticated;
+
+create or replace function private.project_ads002_postclose_refresh()
+returns trigger
+language plpgsql
+security invoker
+set search_path = private, pg_temp
+as $
+declare
+  v_session date;
+begin
+  if new.event_type <> 'ads002_postclose_refresh' then
+    return new;
+  end if;
+  v_session := nullif(new.payload->>'session','')::date;
+  if v_session is null then
+    return new;
+  end if;
+  perform private.rhen_ads002_refresh_session(v_session);
+  return new;
+end;
+$;
+
+drop trigger if exists trg_ads002_postclose_refresh
+on private.trading_events;
+
+create trigger trg_ads002_postclose_refresh
+after insert on private.trading_events
+for each row
+when (new.event_type='ads002_postclose_refresh')
+execute function private.project_ads002_postclose_refresh();
+
+comment on function private.project_ads002_postclose_refresh() is
+'Refreshes ADS-002 research-only attribution, X, confidence, and readiness after close.';
+
 -- Preserve candidate-forward-v1 while allowing ADS-002 v2 to require all seven
 -- frozen horizons before a candidate is marked complete.
 create or replace function private.project_candidate_forward_outcome()
