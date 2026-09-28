@@ -4,6 +4,8 @@ from datetime import date, datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import asyncio
+
 import httpx
 
 from .config import Settings
@@ -223,37 +225,52 @@ class MarketDataClient:
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            for batch in batches:
-                params = {
-                    "symbols": ",".join(batch),
-                    "timeframe": "1Day",
-                    "start": start.astimezone(timezone.utc).isoformat(),
-                    "end": end.astimezone(timezone.utc).isoformat(),
-                    "limit": 10000,
-                    "sort": "asc",
-                    "feed": self.settings.data_feed,
-                }
-                page_token: str | None = None
-                for _ in range(10):
-                    request_params = dict(params)
-                    if page_token:
-                        request_params["page_token"] = page_token
-                    response = await client.get(
-                        f"{self.settings.data_base_url}/v2/stocks/bars",
-                        headers=self.headers,
-                        params=request_params,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    for symbol, bars in (data.get("bars") or {}).items():
-                        output.setdefault(symbol.upper(), []).extend(bars or [])
-                    page_token = data.get("next_page_token")
-                    if not page_token:
-                        break
-                else:
-                    raise RuntimeError(
-                        "dynamic-universe daily-bar pagination exceeded safety limit"
-                    )
+            semaphore = asyncio.Semaphore(4)
+
+            async def fetch_batch(batch: list[str]) -> dict[str, list[dict[str, Any]]]:
+                async with semaphore:
+                    batch_output: dict[str, list[dict[str, Any]]] = {
+                        symbol: [] for symbol in batch
+                    }
+                    params = {
+                        "symbols": ",".join(batch),
+                        "timeframe": "1Day",
+                        "start": start.astimezone(timezone.utc).isoformat(),
+                        "end": end.astimezone(timezone.utc).isoformat(),
+                        "limit": 10000,
+                        "sort": "asc",
+                        "feed": self.settings.data_feed,
+                    }
+                    page_token: str | None = None
+                    for _ in range(10):
+                        request_params = dict(params)
+                        if page_token:
+                            request_params["page_token"] = page_token
+                        response = await client.get(
+                            f"{self.settings.data_base_url}/v2/stocks/bars",
+                            headers=self.headers,
+                            params=request_params,
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        for symbol, bars in (data.get("bars") or {}).items():
+                            batch_output.setdefault(symbol.upper(), []).extend(bars or [])
+                        page_token = data.get("next_page_token")
+                        if not page_token:
+                            break
+                    else:
+                        raise RuntimeError(
+                            "dynamic-universe daily-bar pagination exceeded safety limit"
+                        )
+                    return batch_output
+
+            batch_results = await asyncio.gather(
+                *(fetch_batch(batch) for batch in batches)
+            )
+
+        for batch_output in batch_results:
+            for symbol, bars in batch_output.items():
+                output.setdefault(symbol, []).extend(bars)
 
         return output
 
