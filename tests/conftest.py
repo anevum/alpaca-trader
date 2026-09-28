@@ -77,7 +77,7 @@ def proposal_data():
         "concentration_limits": {"maximum_symbol_share": 0.25},
         "robustness_tests": ["period_stability"],
         "uncertainty_method": {"name": "bootstrap", "resamples": 1000},
-        "multiple_testing_method": {"name": "holm"},
+        "multiple_testing_method": {"name": "holm", "alpha": 0.05},
         "survivor_selection_rule": ["all predefined gates must pass"],
         "stage_gates": {
             "development": {"outcome_required": "PASS"},

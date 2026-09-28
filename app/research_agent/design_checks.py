@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 
 from .models import DesignCheckStatus, ExperimentProposal, ResearchWindow
+from .multiplicity import MultiplicityError, multiplicity_plan_from_proposal
 
 
 SUPPORTED_FEEDS: Mapping[str, frozenset[str]] = {
@@ -362,12 +363,26 @@ def validate_design(proposal: ExperimentProposal) -> DesignReview:
     multiple_configurations = len(proposal.configurations) > 1
     multiple_testing_present = bool(proposal.multiple_testing_method)
     survivor_rule_present = bool(proposal.survivor_selection_rule)
+    multiplicity_valid = True
+    multiplicity_message = "multiplicity plan is deterministic and fully specified"
+    if multiple_configurations:
+        try:
+            multiplicity_plan_from_proposal(proposal)
+        except MultiplicityError as exc:
+            multiplicity_valid = False
+            multiplicity_message = str(exc)
     results.extend(
         (
             _result(
                 "multiple_testing_fixed",
                 not multiple_configurations or multiple_testing_present,
                 "multiple configurations require a fixed multiple-testing treatment",
+                path="multiple_testing_method",
+            ),
+            _result(
+                "multiplicity_plan_valid",
+                not multiple_configurations or multiplicity_valid,
+                multiplicity_message,
                 path="multiple_testing_method",
             ),
             _result(

@@ -144,6 +144,23 @@ async function readEvidence() {
     "        order by event_at desc, search_event_sequence desc",
     "        limit 100",
     "      ) se",
+    "    ),",
+    "    'multiplicity_state', (",
+    "      select to_jsonb(ms)",
+    "      from private.rhen_research_multiplicity_state_v1 ms",
+    "    ),",
+    "    'recent_multiplicity_plans', (",
+    "      select coalesce(jsonb_agg(to_jsonb(mp) order by mp.created_at desc, mp.plan_id), '[]'::jsonb)",
+    "      from (",
+    "        select plan_id, plan_hash, plan_version, proposal_id, proposal_revision,",
+    "               proposal_hash, family_id, method, alpha, family_scope, family_size,",
+    "               input_type, error_metric, dependence_scope, search_generation,",
+    "               policy_status, production_authority, protected_stage_authority,",
+    "               created_at",
+    "        from private.trading_research_multiplicity_plans",
+    "        order by created_at desc, plan_id",
+    "        limit 50",
+    "      ) mp",
     "    )",
     "  )",
     ") as evidence",
@@ -249,7 +266,20 @@ async function recordSearchLedger(ledger: Record<string, unknown>) {
   if (!result || typeof result !== "object") {
     throw new Error("search_ledger_write_failed");
   }
-  return result;
+
+  const planRows = await sql.unsafe<{ result: Record<string, unknown> }[]>(
+    "select private.rhen_research_record_multiplicity_plan($1::jsonb) as result",
+    [JSON.stringify(ledger)],
+  );
+  const multiplicity = planRows[0]?.result;
+  if (!multiplicity || typeof multiplicity !== "object") {
+    throw new Error("multiplicity_plan_write_failed");
+  }
+
+  return {
+    ...result,
+    multiplicity_plan: multiplicity,
+  };
 }
 
 Deno.serve(async (req: Request) => {
