@@ -565,6 +565,11 @@ class TradingEventSink:
             if correlation_id else None
         )
         market_quality = dict(metadata.get("market_quality") or {})
+        candidate_key = (
+            f"{cycle_key}:{signal.symbol.upper()}"
+            if cycle_key
+            else None
+        )
         decision_quote = {
             "bid": market_quality.get("bid"),
             "ask": market_quality.get("ask"),
@@ -585,6 +590,7 @@ class TradingEventSink:
                     "reason": signal.reason,
                     "metadata": signal.metadata or {},
                     "cycle_key": cycle_key,
+                    "candidate_key": candidate_key,
                 },
             },
             "intent": {
@@ -607,6 +613,43 @@ class TradingEventSink:
                     "decision_reference_price": str(signal.reference_price),
                     "decision_quote": decision_quote,
                     "cycle_key": cycle_key,
+                    "candidate_key": candidate_key,
+                    "candidate_snapshot": {
+                        "candidate_key": candidate_key,
+                        "symbol": signal.symbol.upper(),
+                        "observed_at": intended_at.isoformat(),
+                        "action": "buy",
+                        "qualified": True,
+                        "candidate_state": "qualified",
+                        "qualification_status": "qualified",
+                        "final_decision": "selected_for_entry",
+                        "reason": signal.reason,
+                        "decision_reference_price": str(signal.reference_price),
+                        "quote": decision_quote,
+                        "features": signal.metadata or {},
+                        "checks": {
+                            "strategy": metadata.get("checks") or {},
+                            "confirmations": metadata.get("confirmations") or {},
+                            "regime_confirmations": metadata.get("regime_confirmations") or {},
+                            "market_quality": market_quality,
+                            "correlation": metadata.get("correlation") or {},
+                        },
+                        "stop_price": str(signal.stop_price),
+                        "target_price": str(signal.take_profit_price),
+                        "market_context": {
+                            "confirmations": metadata.get("confirmations") or {},
+                            "regime_confirmations": metadata.get("regime_confirmations") or {},
+                        },
+                        "constraints": {
+                            "correlation": metadata.get("correlation") or {},
+                            "sizing": metadata.get("sizing") or {},
+                        },
+                        "methodology_version": "live-decision-v1",
+                        "strategy_family": getattr(self.settings, "strategy_name", None),
+                        "data_source": "alpaca",
+                        "data_feed": getattr(self.settings, "data_feed", None),
+                        "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                    },
                 },
             },
         }
