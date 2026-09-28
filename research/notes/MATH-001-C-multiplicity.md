@@ -180,3 +180,12 @@ MATH-001-C does not:
 - claim novelty for Bonferroni, Holm, BH, BY, e-BH, e-LOND, or async-e-LOND.
 
 The organization-wide online multiplicity policy remains STUDY_ONLY_UNFROZEN until MATH-001-H selects a reliability policy after the complete simulation program.
+
+
+### References
+
+- Holm, S. (1979). A Simple Sequentially Rejective Multiple Test Procedure. Scandinavian Journal of Statistics, 6(2), 65–70.
+- Benjamini, Y. & Hochberg, Y. (1995). Controlling the False Discovery Rate: A Practical and Powerful Approach to Multiple Testing. Journal of the Royal Statistical Society, Series B, 57(1), 289–300.
+- Benjamini, Y. & Yekutieli, D. (2001). The Control of the False Discovery Rate in Multiple Testing under Dependency. Annals of Statistics, 29(4), 1165–1188.
+- Wang, R. & Ramdas, A. (2022). False Discovery Rate Control with E-values. Journal of the Royal Statistical Society Series B, 84(3), 822–852.
+- Xu, Z. & Ramdas, A. (2024). Online Multiple Testing with E-values. Proceedings of AISTATS 2024, PMLR 238, 3997–4005.
