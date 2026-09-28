@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from app.slack_notifier import SlackNotifier
 
 from .catalog import source_catalog
 from .config import get_preopen_settings
@@ -17,6 +21,7 @@ NY = ZoneInfo("America/New_York")
 settings = get_preopen_settings()
 engine = PreOpenStateEngine(settings)
 sink = PreOpenEventSink(settings)
+notifications = SlackNotifier(SimpleNamespace(slack_webhook_url=os.environ.get("SLACK_WEBHOOK_URL", "")))
 stop_event = asyncio.Event()
 worker_task: asyncio.Task | None = None
 runtime: dict[str, Any] = {
@@ -25,7 +30,23 @@ runtime: dict[str, Any] = {
     "last_outcome": None,
     "last_error": None,
     "processed": [],
+    "last_tick_at": None,
 }
+
+
+def _operation(action: str, message: str) -> None:
+    event = {"kind": "preopen_state", "action": action, "message": message,
+             "at": datetime.now(NY).isoformat()}
+    print(json.dumps({"event": "rhen_preopen_operation", **event}), flush=True)
+    notifications.record_event(event)
+
+
+def _confirmed(result: dict) -> None:
+    if result.get("ok") is not True:
+        raise RuntimeError("preopen_persistence_unconfirmed")
+    if runtime["last_error"]:
+        _operation("recovered", "Pre-open canonical persistence recovered.")
+    runtime["last_error"] = None
 
 
 def _due(now: datetime, label: str, grace_minutes: int) -> bool:
@@ -41,6 +62,7 @@ async def _capture_snapshot(label: str, now: datetime) -> None:
         payload=payload,
         occurred_at=now.isoformat(),
     )
+    _confirmed(result)
     runtime["last_snapshot"] = {
         "snapshot_key": payload["snapshot_key"],
         "checkpoint": label,
@@ -57,6 +79,7 @@ async def _capture_outcome(horizon: int, now: datetime) -> None:
         payload=payload,
         occurred_at=now.isoformat(),
     )
+    _confirmed(result)
     runtime["last_outcome"] = {
         "outcome_key": payload["outcome_key"],
         "horizon_minutes": horizon,
@@ -69,6 +92,8 @@ async def _worker() -> None:
     runtime["started_at"] = datetime.now(NY).isoformat()
     while not stop_event.is_set():
         now = datetime.now(NY)
+        runtime["last_tick_at"] = now.isoformat()
+        processed = {key for key in processed if key.startswith(now.date().isoformat())}
         try:
             if settings.preopen_state_enabled and now.weekday() < 5:
                 grace = max(1, settings.preopen_capture_grace_minutes)
@@ -85,9 +110,9 @@ async def _worker() -> None:
                         processed.add(key)
 
                 runtime["processed"] = sorted(processed)[-20:]
-            runtime["last_error"] = None
         except Exception as exc:
-            runtime["last_error"] = f"{type(exc).__name__}: {exc}"
+            runtime["last_error"] = type(exc).__name__
+            _operation("error", "Pre-open capture or persistence failed; checkpoint remains retryable.")
 
         try:
             await asyncio.wait_for(
@@ -102,6 +127,7 @@ async def _worker() -> None:
 async def lifespan(_: FastAPI):
     global worker_task
     stop_event.clear()
+    await notifications.start()
     worker_task = asyncio.create_task(_worker())
     try:
         yield
@@ -112,7 +138,9 @@ async def lifespan(_: FastAPI):
                 await asyncio.wait_for(worker_task, timeout=5)
             except asyncio.TimeoutError:
                 worker_task.cancel()
+                await asyncio.gather(worker_task, return_exceptions=True)
         worker_task = None
+        await notifications.stop()
 
 
 app = FastAPI(title="RHEN Pre-Open State", version="1.0", lifespan=lifespan)
@@ -125,6 +153,11 @@ async def root() -> dict[str, Any]:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    stamp = runtime["last_tick_at"]
+    age = (datetime.now(NY) - datetime.fromisoformat(stamp)).total_seconds() if stamp else None
+    alive = worker_task is not None and not worker_task.done() and age is not None and age < max(120, settings.preopen_poll_seconds * 4)
+    if not alive:
+        raise HTTPException(status_code=503, detail="preopen_worker_not_live")
     return {
         "ok": runtime["last_error"] is None,
         "service": "rhen-preopen-state",
@@ -133,6 +166,9 @@ async def health() -> dict[str, Any]:
         "credentials_configured": settings.credentials_configured,
         "persistence_enabled": sink.enabled,
         "last_error": runtime["last_error"],
+        "worker_alive": alive,
+        "last_tick_age_seconds": age,
+        "slack_notifications": notifications.status(),
     }
 
 

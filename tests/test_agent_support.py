@@ -229,7 +229,7 @@ class IntegrityTests(unittest.TestCase):
                    "cronSchedule": "5 22 * * 1-5" if row["role"] == "research_scheduler" else None}
                   for row in mapping["assignments"]]
         configs = {row["service_id"]: {
-            "start_command": f"uvicorn {row['command_marker']}" if row["role"] != "research_scheduler" else "./run.sh encoded",
+            "start_command": f"uvicorn {row['command_marker']}" if row["role"] != "research_scheduler" else "python -m scripts.research_cron",
             "source": {"repo": row["source_repo"]} if row.get("source_repo") else {"image": row["source_image"]},
         } for row in mapping["assignments"]}
         normalized = normalize_services(status, configs, project_id=mapping["project_id"],

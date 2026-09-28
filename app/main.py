@@ -835,7 +835,21 @@ async def health():
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
         "slack_notifications": slack_notifier.status(),
+        "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
     }
+
+
+@app.get("/v1/session-calendar")
+async def session_calendar():
+    """Public exchange-session dates only; no account or order data."""
+    today = datetime.now(NY).date()
+    from datetime import timedelta
+    sessions = await market_data.market_calendar(start=today, end=today + timedelta(days=14))
+    future = [session for session in sessions if session > today]
+    from .research_scheduler import is_last_session_of_week
+    return {"session_date": today.isoformat(), "is_trading_session": today in sessions,
+            "is_last_session_of_week": bool(today in sessions and future
+                and is_last_session_of_week(today, future[0]))}
 
 
 @app.get("/v1/status")

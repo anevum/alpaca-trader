@@ -91,7 +91,11 @@ class ResearchReportScheduler:
     async def stop(self) -> None:
         self.stop_event.set()
         if self.task is not None:
-            await self.task
+            try:
+                await asyncio.wait_for(self.task, timeout=10)
+            except TimeoutError:
+                self.task.cancel()
+                await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
 
     async def _run(self) -> None:
@@ -140,6 +144,14 @@ class ResearchReportScheduler:
             return
 
         latest = completed[-1]
+        if getattr(self.event_sink, "enabled", False):
+            stored = await self.fetch_daily_report(session=latest)
+            commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+            if (stored and commit and stored.get("runtime_git_commit") == commit
+                    and stored.get("report_version") == DAILY_REPORT_VERSION
+                    and stored.get("session") == latest.isoformat()):
+                self.last_daily_report = stored
+                self.daily_done.add(latest)
         if latest not in self.daily_done:
             if getattr(self.event_sink, "enabled", False):
                 await self.generate_post_event_evidence(latest)
@@ -496,14 +508,19 @@ class ResearchReportScheduler:
                 "capital_scaling_authorized": False,
             }
         )
-        self.last_daily_report = payload
-        self.last_error = None
-        self.event_sink.emit(
+        payload["runtime_git_commit"] = os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        persisted = await self.event_sink.emit_critical(
             event_type="research_daily_report",
             event_key=f"research_daily_report:{report_key}",
             occurred_at=datetime.now(NY).isoformat(),
             payload=payload,
         )
+        if not persisted:
+            raise RuntimeError("canonical daily report could not be durably persisted")
+        self.last_daily_report = payload
+        self.last_error = None
+        self.state.record_event(kind="research_reporting", action="completed",
+                                message=f"Daily research report persisted for {session.isoformat()}")
         return payload
 
     @property

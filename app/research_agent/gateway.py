@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -37,8 +39,23 @@ class ResearchGateway:
             raise ResearchGatewayError("research gateway is not configured")
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.get(self.url, headers=self._headers())
-                response.raise_for_status()
+                for attempt in range(3):
+                    try:
+                        response = await asyncio.wait_for(
+                            client.get(self.url, headers=self._headers()),
+                            timeout=self.timeout_seconds,
+                        )
+                        response.raise_for_status()
+                        break
+                    except (httpx.RequestError, TimeoutError, httpx.HTTPStatusError) as exc:
+                        transient = not isinstance(exc, httpx.HTTPStatusError) or (
+                            exc.response.status_code == 429 or exc.response.status_code >= 500
+                        )
+                        if not transient or attempt == 2:
+                            raise
+                        print(json.dumps({"event": "research_gateway_retry", "attempt": attempt + 1,
+                                          "error_type": type(exc).__name__}), flush=True)
+                        await asyncio.sleep(2 ** attempt)
                 payload = response.json()
         except Exception as exc:
             raise ResearchGatewayError(
