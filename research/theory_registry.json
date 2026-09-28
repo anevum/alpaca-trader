@@ -190,6 +190,166 @@
           "model_path": "app/research_agent/atp001.py"
         }
       ]
+    },
+    {
+      "problem_id": "MATH-001",
+      "title": "Discovery Reliability",
+      "status": "ACTIVE",
+      "visibility": "PUBLIC",
+      "started_on": "2026-09-27",
+      "question": "How much evidence must RHEN observe before it is justified in believing that an edge exists when hypotheses are searched adaptively, evidence is inspected repeatedly, observations are dependent, and market structure may change?",
+      "domains": [
+        "sequential_inference",
+        "multiple_testing",
+        "e_values",
+        "confidence_sequences",
+        "adaptive_data_analysis",
+        "selection_bias",
+        "time_series",
+        "nonstationarity",
+        "financial_econometrics"
+      ],
+      "formalization": {
+        "latent_state": "candidate edge expectancy and research-search state",
+        "observation": "normalized net candidate outcome Y_{h,i} in [-1,1]",
+        "action": "continue observing, reject, confirm, replicate, or archive within protected research gates",
+        "policy": "evidence policy pi",
+        "objective_latex": "\\\\min_{\\\\pi}\\\\; c_{FN}P_{\\\\pi}(\\\\text{miss real edge})+c_D\\\\mathbb{E}_{\\\\pi}[T_{decision}]",
+        "variation_latex": "N_t=|\\\\mathcal{R}_t|",
+        "dynamic_regret_latex": "\\\\operatorname{FDR}_{\\\\pi}\\\\le q^*,\\\\qquad P_{\\\\pi}(\\\\text{false replication})\\\\le\\\\alpha^*",
+        "target_bound": "Construct a search-aware, anytime-valid evidence policy with explicit false-discovery control, effect-size evidence, temporal replication, and quantified decision delay."
+      },
+      "assumptions": [
+        "Candidate outcomes used by the v1 e-process are frozen before confirmation and normalized to the closed interval [-1,1].",
+        "The confirmatory null is conditional: E[Y_{h,i} | F_{i-1}] <= 0 for every eligible observation.",
+        "Betting fractions and mixture weights are predictable and cannot be selected after observing the outcome they score.",
+        "Every confirmatory experiment has a defined global information filtration and immutable methodology identity.",
+        "Development data may generate hypotheses but cannot also serve as untouched confirmatory evidence for those hypotheses.",
+        "Economic actionability is distinct from statistical detectability and requires a separate positive effect-size threshold."
+      ],
+      "non_claims": [
+        "MATH-001 does not claim that any current RHEN strategy has a real edge.",
+        "MATH-001 does not set the final RHEN alpha, FDR target, effect-size threshold, betting mixture, or promotion policy.",
+        "MATH-001 does not authorize DEVELOPMENT, VALIDATION, HOLDOUT, quarantine access, or production changes.",
+        "The implemented B1 confidence sequence is intentionally conservative and is not claimed to be optimal.",
+        "No mathematical novelty is claimed for the fixed-lambda e-process, convex-mixture validity, or Ville/Hoeffding constructions."
+      ],
+      "workstreams": [
+        {
+          "workstream_id": "MATH-001-A",
+          "title": "Search accounting",
+          "status": "ACTIVE",
+          "objective": "Define immutable hypothesis identity, family identity, search generation, and cumulative search exposure."
+        },
+        {
+          "workstream_id": "MATH-001-B",
+          "title": "Sequential evidence",
+          "status": "ACTIVE",
+          "objective": "Develop and verify anytime-valid e-processes and confidence sequences for candidate-edge evidence."
+        },
+        {
+          "workstream_id": "MATH-001-C",
+          "title": "Multiplicity",
+          "status": "ACTIVE",
+          "objective": "Compare familywise controls, e-BH, e-LOND, and conventional multiple-testing procedures under RHEN-style search."
+        },
+        {
+          "workstream_id": "MATH-001-D",
+          "title": "Dependence",
+          "status": "ACTIVE",
+          "objective": "Stress-test temporal dependence, cross-candidate dependence, heavy tails, and volatility clustering."
+        },
+        {
+          "workstream_id": "MATH-001-E",
+          "title": "Selection bias",
+          "status": "ACTIVE",
+          "objective": "Quantify development search and candidate-optimization bias."
+        },
+        {
+          "workstream_id": "MATH-001-F",
+          "title": "Nonstationarity",
+          "status": "ACTIVE",
+          "objective": "Measure regime concentration, temporal instability, decay, and replication failure."
+        },
+        {
+          "workstream_id": "MATH-001-G",
+          "title": "Simulation laboratory",
+          "status": "ACTIVE",
+          "objective": "Evaluate policies in known-truth worlds and quantify false discoveries, power, coverage, and decision delay."
+        },
+        {
+          "workstream_id": "MATH-001-H",
+          "title": "Reliability policy",
+          "status": "ACTIVE",
+          "objective": "Select the eventual RHEN evidence gate subject to frozen reliability constraints."
+        },
+        {
+          "workstream_id": "MATH-001-I",
+          "title": "Integration specification",
+          "status": "ACTIVE",
+          "objective": "Map proven research outputs into bounded Research Agent telemetry without production authority."
+        },
+        {
+          "workstream_id": "MATH-001-J",
+          "title": "Research Note 001",
+          "status": "ACTIVE",
+          "objective": "Maintain the complete derivation, empirical results, provenance, limitations, and rejected approaches."
+        }
+      ],
+      "conjectures": [
+        {
+          "conjecture_id": "MATH-001-C1",
+          "title": "Reliability-constrained decision-delay improvement",
+          "status": "OPEN",
+          "novelty_state": "UNASSESSED",
+          "statement": "There exists a reliability policy combining anytime-valid sequential evidence, explicit search exposure, multiple-testing control, and temporal replication that reduces expected decision delay relative to conservative fixed-sample baselines while satisfying the same frozen empirical false-discovery constraints across the MATH-001 simulation family.",
+          "falsification": "Under the frozen simulation family and loss function, fail to find any admissible policy with lower expected decision delay than the comparator set at matched reliability, or construct a valid counterexample showing the proposed architecture cannot satisfy its stated error constraints."
+        }
+      ],
+      "success_criteria": [
+        "The statistical object called an edge has a precise conditional null and effect-size definition.",
+        "Search history and hypothesis-family identity are durably represented.",
+        "At least one anytime-valid evidence primitive is implemented and checked against its written assumptions.",
+        "Multiple-testing and global-filtration requirements are explicit.",
+        "Known-null calibration, power, coverage, and decision delay are measured in reproducible simulations.",
+        "Dependence, heavy tails, selection, and nonstationarity receive dedicated adversarial tests.",
+        "The final evidence policy is frozen only after comparator evaluation and retains zero production authority."
+      ],
+      "results": [
+        {
+          "result_id": "MATH-001-P1",
+          "title": "Fixed-lambda edge evidence process",
+          "status": "DERIVED",
+          "claim_class": "KNOWN",
+          "novelty_state": "KNOWN",
+          "statement": "For normalized outcomes Y_i in [-1,1], predictable lambda in [0,1), and the conditional null E[Y_i | F_{i-1}] <= 0, E_n=product_i(1+lambda Y_i) is a nonnegative supermartingale and therefore an anytime-valid e-process.",
+          "scope": "Known sequential-inference mathematics instantiated for the MATH-001 candidate-edge null. It does not establish that any RHEN candidate has positive expectancy.",
+          "artifact_path": "research/notes/MATH-001-B1-evidence-process.md",
+          "model_path": "app/research_agent/math001.py"
+        },
+        {
+          "result_id": "MATH-001-P2",
+          "title": "Frozen convex-mixture edge evidence process",
+          "status": "DERIVED",
+          "claim_class": "KNOWN",
+          "novelty_state": "KNOWN",
+          "statement": "A predeclared convex mixture of valid fixed-lambda e-processes remains a valid e-process, allowing one frozen evidence process to cover a range of effect scales without post-hoc lambda selection.",
+          "scope": "Known closure property applied to the MATH-001 evidence construction. The currently implemented lambda grid is a study configuration, not a final RHEN policy.",
+          "artifact_path": "research/notes/MATH-001-B1-evidence-process.md",
+          "model_path": "app/research_agent/math001.py"
+        },
+        {
+          "result_id": "MATH-001-B1",
+          "title": "Discovery-reliability evidence primitive",
+          "status": "IMPLEMENTED",
+          "claim_class": "APPLICATION",
+          "novelty_state": "APPLICATION",
+          "statement": "MATH-001 now has an executable study-only evidence primitive combining a frozen mixture e-process, an anytime p-value summary, and a conservative simultaneous lower bound for running average conditional expectancy, plus a reproducible pure-null repeated-search simulation.",
+          "scope": "Research-only implementation. It cannot confirm an edge, open protected research stages, or change RHEN production behavior.",
+          "artifact_path": "research/notes/MATH-001-B1-evidence-process.md",
+          "model_path": "app/research_agent/math001.py"
+        }
+      ]
     }
   ]
 }
