@@ -23,8 +23,8 @@ from .research_reporting import (
 from .weekly_reporting import REPORT_VERSION, build_weekly_report
 
 NY = ZoneInfo("America/New_York")
-REPORT_AFTER = time(16, 20)
-DAILY_REPORT_VERSION = "rhen-daily-v1.1"
+REPORT_AFTER = time(16, 5)
+DAILY_REPORT_VERSION = "rhen-daily-v1.2"
 
 
 def is_last_session_of_week(current: date, next_session: date | None) -> bool:
@@ -288,6 +288,22 @@ class ResearchReportScheduler:
         summary = await runner.run_session(session)
         if getattr(self.event_sink, "enabled", False):
             await self.event_sink.queue.join()
+            refreshed = await self.event_sink.emit_critical(
+                event_type="ads002_postclose_refresh",
+                event_key=f"ads002_postclose_refresh:{session.isoformat()}:ADS-002-v1",
+                occurred_at=datetime.now(NY).isoformat(),
+                payload={
+                    "session": session.isoformat(),
+                    "methodology_version": "ADS-002-v1",
+                    "analytics_only": True,
+                    "live_configuration_changed": False,
+                },
+            )
+            if not refreshed:
+                raise RuntimeError(
+                    self.event_sink.last_error
+                    or "ADS-002 post-close refresh could not be persisted"
+                )
         payload = {
             "session": summary.session,
             "candidates": summary.candidates,
@@ -314,6 +330,7 @@ class ResearchReportScheduler:
             }
         return {
             "post_event": payload.get("post_event") or {},
+            "ads002": payload.get("ads002") or {},
             "latest_daily_report": payload.get("latest_daily_report"),
             "warning": None,
         }
@@ -323,6 +340,7 @@ class ResearchReportScheduler:
         account = await self.client.account()
         canonical = await self._daily_post_event_inputs(session)
         post_event = canonical.get("post_event") or {}
+        ads002 = canonical.get("ads002") or {}
         runtime = self._runtime_snapshot()
         classification = classify_daily(evidence["metrics"], runtime)
         if (
@@ -340,9 +358,29 @@ class ResearchReportScheduler:
             evidence["funnel"],
             classification,
         )
+        ads_readiness = ads002.get("readiness") or {}
+        ads_reason_codes = [
+            str(code)
+            for code in (ads_readiness.get("reason_codes") or [])
+            if code
+        ]
+        hard_ads_blockers = {
+            "AMBIGUOUS_ATTRIBUTION",
+            "UNLINKED_EXECUTABLE_SIGNAL",
+            "DIRECT_ATTRIBUTION_COVERAGE",
+        }
+        if hard_ads_blockers.intersection(ads_reason_codes):
+            action = (
+                "repair ADS-002 attribution integrity before interpreting "
+                "candidate-score performance"
+            )
         daily_warnings = list(evidence["data_quality_warnings"])
         if canonical.get("warning"):
             daily_warnings.append(str(canonical["warning"]))
+        if ads_reason_codes:
+            daily_warnings.append(
+                "ADS-002 readiness: " + ", ".join(ads_reason_codes)
+            )
         outcome_status = post_event.get("forward_outcome_status") or {}
         if int(outcome_status.get("incomplete_rows") or 0):
             daily_warnings.append(
@@ -365,6 +403,7 @@ class ResearchReportScheduler:
             "metrics": serialize(evidence["metrics"]),
             "forward_outcomes": post_event.get("forward_outcomes_by_horizon") or [],
             "live_offline": live_offline,
+            "ads002": ads002,
         }
         source_fingerprint = hashlib.sha256(
             json.dumps(
@@ -439,6 +478,7 @@ class ResearchReportScheduler:
                     "methodology": "live-offline-v1",
                     "post_event_only": True,
                 },
+                "ads002": ads002,
                 "reconstruction": evidence["reconstruction"],
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,

@@ -516,6 +516,7 @@ async def monitor_loop():
         cycle_started_at = datetime.now(NY)
         runtime_state.last_scan = {}
         market_is_open: bool | None = None
+        cycle_execution_result: dict | None = None
         try:
             if settings.credentials_configured:
                 if settings.scan_only:
@@ -531,6 +532,7 @@ async def monitor_loop():
                         and not runtime_state.paused
                     ):
                         result = await engine.run_once()
+                        cycle_execution_result = result
                         print(
                             "LIVE_EXECUTION_CYCLE",
                             {
@@ -575,6 +577,7 @@ async def monitor_loop():
                 degraded=bool(runtime_state.last_error),
                 error=runtime_state.last_error,
                 runtime=(runtime_provenance.as_dict() if runtime_provenance else {}),
+                execution_result=cycle_execution_result,
             )
 
         try:

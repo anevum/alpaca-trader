@@ -17,9 +17,9 @@ from .strategy import RollingMomentumVwapStrategy
 
 NY = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
-FORWARD_METHODOLOGY_VERSION = "candidate-forward-v1"
+FORWARD_METHODOLOGY_VERSION = "candidate-forward-v2"
 COMPARISON_METHODOLOGY_VERSION = "live-offline-v1"
-FORWARD_HORIZONS_MINUTES = (5, 15, 30, 60)
+FORWARD_HORIZONS_MINUTES = (1, 3, 5, 10, 15, 30, 60)
 
 
 def d(value: Any) -> Decimal | None:
@@ -776,6 +776,28 @@ class PostEventEvidenceRunner:
         self.event_sink = event_sink
         self.evidence_reader = evidence_reader
 
+    async def _apply_backpressure(self) -> None:
+        """Drain analytics telemetry before the bounded queue can overflow."""
+        queue = getattr(self.event_sink, "queue", None)
+        if queue is None:
+            return
+        maxsize = int(getattr(queue, "maxsize", 0) or 0)
+        threshold = max(1, maxsize // 2) if maxsize > 0 else 500
+        if queue.qsize() >= threshold:
+            await queue.join()
+
+    @staticmethod
+    def _forward_outcome_eligible(candidate: dict[str, Any]) -> bool:
+        score = candidate.get("ads002_score")
+        if not isinstance(score, dict):
+            return False
+        completeness = score.get("source_completeness")
+        return bool(
+            isinstance(completeness, dict)
+            and completeness.get("pretrade_complete") is True
+            and score.get("methodology_version") == "ads-shadow-v1"
+        )
+
     @staticmethod
     def _cycle_payload(candidate: dict[str, Any]) -> dict[str, Any]:
         scan = dict(candidate.get("scan_cycle") or {})
@@ -837,7 +859,12 @@ class PostEventEvidenceRunner:
             bar_error = f"{type(exc).__name__}: {exc}"
 
         computed_at = datetime.now(UTC).isoformat()
-        for candidate in candidates:
+        outcome_candidates = [
+            candidate
+            for candidate in candidates
+            if self._forward_outcome_eligible(candidate)
+        ]
+        for candidate in outcome_candidates:
             provider = str(
                 candidate.get("data_feed")
                 or (candidate.get("scan_cycle") or {}).get("data_feed")
@@ -892,6 +919,7 @@ class PostEventEvidenceRunner:
                     symbol=str(candidate.get("symbol") or ""),
                     payload=outcome,
                 )
+                await self._apply_backpressure()
                 summary.outcome_events += 1
                 if status == "complete":
                     summary.complete_outcomes += 1
@@ -951,6 +979,10 @@ class PostEventEvidenceRunner:
                     symbol=str(comparison.get("symbol") or ""),
                     payload=comparison,
                 )
+                await self._apply_backpressure()
                 summary.comparison_events += 1
 
+        queue = getattr(self.event_sink, "queue", None)
+        if queue is not None:
+            await queue.join()
         return summary

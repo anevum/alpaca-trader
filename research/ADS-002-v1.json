@@ -1,0 +1,159 @@
+{
+  "id": "ADS-002",
+  "canonical_version": "ADS-002-v1",
+  "status": "RESEARCH_ONLY",
+  "frozen_on": "2026-09-28",
+  "score_methodology_version": "ads-shadow-v1",
+  "forward_methodology_version": "candidate-forward-v2",
+  "primary_forward_horizon_minutes": 15,
+  "forward_horizons_minutes": [
+    1,
+    3,
+    5,
+    10,
+    15,
+    30,
+    60
+  ],
+  "attribution_states": [
+    "DIRECT_COMPLETE",
+    "DIRECT_PARTIAL",
+    "HISTORICAL_PROVISIONAL",
+    "AMBIGUOUS",
+    "UNLINKED"
+  ],
+  "candidate_identity": {
+    "key_format": "{run_id}:{correlation_id}:{SYMBOL}",
+    "direct_only_for_canonical_link": true,
+    "fuzzy_linking_forbidden": true,
+    "nearest_time_linking_forbidden": true
+  },
+  "scores": {
+    "attention": {
+      "symbol": "A",
+      "weights": {
+        "relative_volume": 0.45,
+        "velocity": 0.35,
+        "trend_persistence_strength": 0.2
+      },
+      "range": [
+        0,
+        100
+      ],
+      "predecision_only": true
+    },
+    "qualification": {
+      "symbol": "Q",
+      "weights": {
+        "positive_momentum": 0.35,
+        "positive_vwap_edge": 0.25,
+        "independent_confirmations": 0.25,
+        "regime_confirmations": 0.15
+      },
+      "range": [
+        0,
+        100
+      ],
+      "predecision_only": true
+    },
+    "timing": {
+      "symbol": "T",
+      "weights": {
+        "spread_quality": 0.35,
+        "bar_freshness": 0.25,
+        "quote_freshness": 0.15,
+        "vwap_extension_headroom": 0.25
+      },
+      "range": [
+        0,
+        100
+      ],
+      "predecision_only": true
+    },
+    "exit_health": {
+      "symbol": "X",
+      "weights": {
+        "outcome_location": 0.45,
+        "mfe_capture": 0.35,
+        "loss_containment": 0.2
+      },
+      "range": [
+        0,
+        100
+      ],
+      "postexit_only": true,
+      "null_without_excursion_data": true
+    },
+    "confidence": {
+      "symbol": "C",
+      "weights": {
+        "attribution": 0.3,
+        "completeness": 0.25,
+        "sample": 0.2,
+        "stability": 0.15,
+        "regime": 0.1
+      },
+      "range": [
+        0,
+        100
+      ],
+      "research_state_only": true,
+      "hard_cap_before_sample_minimums": 49
+    }
+  },
+  "pretrade_benchmark_composite": {
+    "attention": 0.2,
+    "qualification": 0.5,
+    "timing": 0.3
+  },
+  "sample_minimums": {
+    "independent_sessions": 10,
+    "research_eligible_candidates": 100,
+    "closed_direct_trades": 30
+  },
+  "coverage_gates": {
+    "direct_attribution": 0.995,
+    "shadow_score_compute": 0.99,
+    "eligible_forward_outcomes": 0.95
+  },
+  "stability_gates": {
+    "primary_effect_sign_consistency": 0.7,
+    "quartile_spread_sign_consistency": 0.7,
+    "max_single_session_trade_share": 0.25
+  },
+  "confidence_gates": {
+    "shadow_stable": 60,
+    "frozen_validation_ready": 70
+  },
+  "readiness_states": [
+    "RESEARCH_ONLY",
+    "SHADOW_DATA_VALID",
+    "SHADOW_STABLE",
+    "FROZEN_VALIDATION_READY"
+  ],
+  "live_promotion_allowed": false,
+  "live_promotion_authority": "ADS-003_OR_LATER_WITH_EXPLICIT_AUTHORIZATION",
+  "safety": {
+    "live_strategy_mutation": false,
+    "live_risk_mutation": false,
+    "live_sizing_mutation": false,
+    "capital_allocation_mutation": false,
+    "broker_calls": false,
+    "automatic_stage_opening": false,
+    "validation_window_access": false
+  },
+  "current_verified_session_2026_09_28": {
+    "candidate_rows": 9300,
+    "qualified_candidate_rows": 0,
+    "candidate_rows_with_signal_id": 0,
+    "entry_signals": 8,
+    "entry_signals_linked_to_intents": 8,
+    "entry_signals_linked_to_orders": 8,
+    "entry_signals_linked_to_fills": 8,
+    "closed_positions": 8,
+    "closed_positions_with_realized_return": 8,
+    "positions_with_mfe_mae": 6,
+    "candidate_boundary_state": "UNLINKED",
+    "valid_for_candidate_score_effect_inference": false
+  }
+}

@@ -10,6 +10,13 @@ import httpx
 
 from .config import Settings
 from .cash_flow import day_pnl, risk_reference_equity
+from .research_agent.ads002 import (
+    METHODOLOGY_VERSION as ADS002_METHODOLOGY_VERSION,
+    pretrade_composite as ads002_pretrade_composite,
+    score_attention as ads002_score_attention,
+    score_qualification as ads002_score_qualification,
+    score_timing as ads002_score_timing,
+)
 
 
 class TradingEventSink:
@@ -346,6 +353,133 @@ class TradingEventSink:
             "bar_timeframe": value("bar_timeframe"),
         }
 
+    def _ads002_shadow_candidate(
+        self,
+        *,
+        symbol: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Compute research-only pretrade components from already-observed inputs.
+
+        This method performs no I/O and its output is never consumed by execution.
+        Missing source observations remain explicit instead of being imputed into a
+        research-eligible score.
+        """
+        quality = dict(metadata.get("market_quality") or {})
+        confirmations = dict(metadata.get("confirmations") or {})
+        regime_confirmations = dict(metadata.get("regime_confirmations") or {})
+        independent_count = sum(
+            1
+            for peer in confirmations
+            if str(peer).upper() != symbol.upper()
+        )
+        regime_count = len(regime_confirmations)
+
+        quote_age_seconds = quality.get("quote_age_seconds")
+        quote_age_ms = (
+            float(quote_age_seconds) * 1000
+            if quote_age_seconds not in {None, ""}
+            else None
+        )
+        feature_vector = {
+            "relative_volume_ratio": metadata.get("relative_volume_ratio"),
+            "momentum_pct": metadata.get("momentum_pct"),
+            "vwap_edge_pct": metadata.get("vwap_edge_pct"),
+            "trend_persistence": metadata.get("trend_persistence"),
+            "fresh_confirmation_passes": quality.get(
+                "fresh_confirmation_passes",
+                metadata.get("confirmation_passes"),
+            ),
+            "independent_confirmation_count": independent_count,
+            "regime_confirmation_passes": metadata.get(
+                "regime_passes",
+                sum(
+                    bool((payload or {}).get("ok"))
+                    for payload in regime_confirmations.values()
+                ),
+            ),
+            "regime_confirmation_count": regime_count,
+            "spread_pct": quality.get("spread_pct"),
+            "bar_age_seconds": quality.get("bar_age_seconds"),
+            "quote_age_ms": quote_age_ms,
+        }
+        configuration = self._comparison_configuration()
+
+        attention_ready = all(
+            feature_vector.get(key) not in {None, ""}
+            for key in (
+                "relative_volume_ratio",
+                "momentum_pct",
+                "trend_persistence",
+            )
+        )
+        qualification_ready = all(
+            feature_vector.get(key) not in {None, ""}
+            for key in ("momentum_pct", "vwap_edge_pct")
+        ) and bool(confirmations or regime_confirmations)
+        timing_ready = all(
+            feature_vector.get(key) not in {None, ""}
+            for key in ("spread_pct", "bar_age_seconds")
+        )
+
+        attention = (
+            ads002_score_attention(feature_vector, configuration)
+            if attention_ready
+            else None
+        )
+        qualification = (
+            ads002_score_qualification(feature_vector, configuration)
+            if qualification_ready
+            else None
+        )
+        timing = (
+            ads002_score_timing(feature_vector, configuration)
+            if timing_ready
+            else None
+        )
+        component_scores = {
+            "attention": attention,
+            "qualification": qualification,
+            "timing": timing,
+        }
+        complete_pretrade = all(
+            row is not None for row in component_scores.values()
+        )
+        composite = (
+            ads002_pretrade_composite(
+                attention=attention["score"],
+                qualification=qualification["score"],
+                timing=timing["score"],
+            )
+            if complete_pretrade
+            else None
+        )
+        missing: list[str] = []
+        if not attention_ready:
+            missing.append("ATTENTION_INPUTS")
+        if not qualification_ready:
+            missing.append("QUALIFICATION_INPUTS")
+        if not timing_ready:
+            missing.append("TIMING_INPUTS")
+
+        return {
+            "methodology_version": ADS002_METHODOLOGY_VERSION,
+            "research_only": True,
+            "feature_vector": feature_vector,
+            "source_completeness": {
+                "attention": attention_ready,
+                "qualification": qualification_ready,
+                "timing": timing_ready,
+                "pretrade_complete": complete_pretrade,
+                "missing_requirements": missing,
+            },
+            "attention": attention,
+            "qualification": qualification,
+            "timing": timing,
+            "pretrade_composite": composite,
+            "legacy_quality_score": metadata.get("quality_score"),
+        }
+
     @staticmethod
     def _candidate_final_decision(
         symbol: str,
@@ -416,6 +550,10 @@ class TradingEventSink:
             qualified = str(signal.get("action") or "").lower() == "buy"
             qualified_count += int(qualified)
             reason = str(signal.get("reason") or "")
+            ads002_shadow = self._ads002_shadow_candidate(
+                symbol=symbol,
+                metadata=metadata,
+            )
             candidates.append(
                 {
                     "symbol": symbol.upper(),
@@ -485,6 +623,7 @@ class TradingEventSink:
                     "research_attribution": {
                         "live_strategy_version": self.settings.strategy_version_id,
                     },
+                    "ads002": ads002_shadow,
                 }
             )
         replay_context = {
@@ -565,6 +704,11 @@ class TradingEventSink:
             if correlation_id else None
         )
         market_quality = dict(metadata.get("market_quality") or {})
+        candidate_key = (
+            f"{cycle_key}:{signal.symbol.upper()}"
+            if cycle_key
+            else None
+        )
         decision_quote = {
             "bid": market_quality.get("bid"),
             "ask": market_quality.get("ask"),
@@ -585,6 +729,7 @@ class TradingEventSink:
                     "reason": signal.reason,
                     "metadata": signal.metadata or {},
                     "cycle_key": cycle_key,
+                    "candidate_key": candidate_key,
                 },
             },
             "intent": {
@@ -607,6 +752,43 @@ class TradingEventSink:
                     "decision_reference_price": str(signal.reference_price),
                     "decision_quote": decision_quote,
                     "cycle_key": cycle_key,
+                    "candidate_key": candidate_key,
+                    "candidate_snapshot": {
+                        "candidate_key": candidate_key,
+                        "symbol": signal.symbol.upper(),
+                        "observed_at": intended_at.isoformat(),
+                        "action": "buy",
+                        "qualified": True,
+                        "candidate_state": "qualified",
+                        "qualification_status": "qualified",
+                        "final_decision": "selected_for_entry",
+                        "reason": signal.reason,
+                        "decision_reference_price": str(signal.reference_price),
+                        "quote": decision_quote,
+                        "features": signal.metadata or {},
+                        "checks": {
+                            "strategy": metadata.get("checks") or {},
+                            "confirmations": metadata.get("confirmations") or {},
+                            "regime_confirmations": metadata.get("regime_confirmations") or {},
+                            "market_quality": market_quality,
+                            "correlation": metadata.get("correlation") or {},
+                        },
+                        "stop_price": str(signal.stop_price),
+                        "target_price": str(signal.take_profit_price),
+                        "market_context": {
+                            "confirmations": metadata.get("confirmations") or {},
+                            "regime_confirmations": metadata.get("regime_confirmations") or {},
+                        },
+                        "constraints": {
+                            "correlation": metadata.get("correlation") or {},
+                            "sizing": metadata.get("sizing") or {},
+                        },
+                        "methodology_version": "live-decision-v1",
+                        "strategy_family": getattr(self.settings, "strategy_name", None),
+                        "data_source": "alpaca",
+                        "data_feed": getattr(self.settings, "data_feed", None),
+                        "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                    },
                 },
             },
         }
