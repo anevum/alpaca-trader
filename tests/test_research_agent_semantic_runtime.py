@@ -41,6 +41,7 @@ def test_noop_has_no_proposal_and_no_authority():
     assert result["action"] == "NOOP"
     assert result["proposal"] is None
     assert result["proposal_accepted"] is False
+    assert result["search_ledger"] is None
 
 
 def test_non_proposal_action_cannot_smuggle_proposal():
@@ -76,6 +77,11 @@ def test_proposal_uses_runtime_provenance_and_design_checks(proposal_data):
     assert result["proposal"]["evidence_cutoff"] == "2026-09-25T20:00:00Z"
     assert result["design_review"]["freeze_eligible"] is True
     assert result["proposal_accepted"] is True
+    assert result["search_ledger"]["ledger_version"] == "math001-search-ledger-v1"
+    assert result["search_ledger"]["proposal_id"] == proposal_data["proposal_id"]
+    assert result["search_ledger"]["candidate_variant_count"] >= 1
+    assert result["search_ledger"]["production_authority"] is False
+    assert result["search_ledger"]["protected_stage_authority"] is False
 
 
 @pytest.mark.parametrize(
