@@ -15,6 +15,9 @@ class RuntimeState:
     last_equity: str | None = None
     last_equity_reference: str | None = None
     last_day_pnl: str | None = None
+    last_risk_reference_equity: str | None = None
+    last_cash_flow_accounting: dict[str, Any] | None = None
+    last_cash_flow_error: str | None = None
     paused: bool = False
     entries_enabled: bool = True
     startup_reconciled: bool = False

@@ -6,6 +6,8 @@ from functools import lru_cache
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .cash_flow import SessionCashFlow
+
 
 def parse_hhmm(value: str) -> time:
     try:
@@ -54,6 +56,9 @@ class Settings(BaseSettings):
     max_position_notional: Decimal = Field(default=Decimal("80.35"), alias="MAX_POSITION_NOTIONAL")
     max_daily_orders: int = Field(default=2, alias="MAX_DAILY_ORDERS")
     max_daily_loss: Decimal = Field(default=Decimal("1.00"), alias="MAX_DAILY_LOSS")
+    session_cash_flow_adjustment_raw: str = Field(
+        default="", alias="SESSION_CASH_FLOW_ADJUSTMENT"
+    )
     max_concurrent_positions: int = Field(default=1, alias="MAX_CONCURRENT_POSITIONS")
     max_new_entries_per_cycle: int = Field(default=1, alias="MAX_NEW_ENTRIES_PER_CYCLE")
     max_total_position_notional: Decimal = Field(
@@ -306,8 +311,15 @@ class Settings(BaseSettings):
     def execution_authorized(self) -> bool:
         return self.paper_execution_authorized or self.live_execution_authorized
 
+    @property
+    def session_cash_flow_adjustment(self) -> SessionCashFlow | None:
+        return SessionCashFlow.from_json(self.session_cash_flow_adjustment_raw)
+
     @model_validator(mode="after")
     def validate_settings(self):
+        adjustment = self.session_cash_flow_adjustment
+        if adjustment is not None and adjustment.run_id != self.trading_run_id:
+            raise ValueError("cash-flow adjustment must match TRADING_RUN_ID")
         if self.trading_mode not in {"paper", "live"}:
             raise ValueError("TRADING_MODE must be paper or live")
         if self.strategy_name not in {"opening_range_vwap", "rolling_momentum_vwap"}:

@@ -9,6 +9,7 @@ from uuid import uuid4
 import httpx
 
 from .config import Settings
+from .cash_flow import day_pnl, risk_reference_equity
 
 
 class TradingEventSink:
@@ -337,6 +338,7 @@ class TradingEventSink:
             "max_new_entries_per_cycle": value("max_new_entries_per_cycle"),
             "max_daily_orders": value("max_daily_orders"),
             "max_daily_loss": value("max_daily_loss"),
+            "session_cash_flow_adjustment_raw": value("session_cash_flow_adjustment_raw", ""),
             "dynamic_universe_enabled": value("dynamic_universe_enabled"),
             "allowed_symbols": sorted(value("allowed_symbols", set()) or []),
             "execution_authorized": value("execution_authorized", False),
@@ -804,7 +806,7 @@ class TradingEventSink:
             float(position.get("unrealized_pl") or 0)
             for position in positions
         )
-        last_equity = float(account.get("last_equity") or 0)
+        last_equity = float(risk_reference_equity(account))
         equity = float(account.get("equity") or 0)
         drawdown_pct = (
             max((last_equity - equity) / last_equity, 0.0)
@@ -820,6 +822,10 @@ class TradingEventSink:
             payload={
                 "equity": account.get("equity"),
                 "last_equity": account.get("last_equity"),
+                "risk_reference_equity": str(risk_reference_equity(account)),
+                "day_pnl": str(day_pnl(account)),
+                "cash_flow_accounting": account.get("cash_flow_accounting"),
+                "cash_flow_error": account.get("cash_flow_error"),
                 "cash": account.get("cash"),
                 "buying_power": account.get("buying_power"),
                 "realized_pnl": None,
@@ -942,7 +948,7 @@ class TradingEventSink:
             float(position.get("unrealized_pl") or 0)
             for position in positions
         )
-        last_equity = float(account.get("last_equity") or 0)
+        last_equity = float(risk_reference_equity(account))
         equity = float(account.get("equity") or 0)
         drawdown_pct = (
             max((last_equity - equity) / last_equity, 0.0)
@@ -959,6 +965,10 @@ class TradingEventSink:
                 payload={
                     "equity": account.get("equity"),
                     "last_equity": account.get("last_equity"),
+                    "risk_reference_equity": str(risk_reference_equity(account)),
+                    "day_pnl": str(day_pnl(account)),
+                    "cash_flow_accounting": account.get("cash_flow_accounting"),
+                    "cash_flow_error": account.get("cash_flow_error"),
                     "cash": account.get("cash"),
                     "buying_power": account.get("buying_power"),
                     "realized_pnl": None,

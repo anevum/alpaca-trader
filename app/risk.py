@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from .config import Settings
+from .cash_flow import risk_reference_equity
 from .sizing import (
     effective_gross_limit,
     effective_position_limit,
@@ -79,6 +80,9 @@ def validate_buy(
     if blocked:
         return blocked
 
+    if account.get("cash_flow_error"):
+        return RiskDecision(False, str(account["cash_flow_error"]))
+
     normalized_symbol = symbol.upper()
     if any(
         str(position.get("symbol", "")).upper() == normalized_symbol
@@ -141,7 +145,7 @@ def validate_buy(
         return RiskDecision(False, "insufficient cash")
 
     equity = d(account.get("equity"))
-    last_equity = d(account.get("last_equity"))
+    last_equity = risk_reference_equity(account)
     if last_equity > 0 and (last_equity - equity) >= settings.max_daily_loss:
         return RiskDecision(False, "daily loss circuit breaker is active")
 
