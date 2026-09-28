@@ -92,6 +92,7 @@ Deno.serve(async (req) => {
         intent_id: string | null;
         broker_order_id: string | null;
         order_status: string | null;
+        ads002_score: Record<string, unknown> | null;
       }[]>`
         select
           to_jsonb(c) as candidate,
@@ -101,7 +102,8 @@ Deno.serve(async (req) => {
           sig.signal_id::text as signal_id,
           intent.intent_id::text as intent_id,
           ord.broker_order_id,
-          ord.status as order_status
+          ord.status as order_status,
+          ads.score_payload as ads002_score
         from private.trading_candidate_evaluations c
         join private.trading_scan_cycles sc using(scan_cycle_id)
         left join lateral (
@@ -139,6 +141,20 @@ Deno.serve(async (req) => {
           order by coalesce(o.submitted_at,o.updated_at) desc
           limit 1
         ) ord on true
+        left join lateral (
+          select jsonb_build_object(
+            'attention_score', s.attention_score,
+            'qualification_score', s.qualification_score,
+            'timing_score', s.timing_score,
+            'pretrade_composite', s.pretrade_composite,
+            'source_completeness', s.source_completeness,
+            'methodology_version', s.methodology_version
+          ) as score_payload
+          from private.trading_ads_shadow_scores s
+          where s.candidate_id=c.candidate_id
+            and s.methodology_version='ads-shadow-v1'
+          limit 1
+        ) ads on true
         where (c.observed_at at time zone 'America/New_York')::date=${evidenceSession}::date
         order by c.observed_at,c.symbol
       `;
@@ -184,6 +200,7 @@ Deno.serve(async (req) => {
           intent_id: row.intent_id,
           broker_order_id: row.broker_order_id,
           order_status: row.order_status,
+          ads002_score: row.ads002_score,
           submitted: Boolean(row.intent_id),
         })),
         post_event: postRows[0]?.inputs ?? {},
