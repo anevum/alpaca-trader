@@ -77,6 +77,8 @@ def _hypothesis_record(
         "family_id": family["family_id"],
         "parent_hypothesis_id": parent_hypothesis_id,
         "hypothesis_kind": kind,
+        "origin_kind": "AGENT",
+        "search_generation": proposal.revision - 1,
         "research_question_id": proposal.research_question_id,
         "proposal_id": proposal.proposal_id,
         "proposal_revision": proposal.revision,
@@ -173,7 +175,11 @@ def _proposal_event(
         "hypothesis_id": hypothesis["hypothesis_id"],
         "event_type": "PROPOSED",
         "research_stage": "PROPOSAL",
+        "source_kind": "AGENT",
         "event_at": deterministic_dict({"created_at": proposal.created_at})["created_at"],
+        "evidence_cutoff": deterministic_dict(
+            {"evidence_cutoff": proposal.evidence_cutoff}
+        )["evidence_cutoff"],
         "proposal_id": proposal.proposal_id,
         "proposal_revision": proposal.revision,
         "proposal_hash": proposal_hash(proposal),
@@ -241,6 +247,9 @@ def search_event_artifact(
     experiment_id: str | None = None,
     corpus_id: str | None = None,
     data_scope_hash: str | None = None,
+    global_filtration_id: str | None = None,
+    evidence_cutoff: str | None = None,
+    source_kind: str = "SYSTEM",
     data_contaminating: bool = False,
     payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -275,6 +284,8 @@ def search_event_artifact(
         raise SearchLedgerError("unsupported research stage")
     if proposal_revision is not None and proposal_revision < 1:
         raise SearchLedgerError("proposal_revision must be positive")
+    if source_kind not in {"AGENT", "MANUAL", "BACKFILL", "SYSTEM"}:
+        raise SearchLedgerError("unsupported source kind")
     for name, value in (
         ("proposal_hash", proposal_hash_value),
         ("data_scope_hash", data_scope_hash),
@@ -290,7 +301,9 @@ def search_event_artifact(
         "hypothesis_id": str(UUID(hypothesis_id)),
         "event_type": event_type,
         "research_stage": research_stage,
+        "source_kind": source_kind,
         "event_at": str(event_at),
+        "evidence_cutoff": evidence_cutoff,
         "proposal_id": proposal_id,
         "proposal_revision": proposal_revision,
         "proposal_hash": proposal_hash_value,
@@ -304,6 +317,7 @@ def search_event_artifact(
         ),
         "corpus_id": corpus_id,
         "data_scope_hash": data_scope_hash,
+        "global_filtration_id": global_filtration_id,
         "data_contaminating": bool(data_contaminating),
         "payload": dict(payload or {}),
     }
