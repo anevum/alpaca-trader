@@ -1,15 +1,14 @@
 # RHEN Adaptive Decision Space v1
 
-Status: RESEARCH-ONLY
+Status: RESEARCH-ONLY / ADS-001 COMPLETE
 Date: 2026-09-28
-Source session: RHEN live session, September 28, 2026
 Authority: No live strategy, risk, sizing, broker, or promotion authority.
 
 ## Objective
 
 Replace one-dimensional threshold tuning with a decomposed adaptive research model.
 
-RHEN currently makes several logically different decisions that should not be collapsed into one score:
+RHEN makes several logically different decisions that should not be collapsed into one score:
 
 1. Attention: which symbols deserve computational attention now?
 2. Qualification: does the symbol satisfy the current strategy thesis?
@@ -33,117 +32,163 @@ T = entry timing score
 X = exit-health score
 C = evidence confidence
 
-A bounded research priority may then be formed as:
+The architecture remains valid as a research representation. No coefficients in this document are approved for production execution.
 
-P(i,t) = clamp(
-  (0.20 A + 0.35 Q + 0.30 T + 0.15 X)
-  * (0.50 + 0.50 C),
-  0,
-  1
-)
+## ADS-001 question
 
-The confidence multiplier deliberately prevents a sparse early sample from being treated as certainty.
-
-## Default feature decomposition
-
-Attention:
-- intraday return
-- session range
-- relative volume
-- liquidity
-- trend persistence
-
-Qualification:
-- momentum
-- VWAP edge
-- market confirmations
-- market regime
-- spread quality
-- data freshness
-- relative volume
-- trend persistence
-
-Timing:
-- momentum acceleration
-- distance from a useful VWAP region
-- current bar impulse
-- spread quality
-- data freshness
-- confirmation alignment
-
-Exit health:
-- current return
-- retained fraction of MFE
-- position momentum health
-- regime health
-- remaining time budget
-- adverse excursion state
-
-Confidence:
-- evidence coverage
-- effective sample strength
-- coefficient/feature stability
-
-## September 28 observations
-
-The first live qualified opportunity after the afternoon recovery appeared at 14:04:20 ET in ORCL. ORCL was submitted at 14:05:04 ET.
-
-The post-recovery live session produced 8 completed round-trip trades, 16 filled orders, 4 winners, 4 losers, and approximately +$0.0825 realized net P&L.
-
-The existing quality score alone did not rank outcomes reliably. Examples from the executed set:
-
-- KR quality score 86.34 -> losing trade.
-- ORCL quality score 83.96 -> losing trade.
-- CMG quality score 83.40 -> strongest winner of the session.
-- MSFT quality score 80.82 -> losing trade.
-- KGC quality score 85.14 -> small winner.
-
-Therefore the observed evidence does not support simply raising or lowering MIN_QUALITY_SCORE.
-
-The better hypothesis is that qualification quality and entry timing are distinct. A symbol can be a valid setup but still be entered at a poor moment. Future research should estimate these dimensions separately.
-
-## Telemetry discrepancy
-
-The canonical candidate_evaluations table reported zero qualified rows even though live scan events produced qualified buy signals and eight executed entries.
-
-The live scan event stream contains the strategy metadata and quality scores used in actual execution. Until candidate_evaluations linkage is repaired, research using candidate qualification statistics must treat that table as incomplete for this session.
-
-Signals also had null candidate_id values. This prevents direct signal-to-candidate attribution and should be repaired before using candidate-level forward-outcome modeling as a canonical source.
-
-## Research protocol
-
-1. Preserve the current live system as the baseline.
-2. Compute D(i,t) offline from canonical decision telemetry.
-3. Attach realized forward outcomes at multiple horizons.
-4. Estimate whether A, Q, T, and X have independent explanatory value.
-5. Compare against:
-   - existing quality score
-   - current hard qualification gates
-   - simple momentum/VWAP baselines
-6. Use walk-forward session splits.
-7. Keep protected validation sessions untouched until methodology is frozen.
-8. Do not promote coefficients from a single session.
-9. Any proposed live integration requires a separate experiment, evidence review, and explicit approval.
-
-## Immediate next experiment
-
-ADS-001: Qualification versus timing decomposition.
-
-Question:
 Does separating setup qualification from entry timing improve forward-return discrimination relative to the existing quality score?
 
-Primary comparison:
-- existing quality_score
-- Q only
-- T only
-- combined Q/T research priority
+## Data used
 
-Evaluation:
-- forward returns at 1, 3, 5, 10, and 15 minutes
-- MFE / MAE
-- realized trade return where an actual trade exists
-- calibration by score decile
-- rank correlation with forward return
-- stability across independent sessions
+Development / comparison evidence:
+- 2026-09-25 canonical qualified-candidate corpus.
+- 36 qualified candidate rows.
+- Complete forward outcomes available for 34 candidates at 5 minutes, 35 at 15 minutes, 33 at 30 minutes, and 33 at 60 minutes.
+- Existing quality score and contemporaneous strategy features recovered from canonical candidate telemetry.
 
-No production promotion is authorized by this document.
+Independent live consistency evidence:
+- 2026-09-28 live session after the afternoon recovery.
+- 8 completed round-trip trades.
+- 16 submitted orders filled.
+- 4 winners and 4 losers.
+- Approximately +$0.0825 realized net P&L.
+- 5 executed trades had complete attributable live scan feature records suitable for direct score comparison.
+
+Protected validation / holdout datasets were not opened.
+
+## Existing quality-score result
+
+The existing quality score showed weak or negative rank association with subsequent return in the September 25 candidate corpus:
+
+- 5 min Spearman: -0.017
+- 15 min Spearman: -0.154
+- 30 min Spearman: -0.159
+- 60 min Spearman: -0.108
+
+This is not evidence that the current quality score provides useful ordinal forward-return discrimination on that session.
+
+September 28 produced the same qualitative concern:
+- KR quality 86.34 -> losing realized trade.
+- ORCL quality 83.96 -> losing realized trade.
+- CMG quality 83.40 -> strongest realized winner among the fully attributable set.
+- MSFT quality 80.82 -> losing realized trade.
+- KGC quality 85.14 -> small realized winner.
+
+Therefore ADS-001 rejects the idea that simply raising or lowering MIN_QUALITY_SCORE is a justified improvement.
+
+## Qualification/timing decomposition result
+
+A first decomposition was evaluated using structural setup features separately from entry-timing / extension features.
+
+On September 25, the combined decomposed score materially improved rank discrimination relative to the existing quality score:
+
+- 5 min combined Q/T Spearman: +0.040
+- 15 min: +0.210
+- 30 min: +0.334
+- 60 min: +0.233
+
+The 30-minute result was the strongest observed relationship.
+
+At 15 minutes:
+- top timing quartile average forward return: approximately +0.006%
+- bottom timing quartile: approximately -0.742%
+
+At 30 minutes:
+- top combined Q/T quartile average forward return: approximately +0.022%
+- bottom combined Q/T quartile: approximately -0.863%
+
+At 60 minutes:
+- top combined Q/T quartile average forward return: approximately +0.009%
+- bottom combined Q/T quartile: approximately -0.940%
+
+These are development-session observations, not validated production effect estimates.
+
+## Important timing finding
+
+The initial assumption that stronger raw momentum should always increase entry-timing quality was falsified on the September 25 session.
+
+Feature rank correlations with forward return included:
+
+5 minutes:
+- momentum: -0.363
+- trend gap: -0.461
+- spread quality: +0.256
+
+15 minutes:
+- momentum: -0.356
+- bar impulse: -0.243
+
+30 minutes:
+- confirmations: +0.422
+- bar impulse: -0.276
+- VWAP edge: -0.204
+
+60 minutes:
+- confirmations: +0.259
+- bar impulse: -0.375
+- VWAP edge: -0.252
+
+Interpretation: on that session, stronger already-realized impulse frequently behaved more like entry extension / chase risk than additional edge.
+
+This supports separating:
+- "is this a valid setup?"
+from
+- "is now an efficient entry point?"
+
+It does not establish one universal anti-momentum rule.
+
+## Cross-session stability check
+
+The September 28 fully attributable executed subset contained only five trades, so it is too small for reliable coefficient estimation.
+
+Within that subset:
+- existing quality-score Spearman versus realized return: +0.300
+- structural qualification proxy: +0.900
+- first timing proxy: -0.400
+- combined proxy: approximately +0.728
+
+Because n=5, these values are descriptive only.
+
+Most importantly, the exact September 25 timing relationship did not reproduce cleanly. That means the decomposition concept appears useful, but the current timing coefficients are not stable enough for promotion.
+
+## Telemetry limitation
+
+September 28 candidate_evaluations reported zero qualified rows even though live scan events produced qualified buy signals and eight executed entries.
+
+Signals also had incomplete candidate linkage for that session.
+
+Therefore:
+- September 28 live scan events are usable for execution-attribution research.
+- September 28 candidate-level forward-outcome modeling is not yet canonical.
+- candidate -> signal -> order -> position linkage should be repaired before the next formal adaptive-model experiment.
+
+## ADS-001 determination
+
+ADS-001 is COMPLETE.
+
+Decision:
+
+1. ACCEPT the decomposed Adaptive Decision Space architecture as the canonical research direction.
+2. REJECT the current single quality score as sufficient evidence for entry ranking.
+3. REJECT simple threshold tuning of MIN_QUALITY_SCORE as the next improvement path.
+4. REJECT the current timing coefficients for live production use.
+5. DO NOT change live strategy, risk controls, sizing, capital allocation, broker behavior, or execution gates from ADS-001.
+6. Continue collecting live sessions and compute A/Q/T/X components in shadow/research mode only.
+7. Repair canonical candidate-signal-order-position attribution before any promotion study.
+8. Require multi-session stability and a separately frozen promotion experiment before live integration.
+
+## Canonical interpretation
+
+The strongest supported conclusion is architectural, not parametric:
+
+RHEN should learn separate functions for:
+- what to watch,
+- what qualifies,
+- when to enter,
+- when to exit,
+
+rather than trying to make one scalar quality score answer all four questions.
+
+The next evidence phase should learn these functions from accumulated session outcomes while preserving the current live system as the production baseline.
+
+No production promotion is authorized by ADS-001.
