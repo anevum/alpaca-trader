@@ -159,6 +159,13 @@ class CanonicalEvidenceReader:
             ]
             cutoff = max((item for item in candidates if item), default=None)
 
+        search_ledger = self.document.get("search_ledger")
+        search_ledger = (
+            dict(search_ledger)
+            if isinstance(search_ledger, Mapping)
+            else {}
+        )
+
         return CanonicalEvidence(
             current_strategy=dict(strategy),
             latest_daily_report=dict(daily) if daily else None,
@@ -167,6 +174,7 @@ class CanonicalEvidenceReader:
             experiments=experiments,
             research_decisions=decisions,
             agent_runs=agent_runs,
+            search_ledger=search_ledger,
             evidence_cutoff=cutoff,
         )
 

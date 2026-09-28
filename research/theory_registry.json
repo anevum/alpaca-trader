@@ -233,7 +233,8 @@
         "MATH-001 does not set the final RHEN alpha, FDR target, effect-size threshold, betting mixture, or promotion policy.",
         "MATH-001 does not authorize DEVELOPMENT, VALIDATION, HOLDOUT, quarantine access, or production changes.",
         "The implemented B1 confidence sequence is intentionally conservative and is not claimed to be optimal.",
-        "No mathematical novelty is claimed for the fixed-lambda e-process, convex-mixture validity, or Ville/Hoeffding constructions."
+        "No mathematical novelty is claimed for the fixed-lambda e-process, convex-mixture validity, or Ville/Hoeffding constructions.",
+        "The MATH-001 search ledger does not itself convert cumulative search exposure into a p-value, e-value penalty, FDR threshold, or production decision; that calibration belongs to later multiplicity work."
       ],
       "workstreams": [
         {
@@ -349,6 +350,17 @@
           "scope": "Research-only implementation. It cannot confirm an edge, open protected research stages, or change RHEN production behavior.",
           "artifact_path": "research/notes/MATH-001-B1-evidence-process.md",
           "model_path": "app/research_agent/math001.py"
+        },
+        {
+          "result_id": "MATH-001-A1",
+          "title": "Immutable hypothesis and search-exposure ledger",
+          "status": "IMPLEMENTED",
+          "claim_class": "APPLICATION",
+          "novelty_state": "APPLICATION",
+          "statement": "RHEN research now assigns deterministic family and hypothesis identities, records every proposed scientific hypothesis and candidate configuration as append-only search exposure, preserves data-access and terminal events, and backfills prior rejected or terminal research so future multiplicity work does not begin from an artificial zero-search baseline.",
+          "scope": "Research-accounting infrastructure only. The ledger does not itself impose a numerical multiple-testing penalty, confirm an edge, open a protected stage, access quarantine, or authorize production changes.",
+          "artifact_path": "research/notes/MATH-001-A1-search-ledger.md",
+          "model_path": "app/research_agent/search_ledger.py"
         }
       ]
     }

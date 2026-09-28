@@ -121,7 +121,7 @@ def _health() -> dict:
         },
         "scheduler_configured": _truthy("RHEN_RESEARCH_SCHEDULER_CONFIGURED"),
         "autorun": _truthy("RHEN_RESEARCH_AUTORUN"),
-        "persistence_scope": "research_agent_runs_only",
+        "persistence_scope": "research_agent_runs_and_search_ledger",
         "broker_credentials_present": bool(violations),
         "isolation_violations": violations,
     }
@@ -427,6 +427,12 @@ async def review(
             else:
                 status_value = AgentRunStatus.NOOP
 
+    search_ledger = (
+        semantic.get("search_ledger")
+        if isinstance(semantic, dict)
+        else None
+    )
+
     output_artifact = {
         "deterministic_review": deterministic,
         "semantic_review": semantic,
@@ -446,7 +452,14 @@ async def review(
         status=status_value,
         proposed_actions=proposed_actions,
         actions_taken=(
-            ({"action": "persist_agent_run", "scope": "audit_only"},)
+            (
+                {
+                    "action": "persist_agent_run",
+                    "scope": "audit_and_search_ledger"
+                    if search_ledger is not None
+                    else "audit_only",
+                },
+            )
             if request.persist and _truthy("RHEN_RESEARCH_PERSIST_RUNS", True)
             else ()
         ),
@@ -467,9 +480,19 @@ async def review(
     record = run_record(completed)
 
     persisted = False
+    search_ledger_persisted = False
     if request.persist and _truthy("RHEN_RESEARCH_PERSIST_RUNS", True):
         try:
-            await gateway.persist_run(record)
+            if isinstance(search_ledger, dict):
+                persistence = await gateway.persist_run_with_search_ledger(
+                    record,
+                    search_ledger,
+                )
+                search_ledger_persisted = bool(
+                    persistence.get("search_ledger_recorded", False)
+                )
+            else:
+                await gateway.persist_run(record)
             persisted = True
         except ResearchGatewayError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -480,6 +503,7 @@ async def review(
         "run_id": str(completed.run_id),
         "model_invoked": model_invoked,
         "persisted": persisted,
+        "search_ledger_persisted": search_ledger_persisted,
         "approval_required": completed.approval_required,
         "output": output_artifact,
         "llm_usage": llm_usage,
