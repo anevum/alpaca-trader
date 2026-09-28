@@ -154,6 +154,45 @@ which have expectation one under Z ~ N(0,1).
 
 These simulations are diagnostic. They do not replace the theorems establishing the procedures' stated guarantees.
 
+
+### 8A. First benchmark result
+
+A deterministic 2,000-replicate diagnostic run used:
+
+- 40 hypotheses per family;
+- 5 non-null hypotheses in sparse-signal scenarios;
+- one-sided standard-normal test statistics;
+- signal mean 2.5;
+- common-factor dependence parameter rho = 0.65;
+- alpha = 0.05;
+- e-value likelihood-ratio parameter theta = 1.0;
+- async lag = 3;
+- seed = 1002.
+
+The complete machine-readable artifact is:
+
+research/results/MATH-001-C-benchmark-v1.json
+
+Selected results:
+
+| Scenario | Procedure | Empirical FDR | Power | Familywise false discovery |
+| --- | --- | ---: | ---: | ---: |
+| independent null | Bonferroni | 0.0465 | 0.0000 | 0.0465 |
+| independent null | BH | 0.0465 | 0.0000 | 0.0465 |
+| independent null | BY | 0.0100 | 0.0000 | 0.0100 |
+| independent sparse signal | Holm | 0.0204 | 0.3089 | 0.0440 |
+| independent sparse signal | BH | 0.0443 | 0.4242 | 0.1370 |
+| independent sparse signal | BY | 0.0119 | 0.2281 | 0.0260 |
+| signed-dependent sparse signal | Holm | 0.0137 | 0.2998 | 0.0310 |
+| signed-dependent sparse signal | BH | 0.0405 | 0.4069 | 0.0835 |
+| signed-dependent sparse signal | BY | 0.0104 | 0.2148 | 0.0235 |
+
+The current single-statistic e-BH baseline made zero discoveries in these scenarios. e-LOND and async-e-LOND had approximately 0.1–0.2% power in the sparse-signal scenarios.
+
+This is not evidence that e-value methods are intrinsically inferior. It shows that the current one-shot likelihood-ratio calibration is far too conservative for the tested signal scale and family size. The next e-value comparison must use the sequential B1 evidence process over accumulating observations, not treat one Z statistic as though it were a mature RHEN evidence stream.
+
+Therefore MATH-001-C explicitly does **not** freeze e-BH/e-LOND as the final RHEN policy from this benchmark.
+
 ### 9. Separation from A1 search exposure
 
 A1 search exposure and C multiplicity correction are related but are not the same object.
