@@ -17,9 +17,9 @@ from .strategy import RollingMomentumVwapStrategy
 
 NY = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
-FORWARD_METHODOLOGY_VERSION = "candidate-forward-v1"
+FORWARD_METHODOLOGY_VERSION = "candidate-forward-v2"
 COMPARISON_METHODOLOGY_VERSION = "live-offline-v1"
-FORWARD_HORIZONS_MINUTES = (5, 15, 30, 60)
+FORWARD_HORIZONS_MINUTES = (1, 3, 5, 10, 15, 30, 60)
 
 
 def d(value: Any) -> Decimal | None:
