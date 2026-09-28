@@ -355,6 +355,7 @@ def evidence_packet(
         ],
         "experiments": experiments,
         "research_decisions": decisions,
+        "search_ledger": dict(evidence.search_ledger),
         "theory_program": public_theory_projection(),
     }
 
