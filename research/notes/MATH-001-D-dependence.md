@@ -166,6 +166,40 @@ For every scenario it measures:
 
 The benchmark always reports whether the B1 calibration claim applies to the scenario.
 
+### 7A. First benchmark result
+
+A deterministic 500-replicate run used 20 candidates per replicate, 120 observations per candidate, alpha = 0.05, common-factor weight 0.8, AR coefficient 0.75, and seed 1003.
+
+The complete machine-readable artifact is:
+
+research/results/MATH-001-D-benchmark-v1.json
+
+Selected results:
+
+| Scenario | B1 null valid? | Candidate anytime e crossing | Familywise e crossing | Terminal e-BH any rejection | Mean lag-1 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| iid null | yes | 0.0149 | 0.0080 | 0.0000 | -0.0075 |
+| predictable volatility null | yes | 0.0094 | 0.0060 | 0.0020 | -0.0081 |
+| rare bounded extreme null | yes | 0.0028 | 0.0000 | 0.0000 | -0.0082 |
+| common-factor null | yes | 0.0079 | 0.0000 | 0.0000 | -0.0117 |
+| common-factor + volatility null | yes | 0.0034 | 0.0000 | 0.0000 | -0.0151 |
+| overlapping MA(1), unconditional mean zero | no | 0.0829 | 0.2520 | 0.0420 | 0.4879 |
+| AR(1), unconditional mean zero | no | 0.2707 | 0.9020 | 0.7020 | 0.7206 |
+
+The common-factor null had mean absolute cross-candidate correlation about 0.942 while remaining conservatively calibrated. This is the intended demonstration that high cross-candidate dependence is not itself a violation of the per-candidate conditional-mean null.
+
+The assumption-violation worlds behaved very differently. In the AR(1) world, 27.07% of individual candidate e-processes crossed the nominal single-candidate threshold and 90.2% of replicate families crossed the Bonferroni/Ville familywise threshold. The overlapping MA(1) construction also inflated evidence materially.
+
+The benchmark therefore supports the D architecture:
+
+1. do not assume IID;
+2. do require the conditional-mean null relative to the declared global filtration;
+3. explicitly detect overlap and serial persistence that can make unconditional-zero data conditionally predictable;
+4. treat cross-candidate dependence separately through the multiplicity layer;
+5. do not interpret an invalid-null benchmark as a failure of the e-process theorem.
+
+The confidence-sequence companion produced zero false positive crossings in every scenario in this run. That is evidence of conservatism, not a claim of optimality.
+
 ### 8. Bootstrap policy
 
 Block/stationary bootstrap methods may be useful diagnostics for weakly dependent stationary data.
