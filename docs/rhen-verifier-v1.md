@@ -32,12 +32,15 @@ never grant a role. Repurposed IDs become unclassified and fail role checks.
 `rhen-verifier-input-v1` requires `verification_id`, `environment`, `profile`,
 `subject`, bounded `assertions`, and evidence sections. Every section has one to
 four records with `source_id`, `source_version`, `observed_at` (timezone aware),
-`reference`, `authority` (`CANONICAL`, `REPORTED`, `UNAVAILABLE`), and an
+`reference`, `authority` (`CANONICAL`, `OPERATOR_ATTESTED`, `REPORTED`,
+`UNAVAILABLE`), and an
 allowlisted `data` object. Unknown sections, fields, secret-like keys, oversized
 values, and invalid metadata are rejected. Known sections are `github`,
-`release`, `deployment`, `railway`, `readiness`, `support`, `telemetry`, `reports`,
-`migration`, `artifacts`, and `activation`. No raw report body, Railway config,
-broker payload, or hidden model reasoning belongs in this contract.
+`release`, `deployment`, `runtime`, `broker_account`, `railway`, `readiness`,
+`support`, `telemetry`, `reports`, `migration`, `artifacts`, and `activation`.
+Only the bounded account fields belong in `broker_account`; no credentials, raw
+broker payload, raw report body, Railway config, or hidden model reasoning
+belongs in this contract.
 
 The seven profiles are `repository`, `release_deployment`,
 `research_readiness`, `agent_support`, `telemetry_reports`,
@@ -51,8 +54,14 @@ has an independent claimed freshness window (default 15 minutes).
 Current canonical observations with compatible identities establish facts.
 Multiple conflicting canonical observations yield `CONTRADICTORY`. A reported
 activation outcome or historical document is context, not current live proof.
+`OPERATOR_ATTESTED` is explicit lower-authority context: the request subject and
+evidence section identify its subject/scope, while source ID, source version,
+timestamp, and reference preserve provenance. It cannot satisfy an independent
+machine-verification invariant or override contradictory canonical evidence.
+Its presence remains distinguishable from both generic `REPORTED` evidence and
+completely absent evidence.
 The migration artifact in Git establishes only its existence; it cannot prove
-application. The reported application of `20260927225305` in unfinished
+application. The reported application of `20260927195537` in unfinished
 activation is `REPORTED` until a bounded authorized live read confirms it.
 Missing, stale, unavailable, reported-only, or contradictory critical evidence
 yields `INCONCLUSIVE` absent a separately proven violation. A proven invariant
@@ -81,6 +90,9 @@ PR cannot establish that its change is canonical. `main_contains` cannot prove
 production rollout: a production claim also checks release and current
 deployment source commit. An older document saying a service was absent is
 never a substitute for a current Railway observation.
+Deployment identity likewise cannot prove runtime health. An explicit runtime
+health claim requires a separate current canonical runtime observation tied to
+the deployment ID and source commit.
 
 ## Output contract and integration
 
@@ -93,6 +105,8 @@ re-verification flag. Stable codes make the invariant matrix usable by the
 existing RHEN Verifier Workspace Agent after an authorized bounded evidence
 feed is available. Only this structured result should be passed for optional
 human-readable explanation; no hidden reasoning is stored or exposed.
+The result object is recursively immutable; `as_dict()` returns a detached
+JSON-friendly copy for downstream formatting.
 
 Agent Support activation is separate in draft PR #51. This foundation imports
 only the merged Agent Support integrity schema and maintained Railway normalizer,

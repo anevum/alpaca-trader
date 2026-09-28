@@ -40,6 +40,8 @@ def fixture():
         "release": record({"release_id": "r1", "commit_sha": SHA, "strategy_name": "RHEN", "strategy_version_id": "s1"}),
         "deployment": record({"deployment_id": "deploy1", "source_commit": SHA, "release_id": "r1",
                               "strategy_name": "RHEN", "strategy_version_id": "s1"}),
+        "runtime": record({"service_id": "prod-id", "service_name": "alpaca-trader",
+                           "deployment_id": "deploy1", "source_commit": SHA, "healthy": True}),
         "railway": record(railway),
         "readiness": record({"state": "READY", "blocker_count": 0, "blocker_codes": [], "limitation_codes": [],
                              "monitor_codes": [], "waiting_requirements": [], "evidence_cutoff": NOW.isoformat()}),
@@ -295,6 +297,78 @@ def test_historical_documentation_does_not_prove_live_absence():
     assert result("migration_artifacts", changes={"migration": row}).verdict == "INCONCLUSIVE"
 
 
+def operator_broker(*, account_blocked=False):
+    return record({"account_blocked": account_blocked, "trading_blocked": False,
+                   "status": "ACTIVE", "trading_eligible": True, "equity": 100000.0},
+                  authority="OPERATOR_ATTESTED", source="operator-alpaca-ui")
+
+
+def broker_machine(*, account_blocked=False):
+    return record({"account_blocked": account_blocked, "trading_blocked": False,
+                   "status": "ACTIVE", "trading_eligible": True, "equity": 100000.0},
+                  source="broker-read-api")
+
+
+def test_operator_attestation_remains_noncanonical():
+    value = result(changes={"broker_account": operator_broker()},
+                   assertions={"broker_account_machine_verified": True})
+    assert value.verdict == "INCONCLUSIVE"
+    row = next(row for row in value.invariant_matrix if row.code == "BROKER_ACCOUNT_EVIDENCE_MISSING")
+    assert row.observed == "operator-attested only"
+    source = next(row for row in value.evidence_sources if row["section"] == "broker_account")
+    assert source["authority"] == "OPERATOR_ATTESTED"
+
+
+def test_operator_evidence_cannot_override_canonical_broker_evidence():
+    value = result(changes={"broker_account": [broker_machine(), operator_broker(account_blocked=True)]},
+                   assertions={"broker_account_machine_verified": True})
+    assert value.verdict == "VERIFIED"
+    assert "BROKER_ACCOUNT_UNBLOCKED" not in value.failed_invariants
+
+
+def test_canonical_telemetry_and_operator_broker_check_remain_distinct():
+    value = result(changes={"broker_account": operator_broker()})
+    authorities = {row["section"]: row["authority"] for row in value.evidence_sources}
+    assert authorities["telemetry"] == "CANONICAL"
+    assert authorities["broker_account"] == "OPERATOR_ATTESTED"
+
+
+def test_absent_evidence_differs_from_lower_authority_report():
+    absent = result(assertions={"broker_account_machine_verified": True})
+    reported = operator_broker()
+    reported["authority"] = "REPORTED"
+    lower = result(changes={"broker_account": reported},
+                   assertions={"broker_account_machine_verified": True})
+    absent_row = next(row for row in absent.invariant_matrix if row.code == "BROKER_ACCOUNT_EVIDENCE_MISSING")
+    lower_row = next(row for row in lower.invariant_matrix if row.code == "BROKER_ACCOUNT_EVIDENCE_MISSING")
+    assert absent_row.observed == "unavailable"
+    assert lower_row.observed == "reported only"
+
+
+def test_deployment_identity_alone_cannot_prove_runtime_health():
+    value = result("release_deployment", assertions={"runtime_healthy": True}, removed=("runtime",))
+    assert value.verdict == "INCONCLUSIVE"
+    assert "RUNTIME_EVIDENCE_MISSING" in value.missing_evidence
+
+
+def test_runtime_health_requires_matching_deployment_identity():
+    row = fixture()["runtime"]
+    row["data"]["deployment_id"] = "older-deployment"
+    value = result("release_deployment", changes={"runtime": row}, assertions={"runtime_healthy": True})
+    assert value.verdict == "BLOCKED"
+    assert "RUNTIME_DEPLOYMENT_IDENTITY" in value.failed_invariants
+
+
+@pytest.mark.parametrize("code", ["KNOWN_EVIDENCE_LIMITATION", "NONBLOCKING_MONITOR",
+                                   "MULTIPLE_INDEPENDENT_SESSIONS", "RESEARCH_READINESS_WAITING"])
+def test_known_nonblocking_support_reason_cannot_be_promoted(code):
+    row = fixture()["support"]
+    row["data"]["integrity"] = {"state": "BLOCKED", "reasons": [{"code": code, "state": "BLOCKED"}]}
+    value = result("agent_support", changes={"support": row})
+    assert value.verdict == "INCONCLUSIVE"
+    assert "SUPPORT_SEVERITY_CONTRADICTORY" in value.contradictory_evidence
+
+
 def test_model_cannot_override_verdict_or_severity():
     row = fixture()["support"]
     row["data"]["integrity"] = {"state": "DEGRADED", "reasons": [{"code": "SHADOW_SERVICE_UNRESOLVED",
@@ -304,6 +378,29 @@ def test_model_cannot_override_verdict_or_severity():
     assert formatted["verification"]["verdict"] == "DEGRADED"
     assert formatted["verification"]["invariant_matrix"][0]["canonical_severity"] == "DEGRADED"
     assert "verdict" not in formatted or formatted["verdict"] != "BLOCKED"
+
+
+def test_model_cannot_promote_inconclusive_to_verified():
+    value = result("release_deployment", removed=("deployment",))
+    formatted = explanation_context(value, {"verdict": "VERIFIED", "failed_invariants": []})
+    assert formatted["verification"]["verdict"] == "INCONCLUSIVE"
+    assert formatted["verification"]["missing_evidence"] == list(value.missing_evidence)
+
+
+def test_model_cannot_downgrade_blocked_or_remove_failures():
+    value = result("release_deployment", assertions={"release_id": "wrong"})
+    formatted = explanation_context(value, {"verdict": "DEGRADED", "failed_invariants": []})
+    assert formatted["verification"]["verdict"] == "BLOCKED"
+    assert formatted["verification"]["failed_invariants"] == list(value.failed_invariants)
+
+
+def test_result_is_recursively_immutable_and_serialization_is_detached():
+    value = result("repository", assertions={"main_sha": SHA})
+    with pytest.raises(TypeError):
+        value.assertions["main_sha"] = OTHER
+    payload = value.as_dict()
+    payload["assertions"]["main_sha"] = OTHER
+    assert value.assertions["main_sha"] == SHA
 
 
 def test_claimed_release_mismatch():
@@ -336,6 +433,15 @@ def test_forged_severity_on_shadow_is_contradictory():
 def test_bounded_input_rejects_secret_and_arbitrary_fields():
     raw = request("repository")
     raw["evidence"]["github"][0]["data"]["api_key"] = "would be a secret"
+    with pytest.raises(ValueError):
+        VerificationRequest.parse(raw)
+
+
+def test_malformed_operator_evidence_fails_safely():
+    raw = request()
+    raw["evidence"]["broker_account"] = [{"source_id": "operator", "source_version": "v1",
+                                            "observed_at": "not-a-time", "reference": "operator://ui",
+                                            "authority": "OPERATOR_ATTESTED", "data": {}}]
     with pytest.raises(ValueError):
         VerificationRequest.parse(raw)
 

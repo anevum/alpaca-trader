@@ -12,6 +12,13 @@ from .models import INPUT_VERSION, OUTPUT_VERSION, Evidence, Invariant, Verifica
 CANONICAL_REPO = "anevum/alpaca-trader"
 MAX_SOURCE_AGE = timedelta(hours=24)
 REQUIRED_ROLES = ("production_trading", "preopen_state", "research_agent", "research_scheduler")
+NONBLOCKING_SUPPORT_SEVERITY = {
+    "SHADOW_SERVICE_UNRESOLVED": "DEGRADED",
+    "RESEARCH_READINESS_WAITING": "DEGRADED",
+    "KNOWN_EVIDENCE_LIMITATION": "DEGRADED",
+    "NONBLOCKING_MONITOR": "DEGRADED",
+    "MULTIPLE_INDEPENDENT_SESSIONS": "DEGRADED",
+}
 
 
 class Checks:
@@ -34,9 +41,10 @@ class Checks:
             return None
         if canonical:
             return canonical[0]
-        reason = "reported only" if any(r.authority == "REPORTED" for r in rows) else (
+        reason = "operator-attested only" if any(r.authority == "OPERATOR_ATTESTED" for r in rows) else (
+            "reported only" if any(r.authority == "REPORTED" for r in rows) else (
             "stale or future observation" if rows and any(r.authority == "CANONICAL" for r in rows)
-            else "unavailable")
+            else "unavailable"))
         self.add(f"{section.upper()}_EVIDENCE_MISSING", "current canonical observation", reason,
                  "MISSING", refs=tuple(r.reference for r in rows))
         return None
@@ -150,6 +158,47 @@ def _release(c: Checks) -> None:
     if not d.get("deployment_id"):
         c.add("DEPLOYMENT_ID_MISSING", "current deployment ID", None, "MISSING", refs=(deployment.reference,))
     _railway(c)
+    _runtime(c)
+
+
+def _runtime(c: Checks) -> None:
+    """Require separate current runtime evidence only for an explicit health claim."""
+    if c.request.assertions.get("runtime_healthy") is not True:
+        return
+    row = c.source("runtime")
+    if row is None:
+        return
+    d = row.data
+    for key in ("service_id", "service_name", "deployment_id", "source_commit"):
+        if not isinstance(d.get(key), str) or not d[key]:
+            c.add("RUNTIME_EVIDENCE_MALFORMED", f"nonempty {key}", d.get(key), "MISSING", refs=(row.reference,))
+            return
+    c.match("RUNTIME_HEALTH", True, d.get("healthy"), row.reference)
+    deployment = c.source("deployment")
+    if deployment is not None:
+        c.match("RUNTIME_DEPLOYMENT_IDENTITY", deployment.data.get("deployment_id"),
+                d.get("deployment_id"), row.reference)
+        c.match("RUNTIME_SOURCE_COMMIT", deployment.data.get("source_commit"),
+                d.get("source_commit"), row.reference)
+
+
+def _broker_account(c: Checks) -> None:
+    """An independent broker claim requires current canonical machine evidence."""
+    if c.request.assertions.get("broker_account_machine_verified") is not True:
+        return
+    row = c.source("broker_account")
+    if row is None:
+        return
+    d = row.data
+    required = ("account_blocked", "trading_blocked", "status", "trading_eligible", "equity")
+    if (type(d.get("account_blocked")) is not bool or type(d.get("trading_blocked")) is not bool
+            or type(d.get("trading_eligible")) is not bool or not isinstance(d.get("status"), str)
+            or type(d.get("equity")) not in (int, float)):
+        c.add("BROKER_ACCOUNT_EVIDENCE_MALFORMED", required, d, "MISSING", refs=(row.reference,))
+        return
+    c.match("BROKER_ACCOUNT_UNBLOCKED", False, d["account_blocked"], row.reference)
+    c.match("BROKER_TRADING_UNBLOCKED", False, d["trading_blocked"], row.reference)
+    c.match("BROKER_TRADING_ELIGIBLE", True, d["trading_eligible"], row.reference)
 
 
 def _readiness(c: Checks) -> None:
@@ -201,8 +250,10 @@ def _support(c: Checks) -> None:
             return
     for reason in integrity["reasons"]:
         code, severity = reason["code"], reason["state"]
-        if code == "SHADOW_SERVICE_UNRESOLVED" and severity != "DEGRADED":
-            c.add("SUPPORT_SEVERITY_CONTRADICTORY", "DEGRADED", severity, "CONTRADICTORY", refs=(row.reference,))
+        expected_severity = NONBLOCKING_SUPPORT_SEVERITY.get(code)
+        if expected_severity and severity != expected_severity:
+            c.add("SUPPORT_SEVERITY_CONTRADICTORY", expected_severity, severity,
+                  "CONTRADICTORY", refs=(row.reference,))
             continue
         c.add(code, "absent", "present", "FAIL" if severity == "BLOCKED" else "DEGRADED",
               severity, (row.reference,))
@@ -273,6 +324,7 @@ def _activation(c: Checks) -> None:
     _support(c)
     _telemetry_reports(c)
     _migration_artifacts(c)
+    _broker_account(c)
     row = c.source("activation")
     if row is not None:
         gates = row.data.get("gates")
