@@ -8,6 +8,7 @@ from uuid import UUID, uuid5
 from .models import ExperimentProposal, canonical_json, deterministic_dict
 from .proposal import proposal_hash
 from .multiplicity import multiplicity_plan_from_proposal
+from .dependence import dependence_plan_from_proposal
 
 
 LEDGER_VERSION = "math001-search-ledger-v1"
@@ -227,6 +228,7 @@ def proposal_search_ledger(
         "hypotheses": [dict(item) for item in hypotheses],
         "events": [dict(item) for item in events],
         "multiplicity_plan": multiplicity_plan_from_proposal(proposal),
+        "dependence_plan": dependence_plan_from_proposal(proposal),
         "candidate_variant_count": len(variants),
         "search_generation": proposal.revision - 1,
         "production_authority": False,
