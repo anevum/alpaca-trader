@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -7,10 +8,7 @@ import pytest
 from app.persistence import TradingEventSink
 
 
-@pytest.mark.asyncio
-async def test_entry_intent_carries_direct_candidate_identity_before_broker_submission(
-    monkeypatch,
-):
+def test_entry_intent_carries_direct_candidate_identity_before_broker_submission(monkeypatch):
     sink = TradingEventSink(
         SimpleNamespace(
             trading_ingest_url="https://telemetry.invalid",
@@ -53,13 +51,13 @@ async def test_entry_intent_carries_direct_candidate_identity_before_broker_subm
     )
     observed = datetime(2026, 9, 28, 18, 0, tzinfo=timezone.utc)
 
-    refs = await sink.persist_entry_intent(
+    refs = asyncio.run(sink.persist_entry_intent(
         signal=signal,
         qty="0.1",
         client_order_id="anevum-aapl-buy-test",
         correlation_id="cycle-abc",
         intended_at=observed,
-    )
+    ))
 
     assert refs is not None
     payload = captured["payload"]
@@ -79,8 +77,7 @@ async def test_entry_intent_carries_direct_candidate_identity_before_broker_subm
     assert snapshot["quote"]["spread_pct"] == "0.0002"
 
 
-@pytest.mark.asyncio
-async def test_entry_intent_identity_is_telemetry_only(monkeypatch):
+def test_entry_intent_identity_is_telemetry_only(monkeypatch):
     sink = TradingEventSink(
         SimpleNamespace(
             trading_ingest_url="https://telemetry.invalid",
@@ -107,13 +104,13 @@ async def test_entry_intent_identity_is_telemetry_only(monkeypatch):
         metadata={},
     )
 
-    refs = await sink.persist_entry_intent(
+    refs = asyncio.run(sink.persist_entry_intent(
         signal=signal,
         qty="0.02",
         client_order_id="anevum-msft-buy-test",
         correlation_id="cycle-def",
         intended_at=datetime(2026, 9, 28, 18, 1, tzinfo=timezone.utc),
-    )
+    ))
 
     assert set(refs) == {
         "signal_id",
