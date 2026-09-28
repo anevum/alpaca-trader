@@ -115,6 +115,36 @@ async function readEvidence() {
     "      order by started_at desc",
     "      limit 50",
     "    ) a",
+    "  ),",
+    "  'search_ledger', jsonb_build_object(",
+    "    'exposure', (",
+    "      select to_jsonb(x)",
+    "      from private.rhen_research_search_exposure_v1 x",
+    "    ),",
+    "    'recent_hypotheses', (",
+    "      select coalesce(jsonb_agg(to_jsonb(h) order by h.created_at desc), '[]'::jsonb)",
+    "      from (",
+    "        select hypothesis_id, hypothesis_key, definition_hash, family_id,",
+    "               parent_hypothesis_id, hypothesis_kind, origin_kind,",
+    "               search_generation, research_question_id, statement,",
+    "               proposal_id, proposal_revision, created_at",
+    "        from private.trading_research_hypotheses",
+    "        order by created_at desc, hypothesis_id",
+    "        limit 75",
+    "      ) h",
+    "    ),",
+    "    'recent_events', (",
+    "      select coalesce(jsonb_agg(to_jsonb(se) order by se.event_at desc, se.search_event_sequence desc), '[]'::jsonb)",
+    "      from (",
+    "        select search_event_sequence, search_event_id, event_key, family_id,",
+    "               hypothesis_id, event_type, research_stage, source_kind,",
+    "               event_at, prior_hypotheses_examined, data_contaminating,",
+    "               corpus_id, global_filtration_id",
+    "        from private.trading_research_search_events",
+    "        order by event_at desc, search_event_sequence desc",
+    "        limit 100",
+    "      ) se",
+    "    )",
     "  )",
     ") as evidence",
   ].join("\n");
@@ -203,6 +233,25 @@ async function recordRun(run: Record<string, unknown>) {
     : { inserted: false, duplicate: true };
 }
 
+
+async function recordSearchLedger(ledger: Record<string, unknown>) {
+  if (containsForbiddenReasoning(ledger)) {
+    throw new Error("hidden_reasoning_forbidden");
+  }
+  if (ledger.ledger_version !== "math001-search-ledger-v1") {
+    throw new Error("invalid_search_ledger_version");
+  }
+  const rows = await sql.unsafe<{ result: Record<string, unknown> }[]>(
+    "select private.rhen_research_record_search_ledger($1::jsonb) as result",
+    [JSON.stringify(ledger)],
+  );
+  const result = rows[0]?.result;
+  if (!result || typeof result !== "object") {
+    throw new Error("search_ledger_write_failed");
+  }
+  return result;
+}
+
 Deno.serve(async (req: Request) => {
   if (!(await authorized(req))) {
     return json(401, { ok: false, error: "unauthorized" });
@@ -225,7 +274,8 @@ Deno.serve(async (req: Request) => {
     if (!body || typeof body !== "object") {
       return json(400, { ok: false, error: "invalid_json" });
     }
-    if ((body as Record<string, unknown>).action !== "record_run") {
+    const action = String((body as Record<string, unknown>).action || "");
+    if (!["record_run", "record_run_and_search_ledger"].includes(action)) {
       return json(400, { ok: false, error: "invalid_action" });
     }
     const run = (body as Record<string, unknown>).run;
@@ -234,10 +284,26 @@ Deno.serve(async (req: Request) => {
     }
 
     const result = await recordRun(run as Record<string, unknown>);
-    if (result.duplicate) {
-      return json(409, { ok: false, error: "duplicate_run_key" });
+    if (action === "record_run") {
+      if (result.duplicate) {
+        return json(409, { ok: false, error: "duplicate_run_key" });
+      }
+      return json(201, { ok: true, ...result });
     }
-    return json(201, { ok: true, ...result });
+
+    const ledger = (body as Record<string, unknown>).search_ledger;
+    if (!ledger || typeof ledger !== "object" || Array.isArray(ledger)) {
+      return json(400, { ok: false, error: "invalid_search_ledger" });
+    }
+    const ledgerResult = await recordSearchLedger(
+      ledger as Record<string, unknown>,
+    );
+    return json(201, {
+      ok: true,
+      ...result,
+      search_ledger_recorded: true,
+      search_ledger: ledgerResult,
+    });
   } catch (error) {
     console.error(
       "research_agent_gateway_failed",
