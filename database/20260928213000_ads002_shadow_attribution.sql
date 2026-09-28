@@ -629,7 +629,7 @@ returns numeric
 language sql
 immutable
 set search_path = private, pg_temp
-as $
+as $ads002$
   select case
     when p_mfe is null or p_mae is null or p_realized_return is null then null
     else least(
@@ -676,7 +676,7 @@ as $
       )
     )
   end;
-$;
+$ads002$;
 
 revoke all on function private.ads002_exit_health(numeric,numeric,numeric)
 from public, anon, authenticated;
@@ -687,7 +687,7 @@ language sql
 stable
 security invoker
 set search_path = private, pg_temp
-as $
+as $ads002$
 with counts as (
   select
     count(distinct s.session)::integer as independent_sessions,
@@ -873,7 +873,7 @@ select jsonb_build_object(
   ],null))
 )
 from final;
-$;
+$ads002$;
 
 revoke all on function private.rhen_ads002_confidence_state()
 from public, anon, authenticated;
@@ -885,7 +885,7 @@ returns jsonb
 language plpgsql
 security invoker
 set search_path = private, pg_temp
-as $
+as $ads002$
 declare
   r record;
   v_state text;
@@ -1057,7 +1057,7 @@ begin
 
   return private.rhen_ads002_daily_inputs(p_session);
 end;
-$;
+$ads002$;
 
 revoke all on function private.rhen_ads002_refresh_session(date)
 from public, anon, authenticated;
@@ -1070,7 +1070,7 @@ language sql
 stable
 security invoker
 set search_path = private, pg_temp
-as $
+as $ads002$
 with session_scores as (
   select *
   from private.trading_ads_shadow_scores
@@ -1277,7 +1277,7 @@ select jsonb_build_object(
   'promotion_authorized',false
 )
 from readiness;
-$;
+$ads002$;
 
 revoke all on function private.rhen_ads002_daily_inputs(date)
 from public, anon, authenticated;
@@ -1287,7 +1287,7 @@ returns trigger
 language plpgsql
 security invoker
 set search_path = private, pg_temp
-as $
+as $ads002$
 declare
   v_session date;
 begin
@@ -1301,7 +1301,7 @@ begin
   perform private.rhen_ads002_refresh_session(v_session);
   return new;
 end;
-$;
+$ads002$;
 
 drop trigger if exists trg_ads002_postclose_refresh
 on private.trading_events;
