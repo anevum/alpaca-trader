@@ -40,13 +40,13 @@ def test_execution_event_is_queued_but_scan_noise_is_not():
     assert notifier._queue.empty()
 
 
-def test_reconciliation_safe_deduplicates_until_state_changes():
+def test_reconciliation_state_deduplicates_until_it_changes():
     notifier = SlackNotifier(Settings())
     event = {
         "at": "2026-09-28T18:00:00+00:00",
         "kind": "reconciliation",
         "action": "safe",
-        "message": "broker and canonical ledger reconciled",
+        "message": "canonical state reconciled",
     }
     notifier.record_event(event)
     assert "RECONCILIATION SAFE" in queued(notifier)
@@ -54,7 +54,7 @@ def test_reconciliation_safe_deduplicates_until_state_changes():
     notifier.record_event(event)
     assert notifier._queue.empty()
 
-    notifier.record_event({**event, "action": "blocked", "message": "mismatch"})
+    notifier.record_event({**event, "action": "blocked", "message": "state mismatch"})
     assert "RECONCILIATION BLOCKED" in queued(notifier)
 
 
@@ -73,37 +73,3 @@ def test_market_open_and_close_only_emit_transitions():
 
     notifier.observe_market_state(False, observed_at=at)
     assert "MARKET CLOSED" in queued(notifier)
-
-
-def test_broker_snapshot_baselines_then_reports_new_fill_and_position_transition():
-    notifier = SlackNotifier(Settings())
-    order = {
-        "id": "order-1",
-        "client_order_id": "anevum-msft-buy-1",
-        "symbol": "MSFT",
-    }
-    notifier.observe_broker_snapshot(
-        positions=[],
-        recent_orders=[order],
-        fills=[],
-    )
-    assert notifier._queue.empty()
-
-    notifier.observe_broker_snapshot(
-        positions=[{"symbol": "MSFT", "qty": "0.1"}],
-        recent_orders=[order],
-        fills=[
-            {
-                "id": "fill-1",
-                "order_id": "order-1",
-                "symbol": "MSFT",
-                "side": "buy",
-                "qty": "0.1",
-                "price": "510.25",
-                "transaction_time": "2026-09-28T18:45:00Z",
-            }
-        ],
-    )
-    messages = {queued(notifier), queued(notifier)}
-    assert any("FILL" in message for message in messages)
-    assert any("POSITION OPEN" in message for message in messages)
