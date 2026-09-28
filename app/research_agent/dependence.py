@@ -82,6 +82,33 @@ class DependenceError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class PathDependenceDiagnostics:
+    observation_count: int
+    mean: float
+    variance: float
+    lag1_autocorrelation: float
+    squared_lag1_autocorrelation: float
+    max_absolute_outcome: float
+    longest_positive_run: int
+    longest_negative_run: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CrossCandidateDiagnostics:
+    candidate_count: int
+    pair_count: int
+    mean_pairwise_correlation: float
+    mean_absolute_pairwise_correlation: float
+    max_absolute_pairwise_correlation: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class DependenceBenchmark:
     project_id: str
     benchmark_version: str
@@ -213,6 +240,113 @@ def _lag1_correlation(values: Sequence[float]) -> float:
     if denominator <= 0.0:
         return 0.0
     return numerator / denominator
+
+
+def _correlation(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right):
+        raise DependenceError("correlation inputs must have equal length")
+    if len(left) < 2:
+        return 0.0
+    left_mean = math.fsum(left) / len(left)
+    right_mean = math.fsum(right) / len(right)
+    numerator = math.fsum(
+        (a - left_mean) * (b - right_mean)
+        for a, b in zip(left, right)
+    )
+    left_ss = math.fsum((a - left_mean) ** 2 for a in left)
+    right_ss = math.fsum((b - right_mean) ** 2 for b in right)
+    denominator = math.sqrt(left_ss * right_ss)
+    return 0.0 if denominator <= 0.0 else numerator / denominator
+
+
+def _longest_sign_run(values: Sequence[float], *, positive: bool) -> int:
+    longest = 0
+    current = 0
+    for value in values:
+        matches = value > 0.0 if positive else value < 0.0
+        if matches:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+def diagnose_path(outcomes: Sequence[float]) -> PathDependenceDiagnostics:
+    values = tuple(float(value) for value in outcomes)
+    if any(not math.isfinite(value) for value in values):
+        raise DependenceError("dependence diagnostics require finite outcomes")
+    if any(value < -1.0 or value > 1.0 for value in values):
+        raise DependenceError(
+            "B1 dependence diagnostics require outcomes normalized to [-1, 1]"
+        )
+    if not values:
+        return PathDependenceDiagnostics(
+            observation_count=0,
+            mean=0.0,
+            variance=0.0,
+            lag1_autocorrelation=0.0,
+            squared_lag1_autocorrelation=0.0,
+            max_absolute_outcome=0.0,
+            longest_positive_run=0,
+            longest_negative_run=0,
+        )
+    mean = math.fsum(values) / len(values)
+    variance = math.fsum((value - mean) ** 2 for value in values) / len(values)
+    squared = tuple(value * value for value in values)
+    return PathDependenceDiagnostics(
+        observation_count=len(values),
+        mean=mean,
+        variance=variance,
+        lag1_autocorrelation=_lag1_correlation(values),
+        squared_lag1_autocorrelation=_lag1_correlation(squared),
+        max_absolute_outcome=max(abs(value) for value in values),
+        longest_positive_run=_longest_sign_run(values, positive=True),
+        longest_negative_run=_longest_sign_run(values, positive=False),
+    )
+
+
+def diagnose_cross_candidate(
+    paths: Sequence[Sequence[float]],
+) -> CrossCandidateDiagnostics:
+    normalized = tuple(tuple(float(value) for value in path) for path in paths)
+    if not normalized:
+        return CrossCandidateDiagnostics(
+            candidate_count=0,
+            pair_count=0,
+            mean_pairwise_correlation=0.0,
+            mean_absolute_pairwise_correlation=0.0,
+            max_absolute_pairwise_correlation=0.0,
+        )
+    lengths = {len(path) for path in normalized}
+    if len(lengths) != 1:
+        raise DependenceError("candidate paths must have equal length")
+    pairwise: list[float] = []
+    for left_index in range(len(normalized)):
+        for right_index in range(left_index + 1, len(normalized)):
+            pairwise.append(
+                _correlation(
+                    normalized[left_index],
+                    normalized[right_index],
+                )
+            )
+    if not pairwise:
+        return CrossCandidateDiagnostics(
+            candidate_count=len(normalized),
+            pair_count=0,
+            mean_pairwise_correlation=0.0,
+            mean_absolute_pairwise_correlation=0.0,
+            max_absolute_pairwise_correlation=0.0,
+        )
+    return CrossCandidateDiagnostics(
+        candidate_count=len(normalized),
+        pair_count=len(pairwise),
+        mean_pairwise_correlation=math.fsum(pairwise) / len(pairwise),
+        mean_absolute_pairwise_correlation=(
+            math.fsum(abs(value) for value in pairwise) / len(pairwise)
+        ),
+        max_absolute_pairwise_correlation=max(abs(value) for value in pairwise),
+    )
 
 
 def _sign(rng: random.Random) -> float:
@@ -388,6 +522,8 @@ def simulate_dependence_benchmark(
         lag1_abs_sum = 0.0
         terminal_e_sum = 0.0
         max_e_sum = 0.0
+        cross_abs_sum = 0.0
+        cross_max_sum = 0.0
 
         for _ in range(replicates):
             paths = _generate_paths(
@@ -398,6 +534,9 @@ def simulate_dependence_benchmark(
                 common_factor_weight=common_factor_weight,
                 ar_phi=ar_phi,
             )
+            cross = diagnose_cross_candidate(paths)
+            cross_abs_sum += cross.mean_absolute_pairwise_correlation
+            cross_max_sum += cross.max_absolute_pairwise_correlation
             terminal_e_values: list[float] = []
             family_cross = False
 
@@ -459,6 +598,8 @@ def simulate_dependence_benchmark(
             ),
             "mean_terminal_e_value": terminal_e_sum / candidate_count,
             "mean_max_e_value": max_e_sum / candidate_count,
+            "mean_abs_cross_candidate_correlation": cross_abs_sum / replicates,
+            "mean_max_abs_cross_candidate_correlation": cross_max_sum / replicates,
             "familywise_e_threshold": familywise_threshold,
         }
 
