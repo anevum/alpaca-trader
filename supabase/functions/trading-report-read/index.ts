@@ -107,7 +107,29 @@ Deno.serve(async (req) => {
             c.observed_at,
             c.symbol,
             sc.cycle_key,
-            to_jsonb(c) as candidate,
+            jsonb_build_object(
+              'candidate_id', c.candidate_id,
+              'scan_cycle_id', c.scan_cycle_id,
+              'run_id', c.run_id,
+              'strategy_version_id', c.strategy_version_id,
+              'symbol', c.symbol,
+              'observed_at', c.observed_at,
+              'decision_reference_price', c.decision_reference_price,
+              'qualified', c.qualified,
+              'action', c.action,
+              'reason', c.reason,
+              'features', c.features,
+              'final_decision', c.final_decision,
+              'data_feed', c.data_feed,
+              'bar_interval', c.bar_interval,
+              'quote', jsonb_strip_nulls(jsonb_build_object(
+                'bid', c.decision_bid,
+                'ask', c.decision_ask,
+                'midpoint', c.decision_midpoint,
+                'spread_pct', c.observed_spread,
+                'observed_at', c.quote_observed_at
+              ))
+            ) as candidate,
             row_number() over (
               partition by c.scan_cycle_id
               order by c.observed_at,c.symbol,c.candidate_id
@@ -122,7 +144,18 @@ Deno.serve(async (req) => {
           select distinct on (c.scan_cycle_id)
             c.scan_cycle_id,
             c.cycle_key,
-            to_jsonb(sc) as scan_cycle
+            jsonb_strip_nulls(jsonb_build_object(
+              'scan_cycle_id', sc.scan_cycle_id,
+              'cycle_key', sc.cycle_key,
+              'run_id', sc.run_id,
+              'strategy_version_id', sc.strategy_version_id,
+              'observed_at', sc.observed_at,
+              'runtime_instance_id', sc.runtime_instance_id,
+              'deployment_id', sc.deployment_id,
+              'data_status', sc.data_status,
+              'data_feed', sc.data_feed,
+              'bar_interval', sc.bar_interval
+            )) as scan_cycle
           from session_candidates c
           join private.trading_scan_cycles sc
             on sc.scan_cycle_id=c.scan_cycle_id
@@ -143,14 +176,6 @@ Deno.serve(async (req) => {
           where e.occurred_at >= b.starts_at - interval '5 minutes'
             and e.occurred_at < b.ends_at + interval '5 minutes'
           order by cr.scan_cycle_id,e.received_at desc
-        ),
-        outcome_rows as (
-          select
-            o.candidate_id,
-            jsonb_agg(to_jsonb(o) order by o.horizon_minutes) as outcomes
-          from private.trading_candidate_forward_outcomes o
-          join session_candidates c using(candidate_id)
-          group by o.candidate_id
         ),
         signal_ids as (
           select distinct signal_id
@@ -184,7 +209,7 @@ Deno.serve(async (req) => {
             when c.cycle_row_number=1 then de.payload
             else null
           end as decision_cycle_payload,
-          coalesce(fo.outcomes,'[]'::jsonb) as outcomes,
+          '[]'::jsonb as outcomes,
           c.signal_id::text as signal_id,
           intent.intent_id::text as intent_id,
           ord.broker_order_id,
@@ -205,8 +230,6 @@ Deno.serve(async (req) => {
           on cr.scan_cycle_id=c.scan_cycle_id
         left join decision_events de
           on de.scan_cycle_id=c.scan_cycle_id
-        left join outcome_rows fo
-          on fo.candidate_id=c.candidate_id
         left join intent_rows intent
           on intent.signal_id=c.signal_id
         left join order_rows ord
