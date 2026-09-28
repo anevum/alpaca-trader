@@ -22,6 +22,7 @@ class RuntimeState:
     last_reconciliation: dict[str, Any] | None = None
     last_signal: dict[str, Any] | None = None
     last_scan: dict[str, Any] = field(default_factory=dict)
+    last_completed_scan: dict[str, Any] = field(default_factory=dict)
     decision_history: list[dict[str, Any]] = field(default_factory=list)
     last_decision: str | None = None
     last_order: dict[str, Any] | None = None
@@ -86,6 +87,7 @@ class RuntimeState:
         reason: str = "",
         at: datetime | None = None,
         payload: dict[str, Any] | None = None,
+        emit: bool = True,
     ) -> None:
         stamp = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         event = {
@@ -99,7 +101,7 @@ class RuntimeState:
         }
         self.decision_history.insert(0, event)
         del self.decision_history[200:]
-        if self.event_emitter is not None:
+        if emit and self.event_emitter is not None:
             self.event_emitter({**event, "payload": payload or {}})
 
     def record_scan(self, scan: dict[str, Any], at: datetime | None = None) -> None:
@@ -121,6 +123,7 @@ class RuntimeState:
                     payload={"signal": payload},
                 )
         self.last_scan = scan
+        self.last_completed_scan = scan
 
 
 runtime_state = RuntimeState()
