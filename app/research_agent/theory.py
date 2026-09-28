@@ -124,6 +124,12 @@ def load_theory_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
         if problem_id in seen:
             raise TheoryRegistryError(f"duplicate problem_id: {problem_id}")
         seen.add(problem_id)
+    current_problem_id = _require_text(
+        program.get("current_problem_id"),
+        "program.current_problem_id",
+    )
+    if current_problem_id not in seen:
+        raise TheoryRegistryError("program.current_problem_id does not resolve")
     return payload
 
 
@@ -137,6 +143,7 @@ def theory_status() -> dict[str, Any]:
         "program_id": registry["program"]["program_id"],
         "program_name": registry["program"]["name"],
         "status": registry["program"]["status"],
+        "current_problem_id": registry["program"]["current_problem_id"],
         "track_count": len(registry["program"].get("tracks", [])),
         "problem_count": len(problems),
         "active_problem_count": sum(problem.get("status") == "ACTIVE" for problem in problems),
@@ -156,7 +163,7 @@ def public_theory_projection() -> dict[str, Any]:
         "registry_hash": registry_hash(registry),
         "program": {
             key: registry["program"].get(key)
-            for key in ("program_id", "name", "status", "purpose", "standards", "tracks")
+            for key in ("program_id", "name", "status", "purpose", "current_problem_id", "standards", "tracks")
         },
         "problems": public_problems,
         "authority": {
