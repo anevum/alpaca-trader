@@ -56,3 +56,39 @@ def test_registered_result_is_application_not_original():
     assert result["result_id"] == "ATP-001-P1"
     assert result["claim_class"] == "APPLICATION"
     assert result["novelty_state"] == "APPLICATION"
+
+
+def test_math001_is_registered_as_active_research_without_authority():
+    registry = load_theory_registry()
+    problem = next(
+        row for row in registry["problems"]
+        if row["problem_id"] == "MATH-001"
+    )
+    assert problem["status"] == "ACTIVE"
+    assert problem["title"] == "Discovery Reliability"
+    assert problem["conjectures"][0]["conjecture_id"] == "MATH-001-C1"
+    assert {row["result_id"] for row in problem["results"]} >= {
+        "MATH-001-P1",
+        "MATH-001-P2",
+        "MATH-001-B1",
+    }
+    assert all(
+        row["novelty_state"] != "ORIGINAL_VERIFIED"
+        for row in problem["results"]
+    )
+    assert any(
+        "does not authorize DEVELOPMENT" in statement
+        for statement in problem["non_claims"]
+    )
+
+
+def test_math001_public_projection_preserves_research_boundary():
+    public = public_theory_projection()
+    math001 = next(
+        row for row in public["problems"]
+        if row["problem_id"] == "MATH-001"
+    )
+    assert math001["visibility"] == "PUBLIC"
+    assert math001["results"]
+    assert public["authority"]["theory_can_change_live_trading"] is False
+    assert public["authority"]["theory_can_open_protected_research_stages"] is False
