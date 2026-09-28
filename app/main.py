@@ -681,6 +681,7 @@ async def lifespan(app: FastAPI):
         flush=True,
     )
     await event_sink.start()
+    await slack_notifier.start()
 
     runtime_provenance = capture_runtime_provenance()
     runtime_start_payload = {
@@ -728,6 +729,12 @@ async def lifespan(app: FastAPI):
         runtime_provenance.as_dict(),
         flush=True,
     )
+    slack_notifier.notify_runtime_start(
+        trading_mode=settings.trading_mode,
+        strategy_name=settings.strategy_name,
+        strategy_version_id=settings.strategy_version_id,
+        execution_authorized=settings.execution_authorized,
+    )
 
     if settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
@@ -757,6 +764,7 @@ async def lifespan(app: FastAPI):
         },
     )
     await event_sink.stop()
+    await slack_notifier.stop()
 
 
 app = FastAPI(title="RHEN", version=RHEN_VERSION, lifespan=lifespan)
@@ -799,6 +807,7 @@ async def health():
         "last_error": runtime_state.last_error,
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
+        "slack_notifications": slack_notifier.status(),
     }
 
 
