@@ -88,3 +88,21 @@ def test_frozen_holm_plan_passes(proposal_factory):
         multiple_testing_method={"name": "holm", "alpha": 0.05},
     )
     assert "multiplicity_plan_valid" not in failures(proposal)
+
+
+def test_missing_dependence_check_blocks_freeze(proposal_factory):
+    proposal = proposal_factory(
+        robustness_tests=[
+            "conditional_mean_residual_check",
+            "serial_autocorrelation_diagnostic",
+            "volatility_clustering_stress",
+            "rare_extreme_stress",
+            "overlap_double_counting_check",
+        ]
+    )
+    assert "dependence_plan_valid" in failures(proposal)
+    assert validate_design(proposal).freeze_eligible is False
+
+
+def test_complete_dependence_plan_passes(proposal):
+    assert "dependence_plan_valid" not in failures(proposal)
