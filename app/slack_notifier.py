@@ -119,6 +119,7 @@ class SlackNotifier:
             or (kind == "persistence" and action in {"blocked", "warning", "error"})
             or (kind == "control" and action in {"entries_disabled", "entries_enabled", "cancel_orders"})
             or (kind == "risk" and action in {"blocked", "warning"})
+            or (kind == "runtime" and action in {"warning", "error"})
         )
         if not important:
             return
