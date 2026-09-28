@@ -16,7 +16,6 @@ create table private.anevum_theory_artifacts (
   title text not null,
   summary text not null,
   payload jsonb not null default '{}'::jsonb,
-  content_hash text not null,
   registry_hash text not null,
   source_commit text,
   linked_experiment_id uuid references private.trading_experiments(experiment_id),
@@ -43,8 +42,6 @@ create table private.anevum_theory_artifacts (
     check (visibility in ('PRIVATE','PUBLIC')),
   constraint anevum_theory_artifacts_payload_check
     check (jsonb_typeof(payload) = 'object'),
-  constraint anevum_theory_artifacts_content_hash_check
-    check (content_hash ~ '^[0-9a-f]{64}$'),
   constraint anevum_theory_artifacts_registry_hash_check
     check (registry_hash ~ '^[0-9a-f]{64}$'),
   constraint anevum_theory_artifacts_verified_original_check
@@ -109,7 +106,6 @@ insert into private.anevum_theory_artifacts (
   title,
   summary,
   payload,
-  content_hash,
   registry_hash
 ) values (
   'ATP-001:foundation:v1',
@@ -128,7 +124,6 @@ insert into private.anevum_theory_artifacts (
     'theory_can_open_protected_research_stages', false,
     'novelty_claimed', false
   ),
-  '6a0a3b987a2bfd8b9229fba909e99c45809ddea60486462c94829e0481bc85ed',
   '6a0a3b987a2bfd8b9229fba909e99c45809ddea60486462c94829e0481bc85ed'
 )
 on conflict (artifact_key) do nothing;
