@@ -20,6 +20,7 @@ from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
 from .research_scheduler import ResearchReportScheduler
 from .sizing import sizing_snapshot
+from .slack_notifier import SlackNotifier
 from .state import runtime_state
 from .scanner import ReadOnlyScanner
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
@@ -86,6 +87,7 @@ research_reports = ResearchReportScheduler(
     runtime_state,
     event_sink,
 )
+slack_notifier = SlackNotifier(settings)
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
 runtime_provenance = None
@@ -104,6 +106,7 @@ def emit_runtime_event(event: dict) -> None:
             **(event.get("payload") or {}),
         },
     )
+    slack_notifier.record_event(event)
 
 
 runtime_state.set_event_emitter(emit_runtime_event)
