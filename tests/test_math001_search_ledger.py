@@ -55,6 +55,10 @@ def test_proposal_ledger_counts_each_unique_candidate_variant(proposal):
     assert ledger["multiplicity_plan"]["plan_version"] == "math001-multiplicity-plan-v1"
     assert ledger["multiplicity_plan"]["proposal_hash"] == ledger["proposal_hash"]
     assert ledger["multiplicity_plan"]["production_authority"] is False
+    assert ledger["dependence_plan"]["plan_version"] == "math001-dependence-plan-v1"
+    assert ledger["dependence_plan"]["proposal_hash"] == ledger["proposal_hash"]
+    assert ledger["dependence_plan"]["dependence_ready"] is True
+    assert ledger["dependence_plan"]["production_authority"] is False
     assert len(ledger["events"]) == len(ledger["hypotheses"])
     assert all(event["event_type"] == "PROPOSED" for event in ledger["events"])
     assert all(event["data_contaminating"] is False for event in ledger["events"])

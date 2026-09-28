@@ -161,6 +161,25 @@ async function readEvidence() {
     "        order by created_at desc, plan_id",
     "        limit 50",
     "      ) mp",
+    "    ),",
+    "    'dependence_state', (",
+    "      select to_jsonb(ds)",
+    "      from private.rhen_research_dependence_state_v1 ds",
+    "    ),",
+    "    'recent_dependence_plans', (",
+    "      select coalesce(jsonb_agg(to_jsonb(dp) order by dp.created_at desc, dp.plan_id), '[]'::jsonb)",
+    "      from (",
+    "        select plan_id, plan_hash, plan_version, proposal_id, proposal_revision,",
+    "               proposal_hash, family_id, outcome_contract, null_contract,",
+    "               iid_required, level_autocorrelation_policy,",
+    "               heteroskedasticity_policy, cross_candidate_dependence_policy,",
+    "               heavy_tail_policy, overlap_policy, required_checks, present_checks,",
+    "               missing_checks, dependence_ready, policy_status,",
+    "               production_authority, protected_stage_authority, created_at",
+    "        from private.trading_research_dependence_plans",
+    "        order by created_at desc, plan_id",
+    "        limit 50",
+    "      ) dp",
     "    )",
     "  )",
     ") as evidence",
@@ -276,9 +295,19 @@ async function recordSearchLedger(ledger: Record<string, unknown>) {
     throw new Error("multiplicity_plan_write_failed");
   }
 
+  const dependenceRows = await sql.unsafe<{ result: Record<string, unknown> }[]>(
+    "select private.rhen_research_record_dependence_plan($1::jsonb) as result",
+    [JSON.stringify(ledger)],
+  );
+  const dependence = dependenceRows[0]?.result;
+  if (!dependence || typeof dependence !== "object") {
+    throw new Error("dependence_plan_write_failed");
+  }
+
   return {
     ...result,
     multiplicity_plan: multiplicity,
+    dependence_plan: dependence,
   };
 }
 
