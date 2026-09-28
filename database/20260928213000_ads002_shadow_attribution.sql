@@ -401,3 +401,129 @@ from public, anon, authenticated;
 
 comment on function private.rhen_ads002_attribution_inputs(date,date) is
 'Private read-only ADS-002 attribution inputs. No live trading dependency.';
+
+
+-- Preserve candidate-forward-v1 while allowing ADS-002 v2 to require all seven
+-- frozen horizons before a candidate is marked complete.
+create or replace function private.project_candidate_forward_outcome()
+returns trigger
+language plpgsql
+set search_path = private, pg_temp
+as $$
+declare
+  v_candidate_id bigint;
+  v_methodology text;
+  v_total integer;
+  v_complete integer;
+  v_expected integer;
+  v_payload jsonb;
+begin
+  if new.event_type <> 'candidate_forward_outcome' then
+    return new;
+  end if;
+
+  v_candidate_id := nullif(new.payload->>'candidate_id','')::bigint;
+  v_methodology := nullif(new.payload->>'methodology_version','');
+  if v_candidate_id is null or v_methodology is null then
+    raise exception 'candidate_forward_outcome requires candidate_id and methodology_version';
+  end if;
+
+  v_expected := case
+    when v_methodology = 'candidate-forward-v2' then 7
+    else 4
+  end;
+
+  insert into private.trading_candidate_forward_outcomes (
+    candidate_id,
+    horizon_minutes,
+    observation_end_at,
+    reference_price,
+    forward_price,
+    forward_return,
+    max_favorable_return,
+    max_adverse_return,
+    provider,
+    bar_interval,
+    methodology_version,
+    status,
+    computed_at,
+    details
+  ) values (
+    v_candidate_id,
+    nullif(new.payload->>'horizon_minutes','')::integer,
+    nullif(new.payload->>'observation_end_at','')::timestamptz,
+    nullif(new.payload->>'reference_price','')::numeric,
+    nullif(new.payload->>'forward_price','')::numeric,
+    nullif(new.payload->>'forward_return','')::numeric,
+    nullif(new.payload->>'max_favorable_return','')::numeric,
+    nullif(new.payload->>'max_adverse_return','')::numeric,
+    nullif(new.payload->>'provider',''),
+    nullif(new.payload->>'bar_interval',''),
+    v_methodology,
+    new.payload->>'status',
+    coalesce(nullif(new.payload->>'computed_at','')::timestamptz,new.occurred_at),
+    coalesce(new.payload->'details','{}'::jsonb)
+      || jsonb_build_object('source_event_id',new.event_id)
+  )
+  on conflict (candidate_id,horizon_minutes,methodology_version) do update
+  set observation_end_at=excluded.observation_end_at,
+      reference_price=coalesce(
+        excluded.reference_price,
+        private.trading_candidate_forward_outcomes.reference_price
+      ),
+      forward_price=excluded.forward_price,
+      forward_return=excluded.forward_return,
+      max_favorable_return=excluded.max_favorable_return,
+      max_adverse_return=excluded.max_adverse_return,
+      provider=coalesce(
+        excluded.provider,
+        private.trading_candidate_forward_outcomes.provider
+      ),
+      bar_interval=coalesce(
+        excluded.bar_interval,
+        private.trading_candidate_forward_outcomes.bar_interval
+      ),
+      status=excluded.status,
+      computed_at=excluded.computed_at,
+      details=private.trading_candidate_forward_outcomes.details || excluded.details;
+
+  select count(*), count(*) filter(where status='complete')
+  into v_total, v_complete
+  from private.trading_candidate_forward_outcomes
+  where candidate_id=v_candidate_id and methodology_version=v_methodology;
+
+  select coalesce(
+    jsonb_object_agg(
+      horizon_minutes::text,
+      jsonb_build_object(
+        'status',status,
+        'observation_end_at',observation_end_at,
+        'forward_return',forward_return,
+        'max_favorable_return',max_favorable_return,
+        'max_adverse_return',max_adverse_return,
+        'methodology_version',methodology_version
+      )
+      order by horizon_minutes
+    ),
+    '{}'::jsonb
+  )
+  into v_payload
+  from private.trading_candidate_forward_outcomes
+  where candidate_id=v_candidate_id and methodology_version=v_methodology;
+
+  update private.trading_candidate_evaluations
+  set forward_outcomes=v_payload,
+      forward_outcomes_status=case
+        when v_total < v_expected then 'pending'
+        when v_complete = v_expected then 'complete'
+        else 'incomplete'
+      end,
+      forward_enriched_at=now()
+  where candidate_id=v_candidate_id;
+
+  return new;
+end;
+$$;
+
+comment on function private.project_candidate_forward_outcome() is
+'Projects versioned candidate forward outcomes. v1 expects four horizons; ADS-002 candidate-forward-v2 expects seven.';
