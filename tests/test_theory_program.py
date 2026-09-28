@@ -92,3 +92,33 @@ def test_math001_public_projection_preserves_research_boundary():
     assert math001["results"]
     assert public["authority"]["theory_can_change_live_trading"] is False
     assert public["authority"]["theory_can_open_protected_research_stages"] is False
+
+
+def test_current_problem_pointer_resolves_and_is_public():
+    registry = load_theory_registry()
+    assert registry["program"]["current_problem_id"] == "MATH-001"
+    public = public_theory_projection()
+    assert public["program"]["current_problem_id"] == "MATH-001"
+    assert any(
+        row["problem_id"] == public["program"]["current_problem_id"]
+        for row in public["problems"]
+    )
+    assert theory_status()["current_problem_id"] == "MATH-001"
+
+
+def test_registry_rejects_unknown_current_problem_pointer(tmp_path: Path):
+    source = load_theory_registry()
+    clone = __import__("json").loads(__import__("json").dumps(source))
+    clone["program"]["current_problem_id"] = "MATH-DOES-NOT-EXIST"
+    path = tmp_path / "registry.json"
+    path.write_text(__import__("json").dumps(clone))
+    try:
+        load_theory_registry.cache_clear()
+        try:
+            load_theory_registry(path)
+        except TheoryRegistryError:
+            pass
+        else:
+            raise AssertionError("unknown current problem pointer should fail closed")
+    finally:
+        load_theory_registry.cache_clear()

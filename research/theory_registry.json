@@ -60,7 +60,8 @@
         "status": "ACTIVE",
         "scope": "Symbolic and numerical experimentation, proof assistance, counterexample search, reproducible simulation, and machine-verifiable checks where appropriate."
       }
-    ]
+    ],
+    "current_problem_id": "MATH-001"
   },
   "problems": [
     {
