@@ -3,16 +3,16 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from .models import ExperimentProposal, canonical_json, deterministic_dict
 from .proposal import proposal_hash
 
 
 LEDGER_VERSION = "math001-search-ledger-v1"
-FAMILY_ID_NAMESPACE = "MATH-001:FAMILY"
-HYPOTHESIS_ID_NAMESPACE = "MATH-001:HYPOTHESIS"
-EVENT_ID_NAMESPACE = "MATH-001:SEARCH_EVENT"
+FAMILY_ID_NAMESPACE = UUID("6f90b1f4-f34a-5d87-9dc3-7b9ca3e2fb3d")
+HYPOTHESIS_ID_NAMESPACE = UUID("ace4ce41-d4cc-56e0-9f8c-192028f6d41f")
+EVENT_ID_NAMESPACE = UUID("4a21b6b1-9ebf-5ce4-91ef-05577739a59e")
 
 
 class SearchLedgerError(ValueError):
@@ -23,9 +23,8 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _stable_uuid(namespace: str, key: str) -> str:
-    digest = _sha256_text(f"{namespace}:{key}")
-    return str(UUID(hex=digest[:32]))
+def _stable_uuid(namespace: UUID, key: str) -> str:
+    return str(uuid5(namespace, key))
 
 
 def normalize_family_name(value: str) -> str:
