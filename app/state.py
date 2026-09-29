@@ -38,6 +38,12 @@ class RuntimeState:
     universe_error: str | None = None
     exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_execution_context: dict[str, Any] = field(default_factory=dict)
+    realtime_connected: bool = False
+    realtime_symbols: list[str] = field(default_factory=list)
+    realtime_last_message_at: datetime | None = None
+    realtime_last_error: str | None = None
+    realtime_quotes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    realtime_trades: dict[str, dict[str, Any]] = field(default_factory=dict)
     event_emitter: Any = field(default=None, repr=False)
 
     def set_event_emitter(self, emitter: Any) -> None:
@@ -127,6 +133,84 @@ class RuntimeState:
                 )
         self.last_scan = scan
         self.last_completed_scan = scan
+
+    def record_realtime_quote(
+        self,
+        *,
+        symbol: str,
+        bid: Any,
+        ask: Any,
+        bid_size: Any,
+        ask_size: Any,
+        market_timestamp: str,
+        received_at: datetime | None = None,
+    ) -> None:
+        symbol = symbol.strip().upper()
+        if not symbol:
+            return
+        stamp = received_at or datetime.now(timezone.utc)
+        self.realtime_quotes[symbol] = {
+            "symbol": symbol,
+            "bid": bid,
+            "ask": ask,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+            "market_timestamp": market_timestamp,
+            "received_at": stamp.isoformat(),
+        }
+        self.realtime_last_message_at = stamp
+
+    def record_realtime_trade(
+        self,
+        *,
+        symbol: str,
+        price: Any,
+        size: Any,
+        market_timestamp: str,
+        received_at: datetime | None = None,
+    ) -> None:
+        symbol = symbol.strip().upper()
+        if not symbol:
+            return
+        stamp = received_at or datetime.now(timezone.utc)
+        self.realtime_trades[symbol] = {
+            "symbol": symbol,
+            "price": price,
+            "size": size,
+            "market_timestamp": market_timestamp,
+            "received_at": stamp.isoformat(),
+        }
+        self.realtime_last_message_at = stamp
+
+    def realtime_snapshot(
+        self,
+        symbol: str,
+        *,
+        max_age_seconds: int,
+    ) -> dict[str, Any]:
+        symbol = symbol.strip().upper()
+        quote = dict(self.realtime_quotes.get(symbol) or {})
+        trade = dict(self.realtime_trades.get(symbol) or {})
+        newest_raw = quote.get("received_at") or trade.get("received_at")
+        age_seconds = None
+        fresh = False
+        if newest_raw:
+            try:
+                newest = datetime.fromisoformat(str(newest_raw).replace("Z", "+00:00"))
+                age_seconds = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - newest.astimezone(timezone.utc)).total_seconds(),
+                )
+                fresh = age_seconds <= max_age_seconds
+            except ValueError:
+                pass
+        return {
+            "symbol": symbol,
+            "fresh": fresh,
+            "age_seconds": age_seconds,
+            "quote": quote or None,
+            "trade": trade or None,
+        }
 
 
 runtime_state = RuntimeState()
