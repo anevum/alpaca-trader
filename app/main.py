@@ -16,6 +16,7 @@ from .alpaca_client import AlpacaClient
 from .config import get_settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .execution import ExecutionEngine
+from .crypto_execution import CryptoExecutionEngine
 from .crypto_layer import (
     CryptoMarketDataClient,
     CryptoRollingMomentumStrategy,
@@ -94,8 +95,8 @@ crypto_strategy = CryptoRollingMomentumStrategy(
     slow_window=settings.slow_window,
     min_momentum_pct=settings.min_momentum_pct,
     min_vwap_edge_pct=settings.min_vwap_edge_pct,
-    stop_pct=settings.stop_pct,
-    target_pct=settings.target_pct,
+    stop_pct=settings.crypto_stop_pct,
+    target_pct=settings.crypto_target_pct,
     entry_start=settings.entry_start,
     entry_cutoff=settings.entry_cutoff,
     confirmation_symbols=settings.crypto_confirmation_symbols,
@@ -118,6 +119,15 @@ crypto_scanner = CryptoScanner(
     crypto_strategy,
     runtime_state,
     crypto_universe,
+)
+crypto_engine = CryptoExecutionEngine(
+    settings,
+    client,
+    crypto_market_data,
+    crypto_strategy,
+    runtime_state,
+    crypto_universe,
+    ledger=event_sink,
 )
 research_reports = ResearchReportScheduler(
     settings,
@@ -658,7 +668,20 @@ async def crypto_monitor_loop():
     while not _stop.is_set():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
-                await crypto_scanner.scan_once()
+                runtime_state.begin_crypto_cycle(uuid4().hex)
+                if settings.crypto_execution_enabled:
+                    result = await crypto_engine.run_once()
+                    print(
+                        "CRYPTO_EXECUTION_CYCLE",
+                        {
+                            "action": result.get("action"),
+                            "symbol": result.get("symbol"),
+                            "reason": result.get("reason"),
+                        },
+                        flush=True,
+                    )
+                else:
+                    await crypto_scanner.scan_once()
             except Exception as exc:
                 runtime_state.crypto_last_decision = (
                     f"crypto lane error: {type(exc).__name__}: {exc}"
@@ -668,6 +691,7 @@ async def crypto_monitor_loop():
                     action="error",
                     message=runtime_state.crypto_last_decision,
                     payload={"market": "crypto"},
+                    correlation_id=runtime_state.crypto_current_correlation_id,
                 )
                 print(
                     "CRYPTO_LOOP_ERROR",
@@ -958,6 +982,23 @@ async def health():
             "last_decision": runtime_state.crypto_last_decision,
             "last_signal": runtime_state.crypto_last_signal,
             "last_scan": runtime_state.crypto_last_completed_scan,
+            "last_order": runtime_state.crypto_last_order,
+            "last_error": runtime_state.crypto_last_error,
+            "last_execution_at": runtime_state.crypto_last_execution_at,
+            "execution_context": runtime_state.crypto_last_execution_context,
+            "risk": {
+                "order_notional": str(settings.crypto_order_notional),
+                "max_order_notional": str(settings.crypto_max_order_notional),
+                "max_total_position_notional": str(
+                    settings.crypto_max_total_position_notional
+                ),
+                "max_concurrent_positions": settings.crypto_max_concurrent_positions,
+                "max_entries_24h": settings.crypto_max_entries_24h,
+                "max_spread_pct": str(settings.crypto_max_spread_pct),
+                "stop_pct": str(settings.crypto_stop_pct),
+                "target_pct": str(settings.crypto_target_pct),
+                "max_hold_minutes": settings.crypto_max_hold_minutes,
+            },
         },
     }
 
