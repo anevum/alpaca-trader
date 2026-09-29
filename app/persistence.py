@@ -704,6 +704,17 @@ class TradingEventSink:
         ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(scan)
         for rank, (symbol, signal) in enumerate(scan.items(), start=1):
             metadata = dict(signal.get("metadata") or {})
+            is_crypto = str(metadata.get("market") or "").lower() == "crypto"
+            candidate_strategy_version_id = (
+                self.settings.crypto_strategy_version_id
+                if is_crypto
+                else self.settings.strategy_version_id
+            )
+            candidate_data_feed = (
+                f"crypto-{self.settings.crypto_location}"
+                if is_crypto
+                else getattr(self.settings, "data_feed", None)
+            )
             candidate_comparison_context = metadata.pop("_comparison_context", None)
             if isinstance(candidate_comparison_context, dict) and not embedded_comparison_context:
                 embedded_comparison_context = candidate_comparison_context
@@ -785,10 +796,14 @@ class TradingEventSink:
                         "sizing": metadata.get("sizing") or {},
                     },
                     "methodology_version": "live-decision-v1",
-                    "strategy_version_id": self.settings.strategy_version_id,
-                    "strategy_family": getattr(self.settings, "strategy_name", None),
+                    "strategy_version_id": candidate_strategy_version_id,
+                    "strategy_family": (
+                        "crypto_rolling_momentum_vwap"
+                        if is_crypto
+                        else getattr(self.settings, "strategy_name", None)
+                    ),
                     "data_source": "alpaca",
-                    "data_feed": getattr(self.settings, "data_feed", None),
+                    "data_feed": candidate_data_feed,
                     "bar_interval": getattr(self.settings, "bar_timeframe", None),
                     "confirmation_state": {
                         "passes": metadata.get("confirmation_passes"),
@@ -799,7 +814,8 @@ class TradingEventSink:
                         "confirmations": metadata.get("regime_confirmations") or {},
                     },
                     "research_attribution": {
-                        "live_strategy_version": self.settings.strategy_version_id,
+                        "live_strategy_version": candidate_strategy_version_id,
+                        "market": "crypto" if is_crypto else "us_equity",
                     },
                     "ads002": ads002_shadow,
                     "ads002_v2": (
@@ -813,6 +829,10 @@ class TradingEventSink:
                 }
             )
 
+        cycle_is_crypto = any(
+            str((item.get("metadata") or {}).get("market") or "").lower() == "crypto"
+            for item in scan.values()
+        )
         replay_context = {
             "configuration": self._comparison_configuration(),
             "execution_context": comparison_context or embedded_comparison_context,
@@ -833,12 +853,24 @@ class TradingEventSink:
                 "symbols_expected": list(active_universe),
                 "symbols_evaluated": list(scan),
                 "execution_mode": getattr(self.settings, "trading_mode", None),
-                "market_session": "regular" if market_is_open else "closed",
+                "market_session": (
+                    "continuous_24x7"
+                    if cycle_is_crypto
+                    else ("regular" if market_is_open else "closed")
+                ),
                 "data_source": "alpaca",
-                "data_feed": getattr(self.settings, "data_feed", None),
+                "data_feed": (
+                    f"crypto-{self.settings.crypto_location}"
+                    if cycle_is_crypto
+                    else getattr(self.settings, "data_feed", None)
+                ),
                 "bar_interval": getattr(self.settings, "bar_timeframe", None),
                 "methodology_version": "live-decision-v1",
-                "strategy_family": getattr(self.settings, "strategy_name", None),
+                "strategy_family": (
+                    "crypto_rolling_momentum_vwap"
+                    if cycle_is_crypto
+                    else getattr(self.settings, "strategy_name", None)
+                ),
                 "candidate_count": len(candidates),
                 "qualified_count": qualified_count,
                 "rejected_count": len(candidates) - qualified_count,
