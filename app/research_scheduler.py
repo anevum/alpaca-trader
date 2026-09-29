@@ -684,6 +684,8 @@ class ResearchReportScheduler:
             "candidate_forward_evidence": {"status": outcome_status},
             "ads002_v2": ads002_v2,
             "counterfactual_lab": counterfactual_lab,
+            "nostra": nostra,
+            "adaptive_strategy_control": adaptive_control,
         }
         session_state = nostra.get("session_state") or {}
         latest_nostra = (
@@ -822,13 +824,31 @@ class ResearchReportScheduler:
         post_event = canonical.get("post_event") or {}
         ads002 = canonical.get("ads002") or {}
         ads002_v2 = canonical.get("ads002_v2") or {}
+        candidates = list(canonical.get("candidates") or [])
+        outcome_status = post_event.get("forward_outcome_status") or {}
         counterfactual_lab, counterfactual_warning = (
             await self._build_counterfactual_lab(
                 session,
-                list(canonical.get("candidates") or []),
+                candidates,
             )
         )
+        nostra, nostra_warning = await self._build_nostra_research(
+            session,
+            candidates,
+        )
         runtime = self._runtime_snapshot()
+        adaptive_control, adaptive_warning = (
+            await self._build_adaptive_research(
+                session=session,
+                candidates=candidates,
+                counterfactual_lab=counterfactual_lab,
+                nostra=nostra,
+                metrics=evidence["metrics"],
+                runtime=runtime,
+                outcome_status=outcome_status,
+                ads002_v2=ads002_v2,
+            )
+        )
         classification = classify_daily(evidence["metrics"], runtime)
         if (
             evidence["data_quality_warnings"]
@@ -866,11 +886,14 @@ class ResearchReportScheduler:
             daily_warnings.append(str(canonical["warning"]))
         if counterfactual_warning:
             daily_warnings.append(counterfactual_warning)
+        if nostra_warning:
+            daily_warnings.append(nostra_warning)
+        if adaptive_warning and adaptive_warning not in daily_warnings:
+            daily_warnings.append(adaptive_warning)
         if ads_reason_codes:
             daily_warnings.append(
                 "ADS-002 readiness: " + ", ".join(ads_reason_codes)
             )
-        outcome_status = post_event.get("forward_outcome_status") or {}
         if int(outcome_status.get("incomplete_rows") or 0):
             daily_warnings.append(
                 "Some candidate horizons are incomplete because the requested window did not have sufficient regular-session data."
@@ -972,6 +995,10 @@ class ResearchReportScheduler:
                 "ads002": ads002,
                 "ads002_v2": ads002_v2,
                 "counterfactual_lab": counterfactual_lab,
+                "nostra": nostra,
+                "adaptive_strategy_control": adaptive_control,
+                "strategy_health": adaptive_control.get("strategy_health") or {},
+                "graen_validation": adaptive_control.get("graen_validation") or {},
                 "reconstruction": evidence["reconstruction"],
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,
