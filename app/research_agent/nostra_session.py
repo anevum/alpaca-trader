@@ -203,13 +203,16 @@ def derive_nostra_regime_timeline(
         session = str(candidate.get("session") or observed_at[:10])
         scan_cycle = candidate.get("scan_cycle")
         scan_cycle = scan_cycle if isinstance(scan_cycle, Mapping) else {}
+        existing = cycle_meta.get(cycle_id)
         cycle_key = str(
             scan_cycle.get("cycle_key")
             or candidate.get("cycle_key")
+            or (existing[2] if existing is not None else "")
             or cycle_id
         )
         by_cycle[cycle_id].append(candidate)
-        cycle_meta[cycle_id] = (observed_at, session, cycle_key)
+        if existing is None or observed_at >= existing[0]:
+            cycle_meta[cycle_id] = (observed_at, session, cycle_key)
 
     # Keep the last complete RHEN cycle in each five-minute bucket.
     buckets: dict[str, tuple[str, str, str, str]] = {}
