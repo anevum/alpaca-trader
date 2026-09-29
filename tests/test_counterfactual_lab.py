@@ -2,7 +2,9 @@ from decimal import Decimal
 
 from app.research_agent.adaptation_proposal import proposal_from_counterfactual
 from app.research_agent.counterfactual_lab import (
+    aggregate_counterfactual_searches,
     frozen_search_grid,
+    prepare_counterfactual_rows,
     run_counterfactual_search,
 )
 
@@ -163,3 +165,146 @@ def test_valid_counterfactual_flows_into_bounded_proposal_engine():
     assert proposal["authorization_required"] is True
     assert proposal["automatic_application_authorized"] is False
     assert proposal["execution_authority"] is False
+
+
+
+def test_canonical_candidate_projection_isolates_target_gate():
+    candidate = {
+        "candidate_id": 1,
+        "candidate_key": "cycle:TEST",
+        "strategy_version_id": "LIVE-TEST",
+        "session": "2026-09-29",
+        "symbol": "TEST",
+        "features": {
+            "current_close": "100.20",
+            "session_vwap": "100.00",
+            "momentum_pct": "0.0018",
+            "vwap_edge_pct": "0.0020",
+            "confirmation_passes": 2,
+            "checks": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": False,
+                "vwap_ok": True,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            },
+        },
+        "checks": {
+            "strategy": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": False,
+                "vwap_ok": True,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            }
+        },
+        "outcomes": [
+            {
+                "horizon_minutes": 15,
+                "status": "complete",
+                "forward_return": "0.003",
+                "max_favorable_return": "0.004",
+                "max_adverse_return": "-0.001",
+            }
+        ],
+    }
+    rows = prepare_counterfactual_rows(
+        [candidate],
+        parameter="min_momentum_pct",
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["gate_inputs"]["momentum_pct"] == "0.0018"
+    assert row["gate_inputs"]["other_gates_passed"] is True
+    assert row["screening_scope"] == "strategy_gates_only"
+    assert row["downstream_execution_gates_replayed"] is False
+
+
+def test_vwap_minimum_requires_price_above_vwap_independently():
+    candidate = {
+        "candidate_id": 2,
+        "session": "2026-09-29",
+        "features": {
+            "current_close": "99.90",
+            "session_vwap": "100.00",
+            "momentum_pct": "0.003",
+            "vwap_edge_pct": "-0.001",
+            "confirmation_passes": 2,
+            "checks": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": True,
+                "vwap_ok": False,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            },
+        },
+        "checks": {
+            "strategy": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": True,
+                "vwap_ok": False,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            }
+        },
+        "outcomes": [],
+    }
+    row = prepare_counterfactual_rows(
+        [candidate],
+        parameter="min_vwap_edge_pct",
+    )[0]
+    assert row["gate_inputs"]["other_gates_passed"] is False
+
+
+def test_daily_frozen_searches_aggregate_into_cross_session_evidence():
+    all_rows = rows_for_sessions(sessions=6, candidates_per_session=20)
+    searches = []
+    for session in sorted({row["session"] for row in all_rows}):
+        searches.append(
+            run_counterfactual_search(
+                rows=[row for row in all_rows if row["session"] == session],
+                parameter="min_momentum_pct",
+                current_value="0.0020",
+                round_trip_cost="0.0002",
+            )
+        )
+    assert all(search["validity_passed"] is False for search in searches)
+    rolling = aggregate_counterfactual_searches(searches)
+    assert rolling is not None
+    assert rolling["validity_passed"] is True
+    assert rolling["selected"] is not None
+    assert rolling["search_ledger"]["aggregation"] == (
+        "cross_session_from_frozen_daily_searches"
+    )
+
+
+def test_incomplete_affected_outcomes_reduce_coverage():
+    rows = rows_for_sessions(sessions=6, candidates_per_session=20)
+    for row in rows[:30]:
+        if row["gate_inputs"]["momentum_pct"] < 0.002:
+            row["forward_outcomes"][0]["status"] = "insufficient_future_data"
+            row["forward_outcomes"][0]["forward_return"] = None
+    result = run_counterfactual_search(
+        rows=rows,
+        parameter="min_momentum_pct",
+        current_value="0.0020",
+        round_trip_cost="0.0002",
+    )
+    looser = [
+        row for row in result["results"]
+        if float(row["requested_value"]) < 0.002 and row["affected_candidates"]
+    ]
+    assert looser
+    assert any(float(row["outcome_coverage"]) < 0.95 for row in looser)
+    assert any(
+        "INSUFFICIENT_FORWARD_COVERAGE" in row["reason_codes"]
+        for row in looser
+    )
