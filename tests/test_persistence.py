@@ -465,6 +465,7 @@ def test_entry_intent_preserves_same_ads_v1_and_v2_decision_state():
         0,
         result=(sink.events.append(kwargs) is None),
     )
+    setattr(signal, "_evidence_decision_scan", decision_scan)
     result = asyncio.run(
         sink.persist_entry_intent(
             signal=signal,
@@ -472,7 +473,6 @@ def test_entry_intent_preserves_same_ads_v1_and_v2_decision_state():
             client_order_id="anevum-spy-buy-ads-evidence",
             correlation_id="cycle-ads",
             intended_at=datetime(2026, 9, 29, 14, 0, tzinfo=timezone.utc),
-            decision_scan=decision_scan,
         )
     )
 
@@ -513,6 +513,7 @@ def test_entry_intent_keeps_missing_ads_inputs_explicit_without_imputation():
         0,
         result=(sink.events.append(kwargs) is None),
     )
+    setattr(signal, "_evidence_decision_scan", decision_scan)
     result = asyncio.run(
         sink.persist_entry_intent(
             signal=signal,
@@ -520,7 +521,6 @@ def test_entry_intent_keeps_missing_ads_inputs_explicit_without_imputation():
             client_order_id="anevum-spy-buy-missing-ads",
             correlation_id="cycle-missing-ads",
             intended_at=datetime(2026, 9, 29, 14, 1, tzinfo=timezone.utc),
-            decision_scan=decision_scan,
         )
     )
 
