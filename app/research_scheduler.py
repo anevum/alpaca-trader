@@ -685,7 +685,6 @@ class ResearchReportScheduler:
             "ads002_v2": ads002_v2,
             "counterfactual_lab": counterfactual_lab,
             "nostra": nostra,
-            "adaptive_strategy_control": adaptive_control,
         }
         session_state = nostra.get("session_state") or {}
         latest_nostra = (
