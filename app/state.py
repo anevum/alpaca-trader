@@ -36,6 +36,16 @@ class RuntimeState:
     universe_updated_at: datetime | None = None
     universe_source: str = "static"
     universe_error: str | None = None
+    crypto_last_signal: dict[str, Any] | None = None
+    crypto_last_scan: dict[str, Any] = field(default_factory=dict)
+    crypto_last_completed_scan: dict[str, Any] = field(default_factory=dict)
+    crypto_last_decision: str | None = None
+    crypto_universe_active_symbols: list[str] = field(default_factory=list)
+    crypto_universe_candidate_count: int = 0
+    crypto_universe_eligible_count: int = 0
+    crypto_universe_updated_at: datetime | None = None
+    crypto_universe_source: str = "disabled"
+    crypto_universe_error: str | None = None
     exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_execution_context: dict[str, Any] = field(default_factory=dict)
     event_emitter: Any = field(default=None, repr=False)
@@ -59,6 +69,48 @@ class RuntimeState:
         self.universe_source = source
         self.universe_updated_at = at or datetime.now(timezone.utc)
         self.universe_error = error
+
+    def set_crypto_universe(
+        self,
+        *,
+        symbols: list[str],
+        candidate_count: int,
+        eligible_count: int,
+        source: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.crypto_universe_active_symbols = list(symbols)
+        self.crypto_universe_candidate_count = candidate_count
+        self.crypto_universe_eligible_count = eligible_count
+        self.crypto_universe_source = source
+        self.crypto_universe_updated_at = at or datetime.now(timezone.utc)
+        self.crypto_universe_error = error
+
+    def record_crypto_scan(
+        self,
+        scan: dict[str, Any],
+        at: datetime | None = None,
+    ) -> None:
+        previous = self.crypto_last_scan
+        for symbol, payload in scan.items():
+            old = previous.get(symbol) or {}
+            changed = (
+                old.get("action") != payload.get("action")
+                or old.get("reason") != payload.get("reason")
+            )
+            if changed:
+                self.record_event(
+                    kind="crypto_scan",
+                    symbol=symbol,
+                    action=str(payload.get("action") or ""),
+                    message=str(payload.get("reason") or ""),
+                    reason=str(payload.get("reason") or ""),
+                    at=at,
+                    payload={"market": "crypto", "signal": payload},
+                )
+        self.crypto_last_scan = scan
+        self.crypto_last_completed_scan = scan
 
     def begin_cycle(self, correlation_id: str) -> None:
         self.current_correlation_id = correlation_id
