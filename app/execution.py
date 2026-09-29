@@ -430,6 +430,18 @@ class ExecutionEngine:
             metrics = {
                 "max_favorable_excursion": str(peak),
                 "max_adverse_excursion": str(trough),
+                "current_return_pct": str(current_return),
+                "entry_price": str(entry_price),
+                "current_price": str(current_price),
+                "risk_stop_pct": str(state.get("risk_stop_pct") or self.settings.stop_pct),
+                "protected_floor_pct": state.get("protected_floor_pct"),
+                "profit_protection_active": bool(state.get("profit_protection_active")),
+                "thesis_failure_count": int(state.get("thesis_failure_count") or 0),
+                "held_minutes": (
+                    max((datetime.now(NY) - entry_time).total_seconds() / 60, 0)
+                    if entry_time is not None else None
+                ),
+                "target_pct": str(self.settings.target_pct),
                 "peak_favorable_price": str(peak_price),
                 "peak_adverse_price": str(trough_price),
                 "peak_favorable_at": peak_at.isoformat() if peak_at else None,
