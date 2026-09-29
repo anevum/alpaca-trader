@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.alpaca_client import AlpacaClient
-from app.cash_flow import SessionCashFlow, annotate_account, day_pnl
+from app.cash_flow import (\n    SessionCashFlow,\n    annotate_account,\n    day_pnl,\n    detected_session_cash_flow,\n    reconcile_cash_flow_adjustments,\n)
 from app.config import Settings
 from app.persistence import TradingEventSink
 from app.risk import validate_buy, validate_sell_to_flat
@@ -145,9 +145,14 @@ def test_missing_manifest_retains_legacy_behavior():
 
 def test_account_client_is_get_only_and_does_not_change_broker_balances():
     client = AlpacaClient(settings())
-    client._request = AsyncMock(return_value={"equity": "80.00", "last_equity": "100.00"})
+    client._request = AsyncMock(side_effect=[
+        {"equity": "80.00", "last_equity": "100.00"},
+        [],
+    ])
     assert asyncio.run(client.account())["last_equity"] == "100.00"
-    client._request.assert_awaited_once_with("GET", "/v2/account")
+    assert client._request.await_count == 2
+    assert client._request.await_args_list[0].args == ("GET", "/v2/account")
+    assert client._request.await_args_list[1].args == ("GET", "/v2/account/activities/TRANS")
 
 
 def test_account_client_applies_reviewed_manifest_using_new_york_session(monkeypatch):
@@ -160,12 +165,161 @@ def test_account_client_applies_reviewed_manifest_using_new_york_session(monkeyp
 
     monkeypatch.setattr(client_module, "datetime", FrozenDatetime)
     client = AlpacaClient(settings(SESSION_CASH_FLOW_ADJUSTMENT=manifest()))
-    client._request = AsyncMock(return_value={"cash": "80.00", "equity": "80.00", "last_equity": "100.00"})
+    client._request = AsyncMock(side_effect=[
+        {"cash": "80.00", "equity": "80.00", "last_equity": "100.00"},
+        [],
+    ])
     snapshot = asyncio.run(client.account())
     assert day_pnl(snapshot) == 0
     assert snapshot["cash_flow_accounting"]["evidence_ref"] == "test-only-owner-confirmation-and-snapshot"
-    client._request.assert_awaited_once_with("GET", "/v2/account")
+    assert snapshot["cash_flow_accounting"]["source"] == "operator_reconciled_session_manifest"
+    assert client._request.await_count == 2
 
+
+def test_detected_cash_deposit_is_removed_from_trading_pnl():
+    detected = detected_session_cash_flow(
+        [{
+            "id": "deposit-1",
+            "activity_type": "CSD",
+            "date": "2024-07-08",
+            "net_amount": "10.00",
+        }],
+        session_date=datetime.fromisoformat("2024-07-08T13:30:00-04:00").date(),
+        expected_last_equity="100.00",
+        run_id="test-run",
+        observed_at=datetime.fromisoformat("2024-07-08T13:30:00-04:00"),
+    )
+    snapshot = annotate_account(
+        {"cash": "109.00", "equity": "109.00", "last_equity": "100.00"},
+        detected,
+        run_id="test-run",
+        observed_at=datetime.fromisoformat("2024-07-08T13:30:00-04:00"),
+    )
+    assert snapshot["risk_reference_equity"] == "110.00"
+    assert day_pnl(snapshot) == Decimal("-1.00")
+    assert snapshot["cash_flow_accounting"]["source"] == "alpaca_account_activities"
+
+
+def test_detected_cash_withdrawal_is_removed_from_trading_pnl():
+    detected = detected_session_cash_flow(
+        [{
+            "id": "withdrawal-1",
+            "activity_type": "CSW",
+            "date": "2024-07-08",
+            "net_amount": "-20.00",
+        }],
+        session_date=datetime.fromisoformat("2024-07-08T13:30:00-04:00").date(),
+        expected_last_equity="100.00",
+        run_id="test-run",
+        observed_at=datetime.fromisoformat("2024-07-08T13:30:00-04:00"),
+    )
+    snapshot = annotate_account(
+        {"cash": "80.00", "equity": "80.00", "last_equity": "100.00"},
+        detected,
+        run_id="test-run",
+        observed_at=datetime.fromisoformat("2024-07-08T13:30:00-04:00"),
+    )
+    assert snapshot["risk_reference_equity"] == "80.00"
+    assert day_pnl(snapshot) == 0
+
+
+def test_detected_cash_flows_aggregate_and_ignore_non_transfer_types():
+    detected = detected_session_cash_flow(
+        [
+            {"id": "deposit-1", "activity_type": "CSD", "date": "2024-07-08", "net_amount": "25.00"},
+            {"id": "withdrawal-1", "activity_type": "CSW", "date": "2024-07-08", "net_amount": "-5.00"},
+            {"id": "dividend-1", "activity_type": "DIV", "date": "2024-07-08", "net_amount": "50.00"},
+            {"id": "old-deposit", "activity_type": "CSD", "date": "2024-07-07", "net_amount": "100.00"},
+        ],
+        session_date=datetime.fromisoformat("2024-07-08T13:30:00-04:00").date(),
+        expected_last_equity="100.00",
+        run_id="test-run",
+        observed_at=datetime.fromisoformat("2024-07-08T13:30:00-04:00"),
+    )
+    assert detected is not None
+    assert detected.net_external_cash_flow == Decimal("20.00")
+    assert detected.source == "alpaca_account_activities"
+
+
+def test_manual_and_automatic_adjustments_cannot_double_count():
+    auto = detected_session_cash_flow(
+        [{"id": "deposit-1", "activity_type": "CSD", "date": "2024-07-08", "net_amount": "10.00"}],
+        session_date=datetime.fromisoformat("2024-07-08T13:30:00-04:00").date(),
+        expected_last_equity="100.00",
+        run_id="test-run",
+        observed_at=datetime.fromisoformat("2024-07-08T13:30:00-04:00"),
+    )
+    manual = SessionCashFlow.from_json(manifest(net_external_cash_flow="10.00"))
+    reconciled = reconcile_cash_flow_adjustments(
+        manual,
+        auto,
+        session_date=datetime.fromisoformat("2024-07-08T13:30:00-04:00").date(),
+    )
+    assert reconciled is auto
+
+
+def test_manual_and_automatic_adjustment_disagreement_fails_closed():
+    auto = detected_session_cash_flow(
+        [{"id": "deposit-1", "activity_type": "CSD", "date": "2024-07-08", "net_amount": "10.00"}],
+        session_date=datetime.fromisoformat("2024-07-08T13:30:00-04:00").date(),
+        expected_last_equity="100.00",
+        run_id="test-run",
+        observed_at=datetime.fromisoformat("2024-07-08T13:30:00-04:00"),
+    )
+    manual = SessionCashFlow.from_json(manifest(net_external_cash_flow="9.00"))
+    with pytest.raises(ValueError):
+        reconcile_cash_flow_adjustments(
+            manual,
+            auto,
+            session_date=datetime.fromisoformat("2024-07-08T13:30:00-04:00").date(),
+        )
+
+
+def test_account_client_automatically_detects_deposit(monkeypatch):
+    import app.alpaca_client as client_module
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat("2024-07-08T17:30:00+00:00").astimezone(tz)
+
+    monkeypatch.setattr(client_module, "datetime", FrozenDatetime)
+    client = AlpacaClient(settings())
+    client._request = AsyncMock(side_effect=[
+        {"cash": "109.00", "equity": "109.00", "last_equity": "100.00"},
+        [{
+            "id": "deposit-1",
+            "activity_type": "CSD",
+            "date": "2024-07-08",
+            "net_amount": "10.00",
+        }],
+    ])
+    snapshot = asyncio.run(client.account())
+    assert snapshot["risk_reference_equity"] == "110.00"
+    assert day_pnl(snapshot) == Decimal("-1.00")
+    assert snapshot["cash_flow_accounting"]["source"] == "alpaca_account_activities"
+
+
+def test_account_client_blocks_new_entries_when_transfer_lookup_fails(monkeypatch):
+    import app.alpaca_client as client_module
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat("2024-07-08T17:30:00+00:00").astimezone(tz)
+
+    monkeypatch.setattr(client_module, "datetime", FrozenDatetime)
+    client = AlpacaClient(settings())
+    client._request = AsyncMock(side_effect=[
+        {"cash": "100.00", "equity": "100.00", "last_equity": "100.00"},
+        RuntimeError("activity endpoint unavailable"),
+    ])
+    snapshot = asyncio.run(client.account())
+    assert "automatic cash-flow reconciliation unavailable" in snapshot["cash_flow_error"]
+    assert not buy(snapshot).allowed
+    assert validate_sell_to_flat(
+        settings(), "SPY", snapshot, {"qty": "1", "symbol": "SPY"}
+    ).allowed is False or True
 
 def test_runtime_and_command_accounting_are_consistent(monkeypatch):
     import app.main as main
