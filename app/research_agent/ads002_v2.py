@@ -366,3 +366,96 @@ def score_cycle_v2(
             },
         })
     return output
+
+
+def confidence_shrink(raw_score: Any, confidence: Any, *, neutral: float = 0.5) -> float:
+    """Shrink a research score toward neutral instead of toward zero."""
+    raw = _clamp01(raw_score)
+    c = _clamp01(confidence)
+    return round(neutral + c * (raw - neutral), 6)
+
+
+def net_expected_return(
+    *,
+    probability_up: Any,
+    mean_up_return: Any,
+    mean_down_return: Any,
+    expected_round_trip_cost: Any,
+) -> dict[str, Any]:
+    """Research-only expected net return primitive.
+
+    Inputs must come from a separately validated probabilistic model. This
+    function does not estimate those inputs and therefore cannot self-fit.
+    """
+    p_up = _clamp01(probability_up)
+    up = _f(mean_up_return)
+    down = _f(mean_down_return)
+    cost = max(_f(expected_round_trip_cost), 0.0)
+    gross = p_up * up + (1.0 - p_up) * down
+    return {
+        "expected_gross_return": round(gross, 8),
+        "expected_round_trip_cost": round(cost, 8),
+        "expected_net_return": round(gross - cost, 8),
+        "research_only": True,
+    }
+
+
+def select_dynamic_horizon(
+    expected_net_returns: Mapping[int, Any],
+    *,
+    uncertainty_penalty: Mapping[int, Any] | None = None,
+) -> dict[str, Any]:
+    """Select the shadow horizon with highest uncertainty-adjusted net EV."""
+    penalties = uncertainty_penalty or {}
+    rows = []
+    for horizon, value in expected_net_returns.items():
+        net = _f(value)
+        penalty = max(_f(penalties.get(horizon)), 0.0)
+        rows.append((int(horizon), net, penalty, net - penalty))
+    if not rows:
+        return {"horizon_minutes": None, "adjusted_value": None, "reason": "NO_HORIZONS"}
+    rows.sort(key=lambda row: (row[3], -row[0]), reverse=True)
+    best = rows[0]
+    return {
+        "horizon_minutes": best[0],
+        "expected_net_return": round(best[1], 8),
+        "uncertainty_penalty": round(best[2], 8),
+        "adjusted_value": round(best[3], 8),
+        "positive_edge": best[3] > 0,
+        "research_only": True,
+    }
+
+
+def continuation_value(
+    *,
+    probability_continuation: Any,
+    mean_continuation_return: Any,
+    mean_reversal_return: Any,
+    expected_shortfall: Any,
+    opportunity_cost: Any,
+    exit_cost: Any,
+    risk_aversion: Any = 1.0,
+    temperature: Any = 0.001,
+) -> dict[str, Any]:
+    """Shadow hold-vs-exit value primitive for future X models."""
+    p = _clamp01(probability_continuation)
+    cont = _f(mean_continuation_return)
+    rev = _f(mean_reversal_return)
+    shortfall = max(_f(expected_shortfall), 0.0)
+    opp = max(_f(opportunity_cost), 0.0)
+    exit_c = max(_f(exit_cost), 0.0)
+    lam = max(_f(risk_aversion, 1.0), 0.0)
+    tau = max(abs(_f(temperature, 0.001)), 1e-9)
+
+    ev_hold = p * cont + (1.0 - p) * rev - lam * shortfall - opp
+    ev_exit = -exit_c
+    delta = ev_hold - ev_exit
+    hold_probability_like = _sigmoid(delta / tau)
+    return {
+        "ev_hold": round(ev_hold, 8),
+        "ev_exit": round(ev_exit, 8),
+        "continuation_advantage": round(delta, 8),
+        "hold_preference": round(hold_probability_like, 6),
+        "research_only": True,
+        "execution_authority": False,
+    }
