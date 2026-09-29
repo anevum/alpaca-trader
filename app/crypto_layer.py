@@ -17,6 +17,179 @@ from .strategy import RollingMomentumVwapStrategy, Signal
 NY = ZoneInfo("America/New_York")
 
 
+class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
+    """Rolling momentum/VWAP strategy with continuous 24/7 bar semantics."""
+
+    def _completed_session_bars(
+        self,
+        bars: list[dict[str, Any]],
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        now = now.astimezone(NY)
+        completed: list[dict[str, Any]] = []
+        for bar in bars:
+            stamp = self._timestamp(bar)
+            if stamp + timedelta(minutes=1) > now:
+                continue
+            completed.append(bar)
+        completed.sort(key=self._timestamp)
+        return completed
+
+    @staticmethod
+    def _crypto_price(value: Decimal) -> Decimal:
+        if value < Decimal("1"):
+            increment = Decimal("0.00000001")
+        elif value < Decimal("100"):
+            increment = Decimal("0.0001")
+        else:
+            increment = Decimal("0.01")
+        return value.quantize(increment)
+
+    def evaluate(
+        self,
+        bars: list[dict[str, Any]],
+        confirmation_bars: dict[str, list[dict[str, Any]]],
+        symbol: str,
+        has_position: bool,
+        order_notional: Decimal,
+        now: datetime | None = None,
+    ) -> Signal:
+        now = (now or datetime.now(NY)).astimezone(NY)
+        symbol = symbol.upper()
+        if has_position:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="crypto position already open; exit layer manages risk",
+            )
+
+        session = self._completed_session_bars(bars, now)
+        if len(session) < self.slow_window + 1:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="not enough completed crypto bars for rolling signal",
+            )
+
+        closes = [self._d(bar["c"]) for bar in session]
+        current_close = closes[-1]
+        previous_close = closes[-2]
+        fast_average = self._mean(closes[-self.fast_window:])
+        slow_average = self._mean(closes[-self.slow_window:])
+        rolling_vwap = self._vwap(session)
+        momentum_anchor = closes[-(self.fast_window + 1)]
+        momentum_pct = (
+            (current_close - momentum_anchor) / momentum_anchor
+            if momentum_anchor > 0 else Decimal("0")
+        )
+        vwap_edge_pct = (
+            (current_close - rolling_vwap) / rolling_vwap
+            if rolling_vwap > 0 else Decimal("0")
+        )
+
+        checks = {
+            "fast_above_slow": fast_average > slow_average,
+            "rising": current_close > previous_close,
+            "momentum_ok": momentum_pct >= self.min_momentum_pct,
+            "vwap_ok": (
+                current_close > rolling_vwap
+                and vwap_edge_pct >= self.min_vwap_edge_pct
+            ),
+            "vwap_extension_ok": vwap_edge_pct <= self.max_vwap_extension_pct,
+            "confirmations_ok": False,
+            "regime_ok": False,
+        }
+        metadata: dict[str, Any] = {
+            "market": "crypto",
+            "session_model": "24x7",
+            "bar_time": self._timestamp(session[-1]).isoformat(),
+            "current_close": str(current_close),
+            "previous_close": str(previous_close),
+            "fast_average": str(fast_average),
+            "slow_average": str(slow_average),
+            "rolling_vwap": str(rolling_vwap),
+            "momentum_pct": str(momentum_pct),
+            "vwap_edge_pct": str(vwap_edge_pct),
+            "checks": checks,
+            "confirmations": {},
+            "regime_confirmations": {},
+        }
+
+        confirmation_passes = 0
+        regime_passes = 0
+        independent = 0
+        for confirmation_symbol in self.confirmation_symbols:
+            confirmation_symbol = confirmation_symbol.upper()
+            if confirmation_symbol == symbol:
+                continue
+            independent += 1
+            ok, reason, details = self._confirmation_ok(
+                confirmation_bars.get(confirmation_symbol, []), now
+            )
+            metadata["confirmations"][confirmation_symbol] = {
+                "ok": ok, "reason": reason, **details
+            }
+            confirmation_passes += int(ok)
+            rok, rreason, rdetails = self._regime_ok(
+                confirmation_bars.get(confirmation_symbol, []), now
+            )
+            metadata["regime_confirmations"][confirmation_symbol] = {
+                "ok": rok, "reason": rreason, **rdetails
+            }
+            regime_passes += int(rok)
+
+        checks["confirmations_ok"] = (
+            independent >= self.min_confirmations
+            and confirmation_passes >= self.min_confirmations
+        )
+        checks["regime_ok"] = (
+            independent >= self.regime_min_confirmations
+            and regime_passes >= self.regime_min_confirmations
+        )
+        metadata["confirmation_passes"] = confirmation_passes
+        metadata["regime_passes"] = regime_passes
+
+        failures = [
+            ("fast_above_slow", "fast trend is not above slow trend"),
+            ("rising", "latest completed crypto bar is not rising"),
+            ("momentum_ok", "short-term crypto momentum is below threshold"),
+            ("vwap_ok", "crypto price does not have required rolling VWAP edge"),
+            ("vwap_extension_ok", "crypto price is too extended above rolling VWAP"),
+            ("confirmations_ok", "not enough crypto market confirmations passed"),
+            ("regime_ok", "crypto market regime is not constructive"),
+        ]
+        for key, reason in failures:
+            if not checks[key]:
+                return Signal(
+                    action="hold",
+                    symbol=symbol,
+                    reason=reason,
+                    metadata=metadata,
+                )
+
+        effective_stop_pct, stop_model = self._effective_stop_pct(session)
+        stop_price = self._crypto_price(
+            current_close * (Decimal("1") - effective_stop_pct)
+        )
+        target_price = self._crypto_price(
+            current_close * (Decimal("1") + self.target_pct)
+        )
+        metadata["effective_stop_pct"] = str(effective_stop_pct)
+        metadata["stop_model"] = stop_model
+        metadata["stop_price"] = str(stop_price)
+        metadata["take_profit_price"] = str(target_price)
+        return Signal(
+            action="buy",
+            symbol=symbol,
+            notional=order_notional,
+            reference_price=current_close,
+            stop_price=stop_price,
+            take_profit_price=target_price,
+            reason="24/7 crypto momentum above rolling VWAP with constructive regime",
+            metadata=metadata,
+        )
+
+
 def _d(value: Any) -> Decimal:
     try:
         return Decimal(str(value or "0"))
@@ -213,7 +386,7 @@ class CryptoUniverse:
 
             self._active_symbols = active
             self._last_refresh = current
-            self.state.set_universe(
+            self.state.set_crypto_universe(
                 symbols=active,
                 candidate_count=len(eligible),
                 eligible_count=len(eligible),
@@ -242,7 +415,7 @@ class CryptoScanner:
         self,
         settings: Settings,
         market_data: CryptoMarketDataClient,
-        strategy: RollingMomentumVwapStrategy,
+        strategy: CryptoRollingMomentumStrategy,
         state: RuntimeState,
         universe: CryptoUniverse,
     ):
@@ -301,7 +474,7 @@ class CryptoScanner:
             if signal.action == "buy":
                 buy_signals.append(signal)
 
-        self.state.record_scan(scan, at=now)
+        self.state.record_crypto_scan(scan, at=now)
         self.state.record_event(
             kind="crypto_scan_cycle",
             action="qualified" if buy_signals else "hold",
@@ -324,7 +497,7 @@ class CryptoScanner:
         )
 
         if not buy_signals:
-            self.state.last_signal = {
+            self.state.crypto_last_signal = {
                 "action": "hold",
                 "symbol": "",
                 "reason": (
@@ -333,26 +506,26 @@ class CryptoScanner:
                 ),
                 "metadata": {"market": "crypto", "session_model": "24x7"},
             }
-            self.state.last_decision = self.state.last_signal["reason"]
-            return self.state.last_signal
+            self.state.crypto_last_decision = self.state.crypto_last_signal["reason"]
+            return self.state.crypto_last_signal
 
         signal = buy_signals[0]
-        self.state.last_signal = self._signal_payload(signal)
-        self.state.last_decision = (
+        self.state.crypto_last_signal = self._signal_payload(signal)
+        self.state.crypto_last_decision = (
             f"crypto 24/7 qualified {signal.symbol}; shadow execution only"
         )
         self.state.record_event(
             kind="crypto_signal",
             symbol=signal.symbol,
             action="shadow_buy",
-            message=self.state.last_decision,
+            message=self.state.crypto_last_decision,
             reason=signal.reason,
             at=now,
-            payload={"market": "crypto", "signal": self.state.last_signal},
+            payload={"market": "crypto", "signal": self.state.crypto_last_signal},
         )
         return {
             "action": "shadow_buy",
             "symbol": signal.symbol,
-            "reason": self.state.last_decision,
+            "reason": self.state.crypto_last_decision,
             "signal": self.state.last_signal,
         }
