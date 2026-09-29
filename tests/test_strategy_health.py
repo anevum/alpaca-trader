@@ -110,8 +110,16 @@ def test_low_market_familiarity_escalates_to_research_not_auto_adapt():
 def test_persistent_parameter_boundary_pressure_escalates_to_research():
     pressure = {
         "parameters": [
-            {"parameter": "min_momentum_pct", "boundary_fraction": "0.75"},
-            {"parameter": "min_vwap_edge_pct", "boundary_fraction": "0.10"},
+            {
+                "parameter": "min_momentum_pct",
+                "boundary_fraction": "0.75",
+                "observations": 8,
+            },
+            {
+                "parameter": "min_vwap_edge_pct",
+                "boundary_fraction": "0.10",
+                "observations": 8,
+            },
         ]
     }
     result = compute_strategy_health(
@@ -135,3 +143,22 @@ def test_mature_challenger_pressure_is_research_only():
     assert result["control_state"] == RESEARCH
     assert result["dimensions"]["challenger_pressure"]["status"] == "WATCH"
     assert result["promotion_authorized"] is False
+
+
+
+def test_immature_parameter_pressure_remains_collecting():
+    pressure = {
+        "parameters": [
+            {
+                "parameter": "min_momentum_pct",
+                "boundary_fraction": "1",
+                "observations": 2,
+            }
+        ]
+    }
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        parameter_pressure=pressure,
+    )
+    assert result["dimensions"]["parameter_pressure"]["status"] == "COLLECTING"
+    assert result["control_state"] == NORMAL
