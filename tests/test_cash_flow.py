@@ -319,7 +319,7 @@ def test_account_client_blocks_new_entries_when_transfer_lookup_fails(monkeypatc
     assert not buy(snapshot).allowed
     assert validate_sell_to_flat(
         settings(), "SPY", snapshot, {"qty": "1", "symbol": "SPY"}
-    ).allowed is False or True
+    ).allowed
 
 def test_runtime_and_command_accounting_are_consistent(monkeypatch):
     import app.main as main
