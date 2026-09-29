@@ -7,7 +7,10 @@ def test_daily_scheduler_persists_full_asc_shadow_state():
     assert "transition_control_state" in source
     assert '"parameter_pressure": parameter_pressure' in source
     assert '"control_transition": control_transition' in source
-    assert '"strategy_family_routing": rank_strategy_families(' in source
+    assert "build_strategy_family_registry" in source
+    assert "rank_strategy_families" in source
+    assert '"strategy_family_registry": family_registry' in source
+    assert '"strategy_family_routing": family_routing' in source
     assert '"adaptive_strategy_control": adaptive_control' in source
 
 
