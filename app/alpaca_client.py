@@ -7,7 +7,12 @@ from uuid import uuid4
 import httpx
 
 from .config import Settings
-from .cash_flow import annotate_account
+from .cash_flow import (
+    NY,
+    annotate_account,
+    detected_session_cash_flow,
+    reconcile_cash_flow_adjustments,
+)
 
 
 class AlpacaClient:
@@ -61,11 +66,41 @@ class AlpacaClient:
 
     async def account(self) -> dict[str, Any]:
         raw = await self._request("GET", "/v2/account")
+        observed_at = datetime.now(timezone.utc)
+        session_date = observed_at.astimezone(NY).date()
+
+        try:
+            activities = await self.transfer_activities(date=session_date.isoformat())
+            detected = detected_session_cash_flow(
+                activities,
+                session_date=session_date,
+                expected_last_equity=raw.get("last_equity"),
+                run_id=self.settings.trading_run_id,
+                observed_at=observed_at,
+            )
+            adjustment = reconcile_cash_flow_adjustments(
+                self.settings.session_cash_flow_adjustment,
+                detected,
+                session_date=session_date,
+            )
+        except (RuntimeError, ValueError) as exc:
+            result = dict(raw)
+            result["cash_flow_error"] = (
+                "automatic cash-flow reconciliation unavailable: " + str(exc)
+            )
+            result["cash_flow_accounting"] = {
+                "status": "unavailable",
+                "source": "alpaca_account_activities",
+                "session_date": session_date.isoformat(),
+                "observed_at": observed_at.isoformat(),
+            }
+            return result
+
         return annotate_account(
             raw,
-            self.settings.session_cash_flow_adjustment,
+            adjustment,
             run_id=self.settings.trading_run_id,
-            observed_at=datetime.now(timezone.utc),
+            observed_at=observed_at,
         )
 
     async def clock(self) -> dict[str, Any]:
@@ -108,6 +143,25 @@ class AlpacaClient:
                 "nested": "true",
             },
         )
+
+    async def transfer_activities(
+        self,
+        *,
+        date: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "direction": "desc",
+            "page_size": min(max(limit, 1), 100),
+        }
+        if date:
+            params["date"] = date
+        result = await self._request(
+            "GET",
+            "/v2/account/activities/TRANS",
+            params=params,
+        )
+        return result if isinstance(result, list) else []
 
     async def fill_activities(
         self,
