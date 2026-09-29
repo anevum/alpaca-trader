@@ -1,17 +1,32 @@
 # Session cash-flow accounting
 
-Candidate implementation. The optional manifest defaults to empty; no trading or deployment is activated by this change.
+RHEN automatically reconciles owner cash deposits and withdrawals so external funding does not appear as trading performance.
 
-The daily-loss reference must distinguish market P&L from external deposits and withdrawals. The candidate uses:
+The daily-loss reference is:
 
 ```
 reference equity = raw broker last_equity + signed net external cash flow
 trading day P&L = raw broker equity - reference equity
 ```
 
-Deposits are positive and withdrawals negative. The daily loss threshold is unchanged. Percentage-based sizing uses the same reference so withdrawn capital does not remain in the exposure budget. Raw broker balances remain intact; new status and reconciliation fields retain the reference, adjusted P&L, and evidence metadata.
+Deposits are positive and withdrawals negative. The daily loss threshold is unchanged. Percentage-based sizing uses the same adjusted reference, so deposited capital becomes usable capital without being counted as profit and withdrawn capital is removed from the exposure budget. Raw Alpaca balances remain intact.
 
-`SESSION_CASH_FLOW_ADJUSTMENT` is an optional JSON string with exactly six string fields:
+## Automatic detection
+
+Each account refresh reads Alpaca's `TRANS` account-activity feed for the current New York session and accepts only:
+
+- `CSD` — cash deposit, positive `net_amount`
+- `CSW` — cash withdrawal, negative `net_amount`
+
+RHEN aggregates those records and binds the result to the broker's `last_equity` baseline. Dividends, interest, fees, fills, journals, corporate actions, and other activity types are never silently classified as owner funding.
+
+The generated evidence reference contains the session date, activity count, and a hash of the Alpaca activity IDs. Raw activity IDs are not exposed in the public performance surface.
+
+If the transfer endpoint is unavailable, returns malformed evidence, or conflicts with a same-session manual manifest, RHEN fails closed for new entries by setting `cash_flow_error`. Protective exits remain allowed.
+
+## Manual fallback
+
+`SESSION_CASH_FLOW_ADJUSTMENT` remains available as an operator-reviewed fallback. It is optional JSON with exactly six string fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -22,12 +37,14 @@ Deposits are positive and withdrawals negative. The daily loss threshold is unch
 | `run_id` | Matching RHEN run identifier. |
 | `evidence_ref` | Durable reference to the operator-reviewed transfer evidence. |
 
-The manifest is a manual reconciliation bridge. It does not discover or independently verify transfers. It must not contain lifetime flow totals or be inferred solely from a balance decline. Subsequent transfers require renewed reconciliation. Fees, dividends, interest, manual trades, and market P&L must not be silently classified as owner capital movement.
+When both manual and automatic evidence exist for the same session, the amounts, prior-close baseline, and run ID must agree exactly. RHEN uses the broker-derived evidence once they agree, preventing double counting. A mismatch blocks new entries.
 
-A manifest automatically expires at the New York date boundary. During its active session, wrong run, mismatched prior close, invalid broker equity, and a not-yet-effective manifest block new entries. Protective exit validation does not use this gate. Repeated annotation is idempotent.
+A manual manifest expires at the New York date boundary. Wrong run, mismatched prior close, invalid broker equity, and not-yet-effective manual evidence also block new entries.
 
-An operator must review any intended live use and record the actual activation boundary separately from prior observations. Empty configuration retains the existing guard. Historical records are not rewritten. This patch does not address missing telemetry, automatically relax entry filters, or guarantee any trades.
+## Telemetry and reporting
 
-Tests use synthetic data and mocked broker reads only. They cover withdrawal-only balance changes, real losses at the configured limit, deposits hiding losses, reduced exposure capacity, date rollover, malformed manifests, mismatches, protective exits, and consistent runtime/Command accounting.
+`cash_flow_accounting`, `risk_reference_equity`, adjusted `day_pnl`, and adjusted drawdown are persisted in reconciliation snapshots and surfaced through Command. The broker's raw `equity` and `last_equity` are preserved for audit.
 
-Alpaca's primary reference distinguishes non-trade cash deposits/withdrawals from fills and documents signed net amounts: https://docs.alpaca.markets/us/docs/account-activities .
+Alpaca documents `TRANS` as cash transactions and identifies `CSD` as cash deposit (+) and `CSW` as cash withdrawal (-). The non-trade activity `net_amount` is the signed cash impact.
+
+Tests use synthetic activity data and mocked broker reads. They cover automatic deposits, automatic withdrawals, aggregation, ignored non-transfer activities, manual/automatic agreement and disagreement, endpoint failure, daily-loss behavior, exposure sizing, date rollover, protective exits, and Command/reconciliation consistency.
