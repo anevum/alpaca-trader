@@ -13,6 +13,7 @@ from .evidence import (
 from .models import CanonicalEvidence, QueueItem, ResearchCategory, deterministic_dict
 from .policy import EDGE_DISCOVERY_V1_EXPERIMENT_KEY, RDR_V21_EXPERIMENT_KEY
 from .queue import build_queue
+from .strategy_health import compute_strategy_health
 
 
 def _normalized_requirement(value: Any) -> str:
@@ -139,6 +140,10 @@ class ResearchAgentRunner:
             and edge.get("status") == "rejected"
             and edge.get("survivor_state") == "all_rejected"
         )
+        strategy_health = compute_strategy_health(
+            daily_report=self.evidence.latest_daily_report,
+            weekly_report=self.evidence.latest_weekly_report,
+        )
         return {
             "agent_version": "rhen-research-agent-v1-foundation",
             "mode": "DETERMINISTIC_ONLY",
@@ -150,6 +155,7 @@ class ResearchAgentRunner:
             "open_queue_count": len(queue),
             "experiment_count": len(self.evidence.experiments),
             "decision_count": len(self.evidence.research_decisions),
+            "adaptive_strategy_control": strategy_health,
             "rdr_v2_1": rdr_state,
             "edge_discovery_v1": {
                 "closed": edge_closed,
