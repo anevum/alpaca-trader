@@ -2101,6 +2101,7 @@ class ExecutionEngine:
                         client_order_id=client_order_id,
                         correlation_id=self.state.current_correlation_id,
                         intended_at=now,
+                        decision_scan=scan,
                     )
                 except Exception as exc:
                     ledger_refs = None
