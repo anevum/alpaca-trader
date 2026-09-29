@@ -379,9 +379,6 @@ class CryptoExecutionEngine:
             symbol = str(position.get("symbol", "")).upper()
             if symbol not in owned:
                 continue
-            protection = await self._ensure_protection(position, open_orders, now)
-            results.append(protection)
-
             entry = _d(position.get("avg_entry_price"))
             current = _d(position.get("current_price"))
             if current <= 0:
@@ -442,6 +439,10 @@ class CryptoExecutionEngine:
                         now=now,
                     )
                 )
+                continue
+
+            protection = await self._ensure_protection(position, open_orders, now)
+            results.append(protection)
         return results
 
     async def run_once(self) -> dict[str, Any]:
@@ -455,10 +456,6 @@ class CryptoExecutionEngine:
         if not self.settings.crypto_lane_enabled:
             self.state.crypto_last_decision = "crypto lane disabled"
             return {"action": "hold", "reason": self.state.crypto_last_decision}
-        if not self.settings.crypto_execution_enabled:
-            self.state.crypto_last_decision = "crypto execution disabled"
-            return {"action": "hold", "reason": self.state.crypto_last_decision}
-
         account, positions, open_orders, recent_orders = await asyncio.gather(
             self.client.account(),
             self.client.positions(),
