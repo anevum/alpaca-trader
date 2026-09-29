@@ -5,7 +5,7 @@ if (!connectionString) throw new Error("SUPABASE_DB_URL is not configured");
 
 const sql = postgres(connectionString, {
   prepare: false,
-  max: 1,
+  max: 8,
   idle_timeout: 20,
   connect_timeout: 10,
 });
