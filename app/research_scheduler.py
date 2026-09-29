@@ -938,6 +938,59 @@ class ResearchReportScheduler:
             warning,
         )
 
+    def _record_asc_notifications(
+        self,
+        adaptive_control: dict[str, Any],
+    ) -> None:
+        transition = adaptive_control.get("control_transition")
+        if isinstance(transition, dict) and transition.get("changed") is True:
+            previous = str(transition.get("previous_state") or "UNKNOWN")
+            state = str(transition.get("state") or "UNKNOWN")
+            reasons = ", ".join(
+                str(code)
+                for code in transition.get("transition_reason_codes") or []
+            )
+            self.state.record_event(
+                kind="asc",
+                action=state.lower(),
+                message=(
+                    f"IREN ASC {previous} -> {state}; "
+                    f"{reasons or 'state transition'}; production unchanged"
+                ),
+                payload={
+                    "previous_state": previous,
+                    "state": state,
+                    "reason_codes": transition.get(
+                        "transition_reason_codes"
+                    ) or [],
+                    "execution_authority": False,
+                },
+            )
+
+        previews = adaptive_control.get("promotion_previews")
+        if not isinstance(previews, dict):
+            return
+        ready = [
+            parameter
+            for parameter, preview in previews.items()
+            if isinstance(preview, dict)
+            and preview.get("eligible_for_human_authorization") is True
+        ]
+        if ready:
+            self.state.record_event(
+                kind="asc",
+                action="promotion_ready",
+                message=(
+                    "ASC research gate is ready for proposal-specific human "
+                    f"review: {', '.join(sorted(ready))}; no deployment occurred"
+                ),
+                payload={
+                    "parameters": sorted(ready),
+                    "execution_authority": False,
+                    "production_mutation_performed": False,
+                },
+            )
+
     async def generate_daily(self, session: date) -> dict[str, Any]:
         evidence = await self._collect(session, session)
         account = await self.client.account()
@@ -1150,6 +1203,7 @@ class ResearchReportScheduler:
             raise RuntimeError("canonical daily report could not be durably persisted")
         self.last_daily_report = payload
         self.last_error = None
+        self._record_asc_notifications(adaptive_control)
         self.state.record_event(kind="research_reporting", action="completed",
                                 message=f"Daily research report persisted for {session.isoformat()}")
         return payload
