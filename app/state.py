@@ -46,6 +46,12 @@ class RuntimeState:
     crypto_universe_updated_at: datetime | None = None
     crypto_universe_source: str = "disabled"
     crypto_universe_error: str | None = None
+    crypto_current_correlation_id: str | None = None
+    crypto_last_order: dict[str, Any] | None = None
+    crypto_last_error: str | None = None
+    crypto_last_execution_at: datetime | None = None
+    crypto_last_execution_context: dict[str, Any] = field(default_factory=dict)
+    crypto_exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_execution_context: dict[str, Any] = field(default_factory=dict)
     event_emitter: Any = field(default=None, repr=False)
@@ -108,12 +114,16 @@ class RuntimeState:
                     reason=str(payload.get("reason") or ""),
                     at=at,
                     payload={"market": "crypto", "signal": payload},
+                    correlation_id=self.crypto_current_correlation_id,
                 )
         self.crypto_last_scan = scan
         self.crypto_last_completed_scan = scan
 
     def begin_cycle(self, correlation_id: str) -> None:
         self.current_correlation_id = correlation_id
+
+    def begin_crypto_cycle(self, correlation_id: str) -> None:
+        self.crypto_current_correlation_id = correlation_id
 
     def mark_poll(self) -> None:
         self.last_poll_at = datetime.now(timezone.utc)
@@ -143,6 +153,7 @@ class RuntimeState:
         at: datetime | None = None,
         payload: dict[str, Any] | None = None,
         emit: bool = True,
+        correlation_id: str | None = None,
     ) -> None:
         stamp = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         event = {
@@ -152,7 +163,7 @@ class RuntimeState:
             "action": action,
             "message": message,
             "reason": reason or message,
-            "correlation_id": self.current_correlation_id,
+            "correlation_id": correlation_id or self.current_correlation_id,
         }
         self.decision_history.insert(0, event)
         del self.decision_history[200:]

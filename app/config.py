@@ -184,6 +184,42 @@ class Settings(BaseSettings):
     crypto_confirmation_symbols_raw: str = Field(
         default="BTC/USD,ETH/USD", alias="CRYPTO_CONFIRMATION_SYMBOLS"
     )
+    crypto_strategy_version_id: str = Field(
+        default="CRYPTO-2026-09-29-001", alias="CRYPTO_STRATEGY_VERSION_ID"
+    )
+    crypto_order_notional: Decimal = Field(
+        default=Decimal("5.00"), alias="CRYPTO_ORDER_NOTIONAL"
+    )
+    crypto_max_order_notional: Decimal = Field(
+        default=Decimal("5.00"), alias="CRYPTO_MAX_ORDER_NOTIONAL"
+    )
+    crypto_max_total_position_notional: Decimal = Field(
+        default=Decimal("10.00"), alias="CRYPTO_MAX_TOTAL_POSITION_NOTIONAL"
+    )
+    crypto_max_concurrent_positions: int = Field(
+        default=1, alias="CRYPTO_MAX_CONCURRENT_POSITIONS"
+    )
+    crypto_max_entries_24h: int = Field(
+        default=4, alias="CRYPTO_MAX_ENTRIES_24H"
+    )
+    crypto_max_spread_pct: Decimal = Field(
+        default=Decimal("0.005"), alias="CRYPTO_MAX_SPREAD_PCT"
+    )
+    crypto_stop_pct: Decimal = Field(
+        default=Decimal("0.0035"), alias="CRYPTO_STOP_PCT"
+    )
+    crypto_target_pct: Decimal = Field(
+        default=Decimal("0.005"), alias="CRYPTO_TARGET_PCT"
+    )
+    crypto_stop_limit_buffer_pct: Decimal = Field(
+        default=Decimal("0.0025"), alias="CRYPTO_STOP_LIMIT_BUFFER_PCT"
+    )
+    crypto_max_hold_minutes: int = Field(
+        default=60, alias="CRYPTO_MAX_HOLD_MINUTES"
+    )
+    crypto_reentry_cooldown_minutes: int = Field(
+        default=15, alias="CRYPTO_REENTRY_COOLDOWN_MINUTES"
+    )
 
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
     fast_window: int = Field(default=3, alias="FAST_WINDOW")
@@ -526,6 +562,36 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_QUOTE_CURRENCIES cannot be empty")
         if self.crypto_lane_enabled and not self.crypto_confirmation_symbols:
             raise ValueError("CRYPTO_CONFIRMATION_SYMBOLS cannot be empty")
+        if self.crypto_order_notional <= 0:
+            raise ValueError("CRYPTO_ORDER_NOTIONAL must be positive")
+        if self.crypto_max_order_notional < self.crypto_order_notional:
+            raise ValueError(
+                "CRYPTO_MAX_ORDER_NOTIONAL cannot be below CRYPTO_ORDER_NOTIONAL"
+            )
+        if self.crypto_max_total_position_notional < self.crypto_order_notional:
+            raise ValueError(
+                "CRYPTO_MAX_TOTAL_POSITION_NOTIONAL cannot be below CRYPTO_ORDER_NOTIONAL"
+            )
+        if not 1 <= self.crypto_max_concurrent_positions <= 10:
+            raise ValueError("CRYPTO_MAX_CONCURRENT_POSITIONS must be between 1 and 10")
+        if not 0 <= self.crypto_max_entries_24h <= 100:
+            raise ValueError("CRYPTO_MAX_ENTRIES_24H must be between 0 and 100")
+        if not Decimal("0") < self.crypto_max_spread_pct < Decimal("0.10"):
+            raise ValueError("CRYPTO_MAX_SPREAD_PCT must be between 0 and 0.10")
+        if not Decimal("0") < self.crypto_stop_pct < Decimal("0.20"):
+            raise ValueError("CRYPTO_STOP_PCT must be between 0 and 0.20")
+        if not Decimal("0") < self.crypto_target_pct < Decimal("0.50"):
+            raise ValueError("CRYPTO_TARGET_PCT must be between 0 and 0.50")
+        if not Decimal("0") < self.crypto_stop_limit_buffer_pct < Decimal("0.10"):
+            raise ValueError(
+                "CRYPTO_STOP_LIMIT_BUFFER_PCT must be between 0 and 0.10"
+            )
+        if not 1 <= self.crypto_max_hold_minutes <= 1440:
+            raise ValueError("CRYPTO_MAX_HOLD_MINUTES must be between 1 and 1440")
+        if not 0 <= self.crypto_reentry_cooldown_minutes <= 1440:
+            raise ValueError(
+                "CRYPTO_REENTRY_COOLDOWN_MINUTES must be between 0 and 1440"
+            )
         if not 2 <= self.universe_daily_lookback <= 20:
             raise ValueError("UNIVERSE_DAILY_LOOKBACK must be between 2 and 20")
         if not 1 <= self.universe_data_batch_size <= 100:
