@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hmac
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 
 from .alpaca_client import AlpacaClient
 from .config import get_settings
@@ -123,6 +124,16 @@ def require_admin(authorization: str | None):
 SUPABASE_URL = "https://mfntzxheldzdvlokyntk.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_XfkgeXau2-6XOPzoXF-Nnw_FSnx0Sae"
 COMMAND_FOUNDER_EMAIL = "devon@anevum.com"
+
+
+class MobileLiveActivityRegistration(BaseModel):
+    push_token: str
+    activity_id: str
+    platform: str = "ios"
+    surface: str = "rhen_live_activity"
+
+
+mobile_live_activity_tokens: dict[str, dict[str, str]] = {}
 
 
 async def require_command_admin(authorization: str | None) -> dict:
@@ -999,6 +1010,45 @@ async def resume_paper(authorization: str | None = Header(default=None)):
     runtime_state.paused = False
     runtime_state.last_decision = "paper runtime resumed by administrator"
     return {"paused": False}
+
+
+@app.post("/v1/command/mobile/live-activity-token")
+async def command_mobile_live_activity_token(
+    registration: MobileLiveActivityRegistration,
+    authorization: str | None = Header(default=None),
+):
+    await require_command_admin(authorization)
+    token = registration.push_token.strip().lower()
+    activity_id = registration.activity_id.strip()
+    if registration.platform.lower() != "ios":
+        raise HTTPException(status_code=422, detail="only iOS ActivityKit tokens are supported")
+    if registration.surface != "rhen_live_activity":
+        raise HTTPException(status_code=422, detail="unsupported mobile activity surface")
+    if not activity_id or len(activity_id) > 160:
+        raise HTTPException(status_code=422, detail="invalid ActivityKit activity id")
+    if len(token) < 32 or len(token) > 256 or any(ch not in "0123456789abcdef" for ch in token):
+        raise HTTPException(status_code=422, detail="invalid ActivityKit push token")
+
+    mobile_live_activity_tokens[activity_id] = {
+        "push_token": token,
+        "registered_at": datetime.now(timezone.utc).isoformat(),
+        "surface": registration.surface,
+    }
+    if len(mobile_live_activity_tokens) > 8:
+        oldest = min(
+            mobile_live_activity_tokens,
+            key=lambda key: mobile_live_activity_tokens[key]["registered_at"],
+        )
+        if oldest != activity_id:
+            mobile_live_activity_tokens.pop(oldest, None)
+
+    return {
+        "ok": True,
+        "registered": True,
+        "activity_id": activity_id,
+        "remote_push_configured": False,
+        "message": "ActivityKit token registered; APNs signing credentials are not configured yet.",
+    }
 
 
 @app.get("/v1/command/status")
