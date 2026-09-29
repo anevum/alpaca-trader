@@ -724,6 +724,7 @@ class ExecutionEngine:
             position
             for position in positions
             if Decimal(str(position.get("qty", "0") or "0")) > 0
+            and "/" not in str(position.get("symbol", ""))
             and (
                 self.settings.dynamic_universe_enabled
                 or str(position.get("symbol", "")).upper() in self.settings.allowed_symbols
@@ -1605,6 +1606,7 @@ class ExecutionEngine:
             str(position.get("symbol", "")).upper()
             for position in positions
             if str(position.get("symbol", "")).strip()
+            and "/" not in str(position.get("symbol", ""))
         ]
         if self.universe is not None:
             entry_symbols = list(
