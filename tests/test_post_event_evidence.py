@@ -7,6 +7,7 @@ from app.post_event_evidence import (
     COMPARISON_METHODOLOGY_VERSION,
     FORWARD_HORIZONS_MINUTES,
     PostEventEvidenceRunner,
+    PostEventRunSummary,
     calculate_forward_outcome,
     reconstruct_cycle,
     truncate_bars,
@@ -474,9 +475,170 @@ def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
     )
     assert comparison["payload"]["match_state"] == "UNRECONSTRUCTABLE"
     assert comparison["payload"]["mismatch_category"] == "UNRECONSTRUCTABLE"
+    forward_events = [
+        event
+        for event in sink.events
+        if event["event_type"] == "candidate_forward_outcome"
+    ]
+    assert forward_events
+    assert all(
+        event["payload"]["research_eligibility"]["ads002_v1"]["eligible"] is True
+        for event in forward_events
+    )
 
 
-def test_ads002_ineligible_candidate_skips_forward_outcomes_but_keeps_comparison():
+
+def test_ads002_v1_backfill_uses_frozen_config_and_emits_versioned_derived_evidence():
+    reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
+    frozen = replay_config()
+    reference = {
+        **candidate(reference_bar),
+        "candidate_id": 1,
+        "candidate_key": "run:cycle:QQQ",
+        "symbol": "QQQ",
+        "ads002_score": {
+            "methodology_version": "ads-shadow-v1",
+            "source_completeness": {"pretrade_complete": True},
+        },
+        "decision_cycle_payload": {
+            "comparison_context": {"configuration": frozen},
+        },
+    }
+    target = {
+        **candidate(reference_bar),
+        "candidate_id": 2,
+        "candidate_key": "run:cycle:SPY",
+        "ads002_score": None,
+        "features": {
+            "bar_time": reference_bar.isoformat(),
+            "relative_volume_ratio": "1.5",
+            "momentum_pct": "0.002",
+            "vwap_edge_pct": "0.001",
+            "trend_persistence": "0.75",
+            "confirmation_passes": 1,
+            "regime_passes": 1,
+            "confirmations": {"QQQ": {"ok": True}},
+            "regime_confirmations": {"QQQ": {"ok": True}},
+            "market_quality": {
+                "spread_pct": "0.001",
+                "bar_age_seconds": 5,
+                "quote_age_seconds": 1,
+            },
+            "ads002_v2_raw_features": {"return_1m": 0.001},
+        },
+        "decision_cycle_payload": None,
+    }
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+        def _comparison_configuration(self):
+            return frozen
+
+        def _ads002_shadow_candidate_safe(self, *, symbol, metadata):
+            assert symbol == "SPY"
+            assert metadata == target["features"]
+            return {
+                "methodology_version": "ads-shadow-v1",
+                "research_only": True,
+                "feature_vector": {"momentum_pct": metadata["momentum_pct"]},
+                "source_completeness": {
+                    "attention": True,
+                    "qualification": True,
+                    "timing": True,
+                    "pretrade_complete": True,
+                    "missing_requirements": [],
+                },
+                "attention": {"score": 60},
+                "qualification": {"score": 70},
+                "timing": {"score": 80},
+                "pretrade_composite": 72,
+                "legacy_quality_score": None,
+            }
+
+    sink = Sink()
+    runner = PostEventEvidenceRunner(
+        settings=type(
+            "Settings",
+            (),
+            {
+                "strategy_version_id": "LIVE-2026-09-25-003",
+                "data_feed": "iex",
+                "bar_timeframe": "1Min",
+            },
+        )(),
+        market_data=object(),
+        event_sink=sink,
+        evidence_reader=None,
+    )
+    summary = PostEventRunSummary(session="2026-09-25")
+    asyncio.run(
+        runner._backfill_missing_ads002_v1(
+            [reference, target],
+            computed_at="2026-09-25T21:00:00+00:00",
+            summary=summary,
+        )
+    )
+
+    assert summary.prediction_backfill_events == 1
+    assert target["ads002_score"]["pretrade_composite"] == 72
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event["event_type"] == "candidate_prediction_backfill"
+    assert event["event_key"] == (
+        "candidate-prediction-backfill:2:"
+        "ads-shadow-v1:candidate-prediction-backfill-v1"
+    )
+    assert event["payload"]["reconstruction"]["raw_evidence_rewritten"] is False
+    assert event["payload"]["ads002_v2_reconstruction"] == {
+        "status": "UNRECONSTRUCTABLE",
+        "reason": "FULL_DECISION_CYCLE_CROSS_SECTION_NOT_PERSISTED",
+        "raw_features_preserved": True,
+    }
+
+
+def test_ads002_v1_backfill_refuses_frozen_configuration_mismatch():
+    reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
+    frozen = replay_config()
+    candidate_row = {
+        **candidate(reference_bar),
+        "candidate_key": "run:cycle:SPY",
+        "features": {"bar_time": reference_bar.isoformat()},
+        "ads002_score": None,
+    }
+
+    class Sink:
+        def _comparison_configuration(self):
+            current = dict(frozen)
+            current["target_pct"] = "0.006"
+            return current
+
+        def _ads002_shadow_candidate_safe(self, *, symbol, metadata):
+            raise AssertionError("scorer must not run when frozen config mismatches")
+
+    runner = PostEventEvidenceRunner(
+        settings=type(
+            "Settings",
+            (),
+            {"strategy_version_id": "LIVE-2026-09-25-003"},
+        )(),
+        market_data=object(),
+        event_sink=Sink(),
+        evidence_reader=None,
+    )
+    score, reason = runner._reconstruct_ads002_v1(
+        candidate_row,
+        frozen_configurations={"LIVE-2026-09-25-003": frozen},
+    )
+    assert score is None
+    assert reason == "FROZEN_SCORING_CONFIGURATION_MISMATCH:target_pct"
+
+
+def test_ads002_incomplete_candidate_still_gets_outcomes_but_not_model_validation():
     reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
     row = {
         **candidate(reference_bar),
@@ -503,7 +665,15 @@ def test_ads002_ineligible_candidate_skips_forward_outcomes_but_keeps_comparison
             return [{"date": start, "open": "09:30", "close": "16:00"}]
 
         async def historical_bars_many(self, symbols, *, start, end):
-            return {"SPY": []}
+            return {
+                "SPY": [
+                    bar(
+                        reference_bar + timedelta(minutes=minute),
+                        str(Decimal("100") + Decimal(minute) / Decimal("100")),
+                    )
+                    for minute in range(1, 61)
+                ]
+            }
 
     class Sink:
         def __init__(self):
@@ -524,8 +694,25 @@ def test_ads002_ineligible_candidate_skips_forward_outcomes_but_keeps_comparison
     )
     summary = asyncio.run(runner.run_session(date(2026, 9, 25)))
 
-    assert summary.outcome_events == 0
+    assert summary.outcome_events == 7
+    assert summary.complete_outcomes == 7
     assert summary.comparison_events == 1
-    assert [event["event_type"] for event in sink.events] == [
-        "live_offline_comparison"
+    forward_events = [
+        event
+        for event in sink.events
+        if event["event_type"] == "candidate_forward_outcome"
     ]
+    assert len(forward_events) == 7
+    assert all(
+        event["payload"]["research_eligibility"]["ads002_v1"]["eligible"] is False
+        for event in forward_events
+    )
+    assert all(
+        "ADS002_PRETRADE_INCOMPLETE"
+        in event["payload"]["research_eligibility"]["ads002_v1"]["reason_codes"]
+        for event in forward_events
+    )
+    assert any(
+        event["event_type"] == "live_offline_comparison"
+        for event in sink.events
+    )

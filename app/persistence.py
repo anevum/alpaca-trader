@@ -17,7 +17,12 @@ from .research_agent.ads002 import (
     score_qualification as ads002_score_qualification,
     score_timing as ads002_score_timing,
 )
-from .research_agent.ads002_v2 import score_cycle_v2
+from .research_agent.ads002_v2 import (
+    FEATURE_SCHEMA_VERSION as ADS002_V2_FEATURE_SCHEMA_VERSION,
+    METHODOLOGY_VERSION as ADS002_V2_METHODOLOGY_VERSION,
+    NORMALIZATION_VERSION as ADS002_V2_NORMALIZATION_VERSION,
+    score_cycle_v2,
+)
 
 
 class TradingEventSink:
@@ -482,6 +487,168 @@ class TradingEventSink:
         }
 
     @staticmethod
+    def _ads002_v1_missing_state(
+        *,
+        metadata: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        """Preserve an explicit research-only ADS v1 failure without imputing data."""
+        quality = dict(metadata.get("market_quality") or {})
+        return {
+            "methodology_version": ADS002_METHODOLOGY_VERSION,
+            "research_only": True,
+            "feature_vector": {
+                "relative_volume_ratio": metadata.get("relative_volume_ratio"),
+                "momentum_pct": metadata.get("momentum_pct"),
+                "vwap_edge_pct": metadata.get("vwap_edge_pct"),
+                "trend_persistence": metadata.get("trend_persistence"),
+                "spread_pct": quality.get("spread_pct"),
+                "bar_age_seconds": quality.get("bar_age_seconds"),
+                "quote_age_ms": None,
+            },
+            "source_completeness": {
+                "attention": False,
+                "qualification": False,
+                "timing": False,
+                "pretrade_complete": False,
+                "missing_requirements": [reason],
+            },
+            "attention": None,
+            "qualification": None,
+            "timing": None,
+            "pretrade_composite": None,
+            "legacy_quality_score": metadata.get("quality_score"),
+        }
+
+    def _ads002_shadow_candidate_safe(
+        self,
+        *,
+        symbol: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep research scoring failures from ever influencing live execution."""
+        try:
+            return self._ads002_shadow_candidate(symbol=symbol, metadata=metadata)
+        except Exception as exc:
+            return self._ads002_v1_missing_state(
+                metadata=metadata,
+                reason=f"SCORING_ERROR:{type(exc).__name__}",
+            )
+
+    @staticmethod
+    def _ads002_v2_missing_state(
+        *,
+        symbol: str,
+        metadata: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        """Represent unavailable v2 shadow state without inventing ranks or scores."""
+        raw_features = dict(metadata.get("ads002_v2_raw_features") or {})
+        raw_features["symbol"] = symbol.upper()
+        return {
+            "methodology_version": ADS002_V2_METHODOLOGY_VERSION,
+            "feature_schema_version": ADS002_V2_FEATURE_SCHEMA_VERSION,
+            "normalization_version": ADS002_V2_NORMALIZATION_VERSION,
+            "research_only": True,
+            "execution_authority": False,
+            "raw_features": raw_features,
+            "attention": {"score": None, "reason": reason},
+            "qualification": {"score": None, "reason": reason},
+            "timing": {"score": None, "reason": reason},
+            "component_ranks": {
+                "attention": None,
+                "qualification": None,
+                "timing": None,
+            },
+            "confidence": {
+                "score": None,
+                "state": "UNAVAILABLE",
+                "reason": reason,
+            },
+            "challengers": {},
+            "source_completeness": {
+                "pretrade_complete": False,
+                "historical_time_of_day_baseline_available": any(
+                    key.startswith("z_") and value not in {None, ""}
+                    for key, value in raw_features.items()
+                ),
+                "relative_family_complete": False,
+                "missing_requirements": [reason],
+            },
+        }
+
+    def _ads002_v2_shadow_cycle(
+        self,
+        scan: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Score ADS v2 from the full frozen decision cycle.
+
+        ADS v2 contains cross-sectional ranks, so entry snapshots must use the
+        complete decision-time scan rather than scoring an entry in isolation.
+        This path is telemetry-only and never changes execution inputs.
+        """
+        ordered: list[tuple[str, dict[str, Any]]] = []
+        inputs: list[dict[str, Any]] = []
+        for scan_symbol, payload in scan.items():
+            if not isinstance(payload, dict):
+                continue
+            symbol = str(payload.get("symbol") or scan_symbol or "").upper()
+            if not symbol:
+                continue
+            metadata = dict(payload.get("metadata") or {})
+            ordered.append((symbol, metadata))
+            inputs.append(
+                {
+                    "symbol": symbol,
+                    "raw_features": dict(
+                        metadata.get("ads002_v2_raw_features") or {}
+                    ),
+                }
+            )
+
+        if not inputs:
+            return {}
+
+        try:
+            scores = score_cycle_v2(
+                inputs,
+                self._comparison_configuration(),
+            )
+        except Exception as exc:
+            reason = f"SCORING_ERROR:{type(exc).__name__}"
+            return {
+                symbol: self._ads002_v2_missing_state(
+                    symbol=symbol,
+                    metadata=metadata,
+                    reason=reason,
+                )
+                for symbol, metadata in ordered
+            }
+
+        by_symbol: dict[str, dict[str, Any]] = {}
+        for (symbol, metadata), raw_score in zip(ordered, scores):
+            score = dict(raw_score or {})
+            completeness = dict(score.get("source_completeness") or {})
+            missing: list[str] = []
+            if completeness.get("pretrade_complete") is not True:
+                for component_name in ("attention", "qualification", "timing"):
+                    component = score.get(component_name) or {}
+                    if component.get("score") is None:
+                        missing.append(
+                            str(component.get("reason") or f"{component_name.upper()}_INPUTS")
+                        )
+                if not missing:
+                    missing.append("PRETRADE_INPUTS")
+            completeness["missing_requirements"] = missing
+            score["source_completeness"] = completeness
+            by_symbol[symbol] = score or self._ads002_v2_missing_state(
+                symbol=symbol,
+                metadata=metadata,
+                reason="SCORING_RESULT_UNAVAILABLE",
+            )
+        return by_symbol
+
+    @staticmethod
     def _candidate_final_decision(
         symbol: str,
         qualified: bool,
@@ -534,6 +701,7 @@ class TradingEventSink:
         candidates: list[dict[str, Any]] = []
         embedded_comparison_context: dict[str, Any] = {}
         qualified_count = 0
+        ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(scan)
         for rank, (symbol, signal) in enumerate(scan.items(), start=1):
             metadata = dict(signal.get("metadata") or {})
             candidate_comparison_context = metadata.pop("_comparison_context", None)
@@ -551,7 +719,7 @@ class TradingEventSink:
             qualified = str(signal.get("action") or "").lower() == "buy"
             qualified_count += int(qualified)
             reason = str(signal.get("reason") or "")
-            ads002_shadow = self._ads002_shadow_candidate(
+            ads002_shadow = self._ads002_shadow_candidate_safe(
                 symbol=symbol,
                 metadata=metadata,
             )
@@ -617,32 +785,33 @@ class TradingEventSink:
                         "sizing": metadata.get("sizing") or {},
                     },
                     "methodology_version": "live-decision-v1",
+                    "strategy_version_id": self.settings.strategy_version_id,
                     "strategy_family": getattr(self.settings, "strategy_name", None),
                     "data_source": "alpaca",
                     "data_feed": getattr(self.settings, "data_feed", None),
                     "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                    "confirmation_state": {
+                        "passes": metadata.get("confirmation_passes"),
+                        "confirmations": metadata.get("confirmations") or {},
+                    },
+                    "regime_state": {
+                        "passes": metadata.get("regime_passes"),
+                        "confirmations": metadata.get("regime_confirmations") or {},
+                    },
                     "research_attribution": {
                         "live_strategy_version": self.settings.strategy_version_id,
                     },
                     "ads002": ads002_shadow,
+                    "ads002_v2": (
+                        ads002_v2_by_symbol.get(symbol.upper())
+                        or self._ads002_v2_missing_state(
+                            symbol=symbol,
+                            metadata=metadata,
+                            reason="DECISION_CYCLE_CONTEXT_UNAVAILABLE",
+                        )
+                    ),
                 }
             )
-        v2_inputs = [
-            {
-                "symbol": candidate.get("symbol"),
-                "raw_features": (
-                    (candidate.get("features") or {}).get("ads002_v2_raw_features")
-                    or {}
-                ),
-            }
-            for candidate in candidates
-        ]
-        v2_scores = score_cycle_v2(
-            v2_inputs,
-            self._comparison_configuration(),
-        )
-        for candidate, v2_score in zip(candidates, v2_scores):
-            candidate["ads002_v2"] = v2_score
 
         replay_context = {
             "configuration": self._comparison_configuration(),
@@ -734,6 +903,22 @@ class TradingEventSink:
             "spread_pct": market_quality.get("spread_pct"),
             "observed_at": market_quality.get("quote_timestamp"),
         }
+        ads002_shadow = self._ads002_shadow_candidate_safe(
+            symbol=signal.symbol,
+            metadata=metadata,
+        )
+        decision_scan = getattr(signal, "_evidence_decision_scan", None)
+        ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(
+            decision_scan if isinstance(decision_scan, dict) else {}
+        )
+        ads002_v2 = (
+            ads002_v2_by_symbol.get(signal.symbol.upper())
+            or self._ads002_v2_missing_state(
+                symbol=signal.symbol,
+                metadata=metadata,
+                reason="DECISION_CYCLE_CONTEXT_UNAVAILABLE",
+            )
+        )
         payload = {
             "signal": {
                 "signal_id": signal_id,
@@ -802,10 +987,25 @@ class TradingEventSink:
                             "sizing": metadata.get("sizing") or {},
                         },
                         "methodology_version": "live-decision-v1",
+                        "strategy_version_id": self.settings.strategy_version_id,
                         "strategy_family": getattr(self.settings, "strategy_name", None),
                         "data_source": "alpaca",
                         "data_feed": getattr(self.settings, "data_feed", None),
                         "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                        "forward_outcomes_status": "pending",
+                        "confirmation_state": {
+                            "passes": metadata.get("confirmation_passes"),
+                            "confirmations": metadata.get("confirmations") or {},
+                        },
+                        "regime_state": {
+                            "passes": metadata.get("regime_passes"),
+                            "confirmations": metadata.get("regime_confirmations") or {},
+                        },
+                        "research_attribution": {
+                            "live_strategy_version": self.settings.strategy_version_id,
+                        },
+                        "ads002": ads002_shadow,
+                        "ads002_v2": ads002_v2,
                     },
                 },
             },
