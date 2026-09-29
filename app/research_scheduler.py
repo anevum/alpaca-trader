@@ -11,6 +11,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .post_event_evidence import PostEventEvidenceRunner
+from .research_agent.adaptation_proposal import proposal_from_counterfactual
+from .research_agent.adaptive_shadow import (
+    aggregate_shadow_validation,
+    build_adaptive_shadow_plan,
+    evaluate_shadow_session,
+    prepare_shadow_rows,
+)
 from .research_agent.counterfactual_lab import (
     COST_MODEL_VERSION,
     PARAMETER_FEATURES,
@@ -19,6 +26,14 @@ from .research_agent.counterfactual_lab import (
     prepare_counterfactual_rows,
     run_counterfactual_search,
 )
+from .research_agent.graen_adaptive_validation import assess_adaptive_validation
+from .research_agent.nostra_session import derive_nostra_regime_timeline
+from .research_agent.nostra_transition import (
+    build_transition_model,
+    forecast_next_regime,
+)
+from .research_agent.promotion_gate import evaluate_promotion_gate
+from .research_agent.strategy_health import compute_strategy_health
 from .research_reporting import (
     classify_daily,
     enrich_excursions,
@@ -32,7 +47,7 @@ from .weekly_reporting import REPORT_VERSION, build_weekly_report
 
 NY = ZoneInfo("America/New_York")
 REPORT_AFTER = time(16, 5)
-DAILY_REPORT_VERSION = "rhen-daily-v1.3"
+DAILY_REPORT_VERSION = "rhen-daily-v1.4"
 
 
 def is_last_session_of_week(current: date, next_session: date | None) -> bool:
@@ -481,6 +496,323 @@ class ResearchReportScheduler:
                 "promotion_authorized": False,
             },
             history_warning,
+        )
+
+    def _adaptive_baseline_configuration(self) -> dict[str, str]:
+        return {
+            parameter: str(getattr(self.settings, parameter))
+            for parameter in PARAMETER_FEATURES
+            if getattr(self.settings, parameter, None) not in (None, "")
+        }
+
+    async def _build_nostra_research(
+        self,
+        session: date,
+        candidates: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str | None]:
+        current_version = str(
+            getattr(self.settings, "strategy_version_id", "") or ""
+        )
+        session_state = derive_nostra_regime_timeline(candidates)
+        prior_reports, warning = await self._counterfactual_history_reports(
+            session
+        )
+
+        observations: list[dict[str, Any]] = []
+        for report in prior_reports:
+            if (
+                current_version
+                and str(report.get("strategy_version_id") or "")
+                != current_version
+            ):
+                continue
+            nostra = report.get("nostra")
+            if not isinstance(nostra, dict):
+                continue
+            prior_state = nostra.get("session_state")
+            if not isinstance(prior_state, dict):
+                continue
+            for row in prior_state.get("timeline") or []:
+                if isinstance(row, dict):
+                    observations.append(row)
+        observations.extend(
+            row
+            for row in session_state.get("timeline") or []
+            if isinstance(row, dict)
+        )
+
+        transition_model = build_transition_model(observations)
+        latest = session_state.get("latest")
+        next_forecast = None
+        if isinstance(latest, dict) and latest.get("regime"):
+            next_forecast = forecast_next_regime(
+                transition_model,
+                current_regime=str(latest["regime"]),
+            )
+
+        return (
+            {
+                "methodology_version": "nostra-research-v1",
+                "session": session.isoformat(),
+                "strategy_version_id": current_version or None,
+                "session_state": session_state,
+                "transition_model": transition_model,
+                "next_regime_forecast": next_forecast,
+                "research_only": True,
+                "execution_authority": False,
+                "live_configuration_changed": False,
+                "promotion_authorized": False,
+            },
+            warning,
+        )
+
+    @staticmethod
+    def _ads002_evidence_quality(
+        ads002_v2: dict[str, Any],
+    ) -> dict[str, Any]:
+        models = [
+            row
+            for row in ads002_v2.get("models") or []
+            if isinstance(row, dict)
+        ]
+        samples = []
+        direct_coverages = []
+        forward_coverages = []
+        for model in models:
+            confidence = model.get("confidence")
+            if not isinstance(confidence, dict):
+                continue
+            sample = confidence.get("samples")
+            coverage = confidence.get("coverage")
+            if isinstance(sample, dict):
+                samples.append(sample)
+            if isinstance(coverage, dict):
+                try:
+                    direct_coverages.append(
+                        float(coverage.get("direct_attribution") or 0)
+                    )
+                    forward_coverages.append(
+                        float(coverage.get("forward_15m") or 0)
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+        def minimum_sample(key: str) -> int:
+            values = []
+            for row in samples:
+                try:
+                    values.append(int(row.get(key) or 0))
+                except (TypeError, ValueError):
+                    values.append(0)
+            return min(values) if values else 0
+
+        return {
+            "independent_sessions": minimum_sample("independent_sessions"),
+            "eligible_candidates": minimum_sample(
+                "research_eligible_candidates"
+            ),
+            "directly_attributed_closed_trades": minimum_sample(
+                "closed_direct_trades"
+            ),
+            "direct_attribution_coverage": (
+                min(direct_coverages) if direct_coverages else 0
+            ),
+            "forward_15m_coverage": (
+                min(forward_coverages) if forward_coverages else 0
+            ),
+            "source": "ads002_v2_confidence_state",
+        }
+
+    def _bounded_proposals_from_lab(
+        self,
+        *,
+        counterfactual_lab: dict[str, Any],
+        strategy_health: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = str(strategy_health.get("control_state") or "")
+        if state not in {"ADAPT", "RESEARCH"}:
+            return {}
+
+        current_version = str(
+            getattr(self.settings, "strategy_version_id", "") or ""
+        )
+        baseline = counterfactual_lab.get("baseline_parameters") or {}
+        rolling = counterfactual_lab.get("rolling_searches") or {}
+        proposals: dict[str, Any] = {}
+        for parameter in counterfactual_lab.get(
+            "proposal_ready_parameters"
+        ) or []:
+            result = rolling.get(parameter)
+            current_value = baseline.get(parameter)
+            if not isinstance(result, dict) or current_value in (None, ""):
+                continue
+            proposal = proposal_from_counterfactual(
+                parameter=str(parameter),
+                current_value=current_value,
+                alternatives=result.get("results") or [],
+                control_state=state,
+                source_strategy_version=current_version,
+            )
+            if proposal is not None:
+                proposals[str(parameter)] = proposal
+        return proposals
+
+    async def _build_adaptive_research(
+        self,
+        *,
+        session: date,
+        candidates: list[dict[str, Any]],
+        counterfactual_lab: dict[str, Any],
+        nostra: dict[str, Any],
+        metrics: dict[str, Any],
+        runtime: dict[str, Any],
+        outcome_status: dict[str, Any],
+        ads002_v2: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        current_version = str(
+            getattr(self.settings, "strategy_version_id", "") or ""
+        )
+        prior_reports, warning = await self._counterfactual_history_reports(
+            session
+        )
+
+        health_source = {
+            "session": session.isoformat(),
+            "strategy_version_id": current_version or None,
+            "metrics": metrics,
+            "runtime": runtime,
+            "candidate_forward_evidence": {"status": outcome_status},
+            "ads002_v2": ads002_v2,
+            "counterfactual_lab": counterfactual_lab,
+        }
+        session_state = nostra.get("session_state") or {}
+        latest_nostra = (
+            session_state.get("latest")
+            if isinstance(session_state, dict)
+            else None
+        )
+        strategy_health = compute_strategy_health(
+            daily_report=health_source,
+            weekly_report=None,
+            nostra_state=(
+                latest_nostra if isinstance(latest_nostra, dict) else None
+            ),
+        )
+        proposals = self._bounded_proposals_from_lab(
+            counterfactual_lab=counterfactual_lab,
+            strategy_health=strategy_health,
+        )
+
+        current_evaluation = None
+        previous_plan = None
+        ordered_prior = sorted(
+            (
+                report
+                for report in prior_reports
+                if isinstance(report, dict)
+                and (
+                    not current_version
+                    or str(report.get("strategy_version_id") or "")
+                    == current_version
+                )
+            ),
+            key=lambda report: str(report.get("session") or ""),
+        )
+        for report in reversed(ordered_prior):
+            adaptive = report.get("adaptive_strategy_control")
+            if not isinstance(adaptive, dict):
+                continue
+            plan = adaptive.get("next_session_shadow_plan")
+            if isinstance(plan, dict):
+                previous_plan = plan
+                break
+
+        scoped_candidates = [
+            row
+            for row in candidates
+            if isinstance(row, dict)
+            and (
+                not current_version
+                or str(row.get("strategy_version_id") or "")
+                == current_version
+            )
+        ]
+        if (
+            isinstance(previous_plan, dict)
+            and str(previous_plan.get("source_strategy_version") or "")
+            == current_version
+            and str(previous_plan.get("source_session") or "")
+            < session.isoformat()
+        ):
+            current_evaluation = evaluate_shadow_session(
+                rows=prepare_shadow_rows(scoped_candidates),
+                plan=previous_plan,
+                evaluation_session=session.isoformat(),
+                round_trip_cost=STRESS_ROUND_TRIP_COST_V1,
+            )
+
+        evaluations = []
+        for report in ordered_prior:
+            adaptive = report.get("adaptive_strategy_control")
+            if not isinstance(adaptive, dict):
+                continue
+            evaluation = adaptive.get("shadow_evaluation")
+            if isinstance(evaluation, dict):
+                evaluations.append(evaluation)
+        if current_evaluation is not None:
+            evaluations.append(current_evaluation)
+
+        shadow_validation = aggregate_shadow_validation(evaluations)
+
+        next_plan = None
+        if proposals:
+            next_plan = build_adaptive_shadow_plan(
+                source_session=session.isoformat(),
+                source_strategy_version=current_version,
+                baseline_configuration=self._adaptive_baseline_configuration(),
+                proposals=proposals,
+            )
+
+        graen_validation = assess_adaptive_validation(
+            counterfactual_lab=counterfactual_lab,
+            shadow_validation=shadow_validation,
+            holdout_result=None,
+        )
+        evidence_quality = self._ads002_evidence_quality(ads002_v2)
+
+        promotion_previews: dict[str, Any] = {}
+        for parameter, proposal in proposals.items():
+            promotion_previews[parameter] = evaluate_promotion_gate(
+                proposal=proposal,
+                source_strategy_version=current_version,
+                strategy_health=strategy_health,
+                shadow_validation=shadow_validation,
+                evidence_quality=evidence_quality,
+                graen_validation=graen_validation,
+                human_authorization=None,
+            )
+
+        return (
+            {
+                "methodology_version": "iren-asc-v1",
+                "session": session.isoformat(),
+                "strategy_version_id": current_version or None,
+                "strategy_health": strategy_health,
+                "parameter_proposals": proposals,
+                "proposal_count": len(proposals),
+                "shadow_evaluation": current_evaluation,
+                "shadow_validation": shadow_validation,
+                "next_session_shadow_plan": next_plan,
+                "graen_validation": graen_validation,
+                "evidence_quality": evidence_quality,
+                "promotion_previews": promotion_previews,
+                "automatic_application_authorized": False,
+                "execution_authority": False,
+                "risk_or_sizing_authority": False,
+                "live_configuration_changed": False,
+                "promotion_authorized": False,
+            },
+            warning,
         )
 
     async def generate_daily(self, session: date) -> dict[str, Any]:
