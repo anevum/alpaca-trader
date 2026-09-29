@@ -355,6 +355,22 @@ class MobileLiveActivityService:
         delivered = False
 
         try:
+            state = json.loads(json.dumps(content_state))
+            payload = {
+                "aps": {
+                    "timestamp": int(time.time()),
+                    "event": "update",
+                    "content-state": state,
+                    "stale-date": int(time.time()) + 180,
+                }
+            }
+            if len(json.dumps(payload, separators=(",", ":")).encode()) > 3900:
+                state["performancePoints"] = list(state.get("performancePoints") or [])[-16:]
+                state["latestActivity"] = list(state.get("latestActivity") or [])[:1]
+                payload["aps"]["content-state"] = state
+            if len(json.dumps(payload, separators=(",", ":")).encode()) > 4000:
+                raise RuntimeError("ActivityKit payload exceeds 4 KB after compaction")
+
             response = await self._require_client().post(
                 url,
                 headers={
@@ -364,14 +380,7 @@ class MobileLiveActivityService:
                     "apns-priority": "10",
                     "content-type": "application/json",
                 },
-                json={
-                    "aps": {
-                        "timestamp": int(time.time()),
-                        "event": "update",
-                        "content-state": content_state,
-                        "stale-date": int(time.time()) + 180,
-                    }
-                },
+                json=payload,
             )
             response_status = response.status_code
             apns_id = response.headers.get("apns-id")
