@@ -17,6 +17,7 @@ from .research_agent.ads002 import (
     score_qualification as ads002_score_qualification,
     score_timing as ads002_score_timing,
 )
+from .research_agent.ads002_v2 import score_cycle_v2
 
 
 class TradingEventSink:
@@ -626,6 +627,23 @@ class TradingEventSink:
                     "ads002": ads002_shadow,
                 }
             )
+        v2_inputs = [
+            {
+                "symbol": candidate.get("symbol"),
+                "raw_features": (
+                    (candidate.get("features") or {}).get("ads002_v2_raw_features")
+                    or {}
+                ),
+            }
+            for candidate in candidates
+        ]
+        v2_scores = score_cycle_v2(
+            v2_inputs,
+            self._comparison_configuration(),
+        )
+        for candidate, v2_score in zip(candidates, v2_scores):
+            candidate["ads002_v2"] = v2_score
+
         replay_context = {
             "configuration": self._comparison_configuration(),
             "execution_context": comparison_context or embedded_comparison_context,
