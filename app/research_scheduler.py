@@ -34,7 +34,6 @@ from .research_agent.nostra_transition import (
     forecast_next_regime,
 )
 from .research_agent.parameter_pressure import compute_parameter_pressure
-from .research_agent.parameter_pressure import compute_parameter_pressure
 from .research_agent.promotion_gate import evaluate_promotion_gate
 from .research_agent.strategy_health import compute_strategy_health
 from .research_agent.strategy_router import rank_strategy_families
@@ -689,16 +688,6 @@ class ResearchReportScheduler:
                 == current_version
             )
         ]
-        pressure_reports = [
-            *scoped_prior_reports,
-            {
-                "session": session.isoformat(),
-                "strategy_version_id": current_version or None,
-                "counterfactual_lab": counterfactual_lab,
-            },
-        ]
-        parameter_pressure = compute_parameter_pressure(pressure_reports)
-
         health_source = {
             "session": session.isoformat(),
             "strategy_version_id": current_version or None,
@@ -787,13 +776,15 @@ class ResearchReportScheduler:
             consecutive_adapt_observations=adapt_count,
             consecutive_research_observations=research_count,
         )
-        proposal_health = {
+        effective_health = {
             **strategy_health,
+            "requested_control_state": requested_state,
             "control_state": control_transition.get("state"),
+            "control_transition": control_transition,
         }
         proposals = self._bounded_proposals_from_lab(
             counterfactual_lab=counterfactual_lab,
-            strategy_health=proposal_health,
+            strategy_health=effective_health,
         )
 
         current_evaluation = None
@@ -865,7 +856,7 @@ class ResearchReportScheduler:
             promotion_previews[parameter] = evaluate_promotion_gate(
                 proposal=proposal,
                 source_strategy_version=current_version,
-                strategy_health=strategy_health,
+                strategy_health=effective_health,
                 shadow_validation=shadow_validation,
                 evidence_quality=evidence_quality,
                 graen_validation=graen_validation,
@@ -877,7 +868,7 @@ class ResearchReportScheduler:
                 "methodology_version": "iren-asc-v1",
                 "session": session.isoformat(),
                 "strategy_version_id": current_version or None,
-                "strategy_health": strategy_health,
+                "strategy_health": effective_health,
                 "parameter_pressure": parameter_pressure,
                 "control_transition": control_transition,
                 "strategy_family_routing": rank_strategy_families(
