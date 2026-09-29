@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
           [activityId,event,fingerprint,status,apnsId,reason,delivered,durationMs]
         );
         await tx.unsafe(
-          "update private.iren_live_activity_tokens set last_push_at=now(),last_apns_status=$2,last_apns_id=$3,last_error=$4,active=case when $2 in (400,404,410) then false else active end,updated_at=now() where activity_id=$1",
+          "update private.iren_live_activity_tokens set last_push_at=now(),last_apns_status=$2,last_apns_id=$3,last_error=$4,active=case when $2=410 or $4 in ('BadDeviceToken','DeviceTokenNotForTopic','Unregistered') then false else active end,updated_at=now() where activity_id=$1",
           [activityId,status,apnsId,delivered ? null : reason]
         );
       });
