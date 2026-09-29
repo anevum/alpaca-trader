@@ -162,3 +162,69 @@ def test_immature_parameter_pressure_remains_collecting():
     )
     assert result["dimensions"]["parameter_pressure"]["status"] == "COLLECTING"
     assert result["control_state"] == NORMAL
+
+
+
+def healthy_nostra_with_calibration(skill, observations=120):
+    return {
+        "regime": "TREND_EXPANSION",
+        "confidence": "0.80",
+        "unknown_probability": "0.05",
+        "market_familiarity": "0.85",
+        "calibration": {
+            "observations": observations,
+            "multiclass_brier": "0.04",
+            "base_rate_brier": "0.08",
+            "brier_skill_score": str(skill),
+            "log_loss": "0.50",
+            "base_rate_log_loss": "0.70",
+            "log_loss_skill_score": "0.20",
+            "top1_accuracy": "0.70",
+            "majority_class_accuracy": "0.45",
+        },
+    }
+
+
+def test_mature_positive_nostra_skill_is_healthy():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("0.25"),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "HEALTHY"
+    assert calibration["reason_codes"] == [
+        "FORECAST_CALIBRATION_POSITIVE_SKILL"
+    ]
+    assert result["control_state"] == NORMAL
+
+
+def test_mature_negative_nostra_skill_escalates_to_research():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("-0.20"),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "DEGRADED"
+    assert "FORECAST_CALIBRATION_SKILL_DEGRADED" in calibration["reason_codes"]
+    assert result["control_state"] == RESEARCH
+
+
+def test_mature_zero_nostra_skill_is_research_watch():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("0"),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "WATCH"
+    assert "FORECAST_CALIBRATION_NO_SKILL" in calibration["reason_codes"]
+    assert result["control_state"] == RESEARCH
+
+
+def test_immature_nostra_calibration_remains_collecting():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("-0.50", observations=40),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "COLLECTING"
+    assert result["control_state"] == NORMAL
