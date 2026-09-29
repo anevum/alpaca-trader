@@ -26,14 +26,17 @@ from .research_agent.counterfactual_lab import (
     prepare_counterfactual_rows,
     run_counterfactual_search,
 )
+from .research_agent.control_state import transition_control_state
 from .research_agent.graen_adaptive_validation import assess_adaptive_validation
 from .research_agent.nostra_session import derive_nostra_regime_timeline
 from .research_agent.nostra_transition import (
     build_transition_model,
     forecast_next_regime,
 )
+from .research_agent.parameter_pressure import compute_parameter_pressure
 from .research_agent.promotion_gate import evaluate_promotion_gate
 from .research_agent.strategy_health import compute_strategy_health
+from .research_agent.strategy_router import rank_strategy_families
 from .research_reporting import (
     classify_daily,
     enrich_excursions,
@@ -692,20 +695,6 @@ class ResearchReportScheduler:
             if isinstance(session_state, dict)
             else None
         )
-        strategy_health = compute_strategy_health(
-            daily_report=health_source,
-            weekly_report=None,
-            nostra_state=(
-                latest_nostra if isinstance(latest_nostra, dict) else None
-            ),
-        )
-        proposals = self._bounded_proposals_from_lab(
-            counterfactual_lab=counterfactual_lab,
-            strategy_health=strategy_health,
-        )
-
-        current_evaluation = None
-        previous_plan = None
         ordered_prior = sorted(
             (
                 report
@@ -719,6 +708,76 @@ class ResearchReportScheduler:
             ),
             key=lambda report: str(report.get("session") or ""),
         )
+        pressure_reports = [
+            *ordered_prior,
+            {
+                **health_source,
+                "counterfactual_lab": counterfactual_lab,
+            },
+        ]
+        parameter_pressure = compute_parameter_pressure(pressure_reports)
+        strategy_health = compute_strategy_health(
+            daily_report=health_source,
+            weekly_report=None,
+            nostra_state=(
+                latest_nostra if isinstance(latest_nostra, dict) else None
+            ),
+            parameter_pressure=parameter_pressure,
+        )
+
+        def prior_control_state(report: dict[str, Any]) -> str | None:
+            adaptive = report.get("adaptive_strategy_control")
+            if not isinstance(adaptive, dict):
+                return None
+            transition = adaptive.get("control_transition")
+            if isinstance(transition, dict) and transition.get("state"):
+                return str(transition.get("state"))
+            prior_health = adaptive.get("strategy_health")
+            if isinstance(prior_health, dict) and prior_health.get("control_state"):
+                return str(prior_health.get("control_state"))
+            return None
+
+        previous_state = (
+            prior_control_state(ordered_prior[-1])
+            if ordered_prior else None
+        ) or "NORMAL"
+
+        def consecutive(state: str) -> int:
+            count = 0
+            for report in reversed(ordered_prior):
+                if prior_control_state(report) == state:
+                    count += 1
+                else:
+                    break
+            return count
+
+        requested_state = str(
+            strategy_health.get("control_state") or "NORMAL"
+        )
+        control_transition = transition_control_state(
+            previous_state=previous_state,
+            health_snapshot=strategy_health,
+            consecutive_clear_observations=(
+                consecutive("NORMAL") + int(requested_state == "NORMAL")
+            ),
+            consecutive_adapt_observations=(
+                consecutive("ADAPT") + int(requested_state == "ADAPT")
+            ),
+            consecutive_research_observations=(
+                consecutive("RESEARCH") + int(requested_state == "RESEARCH")
+            ),
+        )
+        proposal_health = {
+            **strategy_health,
+            "control_state": control_transition.get("state"),
+        }
+        proposals = self._bounded_proposals_from_lab(
+            counterfactual_lab=counterfactual_lab,
+            strategy_health=proposal_health,
+        )
+
+        current_evaluation = None
+        previous_plan = None
         for report in reversed(ordered_prior):
             adaptive = report.get("adaptive_strategy_control")
             if not isinstance(adaptive, dict):
@@ -799,6 +858,16 @@ class ResearchReportScheduler:
                 "session": session.isoformat(),
                 "strategy_version_id": current_version or None,
                 "strategy_health": strategy_health,
+                "parameter_pressure": parameter_pressure,
+                "control_transition": control_transition,
+                "strategy_family_routing": rank_strategy_families(
+                    regime_state=(
+                        latest_nostra
+                        if isinstance(latest_nostra, dict)
+                        else {"regime": "UNKNOWN"}
+                    ),
+                    families=[],
+                ),
                 "parameter_proposals": proposals,
                 "proposal_count": len(proposals),
                 "shadow_evaluation": current_evaluation,
