@@ -239,6 +239,24 @@ class Settings(BaseSettings):
     lookback_bars: int = Field(default=500, alias="LOOKBACK_BARS")
     lookback_days: int = Field(default=2, alias="LOOKBACK_DAYS")
     data_feed: str = Field(default="iex", alias="DATA_FEED")
+    realtime_market_enabled: bool = Field(
+        default=False, alias="REALTIME_MARKET_ENABLED"
+    )
+    realtime_shadow_only: bool = Field(
+        default=True, alias="REALTIME_SHADOW_ONLY"
+    )
+    realtime_execution_enabled: bool = Field(
+        default=False, alias="REALTIME_EXECUTION_ENABLED"
+    )
+    realtime_symbol_limit: int = Field(
+        default=30, alias="REALTIME_SYMBOL_LIMIT"
+    )
+    realtime_sync_seconds: int = Field(
+        default=5, alias="REALTIME_SYNC_SECONDS"
+    )
+    realtime_quote_max_age_seconds: int = Field(
+        default=5, alias="REALTIME_QUOTE_MAX_AGE_SECONDS"
+    )
     poll_seconds: int = Field(default=15, alias="POLL_SECONDS")
     max_bar_age_seconds: int = Field(default=90, alias="MAX_BAR_AGE_SECONDS")
     market_data_batch_size: int = Field(default=25, alias="MARKET_DATA_BATCH_SIZE")
@@ -366,6 +384,20 @@ class Settings(BaseSettings):
             raise ValueError("STRATEGY_NAME must be opening_range_vwap or rolling_momentum_vwap")
         if self.data_feed not in {"iex", "sip", "delayed_sip"}:
             raise ValueError("DATA_FEED must be iex, sip, or delayed_sip")
+        if not 1 <= self.realtime_symbol_limit <= 1000:
+            raise ValueError("REALTIME_SYMBOL_LIMIT must be between 1 and 1000")
+        if not 1 <= self.realtime_sync_seconds <= 60:
+            raise ValueError("REALTIME_SYNC_SECONDS must be between 1 and 60")
+        if not 1 <= self.realtime_quote_max_age_seconds <= 60:
+            raise ValueError("REALTIME_QUOTE_MAX_AGE_SECONDS must be between 1 and 60")
+        if self.realtime_execution_enabled and not self.realtime_market_enabled:
+            raise ValueError(
+                "REALTIME_EXECUTION_ENABLED requires REALTIME_MARKET_ENABLED"
+            )
+        if self.realtime_execution_enabled and self.realtime_shadow_only:
+            raise ValueError(
+                "REALTIME_EXECUTION_ENABLED requires REALTIME_SHADOW_ONLY=false"
+            )
         if self.poll_seconds < 15:
             raise ValueError("POLL_SECONDS must be at least 15")
         if not 0.5 <= self.slack_webhook_timeout_seconds <= 10.0:
