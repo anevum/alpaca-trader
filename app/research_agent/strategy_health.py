@@ -350,9 +350,28 @@ def _parameter_health(parameter_pressure: Mapping[str, Any] | None) -> dict[str,
     if not rows:
         return _dimension(COLLECTING, "PARAMETER_PRESSURE_NOT_AVAILABLE")
 
+    mature_rows = [
+        row
+        for row in rows
+        if int(_d(row.get("observations"))) >= 5
+    ]
+    if not mature_rows:
+        return _dimension(
+            COLLECTING,
+            "PARAMETER_PRESSURE_SAMPLE_IMMATURE",
+            metrics={
+                "parameter_count": len(rows),
+                "mature_parameter_count": 0,
+                "max_observations": max(
+                    (int(_d(row.get("observations"))) for row in rows),
+                    default=0,
+                ),
+            },
+        )
+
     strongest = Decimal("0")
     boundary_parameters: list[str] = []
-    for row in rows:
+    for row in mature_rows:
         fraction = _d(row.get("boundary_fraction"))
         if fraction > strongest:
             strongest = fraction
@@ -363,6 +382,7 @@ def _parameter_health(parameter_pressure: Mapping[str, Any] | None) -> dict[str,
         "max_boundary_fraction": strongest,
         "boundary_parameters": boundary_parameters,
         "parameter_count": len(rows),
+        "mature_parameter_count": len(mature_rows),
     }
     if strongest >= Decimal("0.60"):
         return _dimension(
