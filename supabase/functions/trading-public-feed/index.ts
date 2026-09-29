@@ -93,6 +93,37 @@ function publicResearchEvent(row: Record<string, unknown>) {
         .slice(0, 4)
     : [];
 
+  const ads002 = objectValue(payload.ads002);
+  const adsReadiness = objectValue(ads002.readiness);
+  const adsConfidence = objectValue(ads002.confidence);
+  const adsAttribution = objectValue(ads002.attribution);
+  const publicAds002 = Object.keys(ads002).length
+    ? {
+        methodology_version: optionalString(ads002.methodology_version),
+        readiness_state: optionalString(adsReadiness.state),
+        data_valid: adsReadiness.data_valid === true,
+        stable: adsReadiness.stable === true,
+        confidence_score: Number.isFinite(Number(adsConfidence.score))
+          ? Number(adsConfidence.score)
+          : null,
+        executable_signals: Number.isFinite(Number(adsAttribution.executable_signals))
+          ? Number(adsAttribution.executable_signals)
+          : null,
+        direct_signals: Number.isFinite(Number(adsAttribution.direct_signals))
+          ? Number(adsAttribution.direct_signals)
+          : null,
+        unlinked_signals: Number.isFinite(Number(adsAttribution.unlinked_signals))
+          ? Number(adsAttribution.unlinked_signals)
+          : null,
+        direct_coverage: Number.isFinite(Number(adsAttribution.direct_coverage))
+          ? Number(adsAttribution.direct_coverage)
+          : null,
+        reason_codes: safeStringArray(adsReadiness.reason_codes),
+        promotion_authorized: ads002.promotion_authorized === true,
+        live_configuration_changed: ads002.live_configuration_changed === true,
+      }
+    : null;
+
   return {
     at: row.occurred_at ? String(row.occurred_at) : null,
     type,
@@ -105,6 +136,7 @@ function publicResearchEvent(row: Record<string, unknown>) {
     week_start: weekStart,
     week_end: weekEnd,
     warnings,
+    ads002: publicAds002,
   };
 }
 
@@ -197,8 +229,8 @@ Deno.serve(async (req) => {
     const decisions = decisionRows.map((row) => publicDecision(row));
     const nextDirection =
       decisions.find((row) => row.decision_type === "next_research_direction") || null;
-    const terminalDecisions =
-      decisions.filter((row) => row.decision_type === "terminal_rejection");
+    const completedDecisions =
+      decisions.filter((row) => row.decision_type !== "next_research_direction");
     const weekly = weeklyRows[0] ?? null;
     const missingSessions = weekly ? safeStringArray(weekly.missing_sessions) : [];
     const includedSessions = weekly ? safeStringArray(weekly.included_sessions) : [];
@@ -267,7 +299,7 @@ Deno.serve(async (req) => {
         current_status: nextDirection?.status || null,
         last_updated_at: decisions[0]?.at || latestWeekly?.at || latestDaily?.at || null,
         next_direction: nextDirection,
-        completed_decisions: terminalDecisions,
+        completed_decisions: completedDecisions,
         active_questions: questionRows,
         latest_daily: latestDaily,
         latest_weekly: latestWeekly,
