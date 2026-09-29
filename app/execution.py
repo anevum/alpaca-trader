@@ -12,6 +12,7 @@ from .config import Settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
+from .research_agent.ads002_features_v2 import build_ads002_v2_features
 from .opportunity import correlation_checks, score_opportunity
 from .risk import validate_buy, validate_sell_to_flat
 from .sizing import calculate_entry_notional, sizing_snapshot
@@ -1690,6 +1691,10 @@ class ExecutionEngine:
                 now=now,
             )
             signal.metadata = dict(signal.metadata or {})
+            signal.metadata["ads002_v2_raw_features"] = build_ads002_v2_features(
+                bars=market_bars.get(symbol, []),
+                metadata={**signal.metadata, "symbol": symbol},
+            )
             signal.metadata["strategy_evaluation"] = {
                 "action": signal.action,
                 "reason": signal.reason,
@@ -1719,6 +1724,11 @@ class ExecutionEngine:
                 )
                 signal.metadata = dict(signal.metadata or {})
                 signal.metadata["market_quality"] = quality
+                signal.metadata["ads002_v2_raw_features"] = build_ads002_v2_features(
+                    bars=market_bars.get(signal.symbol, []),
+                    metadata={**signal.metadata, "symbol": signal.symbol},
+                    market_quality=quality,
+                )
                 if allowed:
                     ranking = score_opportunity(
                         self.settings,
