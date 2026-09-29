@@ -141,15 +141,47 @@ class ResearchAgentRunner:
             and edge.get("status") == "rejected"
             and edge.get("survivor_state") == "all_rejected"
         )
-        strategy_health = compute_strategy_health(
-            daily_report=self.evidence.latest_daily_report,
-            weekly_report=self.evidence.latest_weekly_report,
-        )
-        proposals: dict[str, Any] = {}
         daily_report = self.evidence.latest_daily_report or {}
+        persisted_asc = daily_report.get("adaptive_strategy_control")
+        persisted_asc = (
+            persisted_asc if isinstance(persisted_asc, Mapping) else {}
+        )
+        persisted_health = persisted_asc.get("strategy_health")
+        persisted_health = (
+            persisted_health if isinstance(persisted_health, Mapping) else None
+        )
+
+        nostra = daily_report.get("nostra")
+        nostra = nostra if isinstance(nostra, Mapping) else {}
+        session_state = nostra.get("session_state")
+        session_state = (
+            session_state if isinstance(session_state, Mapping) else {}
+        )
+        latest_nostra = session_state.get("latest")
+        latest_nostra = (
+            latest_nostra if isinstance(latest_nostra, Mapping) else None
+        )
+
+        strategy_health = (
+            dict(persisted_health)
+            if persisted_health is not None
+            else compute_strategy_health(
+                daily_report=self.evidence.latest_daily_report,
+                weekly_report=self.evidence.latest_weekly_report,
+                nostra_state=latest_nostra,
+            )
+        )
+
+        persisted_proposals = persisted_asc.get("parameter_proposals")
+        proposals: dict[str, Any] = (
+            dict(persisted_proposals)
+            if isinstance(persisted_proposals, Mapping)
+            else {}
+        )
         lab = daily_report.get("counterfactual_lab")
         if (
-            isinstance(lab, Mapping)
+            not proposals
+            and isinstance(lab, Mapping)
             and strategy_health.get("control_state") in {"ADAPT", "RESEARCH"}
         ):
             baseline = lab.get("baseline_parameters")
@@ -170,11 +202,20 @@ class ResearchAgentRunner:
                 )
                 if proposal is not None:
                     proposals[str(parameter)] = proposal
+
         strategy_health = {
             **strategy_health,
             "parameter_proposals": proposals,
             "proposal_count": len(proposals),
             "automatic_application_authorized": False,
+            "nostra_state": latest_nostra,
+            "shadow_validation": persisted_asc.get("shadow_validation"),
+            "graen_validation": persisted_asc.get("graen_validation"),
+            "promotion_previews": persisted_asc.get("promotion_previews") or {},
+            "next_session_shadow_plan": persisted_asc.get(
+                "next_session_shadow_plan"
+            ),
+            "canonical_asc_artifact_present": bool(persisted_asc),
         }
         return {
             "agent_version": "rhen-research-agent-v1-foundation",
