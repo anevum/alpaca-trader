@@ -11,6 +11,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .post_event_evidence import PostEventEvidenceRunner
+from .research_agent.counterfactual_lab import (
+    COST_MODEL_VERSION,
+    PARAMETER_FEATURES,
+    STRESS_ROUND_TRIP_COST_V1,
+    aggregate_counterfactual_searches,
+    prepare_counterfactual_rows,
+    run_counterfactual_search,
+)
 from .research_reporting import (
     classify_daily,
     enrich_excursions,
@@ -24,7 +32,7 @@ from .weekly_reporting import REPORT_VERSION, build_weekly_report
 
 NY = ZoneInfo("America/New_York")
 REPORT_AFTER = time(16, 5)
-DAILY_REPORT_VERSION = "rhen-daily-v1.2"
+DAILY_REPORT_VERSION = "rhen-daily-v1.3"
 
 
 def is_last_session_of_week(current: date, next_session: date | None) -> bool:
@@ -339,6 +347,7 @@ class ResearchReportScheduler:
                 "post_event": {},
                 "ads002": {},
                 "ads002_v2": {},
+                "candidates": [],
                 "latest_daily_report": None,
                 "warning": f"canonical post-event evidence unavailable: {type(exc).__name__}: {exc}",
             }
@@ -346,9 +355,133 @@ class ResearchReportScheduler:
             "post_event": payload.get("post_event") or {},
             "ads002": payload.get("ads002") or {},
             "ads002_v2": payload.get("ads002_v2") or {},
+            "candidates": payload.get("candidates") or [],
             "latest_daily_report": payload.get("latest_daily_report"),
             "warning": None,
         }
+
+    async def _counterfactual_history_reports(
+        self,
+        session: date,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        start = session - timedelta(days=35)
+        try:
+            inputs = await self._canonical_weekly_inputs(start, session)
+        except Exception as exc:
+            return [], (
+                "ASC-005 rolling history unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        reports: list[dict[str, Any]] = []
+        for record in inputs.get("daily_reports") or []:
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("session") or "") == session.isoformat():
+                continue
+            reports.append(payload)
+        return reports, None
+
+    async def _build_counterfactual_lab(
+        self,
+        session: date,
+        candidates: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str | None]:
+        current_version = str(
+            getattr(self.settings, "strategy_version_id", "") or ""
+        )
+        scoped_candidates = [
+            row
+            for row in candidates
+            if isinstance(row, dict)
+            and (
+                not current_version
+                or str(row.get("strategy_version_id") or "") == current_version
+            )
+        ]
+
+        baseline_parameters = {
+            parameter: getattr(self.settings, parameter, None)
+            for parameter in PARAMETER_FEATURES
+        }
+        session_searches: dict[str, Any] = {}
+        for parameter, current_value in baseline_parameters.items():
+            if current_value in (None, ""):
+                continue
+            rows = prepare_counterfactual_rows(
+                scoped_candidates,
+                parameter=parameter,
+            )
+            session_searches[parameter] = run_counterfactual_search(
+                rows=rows,
+                parameter=parameter,
+                current_value=current_value,
+                horizon_minutes=15,
+                round_trip_cost=STRESS_ROUND_TRIP_COST_V1,
+                cadence="daily",
+            )
+
+        prior_reports, history_warning = await self._counterfactual_history_reports(
+            session
+        )
+        rolling_searches: dict[str, Any] = {}
+        for parameter, current_search in session_searches.items():
+            searches: list[dict[str, Any]] = []
+            for report in prior_reports:
+                if (
+                    current_version
+                    and str(report.get("strategy_version_id") or "")
+                    != current_version
+                ):
+                    continue
+                lab = report.get("counterfactual_lab")
+                if not isinstance(lab, dict):
+                    continue
+                prior = (lab.get("session_searches") or {}).get(parameter)
+                if isinstance(prior, dict):
+                    searches.append(prior)
+            searches.append(current_search)
+            rolling = aggregate_counterfactual_searches(searches)
+            if rolling is not None:
+                rolling_searches[parameter] = rolling
+
+        ready = sorted(
+            parameter
+            for parameter, result in rolling_searches.items()
+            if isinstance(result, dict) and result.get("validity_passed") is True
+        )
+
+        return (
+            {
+                "methodology_version": "asc-counterfactual-lab-v1",
+                "session": session.isoformat(),
+                "strategy_version_id": current_version or None,
+                "baseline_parameters": baseline_parameters,
+                "candidate_rows_received": len(candidates),
+                "candidate_rows_in_strategy_scope": len(scoped_candidates),
+                "history_window_calendar_days": 35,
+                "cost_model": {
+                    "version": COST_MODEL_VERSION,
+                    "round_trip_cost": str(STRESS_ROUND_TRIP_COST_V1),
+                    "round_trip_bps": "22",
+                    "role": "conservative research stress floor",
+                },
+                "session_searches": session_searches,
+                "rolling_searches": rolling_searches,
+                "proposal_ready_parameters": ready,
+                "screening_only": True,
+                "counterfactual_not_realized_trades": True,
+                "read_only": True,
+                "execution_authority": False,
+                "risk_or_sizing_authority": False,
+                "live_configuration_changed": False,
+                "promotion_authorized": False,
+            },
+            history_warning,
+        )
 
     async def generate_daily(self, session: date) -> dict[str, Any]:
         evidence = await self._collect(session, session)
@@ -357,6 +490,12 @@ class ResearchReportScheduler:
         post_event = canonical.get("post_event") or {}
         ads002 = canonical.get("ads002") or {}
         ads002_v2 = canonical.get("ads002_v2") or {}
+        counterfactual_lab, counterfactual_warning = (
+            await self._build_counterfactual_lab(
+                session,
+                list(canonical.get("candidates") or []),
+            )
+        )
         runtime = self._runtime_snapshot()
         classification = classify_daily(evidence["metrics"], runtime)
         if (
@@ -393,6 +532,8 @@ class ResearchReportScheduler:
         daily_warnings = list(evidence["data_quality_warnings"])
         if canonical.get("warning"):
             daily_warnings.append(str(canonical["warning"]))
+        if counterfactual_warning:
+            daily_warnings.append(counterfactual_warning)
         if ads_reason_codes:
             daily_warnings.append(
                 "ADS-002 readiness: " + ", ".join(ads_reason_codes)
@@ -421,6 +562,7 @@ class ResearchReportScheduler:
             "live_offline": live_offline,
             "ads002": ads002,
             "ads002_v2": ads002_v2,
+            "counterfactual_lab": counterfactual_lab,
         }
         source_fingerprint = hashlib.sha256(
             json.dumps(
@@ -497,6 +639,7 @@ class ResearchReportScheduler:
                 },
                 "ads002": ads002,
                 "ads002_v2": ads002_v2,
+                "counterfactual_lab": counterfactual_lab,
                 "reconstruction": evidence["reconstruction"],
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,
