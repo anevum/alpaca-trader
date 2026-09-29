@@ -230,8 +230,6 @@ class PushWardLiveService:
         )
 
     async def _push_status(self, model: dict[str, Any], *, force: bool) -> None:
-        return_pct = float(model["return_pct"])
-        trend = "up" if return_pct > 0 else "down" if return_pct < 0 else "flat"
         content = {
             "template": "board",
             "state": f'{model["system_state"]} · {model["market_state"]}',
@@ -245,12 +243,11 @@ class PushWardLiveService:
             },
             "tiles": [
                 {
-                    "label": "Return",
-                    "value": f"{return_pct:+.2f}",
-                    "unit": "%",
-                    "icon": "chart.line.uptrend.xyaxis",
+                    "label": "Market",
+                    "value": model["market_state"],
+                    "icon": "clock",
                     "color": "#6FD1FF",
-                    "trend": trend,
+                    "trend": "flat",
                     "url_action": {
                         "url": "https://anevum.com/iren",
                         "foreground": True,
@@ -281,7 +278,6 @@ class PushWardLiveService:
             {
                 "system": model["system_state"],
                 "market": model["market_state"],
-                "return": round(return_pct, 2),
                 "positions": model["open_positions"],
                 "orders": model["pending_orders"],
                 "errors": model["errors_2h"],
@@ -318,14 +314,35 @@ class PushWardLiveService:
             },
             "lines": lines[:10],
         }
-        fingerprint = self._fingerprint(lines[:10])
-        await self._patch_if_changed(
+        stable_lines = [
+            {"text": line.get("text"), "level": line.get("level")}
+            for line in lines[:10]
+        ]
+        fingerprint = self._fingerprint(stable_lines)
+        important_fingerprint = self._fingerprint(
+            [
+                line.get("text")
+                for line in lines[:10]
+                if str(line.get("text") or "").startswith(("ORDER ·", "POSITION ·"))
+            ]
+        )
+        previous_important = self._fingerprints.get(
+            f"{self.ACTIVITY_SLUG}:important"
+        )
+        urgent = previous_important is not None and previous_important != important_fingerprint
+        minimum_interval = 0
+        if self.updates_limit is not None and not urgent:
+            minimum_interval = 10 * 60
+
+        sent = await self._patch_if_changed(
             self.ACTIVITY_SLUG,
             content,
             fingerprint,
             force=force,
-            minimum_interval=0,
+            minimum_interval=minimum_interval,
         )
+        if sent:
+            self._fingerprints[f"{self.ACTIVITY_SLUG}:important"] = important_fingerprint
 
     async def _patch_if_changed(
         self,
@@ -335,16 +352,16 @@ class PushWardLiveService:
         *,
         force: bool,
         minimum_interval: int,
-    ) -> None:
+    ) -> bool:
         now = time.time()
         previous = self._fingerprints.get(slug)
         last_sent = self._last_sent_at.get(slug, 0.0)
 
         if not force and previous == fingerprint:
             if now - last_sent < self.heartbeat_seconds:
-                return
+                return False
         if not force and minimum_interval and now - last_sent < minimum_interval:
-            return
+            return False
 
         await self._request(
             "PATCH",
@@ -358,6 +375,7 @@ class PushWardLiveService:
         self.last_success_at = datetime.utcnow().isoformat() + "Z"
         if self.updates_used is not None:
             self.updates_used += 1
+        return True
 
     def _display_model(
         self,
@@ -421,12 +439,9 @@ class PushWardLiveService:
                 break
             symbol = str(position.get("symbol") or "--").upper()[:12]
             side = str(position.get("side") or "").upper()[:8]
-            raw_pct = position.get("unrealized_plpc")
-            pct = self._optional_float(raw_pct)
-            pct_text = f" · {pct * 100:+.2f}%" if pct is not None else ""
             lines.append(
                 {
-                    "text": f"POSITION · {side} {symbol}{pct_text}"[:180],
+                    "text": f"POSITION · {side} {symbol}"[:180],
                     "at": int(time.time()),
                     "level": "info",
                 }
