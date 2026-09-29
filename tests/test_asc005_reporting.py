@@ -12,7 +12,7 @@ def test_report_read_exposes_candidate_checks_and_forward_outcomes():
 
 def test_daily_report_persists_asc005_session_and_rolling_artifacts():
     source = Path("app/research_scheduler.py").read_text()
-    assert 'DAILY_REPORT_VERSION = "rhen-daily-v1.3"' in source
+    assert 'DAILY_REPORT_VERSION = "rhen-daily-v1.4"' in source
     assert "_build_counterfactual_lab" in source
     assert '"session_searches": session_searches' in source
     assert '"rolling_searches": rolling_searches' in source
@@ -26,3 +26,16 @@ def test_asc005_remains_research_only():
     assert '"risk_or_sizing_authority": False' in source
     assert '"live_configuration_changed": False' in source
     assert '"promotion_authorized": False' in source
+
+
+
+def test_daily_report_persists_nostra_and_adaptive_control_artifacts():
+    source = Path("app/research_scheduler.py").read_text()
+    assert "_build_nostra_research" in source
+    assert "_build_adaptive_research" in source
+    assert '"nostra": nostra' in source
+    assert '"adaptive_strategy_control": adaptive_control' in source
+    assert '"strategy_health": adaptive_control.get("strategy_health") or {}' in source
+    assert '"graen_validation": adaptive_control.get("graen_validation") or {}' in source
+    assert '"nostra": nostra,' in source
+    assert '"adaptive_strategy_control": adaptive_control,' in source
