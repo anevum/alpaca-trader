@@ -158,6 +158,33 @@ class Settings(BaseSettings):
     universe_always_include_raw: str = Field(
         default="SPY,QQQ,SMH", alias="UNIVERSE_ALWAYS_INCLUDE"
     )
+
+    crypto_lane_enabled: bool = Field(default=False, alias="CRYPTO_LANE_ENABLED")
+    crypto_execution_enabled: bool = Field(
+        default=False, alias="CRYPTO_EXECUTION_ENABLED"
+    )
+    crypto_location: str = Field(default="us", alias="CRYPTO_LOCATION")
+    crypto_universe_size: int = Field(default=12, alias="CRYPTO_UNIVERSE_SIZE")
+    crypto_universe_refresh_seconds: int = Field(
+        default=300, alias="CRYPTO_UNIVERSE_REFRESH_SECONDS"
+    )
+    crypto_poll_seconds: int = Field(default=30, alias="CRYPTO_POLL_SECONDS")
+    crypto_lookback_minutes: int = Field(
+        default=240, alias="CRYPTO_LOOKBACK_MINUTES"
+    )
+    crypto_quote_currencies_raw: str = Field(
+        default="USD", alias="CRYPTO_QUOTE_CURRENCIES"
+    )
+    crypto_excluded_bases_raw: str = Field(
+        default="USDC,USDT,USDG", alias="CRYPTO_EXCLUDED_BASES"
+    )
+    crypto_always_include_raw: str = Field(
+        default="BTC/USD,ETH/USD,SOL/USD", alias="CRYPTO_ALWAYS_INCLUDE"
+    )
+    crypto_confirmation_symbols_raw: str = Field(
+        default="BTC/USD,ETH/USD", alias="CRYPTO_CONFIRMATION_SYMBOLS"
+    )
+
     strategy_name: str = Field(default="opening_range_vwap", alias="STRATEGY_NAME")
     fast_window: int = Field(default=3, alias="FAST_WINDOW")
     slow_window: int = Field(default=8, alias="SLOW_WINDOW")
@@ -292,6 +319,22 @@ class Settings(BaseSettings):
     @property
     def universe_always_include(self) -> tuple[str, ...]:
         return parse_csv(self.universe_always_include_raw)
+
+    @property
+    def crypto_quote_currencies(self) -> set[str]:
+        return set(parse_csv(self.crypto_quote_currencies_raw))
+
+    @property
+    def crypto_excluded_bases(self) -> set[str]:
+        return set(parse_csv(self.crypto_excluded_bases_raw))
+
+    @property
+    def crypto_always_include(self) -> tuple[str, ...]:
+        return parse_csv(self.crypto_always_include_raw)
+
+    @property
+    def crypto_confirmation_symbols(self) -> tuple[str, ...]:
+        return parse_csv(self.crypto_confirmation_symbols_raw)
 
     @property
     def entry_start(self) -> time:
@@ -469,6 +512,20 @@ class Settings(BaseSettings):
             )
         if not 60 <= self.universe_refresh_seconds <= 3600:
             raise ValueError("UNIVERSE_REFRESH_SECONDS must be between 60 and 3600")
+        if not 1 <= self.crypto_universe_size <= 100:
+            raise ValueError("CRYPTO_UNIVERSE_SIZE must be between 1 and 100")
+        if not 60 <= self.crypto_universe_refresh_seconds <= 3600:
+            raise ValueError(
+                "CRYPTO_UNIVERSE_REFRESH_SECONDS must be between 60 and 3600"
+            )
+        if not 15 <= self.crypto_poll_seconds <= 300:
+            raise ValueError("CRYPTO_POLL_SECONDS must be between 15 and 300")
+        if not 60 <= self.crypto_lookback_minutes <= 1440:
+            raise ValueError("CRYPTO_LOOKBACK_MINUTES must be between 60 and 1440")
+        if self.crypto_lane_enabled and not self.crypto_quote_currencies:
+            raise ValueError("CRYPTO_QUOTE_CURRENCIES cannot be empty")
+        if self.crypto_lane_enabled and not self.crypto_confirmation_symbols:
+            raise ValueError("CRYPTO_CONFIRMATION_SYMBOLS cannot be empty")
         if not 2 <= self.universe_daily_lookback <= 20:
             raise ValueError("UNIVERSE_DAILY_LOOKBACK must be between 2 and 20")
         if not 1 <= self.universe_data_batch_size <= 100:
