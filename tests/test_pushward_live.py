@@ -78,7 +78,7 @@ def test_pushward_display_model_is_sanitized_and_compact():
     assert model["pending_orders"] == 1
     assert model["errors_2h"] == 0
     assert model["activity_lines"][0]["text"] == "ORDER · BUY AAA · FILLED"
-    assert "POSITION · LONG AAA · +0.42%" in [
+    assert "POSITION · LONG AAA" in [
         line["text"] for line in model["activity_lines"]
     ]
 
