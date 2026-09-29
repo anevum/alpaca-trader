@@ -189,26 +189,70 @@ def evaluate_transition_calibration(
             "research_only": True,
         }
 
+    n = len(usable)
+    realized_counts = {
+        regime: sum(1 for _, realized in usable if realized == regime)
+        for regime in REGIMES
+    }
+    base_probabilities = {
+        regime: realized_counts[regime] / n
+        for regime in REGIMES
+    }
+
     brier = 0.0
+    base_brier = 0.0
     loss = 0.0
+    base_loss = 0.0
     correct = 0
     eps = 1e-12
+    majority_regime = max(base_probabilities, key=base_probabilities.get)
+    majority_correct = 0
+
     for probabilities, realized in usable:
         brier += sum(
             (probabilities[regime] - (1.0 if regime == realized else 0.0)) ** 2
             for regime in REGIMES
         ) / len(REGIMES)
+        base_brier += sum(
+            (
+                base_probabilities[regime]
+                - (1.0 if regime == realized else 0.0)
+            ) ** 2
+            for regime in REGIMES
+        ) / len(REGIMES)
+
         p_realized = max(probabilities[realized], eps)
+        base_p_realized = max(base_probabilities[realized], eps)
         loss -= log(p_realized)
+        base_loss -= log(base_p_realized)
+
         predicted = max(probabilities, key=probabilities.get)
         correct += int(predicted == realized)
+        majority_correct += int(majority_regime == realized)
 
-    n = len(usable)
+    mean_brier = brier / n
+    mean_base_brier = base_brier / n
+    mean_loss = loss / n
+    mean_base_loss = base_loss / n
+
     return {
         "observations": n,
-        "multiclass_brier": round(brier / n, 8),
-        "log_loss": round(loss / n, 8),
+        "multiclass_brier": round(mean_brier, 8),
+        "base_rate_brier": round(mean_base_brier, 8),
+        "brier_skill_score": round(
+            1.0 - mean_brier / mean_base_brier
+            if mean_base_brier > 0 else 0.0,
+            8,
+        ),
+        "log_loss": round(mean_loss, 8),
+        "base_rate_log_loss": round(mean_base_loss, 8),
+        "log_loss_skill_score": round(
+            1.0 - mean_loss / mean_base_loss
+            if mean_base_loss > 0 else 0.0,
+            8,
+        ),
         "top1_accuracy": round(correct / n, 6),
+        "majority_class_accuracy": round(majority_correct / n, 6),
         "mature": n >= 100,
         "research_only": True,
         "execution_authority": False,
