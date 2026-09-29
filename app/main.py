@@ -17,6 +17,7 @@ from .config import get_settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
+from .realtime_market import RealtimeMarketStream
 from .mobile_live_activity import MobileLiveActivityService
 from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
@@ -90,6 +91,7 @@ research_reports = ResearchReportScheduler(
     event_sink,
 )
 slack_notifier = SlackNotifier(settings)
+realtime_market = RealtimeMarketStream(settings, runtime_state)
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
 runtime_provenance = None
@@ -238,6 +240,10 @@ async def command_snapshot() -> dict:
             "last_strategy_at": runtime_state.last_strategy_at,
             "last_decision": runtime_state.last_decision,
             "last_error": runtime_state.last_error,
+            "realtime_connected": runtime_state.realtime_connected,
+            "realtime_symbols": runtime_state.realtime_symbols,
+            "realtime_last_message_at": runtime_state.realtime_last_message_at,
+            "realtime_last_error": runtime_state.realtime_last_error,
             "exit_states": runtime_state.exit_states,
         },
         "account": {
@@ -733,6 +739,7 @@ async def lifespan(app: FastAPI):
     await event_sink.start()
     await slack_notifier.start()
     await mobile_live_activity.start()
+    await realtime_market.start()
 
     runtime_provenance = capture_runtime_provenance()
     runtime_start_payload = {
@@ -816,6 +823,7 @@ async def lifespan(app: FastAPI):
             "git_commit": runtime_provenance.git_commit,
         },
     )
+    await realtime_market.stop()
     await mobile_live_activity.stop()
     await event_sink.stop()
     await slack_notifier.stop()
@@ -863,6 +871,7 @@ async def health():
         "research_reporting": research_reports.status(),
         "slack_notifications": slack_notifier.status(),
         "mobile_live_activity": mobile_live_activity.status(),
+        "realtime_market": realtime_market.status(),
         "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
     }
 
@@ -943,6 +952,7 @@ async def status(authorization: str | None = Header(default=None)):
         },
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
+        "realtime_market": realtime_market.status(),
         "runtime": {
             "started_at": runtime_state.started_at,
             "last_poll_at": runtime_state.last_poll_at,
