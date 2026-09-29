@@ -68,4 +68,30 @@ def test_transition_calibration_scores_frozen_probabilities():
     assert result["observations"] == 120
     assert result["mature"] is True
     assert result["top1_accuracy"] == 1.0
+    assert result["base_rate_brier"] is not None
+    assert result["brier_skill_score"] is not None
+    assert result["base_rate_log_loss"] is not None
+    assert result["log_loss_skill_score"] is not None
     assert result["execution_authority"] is False
+
+
+
+def test_transition_calibration_can_show_positive_skill_vs_base_rate():
+    rows = []
+    for i in range(120):
+        realized = "BROAD_ADVANCE" if i % 2 == 0 else "BROAD_DECLINE"
+        rows.append(
+            {
+                "probabilities": {
+                    "BROAD_ADVANCE": 0.85 if realized == "BROAD_ADVANCE" else 0.15,
+                    "BROAD_DECLINE": 0.85 if realized == "BROAD_DECLINE" else 0.15,
+                },
+                "realized_regime": realized,
+            }
+        )
+    result = evaluate_transition_calibration(rows)
+    assert result["observations"] == 120
+    assert result["mature"] is True
+    assert result["brier_skill_score"] > 0
+    assert result["log_loss_skill_score"] > 0
+    assert result["top1_accuracy"] > result["majority_class_accuracy"]
