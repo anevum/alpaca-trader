@@ -20,6 +20,7 @@ from .market_data import MarketDataClient
 from .mobile_live_activity import MobileLiveActivityService
 from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
+from .pushward_live import PushWardLiveService
 from .research_scheduler import ResearchReportScheduler
 from .sizing import sizing_snapshot
 from .slack_notifier import SlackNotifier
@@ -90,6 +91,7 @@ research_reports = ResearchReportScheduler(
     event_sink,
 )
 slack_notifier = SlackNotifier(settings)
+pushward_live: PushWardLiveService | None = None
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
 runtime_provenance = None
@@ -111,6 +113,8 @@ def emit_runtime_event(event: dict) -> None:
     slack_notifier.record_event(event)
     if mobile_live_activity is not None:
         mobile_live_activity.wake()
+    if pushward_live is not None:
+        pushward_live.wake()
 
 
 runtime_state.set_event_emitter(emit_runtime_event)
@@ -363,10 +367,14 @@ async def command_snapshot() -> dict:
         "mobile_live_activity": (
             mobile_live_activity.status() if mobile_live_activity is not None else None
         ),
+        "pushward_live": (
+            pushward_live.status() if pushward_live is not None else None
+        ),
     }
 
 
 mobile_live_activity = MobileLiveActivityService(settings, command_snapshot)
+pushward_live = PushWardLiveService(settings, command_snapshot)
 
 
 def _ready_symbols() -> list[str]:
@@ -733,6 +741,7 @@ async def lifespan(app: FastAPI):
     await event_sink.start()
     await slack_notifier.start()
     await mobile_live_activity.start()
+    await pushward_live.start()
 
     runtime_provenance = capture_runtime_provenance()
     runtime_start_payload = {
@@ -816,6 +825,7 @@ async def lifespan(app: FastAPI):
             "git_commit": runtime_provenance.git_commit,
         },
     )
+    await pushward_live.stop()
     await mobile_live_activity.stop()
     await event_sink.stop()
     await slack_notifier.stop()
@@ -863,6 +873,7 @@ async def health():
         "research_reporting": research_reports.status(),
         "slack_notifications": slack_notifier.status(),
         "mobile_live_activity": mobile_live_activity.status(),
+        "pushward_live": pushward_live.status(),
         "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
     }
 
