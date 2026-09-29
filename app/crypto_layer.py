@@ -223,6 +223,28 @@ class CryptoMarketDataClient:
         size = max(1, min(self.settings.market_data_batch_size, 100))
         return [normalized[i:i + size] for i in range(0, len(normalized), size)]
 
+    async def latest_quotes(
+        self,
+        symbols: list[str] | tuple[str, ...],
+    ) -> dict[str, dict[str, Any]]:
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+        output: dict[str, dict[str, Any]] = {}
+        batches = self._batches(symbols)
+        async with httpx.AsyncClient(timeout=8.0) as http:
+            for batch in batches:
+                response = await http.get(
+                    f"{self.settings.data_base_url}/v1beta3/crypto/"
+                    f"{self.settings.crypto_location}/latest/quotes",
+                    headers=self.headers,
+                    params={"symbols": ",".join(batch)},
+                )
+                response.raise_for_status()
+                data = response.json()
+                for symbol, quote in (data.get("quotes") or {}).items():
+                    output[symbol.upper()] = quote or {}
+        return output
+
     async def bars_many(
         self,
         symbols: list[str] | tuple[str, ...],
@@ -466,7 +488,7 @@ class CryptoScanner:
                 },
                 symbol=symbol,
                 has_position=False,
-                order_notional=self.settings.order_notional,
+                order_notional=self.settings.crypto_order_notional,
                 now=now,
             )
             payload = self._signal_payload(signal)
