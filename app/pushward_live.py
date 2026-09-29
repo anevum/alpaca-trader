@@ -213,13 +213,13 @@ class PushWardLiveService:
         )
 
         # On a limited/free tier, preserve quota by sampling the graph at most
-        # every 30 minutes. Paid/unlimited accounts can use the configured cadence.
+        # hourly. Paid/unlimited accounts can use the configured cadence.
         minimum_interval = self.interval_seconds
         if self.updates_limit is not None:
-            minimum_interval = max(minimum_interval, 30 * 60)
+            minimum_interval = max(minimum_interval, 60 * 60)
             remaining = max((self.updates_limit or 0) - (self.updates_used or 0), 0)
             if remaining < 25:
-                minimum_interval = max(minimum_interval, 60 * 60)
+                minimum_interval = max(minimum_interval, 2 * 60 * 60)
 
         await self._patch_if_changed(
             self.PERFORMANCE_SLUG,
@@ -358,6 +358,11 @@ class PushWardLiveService:
         last_sent = self._last_sent_at.get(slug, 0.0)
 
         if not force and previous == fingerprint:
+            # Limited tiers have a finite monthly update pool. Unchanged
+            # surfaces stay strictly change-only so heartbeat traffic cannot
+            # consume the allowance.
+            if self.updates_limit is not None:
+                return False
             if now - last_sent < self.heartbeat_seconds:
                 return False
         if not force and minimum_interval and now - last_sent < minimum_interval:
