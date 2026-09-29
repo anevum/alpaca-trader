@@ -7,7 +7,12 @@ from uuid import uuid4
 import httpx
 
 from .config import Settings
-from .cash_flow import (\n    NY,\n    annotate_account,\n    detected_session_cash_flow,\n    reconcile_cash_flow_adjustments,\n)
+from .cash_flow import (
+    NY,
+    annotate_account,
+    detected_session_cash_flow,
+    reconcile_cash_flow_adjustments,
+)
 
 
 class AlpacaClient:
