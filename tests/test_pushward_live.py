@@ -112,3 +112,14 @@ def test_pushward_display_model_degrades_on_error():
     assert model["system_state"] == "DEGRADED"
     assert model["market_state"] == "CLOSED"
     assert model["return_pct"] == -0.25
+
+
+def test_pushward_status_reports_remaining_limited_quota():
+    service = PushWardLiveService(_settings(), _snapshot_provider)
+    service.updates_used = 10
+    service.updates_limit = 250
+
+    status = service.status()
+
+    assert status["updates_remaining"] == 240
+    assert status["updates_limit"] == 250
