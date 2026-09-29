@@ -488,7 +488,11 @@ class CryptoScanner:
                 },
                 symbol=symbol,
                 has_position=False,
-                order_notional=self.settings.crypto_order_notional,
+                order_notional=getattr(
+                    self.settings,
+                    "crypto_order_notional",
+                    self.settings.order_notional,
+                ),
                 now=now,
             )
             payload = self._signal_payload(signal)
