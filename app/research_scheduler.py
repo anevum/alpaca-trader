@@ -34,6 +34,7 @@ from .research_agent.nostra_transition import (
     forecast_next_regime,
 )
 from .research_agent.parameter_pressure import compute_parameter_pressure
+from .research_agent.parameter_pressure import compute_parameter_pressure
 from .research_agent.promotion_gate import evaluate_promotion_gate
 from .research_agent.strategy_health import compute_strategy_health
 from .research_agent.strategy_router import rank_strategy_families
@@ -678,6 +679,25 @@ class ResearchReportScheduler:
         prior_reports, warning = await self._counterfactual_history_reports(
             session
         )
+        scoped_prior_reports = [
+            report
+            for report in prior_reports
+            if isinstance(report, dict)
+            and (
+                not current_version
+                or str(report.get("strategy_version_id") or "")
+                == current_version
+            )
+        ]
+        pressure_reports = [
+            *scoped_prior_reports,
+            {
+                "session": session.isoformat(),
+                "strategy_version_id": current_version or None,
+                "counterfactual_lab": counterfactual_lab,
+            },
+        ]
+        parameter_pressure = compute_parameter_pressure(pressure_reports)
 
         health_source = {
             "session": session.isoformat(),
@@ -696,16 +716,7 @@ class ResearchReportScheduler:
             else None
         )
         ordered_prior = sorted(
-            (
-                report
-                for report in prior_reports
-                if isinstance(report, dict)
-                and (
-                    not current_version
-                    or str(report.get("strategy_version_id") or "")
-                    == current_version
-                )
-            ),
+            scoped_prior_reports,
             key=lambda report: str(report.get("session") or ""),
         )
         pressure_reports = [
