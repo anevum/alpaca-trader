@@ -134,6 +134,11 @@ def test_status_reads_current_strategy_terminal_rdr_and_closed_edge_discovery():
     )
     assert status["edge_discovery_v1"]["closed"] is True
     assert status["llm_usage"]["invoked"] is False
+    asc = status["adaptive_strategy_control"]
+    assert asc["methodology_version"] == "asc-strategy-health-v1"
+    assert asc["read_only"] is True
+    assert asc["execution_authority"] is False
+    assert asc["live_configuration_changed"] is False
 
 
 def test_daily_and_weekly_dry_runs_have_no_mutations_or_model_calls():
