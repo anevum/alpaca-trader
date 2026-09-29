@@ -93,6 +93,7 @@ Deno.serve(async (req) => {
         broker_order_id: string | null;
         order_status: string | null;
         ads002_score: Record<string, unknown> | null;
+        ads002_v2_scores: Record<string, unknown>;
       }[]>`
         with bounds as (
           select
@@ -224,7 +225,8 @@ Deno.serve(async (req) => {
               'source_completeness', ads.source_completeness,
               'methodology_version', ads.methodology_version
             )
-          end as ads002_score
+          end as ads002_score,
+          ads_v2.scores as ads002_v2_scores
         from session_candidates c
         left join cycle_rows cr
           on cr.scan_cycle_id=c.scan_cycle_id
@@ -237,6 +239,28 @@ Deno.serve(async (req) => {
         left join private.trading_ads_shadow_scores ads
           on ads.candidate_id=c.candidate_id
          and ads.methodology_version='ads-shadow-v1'
+        left join lateral (
+          select coalesce(
+            jsonb_object_agg(
+              s.model_key,
+              jsonb_build_object(
+                'attention_score', s.attention_score,
+                'qualification_score', s.qualification_score,
+                'timing_score', s.timing_score,
+                'raw_score', s.raw_score,
+                'confidence_score', s.confidence_score,
+                'effective_score', s.effective_score,
+                'source_completeness', s.source_completeness,
+                'methodology_version', s.methodology_version
+              )
+              order by s.model_key
+            ),
+            '{}'::jsonb
+          ) as scores
+          from private.trading_ads_challenger_scores s
+          where s.candidate_id=c.candidate_id
+            and s.methodology_version='ads-shadow-v2'
+        ) ads_v2 on true
         order by c.observed_at,c.symbol
       `
 
@@ -249,6 +273,12 @@ Deno.serve(async (req) => {
 
       const adsRows = await sql<{ inputs: Record<string, unknown> }[]>`
         select private.rhen_ads002_daily_inputs(
+          ${evidenceSession}::date
+        ) as inputs
+      `;
+
+      const adsV2Rows = await sql<{ inputs: Record<string, unknown> }[]>`
+        select private.rhen_ads002_v2_daily_inputs(
           ${evidenceSession}::date
         ) as inputs
       `;
@@ -282,10 +312,12 @@ Deno.serve(async (req) => {
           broker_order_id: row.broker_order_id,
           order_status: row.order_status,
           ads002_score: row.ads002_score,
+          ads002_v2_scores: row.ads002_v2_scores ?? {},
           submitted: Boolean(row.intent_id),
         })),
         post_event: postRows[0]?.inputs ?? {},
         ads002: adsRows[0]?.inputs ?? {},
+        ads002_v2: adsV2Rows[0]?.inputs ?? {},
         latest_daily_report: dailyRows[0] ?? null,
       });
     }

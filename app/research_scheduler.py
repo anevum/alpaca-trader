@@ -337,12 +337,15 @@ class ResearchReportScheduler:
         except Exception as exc:
             return {
                 "post_event": {},
+                "ads002": {},
+                "ads002_v2": {},
                 "latest_daily_report": None,
                 "warning": f"canonical post-event evidence unavailable: {type(exc).__name__}: {exc}",
             }
         return {
             "post_event": payload.get("post_event") or {},
             "ads002": payload.get("ads002") or {},
+            "ads002_v2": payload.get("ads002_v2") or {},
             "latest_daily_report": payload.get("latest_daily_report"),
             "warning": None,
         }
@@ -353,6 +356,7 @@ class ResearchReportScheduler:
         canonical = await self._daily_post_event_inputs(session)
         post_event = canonical.get("post_event") or {}
         ads002 = canonical.get("ads002") or {}
+        ads002_v2 = canonical.get("ads002_v2") or {}
         runtime = self._runtime_snapshot()
         classification = classify_daily(evidence["metrics"], runtime)
         if (
@@ -416,6 +420,7 @@ class ResearchReportScheduler:
             "forward_outcomes": post_event.get("forward_outcomes_by_horizon") or [],
             "live_offline": live_offline,
             "ads002": ads002,
+            "ads002_v2": ads002_v2,
         }
         source_fingerprint = hashlib.sha256(
             json.dumps(
@@ -491,6 +496,7 @@ class ResearchReportScheduler:
                     "post_event_only": True,
                 },
                 "ads002": ads002,
+                "ads002_v2": ads002_v2,
                 "reconstruction": evidence["reconstruction"],
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,

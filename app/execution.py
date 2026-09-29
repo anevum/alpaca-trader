@@ -12,6 +12,7 @@ from .config import Settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
+from .research_agent.ads002_features_v2 import build_ads002_v2_features
 from .opportunity import correlation_checks, score_opportunity
 from .risk import validate_buy, validate_sell_to_flat
 from .sizing import calculate_entry_notional, sizing_snapshot
@@ -429,6 +430,18 @@ class ExecutionEngine:
             metrics = {
                 "max_favorable_excursion": str(peak),
                 "max_adverse_excursion": str(trough),
+                "current_return_pct": str(current_return),
+                "entry_price": str(entry_price),
+                "current_price": str(current_price),
+                "risk_stop_pct": str(state.get("risk_stop_pct") or self.settings.stop_pct),
+                "protected_floor_pct": state.get("protected_floor_pct"),
+                "profit_protection_active": bool(state.get("profit_protection_active")),
+                "thesis_failure_count": int(state.get("thesis_failure_count") or 0),
+                "held_minutes": (
+                    max((datetime.now(NY) - entry_time).total_seconds() / 60, 0)
+                    if entry_time is not None else None
+                ),
+                "target_pct": str(self.settings.target_pct),
                 "peak_favorable_price": str(peak_price),
                 "peak_adverse_price": str(trough_price),
                 "peak_favorable_at": peak_at.isoformat() if peak_at else None,
@@ -1690,6 +1703,10 @@ class ExecutionEngine:
                 now=now,
             )
             signal.metadata = dict(signal.metadata or {})
+            signal.metadata["ads002_v2_raw_features"] = build_ads002_v2_features(
+                bars=market_bars.get(symbol, []),
+                metadata={**signal.metadata, "symbol": symbol},
+            )
             signal.metadata["strategy_evaluation"] = {
                 "action": signal.action,
                 "reason": signal.reason,
@@ -1719,6 +1736,11 @@ class ExecutionEngine:
                 )
                 signal.metadata = dict(signal.metadata or {})
                 signal.metadata["market_quality"] = quality
+                signal.metadata["ads002_v2_raw_features"] = build_ads002_v2_features(
+                    bars=market_bars.get(signal.symbol, []),
+                    metadata={**signal.metadata, "symbol": signal.symbol},
+                    market_quality=quality,
+                )
                 if allowed:
                     ranking = score_opportunity(
                         self.settings,
