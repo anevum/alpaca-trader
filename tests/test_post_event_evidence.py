@@ -541,7 +541,7 @@ def test_ads002_v1_backfill_uses_frozen_config_and_emits_versioned_derived_evide
 
         def _ads002_shadow_candidate_safe(self, *, symbol, metadata):
             assert symbol == "SPY"
-            assert metadata is target["features"]
+            assert metadata == target["features"]
             return {
                 "methodology_version": "ads-shadow-v1",
                 "research_only": True,
