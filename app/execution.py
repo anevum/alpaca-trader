@@ -2095,14 +2095,18 @@ class ExecutionEngine:
             ledger_refs: dict[str, str] | None = None
             if self.ledger is not None:
                 try:
-                    ledger_refs = await self.ledger.persist_entry_intent(
-                        signal=signal,
-                        qty=str(qty),
-                        client_order_id=client_order_id,
-                        correlation_id=self.state.current_correlation_id,
-                        intended_at=now,
-                        decision_scan=scan,
-                    )
+                    setattr(signal, "_evidence_decision_scan", scan)
+                    try:
+                        ledger_refs = await self.ledger.persist_entry_intent(
+                            signal=signal,
+                            qty=str(qty),
+                            client_order_id=client_order_id,
+                            correlation_id=self.state.current_correlation_id,
+                            intended_at=now,
+                        )
+                    finally:
+                        if hasattr(signal, "_evidence_decision_scan"):
+                            delattr(signal, "_evidence_decision_scan")
                 except Exception as exc:
                     ledger_refs = None
                     self.state.record_event(
