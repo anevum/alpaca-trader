@@ -53,6 +53,26 @@ class Settings(BaseSettings):
 
     trading_ingest_url: str = Field(default="", alias="TRADING_INGEST_URL")
     trading_ingest_token: str = Field(default="", alias="TRADING_INGEST_TOKEN")
+
+    # IREN native / ActivityKit delivery. All APNs signing values remain server-side.
+    iren_mobile_registry_url: str = Field(
+        default="https://mfntzxheldzdvlokyntk.supabase.co/functions/v1/iren-mobile-registry",
+        alias="IREN_MOBILE_REGISTRY_URL",
+    )
+    iren_public_feed_url: str = Field(
+        default="https://mfntzxheldzdvlokyntk.supabase.co/functions/v1/trading-public-feed",
+        alias="IREN_PUBLIC_FEED_URL",
+    )
+    iren_apns_team_id: str = Field(default="", alias="IREN_APNS_TEAM_ID")
+    iren_apns_key_id: str = Field(default="", alias="IREN_APNS_KEY_ID")
+    iren_apns_private_key: str = Field(default="", alias="IREN_APNS_PRIVATE_KEY")
+    iren_bundle_id: str = Field(default="com.anevum.iren", alias="IREN_BUNDLE_ID")
+    iren_mobile_push_interval_seconds: int = Field(
+        default=30, alias="IREN_MOBILE_PUSH_INTERVAL_SECONDS"
+    )
+    iren_mobile_push_heartbeat_seconds: int = Field(
+        default=300, alias="IREN_MOBILE_PUSH_HEARTBEAT_SECONDS"
+    )
     trading_run_id: str = Field(default="", alias="TRADING_RUN_ID")
     strategy_version_id: str = Field(default="", alias="STRATEGY_VERSION_ID")
     trading_run_started_at_raw: str = Field(default="", alias="TRADING_RUN_STARTED_AT")
