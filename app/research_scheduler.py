@@ -36,6 +36,9 @@ from .research_agent.nostra_transition import (
 )
 from .research_agent.parameter_pressure import compute_parameter_pressure
 from .research_agent.promotion_gate import evaluate_promotion_gate
+from .research_agent.strategy_family_registry import (
+    build_strategy_family_registry,
+)
 from .research_agent.strategy_health import compute_strategy_health
 from .research_agent.strategy_router import rank_strategy_families
 from .research_reporting import (
@@ -898,6 +901,16 @@ class ResearchReportScheduler:
                 human_authorization=None,
             )
 
+        family_registry = build_strategy_family_registry()
+        family_routing = rank_strategy_families(
+            regime_state=(
+                latest_nostra
+                if isinstance(latest_nostra, dict)
+                else {"regime": "UNKNOWN"}
+            ),
+            families=family_registry["families"],
+        )
+
         return (
             {
                 "methodology_version": "iren-asc-v1",
@@ -906,14 +919,8 @@ class ResearchReportScheduler:
                 "strategy_health": effective_health,
                 "parameter_pressure": parameter_pressure,
                 "control_transition": control_transition,
-                "strategy_family_routing": rank_strategy_families(
-                    regime_state=(
-                        latest_nostra
-                        if isinstance(latest_nostra, dict)
-                        else {"regime": "UNKNOWN"}
-                    ),
-                    families=[],
-                ),
+                "strategy_family_registry": family_registry,
+                "strategy_family_routing": family_routing,
                 "parameter_proposals": proposals,
                 "proposal_count": len(proposals),
                 "shadow_evaluation": current_evaluation,
