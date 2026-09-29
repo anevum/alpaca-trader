@@ -231,7 +231,8 @@ class MarketDataClient:
                     if page_token:
                         request_params["page_token"] = page_token
                     response = await client.get(
-                        f"{self.settings.data_base_url}/v1beta3/crypto/us/bars",
+                        f"{self.settings.data_base_url}/v1beta3/crypto/"
+                        f"{self.settings.crypto_location}/bars",
                         headers=self.headers,
                         params=request_params,
                     )
