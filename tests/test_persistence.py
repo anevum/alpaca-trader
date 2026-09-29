@@ -374,6 +374,169 @@ def test_decision_cycle_event_is_deterministic_and_preserves_unavailable_quote()
     assert candidate["forward_outcomes_status"] == "pending"
 
 
+
+
+def _complete_ads_metadata():
+    return {
+        "momentum_pct": "0.003",
+        "vwap_edge_pct": "0.002",
+        "relative_volume_ratio": "1.6",
+        "trend_persistence": "0.75",
+        "confirmation_passes": 1,
+        "regime_passes": 1,
+        "confirmations": {"QQQ": {"ok": True}},
+        "regime_confirmations": {"SPY": {"ok": True}},
+        "market_quality": {
+            "bid": "99.99",
+            "ask": "100.01",
+            "midpoint": "100.00",
+            "spread_pct": "0.0002",
+            "bar_age_seconds": 2,
+            "quote_age_seconds": 1,
+            "quote_timestamp": "2026-09-29T14:00:00+00:00",
+        },
+        "ads002_v2_raw_features": {
+            "relative_volume_ratio": 1.6,
+            "relative_volume_ratio_raw": 1.6,
+            "return_1m": 0.001,
+            "return_3m": 0.002,
+            "return_5m": 0.003,
+            "abs_return_5m": 0.003,
+            "accel_1m": 0.0002,
+            "volatility_expansion_ratio": 1.2,
+            "range_expansion_ratio": 1.1,
+            "dollar_volume_5m": 250000,
+            "trend_persistence": 0.75,
+            "fast_slow_spread_pct": 0.001,
+            "vwap_edge_pct": 0.002,
+            "confirmation_ratio": 1.0,
+            "regime_ratio": 1.0,
+            "spread_bps": 2.0,
+            "quote_age_ms": 1000.0,
+            "bar_age_ms": 2000.0,
+        },
+    }
+
+
+def test_entry_intent_preserves_same_ads_v1_and_v2_decision_state():
+    sink = CapturingSink()
+    metadata = _complete_ads_metadata()
+    signal = SimpleNamespace(
+        symbol="SPY",
+        reference_price="100",
+        stop_price="99.65",
+        take_profit_price="100.50",
+        notional="20",
+        reason="qualified",
+        metadata=metadata,
+    )
+    decision_scan = {
+        "SPY": {
+            "symbol": "SPY",
+            "action": "buy",
+            "reference_price": "100",
+            "reason": "qualified",
+            "metadata": metadata,
+        },
+        "QQQ": {
+            "symbol": "QQQ",
+            "action": "hold",
+            "reference_price": "200",
+            "reason": "not qualified",
+            "metadata": {
+                **_complete_ads_metadata(),
+                "ads002_v2_raw_features": {
+                    **_complete_ads_metadata()["ads002_v2_raw_features"],
+                    "relative_volume_ratio": 1.1,
+                    "relative_volume_ratio_raw": 1.1,
+                    "return_5m": 0.001,
+                    "abs_return_5m": 0.001,
+                },
+            },
+        },
+    }
+    expected_v1 = sink._ads002_shadow_candidate_safe(
+        symbol="SPY",
+        metadata=metadata,
+    )
+    expected_v2 = sink._ads002_v2_shadow_cycle(decision_scan)["SPY"]
+
+    sink.emit_critical = lambda **kwargs: asyncio.sleep(
+        0,
+        result=(sink.events.append(kwargs) is None),
+    )
+    result = asyncio.run(
+        sink.persist_entry_intent(
+            signal=signal,
+            qty="0.2",
+            client_order_id="anevum-spy-buy-ads-evidence",
+            correlation_id="cycle-ads",
+            intended_at=datetime(2026, 9, 29, 14, 0, tzinfo=timezone.utc),
+            decision_scan=decision_scan,
+        )
+    )
+
+    assert result is not None
+    snapshot = sink.events[0]["payload"]["intent"]["payload"]["candidate_snapshot"]
+    assert snapshot["ads002"] == expected_v1
+    assert snapshot["ads002"]["source_completeness"]["pretrade_complete"] is True
+    assert snapshot["ads002"]["pretrade_composite"] is not None
+    assert snapshot["ads002_v2"] == expected_v2
+    assert snapshot["ads002_v2"]["source_completeness"]["pretrade_complete"] is True
+    assert snapshot["ads002_v2"]["challengers"]
+    assert snapshot["ads002_v2"]["execution_authority"] is False
+    assert snapshot["strategy_version_id"] == "version-1"
+
+
+def test_entry_intent_keeps_missing_ads_inputs_explicit_without_imputation():
+    sink = CapturingSink()
+    signal = SimpleNamespace(
+        symbol="SPY",
+        reference_price="100",
+        stop_price="99.65",
+        take_profit_price="100.50",
+        notional="20",
+        reason="qualified with incomplete research telemetry",
+        metadata={"market_quality": {}},
+    )
+    decision_scan = {
+        "SPY": {
+            "symbol": "SPY",
+            "action": "buy",
+            "reference_price": "100",
+            "reason": signal.reason,
+            "metadata": signal.metadata,
+        },
+    }
+
+    sink.emit_critical = lambda **kwargs: asyncio.sleep(
+        0,
+        result=(sink.events.append(kwargs) is None),
+    )
+    result = asyncio.run(
+        sink.persist_entry_intent(
+            signal=signal,
+            qty="0.2",
+            client_order_id="anevum-spy-buy-missing-ads",
+            correlation_id="cycle-missing-ads",
+            intended_at=datetime(2026, 9, 29, 14, 1, tzinfo=timezone.utc),
+            decision_scan=decision_scan,
+        )
+    )
+
+    assert result is not None
+    snapshot = sink.events[0]["payload"]["intent"]["payload"]["candidate_snapshot"]
+    v1 = snapshot["ads002"]
+    assert v1["source_completeness"]["pretrade_complete"] is False
+    assert v1["pretrade_composite"] is None
+    assert v1["source_completeness"]["missing_requirements"]
+    v2 = snapshot["ads002_v2"]
+    assert v2["source_completeness"]["pretrade_complete"] is False
+    assert v2["challengers"] == {}
+    assert v2["source_completeness"]["missing_requirements"]
+    assert v2["execution_authority"] is False
+
+
 def test_entry_intent_carries_cycle_and_decision_evidence():
     sink = CapturingSink()
     signal = SimpleNamespace(
