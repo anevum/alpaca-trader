@@ -737,10 +737,20 @@ class ResearchReportScheduler:
             "nostra": nostra,
         }
         session_state = nostra.get("session_state") or {}
-        latest_nostra = (
+        latest_nostra_raw = (
             session_state.get("latest")
             if isinstance(session_state, dict)
             else None
+        )
+        transition_calibration = nostra.get("transition_calibration")
+        latest_nostra = (
+            {
+                **latest_nostra_raw,
+                "calibration": transition_calibration,
+            }
+            if isinstance(latest_nostra_raw, dict)
+            and isinstance(transition_calibration, dict)
+            else latest_nostra_raw
         )
         ordered_prior = sorted(
             scoped_prior_reports,
