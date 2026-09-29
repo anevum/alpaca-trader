@@ -113,13 +113,17 @@ Deno.serve(async (req) => {
               'scan_cycle_id', c.scan_cycle_id,
               'run_id', c.run_id,
               'strategy_version_id', c.strategy_version_id,
+              'candidate_key', c.candidate_key,
               'symbol', c.symbol,
+              'session', (c.observed_at at time zone 'America/New_York')::date,
               'observed_at', c.observed_at,
               'decision_reference_price', c.decision_reference_price,
               'qualified', c.qualified,
               'action', c.action,
               'reason', c.reason,
+              'rejection_reason_codes', c.rejection_reason_codes,
               'features', c.features,
+              'checks', c.checks,
               'final_decision', c.final_decision,
               'data_feed', c.data_feed,
               'bar_interval', c.bar_interval,
@@ -210,7 +214,7 @@ Deno.serve(async (req) => {
             when c.cycle_row_number=1 then de.payload
             else null
           end as decision_cycle_payload,
-          '[]'::jsonb as outcomes,
+          coalesce(outcomes.rows,'[]'::jsonb) as outcomes,
           c.signal_id::text as signal_id,
           intent.intent_id::text as intent_id,
           ord.broker_order_id,
@@ -236,6 +240,25 @@ Deno.serve(async (req) => {
           on intent.signal_id=c.signal_id
         left join order_rows ord
           on ord.order_intent_id=intent.intent_id
+        left join lateral (
+          select coalesce(
+            jsonb_agg(
+              jsonb_build_object(
+                'horizon_minutes', fo.horizon_minutes,
+                'status', fo.status,
+                'forward_return', fo.forward_return,
+                'max_favorable_return', fo.max_favorable_return,
+                'max_adverse_return', fo.max_adverse_return,
+                'methodology_version', fo.methodology_version
+              )
+              order by fo.horizon_minutes
+            ),
+            '[]'::jsonb
+          ) as rows
+          from private.trading_candidate_forward_outcomes fo
+          where fo.candidate_id=c.candidate_id
+            and fo.methodology_version='candidate-forward-v2'
+        ) outcomes on true
         left join private.trading_ads_shadow_scores ads
           on ads.candidate_id=c.candidate_id
          and ads.methodology_version='ads-shadow-v1'
