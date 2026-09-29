@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .adaptation_proposal import proposal_from_counterfactual
 from .audit import deterministic_run_key, input_fingerprint
 from .classification import classify_structured_evidence, report_evidence
 from .evidence import (
@@ -144,6 +145,37 @@ class ResearchAgentRunner:
             daily_report=self.evidence.latest_daily_report,
             weekly_report=self.evidence.latest_weekly_report,
         )
+        proposals: dict[str, Any] = {}
+        daily_report = self.evidence.latest_daily_report or {}
+        lab = daily_report.get("counterfactual_lab")
+        if (
+            isinstance(lab, Mapping)
+            and strategy_health.get("control_state") in {"ADAPT", "RESEARCH"}
+        ):
+            baseline = lab.get("baseline_parameters")
+            rolling = lab.get("rolling_searches")
+            baseline = baseline if isinstance(baseline, Mapping) else {}
+            rolling = rolling if isinstance(rolling, Mapping) else {}
+            for parameter in lab.get("proposal_ready_parameters") or []:
+                result = rolling.get(parameter)
+                current_value = baseline.get(parameter)
+                if not isinstance(result, Mapping) or current_value in (None, ""):
+                    continue
+                proposal = proposal_from_counterfactual(
+                    parameter=str(parameter),
+                    current_value=current_value,
+                    alternatives=result.get("results") or [],
+                    control_state=str(strategy_health["control_state"]),
+                    source_strategy_version=version,
+                )
+                if proposal is not None:
+                    proposals[str(parameter)] = proposal
+        strategy_health = {
+            **strategy_health,
+            "parameter_proposals": proposals,
+            "proposal_count": len(proposals),
+            "automatic_application_authorized": False,
+        }
         return {
             "agent_version": "rhen-research-agent-v1-foundation",
             "mode": "DETERMINISTIC_ONLY",
