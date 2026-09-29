@@ -881,7 +881,6 @@ class TradingEventSink:
         client_order_id: str,
         correlation_id: str | None,
         intended_at: datetime,
-        decision_scan: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, str] | None:
         signal_id = str(uuid4())
         intent_id = str(uuid4())
@@ -908,7 +907,10 @@ class TradingEventSink:
             symbol=signal.symbol,
             metadata=metadata,
         )
-        ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(decision_scan or {})
+        decision_scan = getattr(signal, "_evidence_decision_scan", None)
+        ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(
+            decision_scan if isinstance(decision_scan, dict) else {}
+        )
         ads002_v2 = (
             ads002_v2_by_symbol.get(signal.symbol.upper())
             or self._ads002_v2_missing_state(
