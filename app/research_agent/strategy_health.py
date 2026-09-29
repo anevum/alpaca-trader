@@ -37,6 +37,16 @@ def _rows(value: Any) -> list[Mapping[str, Any]]:
     return []
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _dimension(
     status: str,
     *reason_codes: str,
@@ -46,7 +56,7 @@ def _dimension(
     return {
         "status": status,
         "reason_codes": [code for code in reason_codes if code],
-        "metrics": dict(metrics or {}),
+        "metrics": _json_safe(dict(metrics or {})),
         "observations": observations,
     }
 
