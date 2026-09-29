@@ -886,6 +886,13 @@ class TradingEventSink:
         intent_id = str(uuid4())
         position_id = str(uuid4())
         metadata = dict(signal.metadata or {})
+        market = str(metadata.get("market") or "").lower()
+        time_in_force = "gtc" if market == "crypto" else "day"
+        strategy_version_id = (
+            self.settings.crypto_strategy_version_id
+            if market == "crypto"
+            else self.settings.strategy_version_id
+        )
         cycle_key = (
             f"{self.settings.trading_run_id}:{correlation_id}"
             if correlation_id else None
@@ -942,7 +949,7 @@ class TradingEventSink:
                 "symbol": signal.symbol.upper(),
                 "side": "buy",
                 "order_type": "market",
-                "time_in_force": "day",
+                "time_in_force": time_in_force,
                 "requested_qty": qty,
                 "requested_notional": str(signal.notional),
                 "risk_decision": "approved",
@@ -987,7 +994,7 @@ class TradingEventSink:
                             "sizing": metadata.get("sizing") or {},
                         },
                         "methodology_version": "live-decision-v1",
-                        "strategy_version_id": self.settings.strategy_version_id,
+                        "strategy_version_id": strategy_version_id,
                         "strategy_family": getattr(self.settings, "strategy_name", None),
                         "data_source": "alpaca",
                         "data_feed": getattr(self.settings, "data_feed", None),
@@ -1002,7 +1009,7 @@ class TradingEventSink:
                             "confirmations": metadata.get("regime_confirmations") or {},
                         },
                         "research_attribution": {
-                            "live_strategy_version": self.settings.strategy_version_id,
+                            "live_strategy_version": strategy_version_id,
                         },
                         "ads002": ads002_shadow,
                         "ads002_v2": ads002_v2,
@@ -1040,6 +1047,8 @@ class TradingEventSink:
     ) -> dict[str, str]:
         intent_id = str(uuid4())
         exit_id = str(uuid4())
+        market = str((exit_metadata or {}).get("market") or "").lower()
+        time_in_force = "gtc" if market == "crypto" else "day"
         payload = {
             "intent": {
                 "intent_id": intent_id,
@@ -1048,7 +1057,7 @@ class TradingEventSink:
                 "symbol": symbol.upper(),
                 "side": "sell",
                 "order_type": "market",
-                "time_in_force": "day",
+                "time_in_force": time_in_force,
                 "requested_qty": qty,
                 "requested_notional": None,
                 "risk_decision": "approved",
