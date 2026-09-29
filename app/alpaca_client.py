@@ -192,6 +192,67 @@ class AlpacaClient:
             params={"client_order_id": client_order_id},
         )
 
+    async def submit_crypto_market_buy(
+        self,
+        symbol: str,
+        qty: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v2/orders",
+            json={
+                "symbol": symbol.upper(),
+                "qty": qty,
+                "side": "buy",
+                "type": "market",
+                "time_in_force": "gtc",
+                "client_order_id": client_order_id,
+            },
+        )
+
+    async def submit_crypto_market_sell(
+        self,
+        symbol: str,
+        qty: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v2/orders",
+            json={
+                "symbol": symbol.upper(),
+                "qty": qty,
+                "side": "sell",
+                "type": "market",
+                "time_in_force": "gtc",
+                "client_order_id": client_order_id,
+            },
+        )
+
+    async def submit_crypto_stop_limit_sell(
+        self,
+        symbol: str,
+        qty: str,
+        stop_price: str,
+        limit_price: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v2/orders",
+            json={
+                "symbol": symbol.upper(),
+                "qty": qty,
+                "side": "sell",
+                "type": "stop_limit",
+                "time_in_force": "gtc",
+                "stop_price": stop_price,
+                "limit_price": limit_price,
+                "client_order_id": client_order_id,
+            },
+        )
+
     async def submit_market_buy(
         self,
         symbol: str,
