@@ -788,15 +788,42 @@ class PostEventEvidenceRunner:
 
     @staticmethod
     def _forward_outcome_eligible(candidate: dict[str, Any]) -> bool:
+        """Gate only whether a candidate can be identified for measurement.
+
+        Prediction completeness is intentionally not part of this decision.
+        Invalid prices, timestamps, or future data are persisted as explicit
+        per-horizon error/insufficient states by calculate_forward_outcome().
+        """
+        identity = candidate.get("candidate_id") or candidate.get("candidate_key")
+        symbol = str(candidate.get("symbol") or "").strip()
+        return identity not in {None, ""} and bool(symbol)
+
+    @staticmethod
+    def _ads002_research_eligibility(
+        candidate: dict[str, Any],
+        outcome: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep model-validation eligibility downstream of outcome measurement."""
+        reasons: list[str] = []
         score = candidate.get("ads002_score")
         if not isinstance(score, dict):
-            return False
-        completeness = score.get("source_completeness")
-        return bool(
-            isinstance(completeness, dict)
-            and completeness.get("pretrade_complete") is True
-            and score.get("methodology_version") == "ads-shadow-v1"
-        )
+            reasons.append("ADS002_PREDICTION_MISSING")
+        else:
+            if score.get("methodology_version") != "ads-shadow-v1":
+                reasons.append("ADS002_METHODOLOGY_MISMATCH")
+            completeness = score.get("source_completeness")
+            if not (
+                isinstance(completeness, dict)
+                and completeness.get("pretrade_complete") is True
+            ):
+                reasons.append("ADS002_PRETRADE_INCOMPLETE")
+        if outcome.get("status") != "complete":
+            reasons.append("REQUIRED_HORIZON_INCOMPLETE")
+        return {
+            "eligible": not reasons,
+            "reason_codes": reasons,
+            "analytics_only": True,
+        }
 
     @staticmethod
     def _cycle_payload(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -907,9 +934,20 @@ class PostEventEvidenceRunner:
                     )
                 outcome["session"] = session.isoformat()
                 outcome["computed_at"] = computed_at
+                outcome["candidate_key"] = candidate.get("candidate_key")
+                outcome["research_eligibility"] = {
+                    "ads002_v1": self._ads002_research_eligibility(
+                        candidate,
+                        outcome,
+                    ),
+                }
                 status = str(outcome["status"])
+                candidate_identity = (
+                    candidate.get("candidate_id")
+                    or candidate.get("candidate_key")
+                )
                 event_key = (
-                    f"candidate-forward:{candidate.get('candidate_id')}:"
+                    f"candidate-forward:{candidate_identity}:"
                     f"{horizon}:{FORWARD_METHODOLOGY_VERSION}:{status}"
                 )
                 self.event_sink.emit(
