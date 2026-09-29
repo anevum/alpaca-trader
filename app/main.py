@@ -16,6 +16,12 @@ from .alpaca_client import AlpacaClient
 from .config import get_settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .execution import ExecutionEngine
+from .crypto_layer import (
+    CryptoMarketDataClient,
+    CryptoRollingMomentumStrategy,
+    CryptoScanner,
+    CryptoUniverse,
+)
 from .market_data import MarketDataClient
 from .mobile_live_activity import MobileLiveActivityService
 from .persistence import TradingEventSink
@@ -81,6 +87,37 @@ scanner = ReadOnlyScanner(
     strategy,
     runtime_state,
     universe=universe,
+)
+crypto_market_data = CryptoMarketDataClient(settings)
+crypto_strategy = CryptoRollingMomentumStrategy(
+    fast_window=settings.fast_window,
+    slow_window=settings.slow_window,
+    min_momentum_pct=settings.min_momentum_pct,
+    min_vwap_edge_pct=settings.min_vwap_edge_pct,
+    stop_pct=settings.stop_pct,
+    target_pct=settings.target_pct,
+    entry_start=settings.entry_start,
+    entry_cutoff=settings.entry_cutoff,
+    confirmation_symbols=settings.crypto_confirmation_symbols,
+    min_confirmations=1,
+    regime_window=settings.regime_window,
+    regime_min_confirmations=1,
+    regime_min_return_pct=settings.regime_min_return_pct,
+    max_vwap_extension_pct=settings.max_vwap_extension_pct,
+    volatility_stop_enabled=settings.volatility_stop_enabled,
+    volatility_stop_multiplier=settings.volatility_stop_multiplier,
+    volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
+    max_dynamic_stop_pct=settings.max_dynamic_stop_pct,
+)
+crypto_universe = CryptoUniverse(
+    settings, client, crypto_market_data, runtime_state
+)
+crypto_scanner = CryptoScanner(
+    settings,
+    crypto_market_data,
+    crypto_strategy,
+    runtime_state,
+    crypto_universe,
 )
 research_reports = ResearchReportScheduler(
     settings,
@@ -239,6 +276,11 @@ async def command_snapshot() -> dict:
             "last_decision": runtime_state.last_decision,
             "last_error": runtime_state.last_error,
             "exit_states": runtime_state.exit_states,
+            "crypto_lane_enabled": settings.crypto_lane_enabled,
+            "crypto_execution_enabled": settings.crypto_execution_enabled,
+            "crypto_universe_size": settings.crypto_universe_size,
+            "crypto_poll_seconds": settings.crypto_poll_seconds,
+            "crypto_confirmation_symbols": list(settings.crypto_confirmation_symbols),
         },
         "account": {
             "equity": str(account.get("equity", "0")),
@@ -611,6 +653,36 @@ async def monitor_loop():
             pass
 
 
+async def crypto_monitor_loop():
+    """Independent 24/7 crypto market lane; shadow execution until validated."""
+    while not _stop.is_set():
+        if settings.crypto_lane_enabled and settings.credentials_configured:
+            try:
+                await crypto_scanner.scan_once()
+            except Exception as exc:
+                runtime_state.crypto_last_decision = (
+                    f"crypto lane error: {type(exc).__name__}: {exc}"
+                )
+                runtime_state.record_event(
+                    kind="crypto_runtime_error",
+                    action="error",
+                    message=runtime_state.crypto_last_decision,
+                    payload={"market": "crypto"},
+                )
+                print(
+                    "CRYPTO_LOOP_ERROR",
+                    {"error": runtime_state.crypto_last_decision},
+                    flush=True,
+                )
+        try:
+            await asyncio.wait_for(
+                _stop.wait(),
+                timeout=settings.crypto_poll_seconds,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+
 async def slack_market_observer_loop():
     """Read-only market-state observer used only for Slack transition notices."""
     while not _stop.is_set():
@@ -668,6 +740,12 @@ def _runtime_configuration_snapshot() -> dict:
         "volatility_stop_enabled": settings.volatility_stop_enabled,
         "profit_protect_enabled": settings.profit_protect_enabled,
         "thesis_exit_enabled": settings.thesis_exit_enabled,
+        "crypto_lane_enabled": settings.crypto_lane_enabled,
+        "crypto_execution_enabled": settings.crypto_execution_enabled,
+        "crypto_universe_size": settings.crypto_universe_size,
+        "crypto_poll_seconds": settings.crypto_poll_seconds,
+        "crypto_quote_currencies": sorted(settings.crypto_quote_currencies),
+        "crypto_confirmation_symbols": list(settings.crypto_confirmation_symbols),
     }
 
 
@@ -801,10 +879,12 @@ async def lifespan(app: FastAPI):
 
     await research_reports.start()
     task = asyncio.create_task(monitor_loop())
+    crypto_task = asyncio.create_task(crypto_monitor_loop())
     slack_market_task = asyncio.create_task(slack_market_observer_loop())
     yield
     _stop.set()
     await task
+    await crypto_task
     await slack_market_task
     await research_reports.stop()
     event_sink.emit(
@@ -864,6 +944,21 @@ async def health():
         "slack_notifications": slack_notifier.status(),
         "mobile_live_activity": mobile_live_activity.status(),
         "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
+        "crypto": {
+            "enabled": settings.crypto_lane_enabled,
+            "execution_enabled": settings.crypto_execution_enabled,
+            "session_model": "24x7",
+            "universe_source": runtime_state.crypto_universe_source,
+            "active_count": len(runtime_state.crypto_universe_active_symbols),
+            "candidate_count": runtime_state.crypto_universe_candidate_count,
+            "eligible_count": runtime_state.crypto_universe_eligible_count,
+            "active_symbols": runtime_state.crypto_universe_active_symbols,
+            "updated_at": runtime_state.crypto_universe_updated_at,
+            "error": runtime_state.crypto_universe_error,
+            "last_decision": runtime_state.crypto_last_decision,
+            "last_signal": runtime_state.crypto_last_signal,
+            "last_scan": runtime_state.crypto_last_completed_scan,
+        },
     }
 
 
