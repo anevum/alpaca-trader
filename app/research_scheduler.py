@@ -741,31 +741,40 @@ class ResearchReportScheduler:
             prior_control_state(ordered_prior[-1])
             if ordered_prior else None
         ) or "NORMAL"
-
-        def consecutive(state: str) -> int:
-            count = 0
-            for report in reversed(ordered_prior):
-                if prior_control_state(report) == state:
-                    count += 1
-                else:
-                    break
-            return count
+        prior_counters: dict[str, Any] = {}
+        if ordered_prior:
+            adaptive = ordered_prior[-1].get("adaptive_strategy_control")
+            if isinstance(adaptive, dict):
+                transition = adaptive.get("control_transition")
+                if isinstance(transition, dict):
+                    counters = transition.get("counters")
+                    if isinstance(counters, dict):
+                        prior_counters = counters
 
         requested_state = str(
             strategy_health.get("control_state") or "NORMAL"
         )
+        clear_count = (
+            int(prior_counters.get("consecutive_clear_observations") or 0) + 1
+            if requested_state == "NORMAL"
+            else 0
+        )
+        adapt_count = (
+            int(prior_counters.get("consecutive_adapt_observations") or 0) + 1
+            if requested_state == "ADAPT"
+            else 0
+        )
+        research_count = (
+            int(prior_counters.get("consecutive_research_observations") or 0) + 1
+            if requested_state == "RESEARCH"
+            else 0
+        )
         control_transition = transition_control_state(
             previous_state=previous_state,
             health_snapshot=strategy_health,
-            consecutive_clear_observations=(
-                consecutive("NORMAL") + int(requested_state == "NORMAL")
-            ),
-            consecutive_adapt_observations=(
-                consecutive("ADAPT") + int(requested_state == "ADAPT")
-            ),
-            consecutive_research_observations=(
-                consecutive("RESEARCH") + int(requested_state == "RESEARCH")
-            ),
+            consecutive_clear_observations=clear_count,
+            consecutive_adapt_observations=adapt_count,
+            consecutive_research_observations=research_count,
         )
         proposal_health = {
             **strategy_health,
