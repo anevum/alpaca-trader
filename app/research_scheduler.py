@@ -31,6 +31,7 @@ from .research_agent.graen_adaptive_validation import assess_adaptive_validation
 from .research_agent.nostra_session import derive_nostra_regime_timeline
 from .research_agent.nostra_transition import (
     build_transition_model,
+    evaluate_transition_calibration,
     forecast_next_regime,
 )
 from .research_agent.parameter_pressure import compute_parameter_pressure
@@ -521,7 +522,8 @@ class ResearchReportScheduler:
             session
         )
 
-        observations: list[dict[str, Any]] = []
+        prior_observations: list[dict[str, Any]] = []
+        historical_predictions: list[dict[str, Any]] = []
         for report in prior_reports:
             if (
                 current_version
@@ -529,29 +531,57 @@ class ResearchReportScheduler:
                 != current_version
             ):
                 continue
-            nostra = report.get("nostra")
-            if not isinstance(nostra, dict):
+            prior_nostra = report.get("nostra")
+            if not isinstance(prior_nostra, dict):
                 continue
-            prior_state = nostra.get("session_state")
-            if not isinstance(prior_state, dict):
-                continue
-            for row in prior_state.get("timeline") or []:
+            prior_state = prior_nostra.get("session_state")
+            if isinstance(prior_state, dict):
+                for row in prior_state.get("timeline") or []:
+                    if isinstance(row, dict):
+                        prior_observations.append(row)
+            for row in prior_nostra.get("transition_predictions") or []:
                 if isinstance(row, dict):
-                    observations.append(row)
-        observations.extend(
+                    historical_predictions.append(row)
+
+        current_timeline = [
             row
             for row in session_state.get("timeline") or []
             if isinstance(row, dict)
-        )
+        ]
+        frozen_prior_model = build_transition_model(prior_observations)
+        current_predictions: list[dict[str, Any]] = []
+        if int(frozen_prior_model.get("total_transitions") or 0) > 0:
+            for current_row, next_row in zip(
+                current_timeline,
+                current_timeline[1:],
+            ):
+                current_regime = current_row.get("regime")
+                realized_regime = next_row.get("regime")
+                if not current_regime or not realized_regime:
+                    continue
+                forecast = forecast_next_regime(
+                    frozen_prior_model,
+                    current_regime=str(current_regime),
+                )
+                current_predictions.append(
+                    {
+                        "session": session.isoformat(),
+                        "observed_at": current_row.get("observed_at"),
+                        "current_regime": current_regime,
+                        "probabilities": forecast.get("probabilities") or {},
+                        "forecast_confidence": forecast.get("confidence"),
+                        "forecast_minimums_met": forecast.get("minimums_met"),
+                        "realized_regime": realized_regime,
+                        "evaluation": "prior_sessions_to_next_5m_within_session",
+                    }
+                )
 
-        transition_model = build_transition_model(observations)
-        latest = session_state.get("latest")
-        next_forecast = None
-        if isinstance(latest, dict) and latest.get("regime"):
-            next_forecast = forecast_next_regime(
-                transition_model,
-                current_regime=str(latest["regime"]),
-            )
+        transition_calibration = evaluate_transition_calibration(
+            [*historical_predictions, *current_predictions]
+        )
+        transition_model = build_transition_model(
+            [*prior_observations, *current_timeline]
+        )
 
         return (
             {
@@ -560,7 +590,12 @@ class ResearchReportScheduler:
                 "strategy_version_id": current_version or None,
                 "session_state": session_state,
                 "transition_model": transition_model,
-                "next_regime_forecast": next_forecast,
+                "transition_predictions": current_predictions,
+                "transition_calibration": transition_calibration,
+                "next_regime_forecast": None,
+                "next_regime_forecast_reason": (
+                    "POST_CLOSE_SESSION_BOUNDARY_NOT_MODELED"
+                ),
                 "research_only": True,
                 "execution_authority": False,
                 "live_configuration_changed": False,
