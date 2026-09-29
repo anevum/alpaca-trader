@@ -918,6 +918,8 @@ class ResearchReportScheduler:
             "ads002": ads002,
             "ads002_v2": ads002_v2,
             "counterfactual_lab": counterfactual_lab,
+            "nostra": nostra,
+            "adaptive_strategy_control": adaptive_control,
         }
         source_fingerprint = hashlib.sha256(
             json.dumps(
