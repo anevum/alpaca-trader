@@ -25,6 +25,8 @@ MIN_OUTCOME_COVERAGE = Decimal("0.95")
 MIN_POSITIVE_SESSION_FRACTION = Decimal("0.60")
 MAX_ADJUSTED_SIGN_P = Decimal("0.10")
 MIN_NET_SCREENING_EFFECT = Decimal("0.0001")
+STRESS_ROUND_TRIP_COST_V1 = Decimal("0.0022")
+COST_MODEL_VERSION = "edge-discovery-stress-floor-v1"
 
 
 def _d(value: Any) -> Decimal | None:
