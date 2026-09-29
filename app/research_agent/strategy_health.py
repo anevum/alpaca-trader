@@ -288,12 +288,23 @@ def _calibration_health(nostra_state: Mapping[str, Any] | None) -> dict[str, Any
         return _dimension(COLLECTING, "NOSTRA_CALIBRATION_NOT_AVAILABLE")
 
     observations = int(_d(calibration.get("observations")))
-    brier = calibration.get("brier_score")
-    slope = calibration.get("calibration_slope")
+    brier_skill = (
+        _d(calibration.get("brier_skill_score"))
+        if calibration.get("brier_skill_score") not in (None, "")
+        else None
+    )
     metrics = {
         "observations": observations,
-        "brier_score": brier,
-        "calibration_slope": slope,
+        "multiclass_brier": calibration.get("multiclass_brier"),
+        "base_rate_brier": calibration.get("base_rate_brier"),
+        "brier_skill_score": calibration.get("brier_skill_score"),
+        "log_loss": calibration.get("log_loss"),
+        "base_rate_log_loss": calibration.get("base_rate_log_loss"),
+        "log_loss_skill_score": calibration.get("log_loss_skill_score"),
+        "top1_accuracy": calibration.get("top1_accuracy"),
+        "majority_class_accuracy": calibration.get("majority_class_accuracy"),
+        "brier_score": calibration.get("brier_score"),
+        "calibration_slope": calibration.get("calibration_slope"),
     }
     if observations < 100:
         return _dimension(
@@ -303,6 +314,41 @@ def _calibration_health(nostra_state: Mapping[str, Any] | None) -> dict[str, Any
             observations=observations,
         )
 
+    # NOSTRA transition forecasts are multiclass. Compare their probability
+    # quality against an empirical base-rate forecast instead of inventing a
+    # scalar calibration slope.
+    if brier_skill is not None:
+        if brier_skill < Decimal("-0.10"):
+            return _dimension(
+                DEGRADED,
+                "FORECAST_CALIBRATION_SKILL_DEGRADED",
+                metrics=metrics,
+                observations=observations,
+            )
+        if brier_skill <= Decimal("0"):
+            return _dimension(
+                WATCH,
+                "FORECAST_CALIBRATION_NO_SKILL",
+                metrics=metrics,
+                observations=observations,
+            )
+        return _dimension(
+            HEALTHY,
+            "FORECAST_CALIBRATION_POSITIVE_SKILL",
+            metrics=metrics,
+            observations=observations,
+        )
+
+    # Preserve support for later scalar probabilistic models that expose a
+    # conventional calibration slope.
+    slope = calibration.get("calibration_slope")
+    if slope in (None, ""):
+        return _dimension(
+            COLLECTING,
+            "CALIBRATION_METRIC_NOT_AVAILABLE",
+            metrics=metrics,
+            observations=observations,
+        )
     slope_d = _d(slope, Decimal("1"))
     if slope_d < Decimal("0.6") or slope_d > Decimal("1.4"):
         return _dimension(
