@@ -11,7 +11,7 @@ from app.research_agent.counterfactual_lab import (
 
 def rows_for_sessions(
     *,
-    sessions=6,
+    sessions=7,
     candidates_per_session=20,
     current="0.0020",
     good_looser=True,
@@ -265,7 +265,7 @@ def test_vwap_minimum_requires_price_above_vwap_independently():
 
 
 def test_daily_frozen_searches_aggregate_into_cross_session_evidence():
-    all_rows = rows_for_sessions(sessions=6, candidates_per_session=20)
+    all_rows = rows_for_sessions(sessions=7, candidates_per_session=20)
     searches = []
     for session in sorted({row["session"] for row in all_rows}):
         searches.append(
@@ -287,7 +287,7 @@ def test_daily_frozen_searches_aggregate_into_cross_session_evidence():
 
 
 def test_incomplete_affected_outcomes_reduce_coverage():
-    rows = rows_for_sessions(sessions=6, candidates_per_session=20)
+    rows = rows_for_sessions(sessions=7, candidates_per_session=20)
     for row in rows[:30]:
         if row["gate_inputs"]["momentum_pct"] < 0.002:
             row["forward_outcomes"][0]["status"] = "insufficient_future_data"
