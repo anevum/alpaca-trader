@@ -195,6 +195,61 @@ class MarketDataClient:
         return output
 
 
+    async def historical_crypto_bars_many(
+        self,
+        symbols: list[str],
+        *,
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Fetch Alpaca US crypto bars for VELUM. Read-only; no broker access."""
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+        if end <= start:
+            raise ValueError("historical crypto bar end must be after start")
+
+        batches = self._batches(symbols)
+        if not batches:
+            return {}
+
+        output: dict[str, list[dict[str, Any]]] = {
+            symbol: [] for batch in batches for symbol in batch
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for batch in batches:
+                params = {
+                    "symbols": ",".join(batch),
+                    "timeframe": self.settings.bar_timeframe,
+                    "start": start.astimezone(timezone.utc).isoformat(),
+                    "end": end.astimezone(timezone.utc).isoformat(),
+                    "limit": 10000,
+                    "sort": "asc",
+                }
+                page_token: str | None = None
+                for _ in range(50):
+                    request_params = dict(params)
+                    if page_token:
+                        request_params["page_token"] = page_token
+                    response = await client.get(
+                        f"{self.settings.data_base_url}/v1beta3/crypto/us/bars",
+                        headers=self.headers,
+                        params=request_params,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    for symbol, bars in (data.get("bars") or {}).items():
+                        output.setdefault(symbol.upper(), []).extend(bars or [])
+                    page_token = data.get("next_page_token")
+                    if not page_token:
+                        break
+                else:
+                    raise RuntimeError(
+                        "historical crypto replay pagination exceeded safety limit"
+                    )
+
+        return output
+
+
     async def daily_bars_many(
         self,
         symbols: list[str],
