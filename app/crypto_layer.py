@@ -397,7 +397,7 @@ class CryptoUniverse:
             return tuple(active)
         except Exception as exc:
             fallback = self._active_symbols or list(self.settings.crypto_always_include)
-            self.state.set_universe(
+            self.state.set_crypto_universe(
                 symbols=fallback,
                 candidate_count=self._eligible_count,
                 eligible_count=self._eligible_count,
@@ -444,8 +444,8 @@ class CryptoScanner:
     async def scan_once(self) -> dict[str, Any]:
         self.state.mark_strategy()
         if self.state.paused:
-            self.state.last_decision = "crypto lane paused"
-            return {"action": "hold", "reason": self.state.last_decision}
+            self.state.crypto_last_decision = "crypto lane paused"
+            return {"action": "hold", "reason": self.state.crypto_last_decision}
 
         now = datetime.now(NY)
         entry_symbols = list(await self.universe.active_symbols(now=now))
@@ -527,5 +527,5 @@ class CryptoScanner:
             "action": "shadow_buy",
             "symbol": signal.symbol,
             "reason": self.state.crypto_last_decision,
-            "signal": self.state.last_signal,
+            "signal": self.state.crypto_last_signal,
         }
