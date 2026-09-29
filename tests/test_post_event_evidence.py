@@ -474,9 +474,19 @@ def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
     )
     assert comparison["payload"]["match_state"] == "UNRECONSTRUCTABLE"
     assert comparison["payload"]["mismatch_category"] == "UNRECONSTRUCTABLE"
+    forward_events = [
+        event
+        for event in sink.events
+        if event["event_type"] == "candidate_forward_outcome"
+    ]
+    assert forward_events
+    assert all(
+        event["payload"]["research_eligibility"]["ads002_v1"]["eligible"] is True
+        for event in forward_events
+    )
 
 
-def test_ads002_ineligible_candidate_skips_forward_outcomes_but_keeps_comparison():
+def test_ads002_incomplete_candidate_still_gets_outcomes_but_not_model_validation():
     reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
     row = {
         **candidate(reference_bar),
@@ -503,7 +513,15 @@ def test_ads002_ineligible_candidate_skips_forward_outcomes_but_keeps_comparison
             return [{"date": start, "open": "09:30", "close": "16:00"}]
 
         async def historical_bars_many(self, symbols, *, start, end):
-            return {"SPY": []}
+            return {
+                "SPY": [
+                    bar(
+                        reference_bar + timedelta(minutes=minute),
+                        str(Decimal("100") + Decimal(minute) / Decimal("100")),
+                    )
+                    for minute in range(1, 61)
+                ]
+            }
 
     class Sink:
         def __init__(self):
@@ -524,8 +542,25 @@ def test_ads002_ineligible_candidate_skips_forward_outcomes_but_keeps_comparison
     )
     summary = asyncio.run(runner.run_session(date(2026, 9, 25)))
 
-    assert summary.outcome_events == 0
+    assert summary.outcome_events == 7
+    assert summary.complete_outcomes == 7
     assert summary.comparison_events == 1
-    assert [event["event_type"] for event in sink.events] == [
-        "live_offline_comparison"
+    forward_events = [
+        event
+        for event in sink.events
+        if event["event_type"] == "candidate_forward_outcome"
     ]
+    assert len(forward_events) == 7
+    assert all(
+        event["payload"]["research_eligibility"]["ads002_v1"]["eligible"] is False
+        for event in forward_events
+    )
+    assert all(
+        "ADS002_PRETRADE_INCOMPLETE"
+        in event["payload"]["research_eligibility"]["ads002_v1"]["reason_codes"]
+        for event in forward_events
+    )
+    assert any(
+        event["event_type"] == "live_offline_comparison"
+        for event in sink.events
+    )
