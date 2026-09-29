@@ -9,6 +9,8 @@ from typing import Any, Awaitable, Callable
 import httpx
 import jwt
 
+from .pushward_live import PushWardLiveService
+
 
 SnapshotProvider = Callable[[], Awaitable[dict[str, Any]]]
 
@@ -58,6 +60,7 @@ class MobileLiveActivityService:
         self.last_success_at: str | None = None
         self.push_count = 0
         self.failed_push_count = 0
+        self.pushward = PushWardLiveService(settings, snapshot_provider)
 
     @property
     def registry_configured(self) -> bool:
@@ -85,6 +88,7 @@ class MobileLiveActivityService:
             "failed_push_count": self.failed_push_count,
             "last_success_at": self.last_success_at,
             "last_error": self.last_error,
+            "pushward": self.pushward.status(),
         }
 
     async def start(self) -> None:
@@ -92,8 +96,10 @@ class MobileLiveActivityService:
             return
         self._client = httpx.AsyncClient(http2=True, timeout=10.0)
         self._task = asyncio.create_task(self._loop())
+        await self.pushward.start()
 
     async def stop(self) -> None:
+        await self.pushward.stop()
         if self._task is None:
             return
         self._task.cancel()
@@ -105,6 +111,7 @@ class MobileLiveActivityService:
 
     def wake(self) -> None:
         self._wake.set()
+        self.pushward.wake()
 
     async def register(
         self,
