@@ -148,6 +148,7 @@ class MobileLiveActivityService:
 
     async def _loop(self) -> None:
         while True:
+            self._wake.clear()
             try:
                 await self._push_if_needed()
                 self.last_error = None
@@ -161,7 +162,6 @@ class MobileLiveActivityService:
                     flush=True,
                 )
 
-            self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self.interval_seconds)
             except TimeoutError:
@@ -270,10 +270,10 @@ class MobileLiveActivityService:
             side = str(order.get("side") or "").upper()
             status = str(order.get("status") or "UPDATED").replace("_", " ").upper()
             activity.append({
-                "id": str(order.get("id") or f"order-{len(activity)}"),
+                "id": str(order.get("id") or f"order-{len(activity)}")[:64],
                 "kind": "ORDER",
-                "headline": f"{side} {symbol}".strip(),
-                "detail": status,
+                "headline": f"{side} {symbol}".strip()[:80],
+                "detail": status[:48],
                 "timestamp": str(
                     order.get("filled_at")
                     or order.get("canceled_at")
@@ -290,9 +290,9 @@ class MobileLiveActivityService:
                 "id": hashlib.sha1(
                     json.dumps(event, sort_keys=True).encode()
                 ).hexdigest()[:16],
-                "kind": str(event.get("type") or event.get("kind") or "EVENT").upper(),
-                "headline": str(event.get("label") or "RHEN event"),
-                "detail": str(event.get("kind") or "system").upper(),
+                "kind": str(event.get("type") or event.get("kind") or "EVENT").upper()[:24],
+                "headline": str(event.get("label") or "RHEN event")[:96],
+                "detail": str(event.get("kind") or "system").upper()[:48],
                 "timestamp": str(event.get("at") or ""),
                 "isPrivate": False,
             })
