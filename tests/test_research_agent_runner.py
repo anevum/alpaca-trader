@@ -134,6 +134,13 @@ def test_status_reads_current_strategy_terminal_rdr_and_closed_edge_discovery():
     )
     assert status["edge_discovery_v1"]["closed"] is True
     assert status["llm_usage"]["invoked"] is False
+    asc = status["adaptive_strategy_control"]
+    assert asc["methodology_version"] == "asc-strategy-health-v1"
+    assert asc["read_only"] is True
+    assert asc["execution_authority"] is False
+    assert asc["live_configuration_changed"] is False
+    assert asc["proposal_count"] == 0
+    assert asc["automatic_application_authorized"] is False
 
 
 def test_daily_and_weekly_dry_runs_have_no_mutations_or_model_calls():
@@ -228,3 +235,47 @@ def test_cli_foundation_commands(tmp_path, capsys):
     ) == 0
     weekly = json.loads(capsys.readouterr().out)
     assert weekly["mode"] == "DRY_RUN"
+
+
+
+def test_status_exposes_bounded_proposal_only_when_control_state_escalates():
+    fixture = canonical_fixture()
+    fixture["latest_weekly_report"]["metrics"] = {
+        "completed_trades": 50,
+        "expectancy": "-0.10",
+        "profit_factor": "0.70",
+        "win_rate": "0.30",
+    }
+    fixture["latest_daily_report"]["counterfactual_lab"] = {
+        "baseline_parameters": {
+            "min_momentum_pct": "0.0020",
+        },
+        "proposal_ready_parameters": ["min_momentum_pct"],
+        "rolling_searches": {
+            "min_momentum_pct": {
+                "validity_passed": True,
+                "results": [
+                    {
+                        "counterfactual_id": "CFA-READY",
+                        "requested_value": "0.0018",
+                        "evidence_score": "0.8",
+                        "expected_improvement": "0.001",
+                        "confidence": "0.8",
+                        "selection_bias_status": "CONTROLLED",
+                        "dependence_status": "CONTROLLED",
+                        "validity_passed": True,
+                    }
+                ],
+            }
+        },
+    }
+    value = ResearchAgentRunner(CanonicalEvidenceReader(fixture).read())
+    status = value.status()
+    asc = status["adaptive_strategy_control"]
+    assert asc["control_state"] == "RESEARCH"
+    assert asc["proposal_count"] == 1
+    proposal = asc["parameter_proposals"]["min_momentum_pct"]
+    assert proposal["authorization_required"] is True
+    assert proposal["automatic_application_authorized"] is False
+    assert proposal["execution_authority"] is False
+    assert proposal["source_strategy_version"] == "LIVE-2026-09-25-003"

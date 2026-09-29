@@ -1,0 +1,230 @@
+from app.research_agent.strategy_health import (
+    ADAPT,
+    DEFENSIVE,
+    NORMAL,
+    RESEARCH,
+    compute_strategy_health,
+)
+
+
+def base_daily():
+    return {
+        "report_key": "2026-09-29:rhen-daily-v1.2:test",
+        "session": "2026-09-29",
+        "metrics": {
+            "trade_count": 11,
+            "expectancy": "0.01",
+            "profit_factor": "1.1",
+            "win_rate": "0.55",
+        },
+        "runtime": {
+            "reconciliation_safe": True,
+            "last_error": None,
+            "persistence_error": None,
+        },
+        "candidate_forward_evidence": {
+            "status": {
+                "complete_rows": 300,
+                "incomplete_rows": 25,
+                "error_rows": 0,
+            }
+        },
+        "ads002_v2": {
+            "models": [
+                {
+                    "model_key": "ads002-geo-v2",
+                    "session_spearman_15m": "0.10",
+                    "confidence": {"score": "0.20", "minimums_met": False},
+                }
+            ]
+        },
+    }
+
+
+def test_small_sample_remains_normal_collecting_not_forced_change():
+    result = compute_strategy_health(daily_report=base_daily())
+    assert result["control_state"] == NORMAL
+    assert result["dimensions"]["edge"]["status"] == "COLLECTING"
+    assert result["read_only"] is True
+    assert result["execution_authority"] is False
+    assert result["live_configuration_changed"] is False
+
+
+def test_runtime_integrity_failure_is_defensive():
+    daily = base_daily()
+    daily["runtime"]["reconciliation_safe"] = False
+    result = compute_strategy_health(daily_report=daily)
+    assert result["control_state"] == DEFENSIVE
+    assert result["dimensions"]["evidence_integrity"]["status"] == "BLOCKED"
+
+
+def test_mature_negative_edge_escalates_to_research():
+    weekly = {
+        "period_end": "2026-10-09",
+        "metrics": {
+            "completed_trades": 48,
+            "expectancy": "-0.15",
+            "profit_factor": "0.70",
+            "win_rate": "0.35",
+        },
+    }
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        weekly_report=weekly,
+    )
+    assert result["control_state"] == RESEARCH
+    assert result["dimensions"]["edge"]["status"] == "DEGRADED"
+
+
+def test_regime_uncertainty_can_request_bounded_adapt_state():
+    nostra = {
+        "regime": "TREND_DECAY",
+        "confidence": "0.50",
+        "unknown_probability": "0.10",
+        "market_familiarity": "0.55",
+    }
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=nostra,
+    )
+    assert result["control_state"] == ADAPT
+    assert result["dimensions"]["regime"]["status"] == "WATCH"
+    assert result["dimensions"]["distribution"]["status"] == "WATCH"
+
+
+def test_low_market_familiarity_escalates_to_research_not_auto_adapt():
+    nostra = {
+        "regime": "UNKNOWN",
+        "confidence": "0.30",
+        "unknown_probability": "0.60",
+        "market_familiarity": "0.20",
+    }
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=nostra,
+    )
+    assert result["control_state"] == RESEARCH
+    assert result["dimensions"]["distribution"]["status"] == "DEGRADED"
+
+
+def test_persistent_parameter_boundary_pressure_escalates_to_research():
+    pressure = {
+        "parameters": [
+            {
+                "parameter": "min_momentum_pct",
+                "boundary_fraction": "0.75",
+                "observations": 8,
+            },
+            {
+                "parameter": "min_vwap_edge_pct",
+                "boundary_fraction": "0.10",
+                "observations": 8,
+            },
+        ]
+    }
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        parameter_pressure=pressure,
+    )
+    assert result["control_state"] == RESEARCH
+    assert result["dimensions"]["parameter_pressure"]["status"] == "DEGRADED"
+
+
+def test_mature_challenger_pressure_is_research_only():
+    daily = base_daily()
+    daily["ads002_v2"]["models"] = [
+        {
+            "model_key": "ads002-geo-v2",
+            "session_spearman_15m": "0.22",
+            "confidence": {"score": "0.82", "minimums_met": True},
+        }
+    ]
+    result = compute_strategy_health(daily_report=daily)
+    assert result["control_state"] == RESEARCH
+    assert result["dimensions"]["challenger_pressure"]["status"] == "WATCH"
+    assert result["promotion_authorized"] is False
+
+
+
+def test_immature_parameter_pressure_remains_collecting():
+    pressure = {
+        "parameters": [
+            {
+                "parameter": "min_momentum_pct",
+                "boundary_fraction": "1",
+                "observations": 2,
+            }
+        ]
+    }
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        parameter_pressure=pressure,
+    )
+    assert result["dimensions"]["parameter_pressure"]["status"] == "COLLECTING"
+    assert result["control_state"] == NORMAL
+
+
+
+def healthy_nostra_with_calibration(skill, observations=120):
+    return {
+        "regime": "TREND_EXPANSION",
+        "confidence": "0.80",
+        "unknown_probability": "0.05",
+        "market_familiarity": "0.85",
+        "calibration": {
+            "observations": observations,
+            "multiclass_brier": "0.04",
+            "base_rate_brier": "0.08",
+            "brier_skill_score": str(skill),
+            "log_loss": "0.50",
+            "base_rate_log_loss": "0.70",
+            "log_loss_skill_score": "0.20",
+            "top1_accuracy": "0.70",
+            "majority_class_accuracy": "0.45",
+        },
+    }
+
+
+def test_mature_positive_nostra_skill_is_healthy():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("0.25"),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "HEALTHY"
+    assert calibration["reason_codes"] == [
+        "FORECAST_CALIBRATION_POSITIVE_SKILL"
+    ]
+    assert result["control_state"] == NORMAL
+
+
+def test_mature_negative_nostra_skill_escalates_to_research():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("-0.20"),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "DEGRADED"
+    assert "FORECAST_CALIBRATION_SKILL_DEGRADED" in calibration["reason_codes"]
+    assert result["control_state"] == RESEARCH
+
+
+def test_mature_zero_nostra_skill_is_research_watch():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("0"),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "WATCH"
+    assert "FORECAST_CALIBRATION_NO_SKILL" in calibration["reason_codes"]
+    assert result["control_state"] == RESEARCH
+
+
+def test_immature_nostra_calibration_remains_collecting():
+    result = compute_strategy_health(
+        daily_report=base_daily(),
+        nostra_state=healthy_nostra_with_calibration("-0.50", observations=40),
+    )
+    calibration = result["dimensions"]["calibration"]
+    assert calibration["status"] == "COLLECTING"
+    assert result["control_state"] == NORMAL

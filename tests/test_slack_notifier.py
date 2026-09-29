@@ -73,3 +73,42 @@ def test_market_open_and_close_only_emit_transitions():
 
     notifier.observe_market_state(False, observed_at=at)
     assert "MARKET CLOSED" in queued(notifier)
+
+
+
+def test_asc_state_changes_are_queued_but_unrecognized_asc_noise_is_not():
+    notifier = SlackNotifier(Settings())
+    notifier.record_event(
+        {
+            "at": "2026-09-29T20:10:00+00:00",
+            "kind": "asc",
+            "action": "research",
+            "message": "IREN ASC ADAPT -> RESEARCH; production unchanged",
+        }
+    )
+    assert "ASC RESEARCH" in queued(notifier)
+
+    notifier.record_event(
+        {
+            "at": "2026-09-29T20:10:10+00:00",
+            "kind": "asc",
+            "action": "health_snapshot",
+            "message": "routine snapshot",
+        }
+    )
+    assert notifier._queue.empty()
+
+
+def test_asc_promotion_ready_is_operational_notification_only():
+    notifier = SlackNotifier(Settings())
+    notifier.record_event(
+        {
+            "at": "2026-10-15T20:10:00+00:00",
+            "kind": "asc",
+            "action": "promotion_ready",
+            "message": "proposal ready for human review; no deployment occurred",
+        }
+    )
+    message = queued(notifier)
+    assert "PROMOTION_READY" in message
+    assert "no deployment occurred" in message

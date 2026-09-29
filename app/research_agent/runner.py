@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .adaptation_proposal import proposal_from_counterfactual
 from .audit import deterministic_run_key, input_fingerprint
 from .classification import classify_structured_evidence, report_evidence
 from .evidence import (
@@ -13,6 +14,7 @@ from .evidence import (
 from .models import CanonicalEvidence, QueueItem, ResearchCategory, deterministic_dict
 from .policy import EDGE_DISCOVERY_V1_EXPERIMENT_KEY, RDR_V21_EXPERIMENT_KEY
 from .queue import build_queue
+from .strategy_health import compute_strategy_health
 
 
 def _normalized_requirement(value: Any) -> str:
@@ -139,6 +141,82 @@ class ResearchAgentRunner:
             and edge.get("status") == "rejected"
             and edge.get("survivor_state") == "all_rejected"
         )
+        daily_report = self.evidence.latest_daily_report or {}
+        persisted_asc = daily_report.get("adaptive_strategy_control")
+        persisted_asc = (
+            persisted_asc if isinstance(persisted_asc, Mapping) else {}
+        )
+        persisted_health = persisted_asc.get("strategy_health")
+        persisted_health = (
+            persisted_health if isinstance(persisted_health, Mapping) else None
+        )
+
+        nostra = daily_report.get("nostra")
+        nostra = nostra if isinstance(nostra, Mapping) else {}
+        session_state = nostra.get("session_state")
+        session_state = (
+            session_state if isinstance(session_state, Mapping) else {}
+        )
+        latest_nostra = session_state.get("latest")
+        latest_nostra = (
+            latest_nostra if isinstance(latest_nostra, Mapping) else None
+        )
+
+        strategy_health = (
+            dict(persisted_health)
+            if persisted_health is not None
+            else compute_strategy_health(
+                daily_report=self.evidence.latest_daily_report,
+                weekly_report=self.evidence.latest_weekly_report,
+                nostra_state=latest_nostra,
+            )
+        )
+
+        persisted_proposals = persisted_asc.get("parameter_proposals")
+        proposals: dict[str, Any] = (
+            dict(persisted_proposals)
+            if isinstance(persisted_proposals, Mapping)
+            else {}
+        )
+        lab = daily_report.get("counterfactual_lab")
+        if (
+            not proposals
+            and isinstance(lab, Mapping)
+            and strategy_health.get("control_state") in {"ADAPT", "RESEARCH"}
+        ):
+            baseline = lab.get("baseline_parameters")
+            rolling = lab.get("rolling_searches")
+            baseline = baseline if isinstance(baseline, Mapping) else {}
+            rolling = rolling if isinstance(rolling, Mapping) else {}
+            for parameter in lab.get("proposal_ready_parameters") or []:
+                result = rolling.get(parameter)
+                current_value = baseline.get(parameter)
+                if not isinstance(result, Mapping) or current_value in (None, ""):
+                    continue
+                proposal = proposal_from_counterfactual(
+                    parameter=str(parameter),
+                    current_value=current_value,
+                    alternatives=result.get("results") or [],
+                    control_state=str(strategy_health["control_state"]),
+                    source_strategy_version=version,
+                )
+                if proposal is not None:
+                    proposals[str(parameter)] = proposal
+
+        strategy_health = {
+            **strategy_health,
+            "parameter_proposals": proposals,
+            "proposal_count": len(proposals),
+            "automatic_application_authorized": False,
+            "nostra_state": latest_nostra,
+            "shadow_validation": persisted_asc.get("shadow_validation"),
+            "graen_validation": persisted_asc.get("graen_validation"),
+            "promotion_previews": persisted_asc.get("promotion_previews") or {},
+            "next_session_shadow_plan": persisted_asc.get(
+                "next_session_shadow_plan"
+            ),
+            "canonical_asc_artifact_present": bool(persisted_asc),
+        }
         return {
             "agent_version": "rhen-research-agent-v1-foundation",
             "mode": "DETERMINISTIC_ONLY",
@@ -150,6 +228,7 @@ class ResearchAgentRunner:
             "open_queue_count": len(queue),
             "experiment_count": len(self.evidence.experiments),
             "decision_count": len(self.evidence.research_decisions),
+            "adaptive_strategy_control": strategy_health,
             "rdr_v2_1": rdr_state,
             "edge_discovery_v1": {
                 "closed": edge_closed,

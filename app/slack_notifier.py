@@ -124,6 +124,16 @@ class SlackNotifier:
             or (kind == "runtime" and action in {"warning", "error"})
             or (kind in {"research_agent", "research_reporting", "research_scheduler", "preopen_state"}
                 and action in {"completed", "recovered", "warning", "error"})
+            or (
+                kind == "asc"
+                and action in {
+                    "normal",
+                    "adapt",
+                    "research",
+                    "defensive",
+                    "promotion_ready",
+                }
+            )
         )
         if not important:
             return
