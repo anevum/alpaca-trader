@@ -20,6 +20,14 @@ UTC = ZoneInfo("UTC")
 FORWARD_METHODOLOGY_VERSION = "candidate-forward-v2"
 COMPARISON_METHODOLOGY_VERSION = "live-offline-v1"
 FORWARD_HORIZONS_MINUTES = (1, 3, 5, 10, 15, 30, 60)
+PREDICTION_BACKFILL_METHODOLOGY_VERSION = "candidate-prediction-backfill-v1"
+ADS002_V1_CONFIGURATION_KEYS = (
+    "min_momentum_pct",
+    "target_pct",
+    "max_spread_pct",
+    "max_bar_age_seconds",
+    "max_vwap_extension_pct",
+)
 
 
 def d(value: Any) -> Decimal | None:
@@ -753,6 +761,7 @@ def reconstruct_cycle(
 class PostEventRunSummary:
     session: str
     candidates: int = 0
+    prediction_backfill_events: int = 0
     outcome_events: int = 0
     comparison_events: int = 0
     complete_outcomes: int = 0
@@ -826,6 +835,154 @@ class PostEventEvidenceRunner:
         }
 
     @staticmethod
+    def _configuration_value_equal(left: Any, right: Any) -> bool:
+        left_decimal = d(left)
+        right_decimal = d(right)
+        if left_decimal is not None and right_decimal is not None:
+            return left_decimal == right_decimal
+        return str(left) == str(right)
+
+    @classmethod
+    def _frozen_ads002_configurations(
+        cls,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Find immutable decision-cycle configurations already persisted in-session."""
+        by_strategy: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            strategy_version = str(candidate.get("strategy_version_id") or "")
+            if not strategy_version or strategy_version in by_strategy:
+                continue
+            payload = candidate.get("decision_cycle_payload")
+            if not isinstance(payload, dict):
+                continue
+            comparison = payload.get("comparison_context")
+            if not isinstance(comparison, dict):
+                continue
+            configuration = comparison.get("configuration")
+            if not isinstance(configuration, dict):
+                continue
+            if all(key in configuration for key in ADS002_V1_CONFIGURATION_KEYS):
+                by_strategy[strategy_version] = dict(configuration)
+        return by_strategy
+
+    def _reconstruct_ads002_v1(
+        self,
+        candidate: dict[str, Any],
+        *,
+        frozen_configurations: dict[str, dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Reconstruct v1 only when frozen inputs and frozen scoring config agree."""
+        existing = candidate.get("ads002_score")
+        if isinstance(existing, dict):
+            return existing, None
+
+        builder = getattr(self.event_sink, "_ads002_shadow_candidate_safe", None)
+        current_configuration = getattr(
+            self.event_sink,
+            "_comparison_configuration",
+            None,
+        )
+        if not callable(builder) or not callable(current_configuration):
+            return None, "ADS002_CANONICAL_SCORER_UNAVAILABLE"
+
+        candidate_strategy = str(candidate.get("strategy_version_id") or "")
+        active_strategy = str(getattr(self.settings, "strategy_version_id", "") or "")
+        if not candidate_strategy or candidate_strategy != active_strategy:
+            return None, "STRATEGY_VERSION_MISMATCH"
+
+        frozen = frozen_configurations.get(candidate_strategy)
+        if not isinstance(frozen, dict):
+            return None, "FROZEN_SCORING_CONFIGURATION_UNAVAILABLE"
+
+        current = current_configuration()
+        mismatched = [
+            key
+            for key in ADS002_V1_CONFIGURATION_KEYS
+            if key not in current
+            or not self._configuration_value_equal(frozen.get(key), current.get(key))
+        ]
+        if mismatched:
+            return None, "FROZEN_SCORING_CONFIGURATION_MISMATCH:" + ",".join(mismatched)
+
+        features = candidate.get("features")
+        if not isinstance(features, dict):
+            return None, "FROZEN_CANDIDATE_FEATURES_UNAVAILABLE"
+
+        score = builder(
+            symbol=str(candidate.get("symbol") or ""),
+            metadata=dict(features),
+        )
+        if not isinstance(score, dict):
+            return None, "ADS002_RECONSTRUCTION_FAILED"
+        return score, None
+
+    async def _backfill_missing_ads002_v1(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        computed_at: str,
+        summary: PostEventRunSummary,
+    ) -> None:
+        """Append derived v1 evidence without rewriting historical raw evidence."""
+        frozen_configurations = self._frozen_ads002_configurations(candidates)
+        for candidate in candidates:
+            if isinstance(candidate.get("ads002_score"), dict):
+                continue
+
+            score, failure_reason = self._reconstruct_ads002_v1(
+                candidate,
+                frozen_configurations=frozen_configurations,
+            )
+            if score is None:
+                continue
+
+            candidate["ads002_score"] = score
+            candidate_id = candidate.get("candidate_id")
+            symbol = str(candidate.get("symbol") or "")
+            payload = {
+                "candidate_id": candidate_id,
+                "candidate_key": candidate.get("candidate_key"),
+                "symbol": symbol,
+                "strategy_version_id": candidate.get("strategy_version_id"),
+                "observed_at": candidate.get("observed_at"),
+                "ads002": score,
+                "ads002_v2_reconstruction": {
+                    "status": "UNRECONSTRUCTABLE",
+                    "reason": "FULL_DECISION_CYCLE_CROSS_SECTION_NOT_PERSISTED",
+                    "raw_features_preserved": bool(
+                        (candidate.get("features") or {}).get(
+                            "ads002_v2_raw_features"
+                        )
+                    ),
+                },
+                "reconstruction": {
+                    "status": "RECONSTRUCTED",
+                    "methodology_version": PREDICTION_BACKFILL_METHODOLOGY_VERSION,
+                    "basis": (
+                        "immutable_candidate_features+"
+                        "frozen_session_scoring_configuration"
+                    ),
+                    "failure_reason": failure_reason,
+                    "analytics_only": True,
+                    "raw_evidence_rewritten": False,
+                },
+                "computed_at": computed_at,
+            }
+            self.event_sink.emit(
+                event_type="candidate_prediction_backfill",
+                event_key=(
+                    f"candidate-prediction-backfill:{candidate_id}:"
+                    f"ads-shadow-v1:{PREDICTION_BACKFILL_METHODOLOGY_VERSION}"
+                ),
+                occurred_at=computed_at,
+                symbol=symbol,
+                payload=payload,
+            )
+            await self._apply_backpressure()
+            summary.prediction_backfill_events += 1
+
+    @staticmethod
     def _cycle_payload(candidate: dict[str, Any]) -> dict[str, Any]:
         scan = dict(candidate.get("scan_cycle") or {})
         source = candidate.get("decision_cycle_payload")
@@ -886,6 +1043,11 @@ class PostEventEvidenceRunner:
             bar_error = f"{type(exc).__name__}: {exc}"
 
         computed_at = datetime.now(UTC).isoformat()
+        await self._backfill_missing_ads002_v1(
+            candidates,
+            computed_at=computed_at,
+            summary=summary,
+        )
         outcome_candidates = [
             candidate
             for candidate in candidates
