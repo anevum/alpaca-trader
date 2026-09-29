@@ -669,19 +669,17 @@ async def crypto_monitor_loop():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
                 runtime_state.begin_crypto_cycle(uuid4().hex)
-                if settings.crypto_execution_enabled:
-                    result = await crypto_engine.run_once()
-                    print(
-                        "CRYPTO_EXECUTION_CYCLE",
-                        {
-                            "action": result.get("action"),
-                            "symbol": result.get("symbol"),
-                            "reason": result.get("reason"),
-                        },
-                        flush=True,
-                    )
-                else:
-                    await crypto_scanner.scan_once()
+                result = await crypto_engine.run_once()
+                print(
+                    "CRYPTO_EXECUTION_CYCLE",
+                    {
+                        "execution_enabled": settings.crypto_execution_enabled,
+                        "action": result.get("action"),
+                        "symbol": result.get("symbol"),
+                        "reason": result.get("reason"),
+                    },
+                    flush=True,
+                )
             except Exception as exc:
                 runtime_state.crypto_last_decision = (
                     f"crypto lane error: {type(exc).__name__}: {exc}"
