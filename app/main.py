@@ -17,6 +17,7 @@ from .config import get_settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .execution import ExecutionEngine
 from .market_data import MarketDataClient
+from .mobile_live_activity import MobileLiveActivityService
 from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
 from .research_scheduler import ResearchReportScheduler
@@ -108,6 +109,8 @@ def emit_runtime_event(event: dict) -> None:
         },
     )
     slack_notifier.record_event(event)
+    if mobile_live_activity is not None:
+        mobile_live_activity.wake()
 
 
 runtime_state.set_event_emitter(emit_runtime_event)
@@ -131,9 +134,14 @@ class MobileLiveActivityRegistration(BaseModel):
     activity_id: str
     platform: str = "ios"
     surface: str = "rhen_live_activity"
+    apns_environment: str = "production"
 
 
-mobile_live_activity_tokens: dict[str, dict[str, str]] = {}
+class MobileLiveActivityEnd(BaseModel):
+    activity_id: str
+
+
+mobile_live_activity: MobileLiveActivityService | None = None
 
 
 async def require_command_admin(authorization: str | None) -> dict:
@@ -352,7 +360,13 @@ async def command_snapshot() -> dict:
             "latest_daily": research_reports.last_daily_report,
             "latest_weekly": research_reports.last_weekly_report,
         },
+        "mobile_live_activity": (
+            mobile_live_activity.status() if mobile_live_activity is not None else None
+        ),
     }
+
+
+mobile_live_activity = MobileLiveActivityService(settings, command_snapshot)
 
 
 def _ready_symbols() -> list[str]:
@@ -718,6 +732,7 @@ async def lifespan(app: FastAPI):
     )
     await event_sink.start()
     await slack_notifier.start()
+    await mobile_live_activity.start()
 
     runtime_provenance = capture_runtime_provenance()
     runtime_start_payload = {
@@ -801,6 +816,7 @@ async def lifespan(app: FastAPI):
             "git_commit": runtime_provenance.git_commit,
         },
     )
+    await mobile_live_activity.stop()
     await event_sink.stop()
     await slack_notifier.stop()
 
@@ -846,6 +862,7 @@ async def health():
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
         "slack_notifications": slack_notifier.status(),
+        "mobile_live_activity": mobile_live_activity.status(),
         "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
     }
 
@@ -1020,35 +1037,44 @@ async def command_mobile_live_activity_token(
     await require_command_admin(authorization)
     token = registration.push_token.strip().lower()
     activity_id = registration.activity_id.strip()
+    environment = registration.apns_environment.strip().lower()
     if registration.platform.lower() != "ios":
         raise HTTPException(status_code=422, detail="only iOS ActivityKit tokens are supported")
     if registration.surface != "rhen_live_activity":
         raise HTTPException(status_code=422, detail="unsupported mobile activity surface")
+    if environment not in {"sandbox", "production"}:
+        raise HTTPException(status_code=422, detail="invalid APNs environment")
     if not activity_id or len(activity_id) > 160:
         raise HTTPException(status_code=422, detail="invalid ActivityKit activity id")
     if len(token) < 32 or len(token) > 256 or any(ch not in "0123456789abcdef" for ch in token):
         raise HTTPException(status_code=422, detail="invalid ActivityKit push token")
 
-    mobile_live_activity_tokens[activity_id] = {
-        "push_token": token,
-        "registered_at": datetime.now(timezone.utc).isoformat(),
-        "surface": registration.surface,
-    }
-    if len(mobile_live_activity_tokens) > 8:
-        oldest = min(
-            mobile_live_activity_tokens,
-            key=lambda key: mobile_live_activity_tokens[key]["registered_at"],
+    try:
+        return await mobile_live_activity.register(
+            push_token=token,
+            activity_id=activity_id,
+            apns_environment=environment,
         )
-        if oldest != activity_id:
-            mobile_live_activity_tokens.pop(oldest, None)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"IREN mobile registry rejected registration ({exc.response.status_code})",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"IREN mobile registration failed: {type(exc).__name__}")
 
-    return {
-        "ok": True,
-        "registered": True,
-        "activity_id": activity_id,
-        "remote_push_configured": False,
-        "message": "ActivityKit token registered; APNs signing credentials are not configured yet.",
-    }
+
+@app.post("/v1/command/mobile/live-activity-end")
+async def command_mobile_live_activity_end(
+    payload: MobileLiveActivityEnd,
+    authorization: str | None = Header(default=None),
+):
+    await require_command_admin(authorization)
+    activity_id = payload.activity_id.strip()
+    if not activity_id or len(activity_id) > 160:
+        raise HTTPException(status_code=422, detail="invalid ActivityKit activity id")
+    await mobile_live_activity.deactivate(activity_id)
+    return {"ok": True, "deactivated": True, "activity_id": activity_id}
 
 
 @app.get("/v1/command/status")
