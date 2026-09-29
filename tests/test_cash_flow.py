@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.alpaca_client import AlpacaClient
-from app.cash_flow import (\n    SessionCashFlow,\n    annotate_account,\n    day_pnl,\n    detected_session_cash_flow,\n    reconcile_cash_flow_adjustments,\n)
+from app.cash_flow import (
+    SessionCashFlow,
+    annotate_account,
+    day_pnl,
+    detected_session_cash_flow,
+    reconcile_cash_flow_adjustments,
+)
 from app.config import Settings
 from app.persistence import TradingEventSink
 from app.risk import validate_buy, validate_sell_to_flat
