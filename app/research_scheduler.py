@@ -534,14 +534,10 @@ class ResearchReportScheduler:
         current_version = str(
             getattr(self.settings, "strategy_version_id", "") or ""
         )
-        baseline_parameters = {
-            parameter: (
-                None
-                if getattr(self.settings, parameter, None) in (None, "")
-                else str(getattr(self.settings, parameter))
-            )
+        baseline_parameters = serialize({
+            parameter: getattr(self.settings, parameter, None)
             for parameter in PARAMETER_FEATURES
-        }
+        })
         expected_report = canonical.get("latest_daily_report")
         expected_lab = (
             expected_report.get("counterfactual_lab")
