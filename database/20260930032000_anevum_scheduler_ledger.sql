@@ -127,6 +127,11 @@ begin
 
   if v_allow_retry
      and v_row.status = 'FAILED'
+     and v_row.error_classification in (
+       'transient_infrastructure',
+       'dependency_unavailable',
+       'evidence_unavailable'
+     )
      and v_row.attempt < greatest(v_row.max_attempts,v_max_attempts) then
     update private.anevum_scheduler_runs
       set status = 'RUNNING',
