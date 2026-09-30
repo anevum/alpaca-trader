@@ -1,8 +1,9 @@
 """Dated external-cash-flow accounting for trading P&L and risk.
 
-Automatic detection uses Alpaca account activities for current-session cash
-deposits/withdrawals. The operator-reviewed manifest remains a fallback and a
-cross-check. Raw broker equity/last_equity are never rewritten.
+Automatic detection uses Alpaca account activities created since the prior
+market close, so overnight and after-close deposits/withdrawals are reconciled
+against the broker's prior-close equity. The operator-reviewed manifest remains
+a fallback and cross-check. Raw broker equity/last_equity are never rewritten.
 """
 from __future__ import annotations
 
@@ -130,6 +131,84 @@ def detected_session_cash_flow(
         run_id=run_id,
         evidence_ref=f"alpaca-trans:{session_date.isoformat()}:{len(activity_ids)}:{digest}",
         source="alpaca_account_activities",
+    )
+
+
+def detected_reference_window_cash_flow(
+    activities: list[dict[str, Any]],
+    *,
+    session_date: date,
+    expected_last_equity: Any,
+    run_id: str,
+    observed_at: datetime,
+    reference_start: datetime,
+) -> SessionCashFlow | None:
+    """Build a session adjustment from transfers created after prior market close.
+
+    The caller is responsible for querying Alpaca with an after=reference_start
+    filter. Non-trade activity payloads expose an activity/settlement date
+    rather than a reliable creation timestamp, so this function deliberately
+    does not re-filter returned CSD/CSW rows by activity.date. This carries an
+    after-close transfer into the next session's risk reference without counting
+    transfers that were already part of the prior close.
+    """
+    if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        raise ValueError("observed_at requires a timezone")
+    if reference_start.tzinfo is None or reference_start.utcoffset() is None:
+        raise ValueError("cash-flow reference_start requires a timezone")
+    if reference_start >= observed_at:
+        raise ValueError("cash-flow reference_start must precede observed_at")
+
+    prior = money(expected_last_equity)
+    if prior <= 0:
+        raise ValueError("cash-flow prior-close equity must be positive")
+
+    net = Decimal("0")
+    activity_ids: list[str] = []
+    for activity in activities:
+        if not isinstance(activity, dict):
+            raise ValueError("cash-flow activity must be an object")
+        activity_type = str(activity.get("activity_type") or "").upper()
+        if activity_type not in EXTERNAL_CASH_ACTIVITY_TYPES:
+            continue
+
+        raw_date = str(activity.get("date") or "").strip()
+        if not raw_date:
+            raise ValueError("cash-flow activity is missing date")
+        try:
+            date.fromisoformat(raw_date[:10])
+        except ValueError as exc:
+            raise ValueError("cash-flow activity date is invalid") from exc
+
+        activity_id = str(activity.get("id") or "").strip()
+        if not activity_id:
+            raise ValueError("cash-flow activity is missing id")
+        amount = money(activity.get("net_amount"))
+        if activity_type == "CSD" and amount < 0:
+            raise ValueError("cash deposit activity has a negative net amount")
+        if activity_type == "CSW" and amount > 0:
+            raise ValueError("cash withdrawal activity has a positive net amount")
+
+        net += amount
+        activity_ids.append(activity_id)
+
+    if not activity_ids:
+        return None
+    if prior + net <= 0:
+        raise ValueError("cash-flow reference equity must stay positive")
+
+    digest = hashlib.sha256("|".join(sorted(activity_ids)).encode()).hexdigest()[:16]
+    return SessionCashFlow(
+        session_date=session_date,
+        effective_at=observed_at.astimezone(NY),
+        net_external_cash_flow=net,
+        expected_last_equity=prior,
+        run_id=run_id,
+        evidence_ref=(
+            f"alpaca-trans-window:{session_date.isoformat()}:"
+            f"{len(activity_ids)}:{digest}"
+        ),
+        source="alpaca_account_activities_reference_window",
     )
 
 
