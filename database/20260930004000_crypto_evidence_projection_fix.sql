@@ -277,17 +277,22 @@ set strategy_version_id = coalesce(
 where market_lane='crypto';
 
 update private.trading_scan_cycles sc
-set strategy_version_id=src.strategy_version_id
-from lateral (
+set strategy_version_id=(
   select c.strategy_version_id
   from private.trading_candidate_evaluations c
   where c.scan_cycle_id=sc.scan_cycle_id
     and c.market_lane='crypto'
     and c.strategy_version_id is not null
   limit 1
-) src
+)
 where sc.market_lane='crypto'
-  and src.strategy_version_id is not null;
+  and exists (
+    select 1
+    from private.trading_candidate_evaluations c
+    where c.scan_cycle_id=sc.scan_cycle_id
+      and c.market_lane='crypto'
+      and c.strategy_version_id is not null
+  );
 
 update private.trading_signals s
 set strategy_version_id=c.strategy_version_id,
