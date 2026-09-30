@@ -51,3 +51,10 @@ def test_scheduler_registry_is_packaged_by_production_image():
     assert registry.exists()
     dockerfile = Path("Dockerfile").read_text()
     assert "COPY app ./app" in dockerfile
+
+
+def test_scheduler_gateway_binds_native_json_rpc_payloads():
+    gateway = Path("supabase/functions/scheduler-gateway/index.ts").read_text()
+    assert "anevum_scheduler_claim(${sql.json(payload)}::jsonb)" in gateway
+    assert "anevum_scheduler_complete(${sql.json(payload)}::jsonb)" in gateway
+    assert "invalid_claim_shape:" in gateway
