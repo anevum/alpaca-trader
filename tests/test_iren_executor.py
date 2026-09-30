@@ -108,3 +108,63 @@ def test_work_engine_routes_job_and_persists_executor_state(monkeypatch):
     assert updates[-1]["status"] == "NEEDS_APPROVAL"
     routed = updates[-1]["result"]["execution_router"]
     assert routed["reason"] == "model_execution_not_authorized"
+
+
+def test_graen_research_job_submits_to_problem_api(monkeypatch):
+    monkeypatch.setenv("GRAEN_SERVICE_URL", "http://graen")
+    monkeypatch.setenv("GRAEN_ADMIN_TOKEN", "g" * 40)
+
+    original = httpx.AsyncClient
+
+    def handler(request):
+        assert request.url == httpx.URL("http://graen/v1/problems")
+        assert request.headers["x-graen-admin-token"] == "g" * 40
+        payload = __import__("json").loads(request.content.decode())
+        assert payload["domain"] == "CRYPTO_STRATEGY_RESEARCH"
+        assert payload["constraints"]["production_authority"] is False
+        assert payload["constraints"]["broker_authority"] is False
+        assert payload["linked_iren_job_id"] == "graen-job-1"
+        return httpx.Response(
+            201,
+            json={
+                "ok": True,
+                "problem": {
+                    "problem_id": "11111111-1111-1111-1111-111111111111",
+                    "problem_key": "crypto-problem",
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    async def scenario():
+        job = JobEnvelope(
+            job_id="graen-job-1",
+            objective_key="GRAEN-VIABLE-CRYPTO-STRATEGY",
+            title="Find a viable sufficiently active crypto strategy",
+            instructions="Research and falsify crypto-native strategy families.",
+            owner_system="GRAEN",
+            job_type="GRAEN_RESEARCH_PROBLEM",
+            protected_action=False,
+            requires_human=False,
+            metadata={
+                "success_criteria": {
+                    "cost_stress": True,
+                    "validation_gate": True,
+                    "holdout_gate": True,
+                }
+            },
+        )
+        accepted = runtime.accept(job)
+        assert accepted["accepted"] is True
+        result = await runtime.submit_graen(job)
+        assert result["status"] == "WAITING"
+        assert result["reason"] == "graen_problem_submitted"
+        assert result["graen_problem_id"] == "11111111-1111-1111-1111-111111111111"
+        assert result["model_invoked"] is False
+
+    asyncio.run(scenario())
