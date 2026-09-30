@@ -148,8 +148,8 @@ class ResearchReportScheduler:
     async def _run(self) -> None:
         catch_up_done = False
         while not self.stop_event.is_set():
-            await self._crypto_forward_tick()
             await self._crypto_promotion_tick()
+            await self._crypto_forward_tick()
             try:
                 if not catch_up_done:
                     await self._catch_up_latest_completed()
