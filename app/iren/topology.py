@@ -92,13 +92,14 @@ def topology(observation, state, self_identity):
         fresh(scheduler.get("last_success_at"), now, 180) or fresh(scheduler.get("started_at"), now, 180))
     rhen = observation["services"].get("RHEN", {})
     evidence = rhen.get("persistence", {})
+    evidence_incident = any(k.startswith("evidence.") and v.get("status") == "OPEN" for k, v in incidents.items())
     dependencies = {
         "scheduler": {"status": "RUNNING" if scheduler_ok else "DEGRADED", "last_success": scheduler.get("last_success_at"),
                       "independent_runtime": False, "host": "IREN"},
         "data_plane": {"status": "RUNNING", "basis": "this snapshot is visible only after its durable commit"},
         "broker": {"status": "RUNNING" if rhen.get("ok") is True and rhen.get("reconciliation_safe") is True else "UNKNOWN",
                    "basis": "RHEN reconciliation observation; no independent broker probe"},
-        "telemetry": {"status": "STALE" if not fresh(evidence.get("last_sent_at"), now, 180) else "DEGRADED" if evidence.get("last_error") else "RUNNING",
+        "telemetry": {"status": "STALE" if not fresh(evidence.get("last_sent_at"), now, 180) else "DEGRADED" if evidence.get("last_error") or evidence_incident else "RUNNING",
                       "last_success": evidence.get("last_sent_at"), "dropped_count": evidence.get("dropped_count")},
     }
     return {"schema_version": "runtime_topology.v1", "observed_at": stamp, "services": rows,
