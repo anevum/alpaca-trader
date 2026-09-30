@@ -883,9 +883,10 @@ class SchedulerRuntime:
         suffix = ""
         if status in {"FAILED", "MISSED", "STALE"} and error:
             suffix = "\n" + error[:600]
+        subsystem = str(item.workflow.get("subsystem") or "IREN").upper()
         text = (
-            f"*IREN // {item.workflow['workflow_id']} // {status}*\n"
-            f"scheduled: {_iso(item.scheduled_at)} | "
+            f"*{subsystem} // {item.workflow['workflow_id']} // {status}*\n"
+            f"scheduled by IREN: {_iso(item.scheduled_at)} | "
             f"reference: {item.trigger_reference}{suffix}"
         )
         return await self.slack.send(route, text)
