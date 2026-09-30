@@ -1,0 +1,124 @@
+{
+  "registry_version": "graen-crypto-candidate-registry-v5",
+  "methodology_version": "graen-crypto-native-v5",
+  "frozen_at": "2026-09-30T02:30:00Z",
+  "execution_authority": false,
+  "prior_generations": [
+    {
+      "id": "graen-crypto-edge-discovery-v1",
+      "decision": "NO_EDGE",
+      "role": "exploratory_search_history"
+    },
+    {
+      "id": "graen-crypto-edge-discovery-v2",
+      "decision": "INVALID_CORPUS_OVERLAP",
+      "role": "excluded_from_inference"
+    },
+    {
+      "id": "graen-crypto-edge-discovery-v2.1",
+      "decision": "NO_EDGE",
+      "role": "exploratory_search_history"
+    },
+    {
+      "id": "graen-crypto-edge-discovery-v3",
+      "decision": "NO_EDGE",
+      "role": "exploratory_search_history"
+    },
+    {
+      "id": "graen-crypto-edge-discovery-v4",
+      "decision": "NON_PROMOTIONAL_AND_INSUFFICIENT_CORPUS",
+      "role": "exploratory_search_history"
+    }
+  ],
+  "universe": [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD",
+    "AVAX/USD",
+    "LINK/USD"
+  ],
+  "candidate_family": [
+    {
+      "candidate_id": "MOM_CONT",
+      "family": "simple_momentum",
+      "source_feature": "absolute_return_60",
+      "timing": "instant",
+      "holds_minutes": [
+        60,
+        120,
+        240
+      ],
+      "complexity_score": 1
+    },
+    {
+      "candidate_id": "RS_CONT",
+      "family": "market_residual_relative_strength",
+      "source_feature": "market_residual_60",
+      "timing": "instant",
+      "holds_minutes": [
+        60,
+        120,
+        240
+      ],
+      "complexity_score": 2
+    },
+    {
+      "candidate_id": "RS_DELAY15",
+      "family": "market_residual_relative_strength",
+      "source_feature": "market_residual_60",
+      "timing": "delayed_confirmation_15m",
+      "holds_minutes": [
+        60,
+        120,
+        240
+      ],
+      "complexity_score": 3
+    },
+    {
+      "candidate_id": "RS_PULLBACK",
+      "family": "market_residual_relative_strength",
+      "source_feature": "market_residual_60",
+      "timing": "pullback_reclaim_30m",
+      "holds_minutes": [
+        60,
+        120,
+        240
+      ],
+      "complexity_score": 4
+    },
+    {
+      "candidate_id": "MR_BTC_NONBEAR",
+      "family": "controlled_mean_reversion",
+      "source_feature": "negative_market_residual_15",
+      "timing": "instant_btc_nonbearish",
+      "holds_minutes": [
+        60,
+        120
+      ],
+      "complexity_score": 3
+    },
+    {
+      "candidate_id": "VNT_CONT",
+      "family": "volatility_normalized_trend",
+      "source_feature": "volnorm_60",
+      "timing": "instant",
+      "holds_minutes": [
+        60,
+        120,
+        240
+      ],
+      "complexity_score": 2
+    },
+    {
+      "candidate_id": "RANDOM_CONTROL",
+      "family": "random_entry_control",
+      "source_feature": null,
+      "timing": "matched_random",
+      "holds_minutes": [
+        120
+      ],
+      "complexity_score": 0
+    }
+  ]
+}
