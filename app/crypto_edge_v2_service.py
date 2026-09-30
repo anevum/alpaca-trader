@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import os
 from typing import Any
@@ -185,7 +186,9 @@ class CryptoEdgeDiscoveryV2Runtime:
         result = run_crypto_edge_discovery_v2(
             settings=research_settings,
             bars_by_symbol=bars,
-            initial_equity=self.settings.order_notional,
+            initial_equity=Decimal(
+                os.getenv("CRYPTO_EDGE_V2_INITIAL_EQUITY", "100")
+            ),
             min_train_days=self.min_train_days,
             validation_days=self.validation_days,
             holdout_days=self.holdout_days,
