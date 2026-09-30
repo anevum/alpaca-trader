@@ -778,7 +778,7 @@ def _profit_factor(returns: Sequence[float]) -> float | None:
     gains = sum(value for value in returns if value > 0)
     losses = -sum(value for value in returns if value < 0)
     if losses <= 0:
-        return None if gains <= 0 else float("inf")
+        return None
     return gains / losses
 
 
