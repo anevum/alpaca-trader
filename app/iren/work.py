@@ -171,7 +171,7 @@ class IrenWorkEngine:
         self,
         gateway: Callable[..., Awaitable[dict[str, Any]]],
         control_state: Callable[[], dict[str, Any]],
-        notify: Callable[[str], Awaitable[None]] | None = None,
+        notify: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         interval_seconds: float = 5.0,
     ) -> None:
         self.gateway = gateway
@@ -195,9 +195,9 @@ class IrenWorkEngine:
             requested_by=requested_by[:160],
         )
 
-    async def _notify(self, text: str) -> None:
+    async def _notify(self, text: str, context: dict[str, Any] | None = None) -> None:
         if self.notify is not None:
-            await self.notify(text)
+            await self.notify(text, context or {})
 
     async def _process_commands(self) -> None:
         claimed = await self.gateway("iren_commands_claim", owner="iren-work-engine", limit=5)
@@ -220,7 +220,7 @@ class IrenWorkEngine:
                     line = response.get("message") or "IREN command completed."
                     if job_row:
                         line += f" Job {job_row.get('job_id')} is {job_row.get('status')}."
-                    await self._notify(line)
+                    await self._notify(line, command.get("context") or {})
             except Exception as exc:
                 self.last_error = type(exc).__name__
                 await self.gateway("iren_command_complete", command_id=command_id, status="FAILED", response={"error": type(exc).__name__})
