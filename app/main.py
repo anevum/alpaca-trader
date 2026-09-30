@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
+import json
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -178,9 +180,71 @@ def require_admin(authorization: str | None):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def require_scheduler_token(x_anevum_scheduler_token: str | None) -> None:
+    expected = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="scheduler token is not configured")
+    if x_anevum_scheduler_token is None or not hmac.compare_digest(
+        x_anevum_scheduler_token,
+        expected,
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def scheduler_configuration_snapshot() -> dict:
+    comparison = event_sink._comparison_configuration()
+    protected = {
+        "trading_mode": settings.trading_mode,
+        "execution_enabled": settings.execution_enabled,
+        "execution_authorized": settings.execution_authorized,
+        "paper_execution_authorized": settings.paper_execution_authorized,
+        "live_execution_authorized": settings.live_execution_authorized,
+        "bot_armed": settings.bot_armed,
+        "strategy_version_id": settings.strategy_version_id,
+        "max_order_notional": str(settings.max_order_notional),
+        "max_position_notional": str(settings.max_position_notional),
+        "max_concurrent_positions": settings.max_concurrent_positions,
+        "max_total_position_notional": str(settings.max_total_position_notional),
+        "max_daily_orders": settings.max_daily_orders,
+        "max_daily_loss": str(settings.max_daily_loss),
+        "risk_per_trade_pct": str(settings.risk_per_trade_pct),
+        "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
+        "crypto_execution_enabled": settings.crypto_execution_enabled,
+    }
+    material = {"comparison": comparison, "protected": protected}
+    digest = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    return {
+        "fingerprint": "sha256:" + digest,
+        "strategy_name": settings.strategy_name,
+        "strategy_version_id": settings.strategy_version_id,
+        "trading_mode": settings.trading_mode,
+        "execution_authorized": settings.execution_authorized,
+        "crypto_execution_enabled": settings.crypto_execution_enabled,
+    }
+
+
+async def scheduler_session_detail(session: date) -> dict:
+    rows = await market_data.market_calendar_details(start=session, end=session)
+    if not rows:
+        raise HTTPException(
+            status_code=422,
+            detail="requested date is not a U.S. equity trading session",
+        )
+    row = dict(rows[0])
+    row["date"] = row["date"].isoformat()
+    return row
+
+
 SUPABASE_URL = "https://mfntzxheldzdvlokyntk.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_XfkgeXau2-6XOPzoXF-Nnw_FSnx0Sae"
 COMMAND_FOUNDER_EMAIL = "devon@anevum.com"
+
+
+class SchedulerSessionRequest(BaseModel):
+    session: date
+    scheduled_at: datetime | None = None
 
 
 class MobileLiveActivityRegistration(BaseModel):
@@ -1064,6 +1128,184 @@ async def health():
                 "max_hold_minutes": settings.crypto_max_hold_minutes,
             },
         },
+    }
+
+
+@app.get("/v1/scheduler/calendar")
+async def scheduler_calendar(
+    start: date,
+    end: date,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    if end < start or (end - start).days > 31:
+        raise HTTPException(status_code=422, detail="invalid scheduler calendar range")
+    rows = await market_data.market_calendar_details(start=start, end=end)
+    return {
+        "ok": True,
+        "calendar": "US_EQUITIES",
+        "timezone": "America/New_York",
+        "sessions": [
+            {
+                **row,
+                "date": row["date"].isoformat(),
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.post("/v1/scheduler/preflight")
+async def scheduler_preflight(
+    request: SchedulerSessionRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    session = await scheduler_session_detail(request.session)
+    try:
+        account, clock = await asyncio.gather(client.account(), client.clock())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"broker reachability failed: {type(exc).__name__}",
+        ) from exc
+
+    persistence = event_sink.status()
+    config = scheduler_configuration_snapshot()
+    checks = {
+        "broker_api_reachable": bool(account),
+        "runtime_alive": runtime_state.last_error is None,
+        "persistence_enabled": bool(persistence.get("enabled")),
+        "strategy_identified": bool(settings.strategy_version_id),
+        "startup_reconciled": bool(runtime_state.startup_reconciled),
+        "reconciliation_safe": bool(runtime_state.reconciliation_safe),
+        "market_session_valid": True,
+        "crypto_execution_disabled": not bool(settings.crypto_execution_enabled),
+    }
+    payload = {
+        "ok": all(checks.values()),
+        "workflow": "rhen.preflight",
+        "session": session,
+        "scheduled_at": request.scheduled_at.isoformat() if request.scheduled_at else None,
+        "checks": checks,
+        "configuration": config,
+        "runtime": {
+            "git_commit": runtime_provenance.git_commit if runtime_provenance else None,
+            "deployment_id": runtime_provenance.deployment_id if runtime_provenance else None,
+        },
+        "broker_clock": {
+            "is_open": bool(clock.get("is_open")),
+            "timestamp": clock.get("timestamp"),
+            "next_open": clock.get("next_open"),
+            "next_close": clock.get("next_close"),
+        },
+        "persistence": {
+            "enabled": persistence.get("enabled"),
+            "last_error": persistence.get("last_error"),
+            "queue_depth": persistence.get("queue_depth"),
+        },
+    }
+    if not payload["ok"]:
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
+
+
+@app.post("/v1/scheduler/market-open")
+async def scheduler_market_open(
+    request: SchedulerSessionRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    session = await scheduler_session_detail(request.session)
+    try:
+        clock = await client.clock()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"broker clock unavailable: {type(exc).__name__}",
+        ) from exc
+
+    checks = {
+        "market_open": bool(clock.get("is_open")),
+        "runtime_alive": runtime_state.last_error is None,
+        "startup_reconciled": bool(runtime_state.startup_reconciled),
+        "reconciliation_safe": bool(runtime_state.reconciliation_safe),
+        "strategy_identified": bool(settings.strategy_version_id),
+    }
+    payload = {
+        "ok": all(checks.values()),
+        "workflow": "rhen.market_open",
+        "session": session,
+        "checks": checks,
+        "runtime_state": {
+            "paused": runtime_state.paused,
+            "entries_enabled": runtime_state.entries_enabled,
+            "last_poll_at": runtime_state.last_poll_at,
+        },
+        "configuration": scheduler_configuration_snapshot(),
+    }
+    if not payload["ok"]:
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
+
+
+@app.post("/v1/scheduler/session-close")
+async def scheduler_session_close(
+    request: SchedulerSessionRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    session = await scheduler_session_detail(request.session)
+    account = await refresh_account_state()
+    reconciliation = await reconcile_broker_state(account, force=True)
+    if not reconciliation or reconciliation.get("safe_to_enter") is not True:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "session_close_reconciliation_not_safe",
+                "reconciliation": reconciliation,
+            },
+        )
+
+    post_event = await research_reports.generate_post_event_evidence(request.session)
+    report = await research_reports.generate_daily(request.session)
+    return {
+        "ok": True,
+        "workflow": "rhen.session_close",
+        "session": session,
+        "reconciliation": reconciliation,
+        "post_event": post_event,
+        "daily_report": {
+            "report_key": report.get("report_key"),
+            "report_version": report.get("report_version"),
+            "classification": report.get("classification"),
+            "data_quality_warnings": report.get("data_quality_warnings"),
+        },
+        "configuration": scheduler_configuration_snapshot(),
+    }
+
+
+@app.post("/v1/scheduler/weekly-review")
+async def scheduler_weekly_review(
+    request: SchedulerSessionRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    session = await scheduler_session_detail(request.session)
+    period_start = request.session - timedelta(days=request.session.weekday())
+    report = await research_reports.generate_weekly(period_start, request.session)
+    return {
+        "ok": True,
+        "workflow": "rhen.weekly_review",
+        "session": session,
+        "weekly_report": {
+            "report_key": report.get("report_key"),
+            "report_version": report.get("report_version"),
+            "completeness_state": report.get("completeness_state"),
+            "period_start": report.get("period_start"),
+            "period_end": report.get("period_end"),
+        },
+        "configuration": scheduler_configuration_snapshot(),
     }
 
 
