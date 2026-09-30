@@ -97,6 +97,23 @@ class GraenGateway:
             },
         )
 
+    async def queue_research_stage(
+        self,
+        *,
+        problem_id: str,
+        stage: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        return await self._request(
+            "POST",
+            {
+                "action": "queue_research_stage",
+                "problem_id": problem_id,
+                "stage": stage,
+                "metadata": metadata or {},
+            },
+        )
+
     async def claim_research_problem(
         self,
         *,
