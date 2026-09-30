@@ -26,7 +26,9 @@ def test_execution_event_is_queued_but_scan_noise_is_not():
             "message": "entry submitted",
         }
     )
-    assert "MSFT" in queued(notifier)
+    message = queued(notifier)
+    assert message.startswith(":rhen:")
+    assert "MSFT" in message
 
     notifier.record_event(
         {
@@ -112,3 +114,33 @@ def test_asc_promotion_ready_is_operational_notification_only():
     message = queued(notifier)
     assert "PROMOTION_READY" in message
     assert "no deployment occurred" in message
+
+
+def test_research_event_uses_graen_identity():
+    notifier = SlackNotifier(Settings())
+    notifier.record_event(
+        {
+            "at": "2026-09-30T20:00:00+00:00",
+            "kind": "research_agent",
+            "action": "completed",
+            "message": "daily research review completed",
+        }
+    )
+    message = queued(notifier)
+    assert message.startswith(":graen:")
+    assert "*GRAEN // RESEARCH_AGENT COMPLETED*" in message
+
+
+def test_asc_event_uses_iren_identity():
+    notifier = SlackNotifier(Settings())
+    notifier.record_event(
+        {
+            "at": "2026-09-30T20:00:00+00:00",
+            "kind": "asc",
+            "action": "research",
+            "message": "IREN ASC entered research state",
+        }
+    )
+    message = queued(notifier)
+    assert message.startswith(":iren:")
+    assert "*IREN // ASC RESEARCH*" in message
