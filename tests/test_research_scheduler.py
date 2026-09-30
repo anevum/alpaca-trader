@@ -194,8 +194,13 @@ def test_counterfactual_snapshot_identity_is_deterministic():
                 }
             ],
             "latest_daily_report": {
-                "session": session.isoformat(),
-                "counterfactual_lab": {"methodology_version": "asc-counterfactual-lab-v1"},
+                "event_id": "daily-1",
+                "payload": {
+                    "session": session.isoformat(),
+                    "counterfactual_lab": {
+                        "methodology_version": "asc-counterfactual-lab-v1"
+                    },
+                },
             },
         }
 
@@ -210,6 +215,10 @@ def test_counterfactual_snapshot_identity_is_deterministic():
 
     assert first["input_identity"] == second["input_identity"]
     assert first["expected_output_identity"] == second["expected_output_identity"]
+    assert first["expected_output_identity"].startswith("sha256:")
+    assert first["expected_counterfactual_lab"] == {
+        "methodology_version": "asc-counterfactual-lab-v1"
+    }
     assert first["schema_version"] == "velum_counterfactual_input.v1"
     assert first["execution_authority"] is False
     assert first["live_configuration_changed"] is False
