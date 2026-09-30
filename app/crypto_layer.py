@@ -419,6 +419,55 @@ class CryptoMarketDataClient:
                         raise RuntimeError("crypto market-data pagination exceeded safety limit")
         return output
 
+    async def historical_bars_many(
+        self,
+        symbols: list[str] | tuple[str, ...],
+        *,
+        start: datetime,
+        end: datetime,
+        timeframe: str = "1Min",
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
+        if end_utc <= start_utc:
+            return {symbol: [] for symbol in self._normalize(symbols)}
+        batches = self._batches(symbols)
+        output = {symbol: [] for batch in batches for symbol in batch}
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            for batch in batches:
+                page_token: str | None = None
+                pages = 0
+                while True:
+                    params: dict[str, Any] = {
+                        "symbols": ",".join(batch),
+                        "timeframe": timeframe,
+                        "start": start_utc.isoformat().replace("+00:00", "Z"),
+                        "end": end_utc.isoformat().replace("+00:00", "Z"),
+                        "limit": 10000,
+                        "sort": "asc",
+                    }
+                    if page_token:
+                        params["page_token"] = page_token
+                    response = await http.get(
+                        f"{self.settings.data_base_url}/v1beta3/crypto/"
+                        f"{self.settings.crypto_location}/bars",
+                        headers=self.headers,
+                        params=params,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    for symbol, rows in (data.get("bars") or {}).items():
+                        output.setdefault(symbol.upper(), []).extend(rows or [])
+                    page_token = data.get("next_page_token")
+                    if not page_token:
+                        break
+                    pages += 1
+                    if pages >= 40:
+                        raise RuntimeError("crypto historical pagination exceeded safety limit")
+        return output
+
 
 class CryptoUniverse:
     """Discovers and ranks Alpaca's active tradable USD crypto pairs."""
