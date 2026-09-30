@@ -112,6 +112,50 @@ def test_hourly_crypto_bucket_uses_completed_hour():
     assert item.details["window_end"] == "2026-09-30T03:00:00+00:00"
 
 
+def test_counterfactual_job_routes_frozen_snapshot_through_velum():
+    runtime = object.__new__(SchedulerRuntime)
+    runtime.trader_url = "http://rhen/v1/scheduler"
+    runtime.velum_url = "http://velum/v1/scheduler"
+    runtime.token = "test"
+    runtime._post = AsyncMock(side_effect=[
+        {
+            "ok": True,
+            "snapshot": {
+                "schema_version": "velum_counterfactual_input.v1",
+                "session": "2026-09-30",
+                "input_identity": "sha256:input",
+            },
+        },
+        {
+            "ok": True,
+            "persisted": True,
+            "output_identity": "sha256:output",
+            "expected_output_identity": "sha256:output",
+            "parity_match": True,
+        },
+    ])
+    item = ScheduledItem(
+        workflow(
+            workflow_id="velum.counterfactual.parity",
+            implementation_target="velum_counterfactual",
+        ),
+        datetime(2026, 9, 30, 20, 20, tzinfo=UTC),
+        "2026-09-30",
+        {"session": "2026-09-30"},
+    )
+
+    result = asyncio.run(runtime._execute(item))
+
+    assert result["input_identity"] == "sha256:input"
+    assert result["parity_match"] is True
+    assert result["persisted"] is True
+    assert runtime._post.await_count == 2
+    first = runtime._post.await_args_list[0]
+    second = runtime._post.await_args_list[1]
+    assert first.args[0].endswith("/counterfactual-snapshot")
+    assert second.args[0].endswith("/counterfactual")
+
+
 def test_preflight_allows_sleeping_optional_research_agent():
     runtime = object.__new__(SchedulerRuntime)
     runtime.trader_url = "http://rhen/v1/scheduler"
