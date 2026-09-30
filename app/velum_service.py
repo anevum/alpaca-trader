@@ -393,6 +393,7 @@ class VelumRuntime:
             initial_equity=self.initial_equity,
             spread_bps=self.crypto_spread_bps,
             slippage_bps=self.crypto_slippage_bps,
+            equity_settings=self.settings,
         )
         payload = self._payload(
             asset_class="crypto",
