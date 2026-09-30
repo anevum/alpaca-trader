@@ -182,6 +182,133 @@ function publicEvent(eventType: string | null, occurredAt: string | null) {
   return { at: occurredAt, type, kind: safe.kind, label: safe.label };
 }
 
+function dateString(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function latestTimestamp(...values: unknown[]): string | null {
+  const clean = values
+    .map((value) => dateString(value))
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => Date.parse(b) - Date.parse(a));
+  return clean[0] || null;
+}
+
+function serviceRows(controlState: Record<string, unknown>) {
+  const topology = objectValue(controlState.topology);
+  if (!Array.isArray(topology.services)) return [] as Record<string, unknown>[];
+  return topology.services
+    .map((value) => objectValue(value))
+    .filter((value) => Object.keys(value).length > 0);
+}
+
+function normalizedState(value: unknown, fallback = "UNKNOWN") {
+  return optionalString(value)?.toUpperCase() || fallback;
+}
+
+function publicSystemStates(
+  row: Record<string, unknown>,
+  live: boolean,
+  latestEventAt: string | null,
+  events60m: number,
+) {
+  const controlState = objectValue(row.iren_control_state);
+  const services = serviceRows(controlState);
+  const service = (id: string) =>
+    services.find((value) => String(value.service_id || "").toUpperCase() === id) || {};
+
+  const iren = service("IREN");
+  const rhen = service("RHEN");
+  const graen = service("GRAEN");
+  const nostra = service("NOSTRA");
+  const velum = service("VELUM");
+  const graenRuntime = objectValue(row.graen_runtime);
+
+  const controlObservedAt =
+    dateString(controlState.observed_at) ||
+    dateString(row.iren_updated_at);
+  const graenObservedAt =
+    dateString(graenRuntime.heartbeat_at) ||
+    dateString(graen.last_heartbeat_at) ||
+    dateString(graen.observed_at);
+  const nostraObservedAt = latestTimestamp(
+    row.nostra_latest_forecast_at,
+    row.nostra_latest_snapshot_at,
+  );
+
+  const rhenProbeState = normalizedState(rhen.status);
+  const rhenHealth =
+    live && rhenProbeState === "OFFLINE"
+      ? "OBSERVABILITY_DEGRADED"
+      : rhenProbeState;
+
+  const queueDepth = numberOrZero(graenRuntime.queue_depth);
+  const graenState =
+    normalizedState(graen.status) !== "UNKNOWN"
+      ? normalizedState(graen.status)
+      : graenObservedAt && Date.now() - Date.parse(graenObservedAt) < 180_000
+        ? "RUNNING"
+        : "STALE";
+  const graenHealth = optionalString(graenRuntime.last_error)
+    ? "DEGRADED"
+    : graenState === "RUNNING"
+      ? "HEALTHY"
+      : graenState;
+
+  const nostraForecasts24h = numberOrZero(row.nostra_forecasts_24h);
+  const nostraSnapshots24h = numberOrZero(row.nostra_snapshots_24h);
+  const nostraRecords24h = nostraForecasts24h + nostraSnapshots24h;
+  const nostraIndependent = nostra.independent_runtime === true;
+
+  return {
+    IREN: {
+      runtime_state: normalizedState(iren.status),
+      health_state: normalizedState(controlState.state),
+      tracking_state: "CANONICAL_CONTROL_STATE",
+      observed_at: dateString(iren.last_heartbeat_at) || controlObservedAt,
+      independent_runtime: iren.independent_runtime === true,
+      activity: optionalString(iren.current_activity) || "Deterministic supervision",
+    },
+    RHEN: {
+      runtime_state: live ? "RUNNING" : normalizedState(rhen.status, latestEventAt ? "STALE" : "OFFLINE"),
+      health_state: rhenHealth,
+      tracking_state: live ? "LIVE_TELEMETRY" : "STALE_TELEMETRY",
+      observed_at: latestEventAt || dateString(rhen.observed_at),
+      independent_runtime: true,
+      activity: `${events60m} public events / 60m`,
+    },
+    GRAEN: {
+      runtime_state: graenState,
+      health_state: graenHealth,
+      tracking_state: "CANONICAL_RUNTIME",
+      observed_at: graenObservedAt,
+      independent_runtime: true,
+      activity: queueDepth > 0 ? `${queueDepth} queued research problem${queueDepth === 1 ? "" : "s"}` : "Worker active · queue clear",
+    },
+    NOSTRA: {
+      runtime_state: nostraIndependent ? normalizedState(nostra.status) : "EMBEDDED",
+      health_state: nostraIndependent ? normalizedState(nostra.status) : "RESEARCH_ONLY",
+      tracking_state: nostraRecords24h > 0 ? "COLLECTING" : "AWAITING_INDEPENDENT_RUNTIME",
+      observed_at: nostraObservedAt || dateString(nostra.observed_at),
+      independent_runtime: nostraIndependent,
+      activity: nostraRecords24h > 0
+        ? `${nostraForecasts24h} forecasts / 24h · ${nostraSnapshots24h} snapshots / 24h`
+        : "Independent forecast runtime not yet activated",
+    },
+    VELUM: {
+      runtime_state: normalizedState(velum.status, "UNKNOWN"),
+      health_state: velum.liveness === true ? "HEALTHY" : normalizedState(velum.status),
+      tracking_state: velum.liveness === true ? "READY" : "UNAVAILABLE",
+      observed_at: dateString(velum.last_heartbeat_at) || dateString(velum.observed_at),
+      independent_runtime: velum.independent_runtime === true,
+      activity: optionalString(velum.current_activity) || (normalizedState(velum.status) === "IDLE" ? "Replay worker ready" : "Replay runtime"),
+    },
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "GET") return json(405, { ok: false, error: "method_not_allowed" });
@@ -201,6 +328,7 @@ Deno.serve(async (req) => {
       outcomeRows,
       comparisonRows,
       scanRows,
+      systemStateRows,
     ] = await Promise.all([
       sql.unsafe("select version_id, strategy_name, environment, status, activated_at from private.trading_strategy_versions where environment = 'live' and status = 'active' order by activated_at desc limit 1"),
       sql.unsafe("select version_id, strategy_name, environment, status, activated_at, retired_at from private.trading_strategy_versions where environment = 'live' order by coalesce(activated_at,created_at) desc limit 12"),
@@ -215,6 +343,18 @@ Deno.serve(async (req) => {
       sql.unsafe("select horizon_minutes,status,count(*)::int as count from private.trading_candidate_forward_outcomes group by horizon_minutes,status order by horizon_minutes,status"),
       sql.unsafe("select coalesce(nullif(payload->>'match_state',''),'UNKNOWN') as match_state,count(*)::int as count from private.trading_events where event_type='live_offline_comparison' group by 1 order by 1"),
       sql.unsafe("select observed_at,market_session,cycle_outcome,data_status,degraded from private.trading_scan_cycles order by observed_at desc limit 1"),
+      sql.unsafe(`select
+        (select state from private.iren_control_state where singleton = true limit 1) as iren_control_state,
+        (select updated_at from private.iren_control_state where singleton = true limit 1) as iren_updated_at,
+        (select jsonb_build_object(
+          'heartbeat_at', heartbeat_at,
+          'queue_depth', queue_depth,
+          'last_error', last_error
+        ) from private.graen_runtime_state where singleton = true limit 1) as graen_runtime,
+        (select max(generated_at) from private.nostra_forecasts) as nostra_latest_forecast_at,
+        (select count(*)::int from private.nostra_forecasts where generated_at >= now() - interval '24 hours') as nostra_forecasts_24h,
+        (select max(as_of_timestamp) from private.nostra_snapshots) as nostra_latest_snapshot_at,
+        (select count(*)::int from private.nostra_snapshots where created_at >= now() - interval '24 hours') as nostra_snapshots_24h`),
     ]);
 
     const strategy = strategyRows[0] ?? null;
@@ -233,6 +373,12 @@ Deno.serve(async (req) => {
     const completedDecisions =
       decisions.filter((row) => row.decision_type !== "next_research_direction");
     const weekly = weeklyRows[0] ?? null;
+    const systems = publicSystemStates(
+      objectValue(systemStateRows[0]),
+      live,
+      latestEventAt,
+      numberOrZero(summary.events_60m),
+    );
     const missingSessions = weekly ? safeStringArray(weekly.missing_sessions) : [];
     const includedSessions = weekly ? safeStringArray(weekly.included_sessions) : [];
 
@@ -269,6 +415,7 @@ Deno.serve(async (req) => {
       live,
       freshness_seconds: freshnessSeconds,
       state: live ? "RUNNING" : latestEventAt ? "STALE" : "OFFLINE",
+      systems,
       active_strategy: strategy
         ? {
             version_id: strategy.version_id,
@@ -337,6 +484,7 @@ Deno.serve(async (req) => {
           "sanitized research decisions",
           "sanitized evidence availability",
           "sanitized strategy history",
+          "sanitized per-system runtime and tracking state",
         ]
       }
     });
