@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
@@ -41,6 +42,18 @@ class ExecutorRuntime:
     def token(self) -> str:
         return os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
 
+    @property
+    def graen_url(self) -> str:
+        return os.getenv("GRAEN_SERVICE_URL", "").strip().rstrip("/")
+
+    @property
+    def graen_token(self) -> str:
+        return os.getenv("GRAEN_ADMIN_TOKEN", "").strip()
+
+    @property
+    def graen_configured(self) -> bool:
+        return self.graen_url.startswith("http") and len(self.graen_token) >= 32
+
     def health(self) -> dict[str, Any]:
         return {
             "ok": True,
@@ -52,9 +65,10 @@ class ExecutorRuntime:
             "model_invoked": False,
             "spending_authority": self.model_execution_authorized,
             "supported_job_types": sorted(self.supported_job_types),
+            "graen_configured": self.graen_configured,
             "execution_backends": {
                 "software_build": "authorization_required",
-                "graen_research_problem": "waiting_for_graen_runtime",
+                "graen_research_problem": "graen_problem_api" if self.graen_configured else "not_configured",
                 "agent_work": "external_worker_required",
             },
         }
@@ -97,10 +111,10 @@ class ExecutorRuntime:
             }
         if job_type == "GRAEN_RESEARCH_PROBLEM":
             return {
-                "accepted": True,
+                "accepted": self.graen_configured,
                 "job_id": job.job_id,
-                "status": "WAITING",
-                "reason": "graen_independent_runtime_required",
+                "status": "WAITING" if self.graen_configured else "BLOCKED",
+                "reason": "graen_submission_ready" if self.graen_configured else "graen_problem_api_not_configured",
                 "model_invoked": False,
             }
         return {
@@ -108,6 +122,72 @@ class ExecutorRuntime:
             "job_id": job.job_id,
             "status": "WAITING",
             "reason": "external_execution_backend_not_configured",
+            "model_invoked": False,
+        }
+
+
+    async def submit_graen(self, job: JobEnvelope) -> dict[str, Any]:
+        if not self.graen_configured:
+            return {
+                "accepted": False,
+                "job_id": job.job_id,
+                "status": "BLOCKED",
+                "reason": "graen_problem_api_not_configured",
+                "model_invoked": False,
+            }
+        success_criteria = job.metadata.get("success_criteria")
+        if not isinstance(success_criteria, dict):
+            success_criteria = {}
+        payload = {
+            "title": job.title,
+            "statement": job.instructions,
+            "domain": "CRYPTO_STRATEGY_RESEARCH",
+            "priority": 100,
+            "source": "IREN",
+            "requested_by": "iren-executor",
+            "linked_iren_job_id": job.job_id,
+            "constraints": {
+                "research_only": True,
+                "production_authority": False,
+                "broker_authority": False,
+                "risk_or_sizing_authority": False,
+                "crypto_execution_enabled": False,
+                "falsification_required": True,
+                "preserve_search_history": True,
+            },
+            "success_criteria": success_criteria,
+            "metadata": {
+                "objective_key": job.objective_key,
+                "requested_via": "iren-executor",
+            },
+        }
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    f"{self.graen_url}/v1/problems",
+                    headers={"x-graen-admin-token": self.graen_token},
+                    json=payload,
+                )
+                response.raise_for_status()
+                body = response.json()
+        except Exception as exc:
+            return {
+                "accepted": True,
+                "job_id": job.job_id,
+                "status": "WAITING",
+                "reason": "graen_problem_submission_failed",
+                "error_type": type(exc).__name__,
+                "model_invoked": False,
+            }
+        problem = body.get("problem") if isinstance(body, dict) else None
+        problem = problem if isinstance(problem, dict) else {}
+        return {
+            "accepted": True,
+            "job_id": job.job_id,
+            "status": "WAITING",
+            "reason": "graen_problem_submitted",
+            "graen_problem_id": problem.get("problem_id"),
+            "graen_problem_key": problem.get("problem_key"),
             "model_invoked": False,
         }
 
@@ -139,4 +219,7 @@ async def accept_job(
     x_anevum_scheduler_token: str | None = Header(default=None),
 ):
     _require_token(x_anevum_scheduler_token)
-    return runtime.accept(job)
+    accepted = runtime.accept(job)
+    if job.job_type.strip().upper() == "GRAEN_RESEARCH_PROBLEM" and accepted.get("accepted"):
+        return await runtime.submit_graen(job)
+    return accepted
