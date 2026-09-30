@@ -33,6 +33,12 @@ def normalize_command(command: str) -> str:
         return "FIX"
     if value in {"what needs me", "needs me", "what requires me", "decisions"}:
         return "DECISIONS"
+    if value in {"autopilot", "autopilot status", "self update status", "self-update status"}:
+        return "AUTOPILOT_STATUS"
+    if value in {"pause autopilot", "autopilot pause", "stop autopilot", "pause self update", "pause self-update"}:
+        return "AUTOPILOT_PAUSE"
+    if value in {"resume autopilot", "autopilot resume", "start autopilot", "resume self update", "resume self-update"}:
+        return "AUTOPILOT_RESUME"
     if value.startswith("status "):
         return "STATUS"
     return "DIRECTIVE"
@@ -123,7 +129,14 @@ def format_slack_response(response: dict[str, Any]) -> str:
         lines.append(f"Objectives: *{complete}/{total} complete*")
     lines.append(f"Active jobs: *{active}*  ·  Needs you: *{needs}*  ·  Blocked: *{blocked}*")
 
-    if intent == "DECISIONS":
+    if intent.startswith("AUTOPILOT"):
+        lines.extend([
+            "",
+            "*AUTOPILOT*",
+            f"Enabled: *{'YES' if response.get('autopilot_enabled') else 'NO'}*",
+            f"Daily cap: *{int(response.get('autopilot_max_jobs_per_day') or 3)} jobs*",
+        ])
+    elif intent == "DECISIONS":
         items = response.get("items") or []
         if isinstance(items, list) and items:
             lines.extend(["", "*REQUIRES YOU*"])
@@ -187,6 +200,7 @@ class CommandResult:
     intent: str
     response: dict[str, Any]
     job: dict[str, Any] | None = None
+    settings_update: dict[str, Any] | None = None
 
 
 def process_command(command: str, snapshot: dict[str, Any], control_state: dict[str, Any], *, requested_by: str, source: str) -> CommandResult:
@@ -203,6 +217,24 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
     if intent == "DECISIONS":
         decisions = [row for row in snapshot.get("jobs") or [] if row.get("status") == "NEEDS_APPROVAL" or row.get("requires_human") is True]
         return CommandResult(intent, {"message": "Items requiring human authority.", "items": decisions, **summary})
+    if intent in {"AUTOPILOT_STATUS", "AUTOPILOT_PAUSE", "AUTOPILOT_RESUME"}:
+        settings = snapshot.get("settings") or {}
+        current = bool(settings.get("autopilot_enabled"))
+        if intent == "AUTOPILOT_PAUSE":
+            current = False
+        elif intent == "AUTOPILOT_RESUME":
+            current = True
+        update = {"autopilot_enabled": current} if intent != "AUTOPILOT_STATUS" else None
+        return CommandResult(
+            intent,
+            {
+                "message": "IREN autopilot status.",
+                "autopilot_enabled": current,
+                "autopilot_max_jobs_per_day": int(settings.get("autopilot_max_jobs_per_day") or 3),
+                **summary,
+            },
+            settings_update=update,
+        )
     if intent in {"EXECUTE_NEXT", "FIX"}:
         action = summary.get("next_action")
         if not action:
@@ -276,6 +308,14 @@ class IrenWorkEngine:
                 snapshot = await self.snapshot()
                 result = process_command(text, snapshot, self.control_state(), requested_by=requested_by, source=source)
                 job_row = None
+                if result.settings_update:
+                    updated = await self.gateway(
+                        "iren_settings_update",
+                        settings=result.settings_update,
+                        updated_by=requested_by,
+                    )
+                    if isinstance(updated.get("settings"), dict):
+                        result.response.update(updated["settings"])
                 if result.job:
                     created = await self.gateway("iren_job_create", job=result.job)
                     job_row = created.get("job")
@@ -383,9 +423,27 @@ class IrenWorkEngine:
                 )
 
     async def _autopilot(self) -> None:
-        if not self.autopilot_enabled:
-            return
         snapshot = await self.snapshot()
+        settings = snapshot.get("settings") or {}
+        enabled = bool(settings.get("autopilot_enabled", self.autopilot_enabled))
+        if not enabled or _text(self.control_state().get("state")).upper() != "HEALTHY":
+            return
+        jobs = list(snapshot.get("jobs") or [])
+        if any(
+            row.get("requested_via") == "autopilot"
+            and row.get("status") in ACTIVE_JOB_STATES
+            for row in jobs
+        ):
+            return
+        cap = max(1, min(12, int(settings.get("autopilot_max_jobs_per_day") or 3)))
+        today = datetime.now(UTC).date().isoformat()
+        used = sum(
+            1 for row in jobs
+            if row.get("requested_via") == "autopilot"
+            and _text(row.get("created_at")).startswith(today)
+        )
+        if used >= cap:
+            return
         action = choose_next_action(snapshot)
         if not action or bool(action.get("protected_action")):
             return
@@ -397,7 +455,8 @@ class IrenWorkEngine:
             "*IREN // AUTOPILOT*\n"
             f"Queued *{_text(row.get('title')) or _text(action.get('title'))}*\n"
             f"Owner: *{_text(row.get('owner_system')) or _text(action.get('owner_system'))}*  ·  "
-            f"Job: `{_text(row.get('job_id'))[:8]}`",
+            f"Job: `{_text(row.get('job_id'))[:8]}`\n"
+            f"Daily autonomous jobs: *{used + 1}/{cap}*",
             {},
         )
 
