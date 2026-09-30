@@ -101,15 +101,28 @@ class GraenCryptoV5Runtime:
 
     async def run_once(self) -> dict[str, Any]:
         fetch_start = DEVELOPMENT_START - timedelta(hours=8)
-        raw = await self.market_data.historical_crypto_bars_many(
-            list(UNIVERSE),
-            start=fetch_start,
-            end=HOLDOUT_END,
-        )
+        raw: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in UNIVERSE}
+        chunk_start = fetch_start
+        while chunk_start < HOLDOUT_END:
+            chunk_end = min(chunk_start + timedelta(days=20), HOLDOUT_END)
+            chunk = await self.market_data.historical_crypto_bars_many(
+                list(UNIVERSE),
+                start=chunk_start,
+                end=chunk_end,
+            )
+            for symbol in UNIVERSE:
+                raw[symbol].extend(chunk.get(symbol, []))
+            chunk_start = chunk_end
+
         bars: dict[str, list[dict[str, Any]]] = {}
         for symbol in UNIVERSE:
             clean: list[dict[str, Any]] = []
+            seen: set[str] = set()
             for bar in raw.get(symbol, []):
+                identity = str(bar.get("t") or "")
+                if identity in seen:
+                    continue
+                seen.add(identity)
                 try:
                     stamp = datetime.fromisoformat(str(bar.get("t") or "").replace("Z", "+00:00"))
                 except ValueError:
