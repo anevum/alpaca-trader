@@ -144,6 +144,14 @@ Deno.serve(async (req) => {
             and payload->>'asset_class'='crypto'
           order by occurred_at desc
           limit 1
+        ),
+        edge as (
+          select payload, occurred_at
+          from private.trading_events
+          where event_type='crypto_edge_discovery_result'
+            and payload->>'methodology_version'='graen-crypto-edge-discovery-v1'
+          order by occurred_at desc
+          limit 1
         )
         select jsonb_build_object(
           'methodology_version','graen-crypto-promotion-evidence-v1',
@@ -159,42 +167,63 @@ Deno.serve(async (req) => {
           'coverage_first_observed_at',c.first_observed_at,
           'coverage_last_observed_at',c.last_observed_at,
           'metrics',jsonb_build_object(
-            'net_expectancy_after_costs',nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision,
+            'net_expectancy_after_costs',coalesce(
+              nullif(ed.payload#>>'{holdout,cost_scenarios,high,expectancy_return}','')::double precision,
+              nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision
+            ),
             'brier_score',null,
             'log_loss',null,
             'calibration_intercept',null,
             'calibration_slope',null,
             'discrimination',null,
-            'max_drawdown',nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,max_drawdown_pct}','')::double precision,
-            'tail_loss',null,
+            'max_drawdown',coalesce(
+              nullif(ed.payload#>>'{holdout,cost_scenarios,high,summary,max_drawdown_pct}','')::double precision,
+              nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,max_drawdown_pct}','')::double precision
+            ),
+            'tail_loss',nullif(ed.payload#>>'{holdout,cost_scenarios,high,tail_loss_05}','')::double precision,
             'mfe',e.mfe,
             'mae',e.mae,
-            'slippage',nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,assumptions,slippage_bps_per_side}','')::double precision,
-            'spread_sensitivity',(
-              nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,low,summary,expectancy_per_trade}','')::double precision
-              - nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision
+            'slippage',coalesce(
+              nullif(ed.payload#>>'{holdout,cost_scenarios,high,assumptions,slippage_bps_per_side}','')::double precision,
+              nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,assumptions,slippage_bps_per_side}','')::double precision
+            ),
+            'spread_sensitivity',coalesce(
+              (
+                nullif(ed.payload#>>'{holdout,cost_scenarios,low,expectancy_return}','')::double precision
+                - nullif(ed.payload#>>'{holdout,cost_scenarios,high,expectancy_return}','')::double precision
+              ),
+              (
+                nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,low,summary,expectancy_per_trade}','')::double precision
+                - nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision
+              )
             ),
             'regime_stability',null,
-            'time_of_week_stability',null
+            'time_of_week_stability',nullif(ed.payload#>>'{holdout,cost_scenarios,high,time_of_week_stability}','')::double precision
           ),
           'net_expectancy_positive_after_high_costs',coalesce(
-            nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision > 0,
+            nullif(ed.payload#>>'{holdout,cost_scenarios,high,expectancy_return}','')::double precision > 0,
             false
           ),
-          'walk_forward_passed',false,
-          'holdout_passed',false,
-          'dependence_adjusted',false,
-          'multiplicity_adjusted',false,
-          'no_lookahead_verified',false,
+          'walk_forward_passed',coalesce((ed.payload->>'walk_forward_passed')::boolean,false),
+          'holdout_passed',coalesce((ed.payload->>'holdout_passed')::boolean,false),
+          'dependence_adjusted',coalesce((ed.payload->>'dependence_adjusted')::boolean,false),
+          'multiplicity_adjusted',coalesce((ed.payload->>'multiplicity_adjusted')::boolean,false),
+          'no_lookahead_verified',coalesce((ed.payload->>'no_lookahead_verified')::boolean,false),
           'latest_velum_methodology',v.payload->>'methodology_version',
           'latest_velum_range',v.payload->'range',
           'latest_velum_baseline_trades',coalesce((v.payload#>>'{baseline,summary,trades}')::int,0),
-          'latest_velum_high_cost_trades',coalesce((v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,trades}')::int,0)
+          'latest_velum_high_cost_trades',coalesce((v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,trades}')::int,0),
+          'latest_edge_discovery_at',ed.occurred_at,
+          'latest_edge_methodology',ed.payload->>'methodology_version',
+          'latest_edge_status',ed.payload->>'status',
+          'latest_edge_selected_candidate',ed.payload#>>'{selected_candidate,candidate_id}',
+          'latest_edge_holdout_passed',coalesce((ed.payload->>'holdout_passed')::boolean,false)
         ) as evidence
         from coverage c
         cross join regimes r
         cross join excursion e
         left join velum v on true
+        left join edge ed on true
       `;
       return json(200, {
         ok: true,
