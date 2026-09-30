@@ -115,7 +115,7 @@ def test_hourly_crypto_bucket_uses_completed_hour():
 def test_preflight_allows_sleeping_optional_research_agent():
     runtime = object.__new__(SchedulerRuntime)
     runtime.trader_url = "http://rhen/v1/scheduler"
-    runtime.scheduler_headers = {"x-anevum-scheduler-token": "test"}
+    runtime.token = "test"
     runtime._post = AsyncMock(return_value={"ok": True})
     runtime._dependency_health = AsyncMock(
         return_value={
@@ -140,7 +140,7 @@ def test_preflight_allows_sleeping_optional_research_agent():
 def test_preflight_still_blocks_unhealthy_required_dependency():
     runtime = object.__new__(SchedulerRuntime)
     runtime.trader_url = "http://rhen/v1/scheduler"
-    runtime.scheduler_headers = {"x-anevum-scheduler-token": "test"}
+    runtime.token = "test"
     runtime._post = AsyncMock(return_value={"ok": True})
     runtime._dependency_health = AsyncMock(
         return_value={
