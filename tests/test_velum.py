@@ -195,3 +195,130 @@ def test_velum_blocking_work_is_thread_offloaded(monkeypatch):
     assert result == 5
     assert len(calls) == 1
     assert calls[0][0] is add
+
+
+def test_velum_counterfactual_matches_rhen_inline_lab_identity():
+    from datetime import date
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+    from app.velum_service import _canonical_identity, build_counterfactual_from_snapshot
+
+    session = date(2026, 9, 30)
+    settings_obj = SimpleNamespace(
+        strategy_version_id="LIVE-2026-09-25-003",
+        min_momentum_pct=Decimal("0.0020"),
+        min_vwap_edge_pct=Decimal("0.0000"),
+        min_confirmations=2,
+        max_vwap_extension_pct=Decimal("0.0080"),
+    )
+    scheduler = ResearchReportScheduler(
+        settings_obj,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    candidate = {
+        "candidate_id": 1,
+        "strategy_version_id": "LIVE-2026-09-25-003",
+        "session": session.isoformat(),
+        "symbol": "TEST",
+        "features": {
+            "current_close": "100.20",
+            "session_vwap": "100.00",
+            "momentum_pct": "0.0018",
+            "vwap_edge_pct": "0.0020",
+            "confirmation_passes": 2,
+            "checks": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": False,
+                "vwap_ok": True,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            },
+        },
+        "checks": {
+            "strategy": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": False,
+                "vwap_ok": True,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            }
+        },
+        "outcomes": [
+            {
+                "horizon_minutes": 15,
+                "status": "complete",
+                "forward_return": "0.003",
+                "max_favorable_return": "0.004",
+                "max_adverse_return": "-0.001",
+            }
+        ],
+    }
+
+    async def no_history(_session):
+        return [], None
+
+    scheduler._counterfactual_history_reports = no_history
+    rhen_lab, warning = asyncio.run(
+        scheduler._build_counterfactual_lab(session, [candidate])
+    )
+    assert warning is None
+
+    snapshot = {
+        "schema_version": "velum_counterfactual_input.v1",
+        "session": session.isoformat(),
+        "strategy_version_id": settings_obj.strategy_version_id,
+        "baseline_parameters": {
+            "min_momentum_pct": str(settings_obj.min_momentum_pct),
+            "min_vwap_edge_pct": str(settings_obj.min_vwap_edge_pct),
+            "min_confirmations": str(settings_obj.min_confirmations),
+            "max_vwap_extension_pct": str(settings_obj.max_vwap_extension_pct),
+        },
+        "candidates": [candidate],
+        "prior_reports": [],
+    }
+    velum_lab = build_counterfactual_from_snapshot(snapshot)
+    assert _canonical_identity(velum_lab) == _canonical_identity(rhen_lab)
+
+
+def test_velum_counterfactual_parity_result_is_research_only(monkeypatch):
+    runtime = VelumRuntime(settings())
+    runtime._emit = lambda *args, **kwargs: asyncio.sleep(0, result=True)
+    lab = build_counterfactual_from_snapshot({
+        "schema_version": "velum_counterfactual_input.v1",
+        "session": "2026-09-30",
+        "strategy_version_id": "LIVE-2026-09-25-003",
+        "baseline_parameters": {
+            "min_momentum_pct": "0.0020",
+            "min_vwap_edge_pct": "0",
+            "min_confirmations": "2",
+            "max_vwap_extension_pct": "0.008",
+        },
+        "candidates": [],
+        "prior_reports": [],
+    })
+    snapshot = {
+        "schema_version": "velum_counterfactual_input.v1",
+        "session": "2026-09-30",
+        "strategy_version_id": "LIVE-2026-09-25-003",
+        "baseline_parameters": lab["baseline_parameters"],
+        "candidates": [],
+        "prior_reports": [],
+        "input_identity": "sha256:test",
+        "expected_counterfactual_lab": lab,
+        "expected_output_identity": _canonical_identity(lab),
+    }
+    result = asyncio.run(runtime.run_counterfactual(snapshot))
+    assert result["parity_match"] is True
+    assert result["persisted"] is True
+    assert result["execution_authority"] is False
+    assert result["broker_orders_possible"] is False
+    assert result["live_configuration_changed"] is False
+    assert result["promotion_authorized"] is False
