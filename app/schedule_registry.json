@@ -116,7 +116,7 @@
     {
       "workflow_id": "velum.equity.replay",
       "subsystem": "VELUM",
-      "owner": "RHEN",
+      "owner": "VELUM",
       "enabled": true,
       "schedule_type": "market_session_offset",
       "schedule_expression": "market_close+35m",
@@ -198,7 +198,7 @@
     {
       "workflow_id": "velum.crypto.replay",
       "subsystem": "VELUM",
-      "owner": "RHEN",
+      "owner": "VELUM",
       "enabled": true,
       "schedule_type": "hourly",
       "schedule_expression": "hourly+05m; replay completed hour",
