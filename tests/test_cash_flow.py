@@ -12,6 +12,7 @@ from app.cash_flow import (
     SessionCashFlow,
     annotate_account,
     day_pnl,
+    detected_reference_window_cash_flow,
     detected_session_cash_flow,
     reconcile_cash_flow_adjustments,
 )
@@ -39,6 +40,17 @@ def account(equity="80.00", at="2024-07-08T13:30:00-04:00", **changes):
     raw.update(changes)
     return annotate_account(raw, SessionCashFlow.from_json(manifest()),
                             run_id="test-run", observed_at=datetime.fromisoformat(at))
+
+
+def calendar_stub(*dates: str):
+    return [
+        {
+            "date": value,
+            "open": value + "T09:30:00",
+            "close": value + "T16:00:00",
+        }
+        for value in (dates or ("2024-07-05", "2024-07-08"))
+    ]
 
 
 def settings(**changes):
@@ -153,12 +165,16 @@ def test_account_client_is_get_only_and_does_not_change_broker_balances():
     client = AlpacaClient(settings())
     client._request = AsyncMock(side_effect=[
         {"equity": "80.00", "last_equity": "100.00"},
+        calendar_stub(),
         [],
     ])
     assert asyncio.run(client.account())["last_equity"] == "100.00"
-    assert client._request.await_count == 2
+    assert client._request.await_count == 3
     assert client._request.await_args_list[0].args == ("GET", "/v2/account")
-    assert client._request.await_args_list[1].args == ("GET", "/v2/account/activities/TRANS")
+    assert client._request.await_args_list[1].args == ("GET", "/v2/calendar")
+    assert client._request.await_args_list[2].args == ("GET", "/v2/account/activities/TRANS")
+    assert "after" in client._request.await_args_list[2].kwargs["params"]
+    assert "date" not in client._request.await_args_list[2].kwargs["params"]
 
 
 def test_account_client_applies_reviewed_manifest_using_new_york_session(monkeypatch):
@@ -173,13 +189,14 @@ def test_account_client_applies_reviewed_manifest_using_new_york_session(monkeyp
     client = AlpacaClient(settings(SESSION_CASH_FLOW_ADJUSTMENT=manifest()))
     client._request = AsyncMock(side_effect=[
         {"cash": "80.00", "equity": "80.00", "last_equity": "100.00"},
+        calendar_stub(),
         [],
     ])
     snapshot = asyncio.run(client.account())
     assert day_pnl(snapshot) == 0
     assert snapshot["cash_flow_accounting"]["evidence_ref"] == "test-only-owner-confirmation-and-snapshot"
     assert snapshot["cash_flow_accounting"]["source"] == "operator_reconciled_session_manifest"
-    assert client._request.await_count == 2
+    assert client._request.await_count == 3
 
 
 def test_detected_cash_deposit_is_removed_from_trading_pnl():
@@ -293,6 +310,7 @@ def test_account_client_automatically_detects_deposit(monkeypatch):
     client = AlpacaClient(settings())
     client._request = AsyncMock(side_effect=[
         {"cash": "109.00", "equity": "109.00", "last_equity": "100.00"},
+        calendar_stub(),
         [{
             "id": "deposit-1",
             "activity_type": "CSD",
@@ -304,6 +322,61 @@ def test_account_client_automatically_detects_deposit(monkeypatch):
     assert snapshot["risk_reference_equity"] == "110.00"
     assert day_pnl(snapshot) == Decimal("-1.00")
     assert snapshot["cash_flow_accounting"]["source"] == "alpaca_account_activities"
+
+
+
+def test_reference_window_carries_after_close_transfer_into_next_session():
+    observed_at = datetime.fromisoformat("2024-07-09T09:31:00-04:00")
+    reference_start = datetime.fromisoformat("2024-07-08T16:00:00-04:00")
+    detected = detected_reference_window_cash_flow(
+        [{
+            "id": "after-close-withdrawal",
+            "activity_type": "CSW",
+            "date": "2024-07-08",
+            "net_amount": "-20.00",
+        }],
+        session_date=observed_at.date(),
+        expected_last_equity="100.00",
+        run_id="test-run",
+        observed_at=observed_at,
+        reference_start=reference_start,
+    )
+    snapshot = annotate_account(
+        {"cash": "80.00", "equity": "80.00", "last_equity": "100.00"},
+        detected,
+        run_id="test-run",
+        observed_at=observed_at,
+    )
+    assert snapshot["risk_reference_equity"] == "80.00"
+    assert day_pnl(snapshot) == 0
+    assert snapshot["cash_flow_accounting"]["source"] == "alpaca_account_activities_reference_window"
+
+
+def test_account_client_queries_transfers_since_prior_market_close(monkeypatch):
+    import app.alpaca_client as client_module
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat("2024-07-09T13:31:00+00:00").astimezone(tz)
+
+    monkeypatch.setattr(client_module, "datetime", FrozenDatetime)
+    client = AlpacaClient(settings())
+    client._request = AsyncMock(side_effect=[
+        {"cash": "80.00", "equity": "80.00", "last_equity": "100.00"},
+        calendar_stub("2024-07-08", "2024-07-09"),
+        [{
+            "id": "after-close-withdrawal",
+            "activity_type": "CSW",
+            "date": "2024-07-08",
+            "net_amount": "-20.00",
+        }],
+    ])
+    snapshot = asyncio.run(client.account())
+    assert day_pnl(snapshot) == 0
+    params = client._request.await_args_list[2].kwargs["params"]
+    assert params["after"] == "2024-07-08T20:00:00+00:00"
+    assert "date" not in params
 
 
 def test_account_client_blocks_new_entries_when_transfer_lookup_fails(monkeypatch):
@@ -318,6 +391,7 @@ def test_account_client_blocks_new_entries_when_transfer_lookup_fails(monkeypatc
     client = AlpacaClient(settings())
     client._request = AsyncMock(side_effect=[
         {"cash": "100.00", "equity": "100.00", "last_equity": "100.00"},
+        calendar_stub(),
         RuntimeError("activity endpoint unavailable"),
     ])
     snapshot = asyncio.run(client.account())
