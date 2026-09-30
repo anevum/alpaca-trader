@@ -730,9 +730,13 @@ class TradingEventSink:
             qualified = str(signal.get("action") or "").lower() == "buy"
             qualified_count += int(qualified)
             reason = str(signal.get("reason") or "")
-            ads002_shadow = self._ads002_shadow_candidate_safe(
-                symbol=symbol,
-                metadata=metadata,
+            ads002_shadow = (
+                None
+                if is_crypto
+                else self._ads002_shadow_candidate_safe(
+                    symbol=symbol,
+                    metadata=metadata,
+                )
             )
             candidates.append(
                 {
@@ -797,10 +801,27 @@ class TradingEventSink:
                     },
                     "methodology_version": "live-decision-v1",
                     "strategy_version_id": candidate_strategy_version_id,
+                    "market_lane": "crypto" if is_crypto else "us_equity",
                     "strategy_family": (
-                        "crypto_rolling_momentum_vwap"
+                        getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
                         if is_crypto
                         else getattr(self.settings, "strategy_name", None)
+                    ),
+                    "model_version": (
+                        getattr(self.settings, "crypto_model_version", None)
+                        if is_crypto else candidate_strategy_version_id
+                    ),
+                    "calibration_version": (
+                        getattr(self.settings, "crypto_calibration_version", None)
+                        if is_crypto else None
+                    ),
+                    "regime_version": (
+                        getattr(self.settings, "crypto_regime_version", None)
+                        if is_crypto else None
+                    ),
+                    "execution_adapter_version": (
+                        getattr(self.settings, "crypto_execution_adapter_version", None)
+                        if is_crypto else "alpaca-equity-execution-v1"
                     ),
                     "data_source": "alpaca",
                     "data_feed": candidate_data_feed,
@@ -819,13 +840,18 @@ class TradingEventSink:
                     },
                     "ads002": ads002_shadow,
                     "ads002_v2": (
-                        ads002_v2_by_symbol.get(symbol.upper())
-                        or self._ads002_v2_missing_state(
-                            symbol=symbol,
-                            metadata=metadata,
-                            reason="DECISION_CYCLE_CONTEXT_UNAVAILABLE",
+                        None
+                        if is_crypto
+                        else (
+                            ads002_v2_by_symbol.get(symbol.upper())
+                            or self._ads002_v2_missing_state(
+                                symbol=symbol,
+                                metadata=metadata,
+                                reason="DECISION_CYCLE_CONTEXT_UNAVAILABLE",
+                            )
                         )
                     ),
+                    "ads_crypto": metadata.get("ads_crypto") if is_crypto else None,
                 }
             )
 
@@ -866,10 +892,27 @@ class TradingEventSink:
                 ),
                 "bar_interval": getattr(self.settings, "bar_timeframe", None),
                 "methodology_version": "live-decision-v1",
+                "market_lane": "crypto" if cycle_is_crypto else "us_equity",
                 "strategy_family": (
-                    "crypto_rolling_momentum_vwap"
+                    getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
                     if cycle_is_crypto
                     else getattr(self.settings, "strategy_name", None)
+                ),
+                "model_version": (
+                    getattr(self.settings, "crypto_model_version", None)
+                    if cycle_is_crypto else getattr(self.settings, "strategy_version_id", None)
+                ),
+                "calibration_version": (
+                    getattr(self.settings, "crypto_calibration_version", None)
+                    if cycle_is_crypto else None
+                ),
+                "regime_version": (
+                    getattr(self.settings, "crypto_regime_version", None)
+                    if cycle_is_crypto else None
+                ),
+                "execution_adapter_version": (
+                    getattr(self.settings, "crypto_execution_adapter_version", None)
+                    if cycle_is_crypto else "alpaca-equity-execution-v1"
                 ),
                 "candidate_count": len(candidates),
                 "qualified_count": qualified_count,
@@ -1027,9 +1070,34 @@ class TradingEventSink:
                         },
                         "methodology_version": "live-decision-v1",
                         "strategy_version_id": strategy_version_id,
-                        "strategy_family": getattr(self.settings, "strategy_name", None),
+                        "market_lane": market or "us_equity",
+                        "strategy_family": (
+                            getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
+                            if market == "crypto"
+                            else getattr(self.settings, "strategy_name", None)
+                        ),
+                        "model_version": (
+                            getattr(self.settings, "crypto_model_version", None)
+                            if market == "crypto" else strategy_version_id
+                        ),
+                        "calibration_version": (
+                            getattr(self.settings, "crypto_calibration_version", None)
+                            if market == "crypto" else None
+                        ),
+                        "regime_version": (
+                            getattr(self.settings, "crypto_regime_version", None)
+                            if market == "crypto" else None
+                        ),
+                        "execution_adapter_version": (
+                            getattr(self.settings, "crypto_execution_adapter_version", None)
+                            if market == "crypto" else "alpaca-equity-execution-v1"
+                        ),
                         "data_source": "alpaca",
-                        "data_feed": getattr(self.settings, "data_feed", None),
+                        "data_feed": (
+                            f"crypto-{self.settings.crypto_location}"
+                            if market == "crypto"
+                            else getattr(self.settings, "data_feed", None)
+                        ),
                         "bar_interval": getattr(self.settings, "bar_timeframe", None),
                         "forward_outcomes_status": "pending",
                         "confirmation_state": {
@@ -1043,8 +1111,9 @@ class TradingEventSink:
                         "research_attribution": {
                             "live_strategy_version": strategy_version_id,
                         },
-                        "ads002": ads002_shadow,
-                        "ads002_v2": ads002_v2,
+                        "ads002": None if market == "crypto" else ads002_shadow,
+                        "ads002_v2": None if market == "crypto" else ads002_v2,
+                        "ads_crypto": metadata.get("ads_crypto") if market == "crypto" else None,
                     },
                 },
             },

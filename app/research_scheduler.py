@@ -11,6 +11,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .post_event_evidence import PostEventEvidenceRunner
+from .crypto_layer import CryptoMarketDataClient
+from .crypto_post_event_evidence import CryptoForwardEvidenceRunner
 from .research_agent.adaptation_proposal import proposal_from_counterfactual
 from .research_agent.adaptive_shadow import (
     aggregate_shadow_validation,
@@ -87,6 +89,14 @@ class ResearchReportScheduler:
         self.last_weekly_report: dict[str, Any] | None = None
         self.last_post_event_summary: dict[str, Any] | None = None
         self.last_error: str | None = None
+        self.crypto_market_data = CryptoMarketDataClient(settings)
+        self.crypto_forward_runner = CryptoForwardEvidenceRunner(
+            market_data=self.crypto_market_data,
+            event_sink=event_sink,
+            evidence_reader=self._report_api_get,
+            state=state,
+        )
+        self.last_crypto_forward_at: datetime | None = None
 
     def status(self) -> dict[str, Any]:
         return {
@@ -136,6 +146,7 @@ class ResearchReportScheduler:
                     await self._catch_up_latest_completed()
                     catch_up_done = True
                 await self._tick()
+                await self._crypto_forward_tick()
             except Exception as exc:
                 message = f"research reporting {type(exc).__name__}: {exc}"
                 self.last_error = message
@@ -149,6 +160,40 @@ class ResearchReportScheduler:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
+
+    async def _crypto_forward_tick(self, now: datetime | None = None) -> None:
+        if not getattr(self.settings, "crypto_lane_enabled", False):
+            return
+        if not getattr(self.event_sink, "enabled", False):
+            return
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if (
+            self.last_crypto_forward_at is not None
+            and (current - self.last_crypto_forward_at).total_seconds() < 60
+        ):
+            return
+        try:
+            summary = await self.crypto_forward_runner.run_recent(current)
+            self.last_crypto_forward_at = current
+            if summary.errors:
+                self.state.record_event(
+                    kind="crypto_evidence",
+                    action="warning",
+                    message="crypto forward evidence completed with errors",
+                    reason=f"{summary.errors} outcome errors",
+                )
+        except Exception as exc:
+            self.state.crypto_forward_evidence_state = {
+                "status": "error",
+                "last_run_at": current.isoformat(),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            self.state.record_event(
+                kind="crypto_evidence",
+                action="error",
+                message="crypto forward evidence failed",
+                reason=f"{type(exc).__name__}: {exc}",
+            )
 
     async def _catch_up_latest_completed(
         self,

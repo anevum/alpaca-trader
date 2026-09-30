@@ -51,6 +51,21 @@ class RuntimeState:
     crypto_last_error: str | None = None
     crypto_last_execution_at: datetime | None = None
     crypto_last_execution_context: dict[str, Any] = field(default_factory=dict)
+    crypto_last_scan_at: datetime | None = None
+    crypto_last_market_data_at: datetime | None = None
+    crypto_scanner_healthy: bool = False
+    crypto_execution_healthy: bool = False
+    crypto_candidates_generated: int = 0
+    crypto_qualified_candidates: int = 0
+    crypto_rejection_counts: dict[str, int] = field(default_factory=dict)
+    crypto_active_positions: int = 0
+    crypto_aggregate_exposure: str = "0"
+    crypto_recent_orders: list[dict[str, Any]] = field(default_factory=list)
+    crypto_protective_status: dict[str, Any] = field(default_factory=dict)
+    crypto_forward_evidence_state: dict[str, Any] = field(default_factory=lambda: {"status": "pending"})
+    crypto_replay_state: dict[str, Any] = field(default_factory=lambda: {"status": "unknown"})
+    crypto_graen_promotion: dict[str, Any] = field(default_factory=lambda: {"status": "GATED", "promotion_ready": False})
+    crypto_breaker_state: dict[str, Any] = field(default_factory=dict)
     crypto_exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_execution_context: dict[str, Any] = field(default_factory=dict)
@@ -118,6 +133,20 @@ class RuntimeState:
                 )
         self.crypto_last_scan = scan
         self.crypto_last_completed_scan = scan
+        self.crypto_last_scan_at = at or datetime.now(timezone.utc)
+        self.crypto_scanner_healthy = True
+        self.crypto_candidates_generated = len(scan)
+        self.crypto_qualified_candidates = sum(
+            1 for payload in scan.values()
+            if str(payload.get("action") or "").lower() == "buy"
+        )
+        counts: dict[str, int] = {}
+        for payload in scan.values():
+            if str(payload.get("action") or "").lower() == "buy":
+                continue
+            reason = str(payload.get("reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+        self.crypto_rejection_counts = counts
 
     def begin_cycle(self, correlation_id: str) -> None:
         self.current_correlation_id = correlation_id

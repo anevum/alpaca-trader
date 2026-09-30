@@ -10,6 +10,9 @@ import httpx
 
 from .alpaca_client import AlpacaClient
 from .config import Settings
+from .crypto_features import crypto_feature_state
+from .research_agent.crypto_ads import score_crypto_ads
+from .research_agent.crypto_nostra import infer_crypto_regime
 from .state import RuntimeState
 from .strategy import RollingMomentumVwapStrategy, Signal
 
@@ -19,6 +22,45 @@ NY = ZoneInfo("America/New_York")
 
 class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
     """Rolling momentum/VWAP strategy with continuous 24/7 bar semantics."""
+
+    def __init__(
+        self,
+        *args,
+        strategy_version_id: str = "CRYPTO-2026-09-29-001",
+        model_version: str = "crypto-rmvwap-model-v1",
+        calibration_version: str = "crypto-calibration-unvalidated-v1",
+        calibration_promoted: bool = False,
+        regime_version: str = "nostra-crypto-regime-v1",
+        execution_adapter_version: str = "alpaca-crypto-execution-v1",
+        feature_volatility_lookback: int = 30,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.strategy_version_id = strategy_version_id
+        self.model_version = model_version
+        self.calibration_version = calibration_version
+        self.calibration_promoted = calibration_promoted
+        self.regime_version = regime_version
+        self.execution_adapter_version = execution_adapter_version
+        self.feature_volatility_lookback = feature_volatility_lookback
+
+    @staticmethod
+    def _vwap(bars: list[dict[str, Any]]) -> Decimal:
+        """Crypto VWAP excludes zero-trade bars from trade-weighted liquidity."""
+        weighted = Decimal("0")
+        total_volume = Decimal("0")
+        for bar in bars:
+            volume = _d(bar.get("v"))
+            if volume <= 0:
+                continue
+            bar_vwap = _d(bar.get("vw") or bar.get("c"))
+            if bar_vwap <= 0:
+                continue
+            weighted += bar_vwap * volume
+            total_volume += volume
+        if total_volume > 0:
+            return weighted / total_volume
+        return _d(bars[-1].get("c")) if bars else Decimal("0")
 
     def _completed_session_bars(
         self,
@@ -99,9 +141,35 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
             "confirmations_ok": False,
             "regime_ok": False,
         }
+        feature_state = crypto_feature_state(
+            session,
+            {},
+            now=now,
+            fast_window=self.fast_window,
+            volatility_lookback=self.feature_volatility_lookback,
+        )
+        nostra = infer_crypto_regime(feature_state=feature_state)
+        ads = score_crypto_ads(
+            feature_state,
+            calibration_version=self.calibration_version,
+            calibrated=self.calibration_promoted,
+        )
         metadata: dict[str, Any] = {
             "market": "crypto",
+            "market_lane": "crypto",
             "session_model": "24x7",
+            "strategy_family": "rolling_momentum_vwap",
+            "strategy_version_id": self.strategy_version_id,
+            "model_version": self.model_version,
+            "calibration_version": self.calibration_version,
+            "regime_version": self.regime_version,
+            "execution_adapter_version": self.execution_adapter_version,
+            "feature_state": feature_state,
+            "raw_features": feature_state["raw"],
+            "normalized_features": feature_state["normalized"],
+            "time_state": feature_state["time_state"],
+            "nostra": nostra,
+            "ads_crypto": ads,
             "bar_time": self._timestamp(session[-1]).isoformat(),
             "current_close": str(current_close),
             "previous_close": str(previous_close),
@@ -188,6 +256,56 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
             reason="24/7 crypto momentum above rolling VWAP with constructive regime",
             metadata=metadata,
         )
+
+
+def enrich_crypto_signal_market_state(
+    signal: Signal,
+    *,
+    bars: list[dict[str, Any]],
+    quote: dict[str, Any],
+    now: datetime,
+    settings: Settings,
+) -> Signal:
+    """Attach quote/depth/activity state before any execution eligibility decision."""
+    metadata = dict(signal.metadata or {})
+    state = crypto_feature_state(
+        bars,
+        quote,
+        now=now,
+        fast_window=settings.crypto_fast_window,
+        volatility_lookback=settings.crypto_volatility_lookback_bars,
+    )
+    btc_context = {}
+    eth_context = {}
+    nostra = infer_crypto_regime(
+        feature_state=state,
+        btc_context=btc_context,
+        eth_context=eth_context,
+    )
+    ads = score_crypto_ads(
+        state,
+        calibration_version=settings.crypto_calibration_version,
+        calibrated=settings.crypto_calibration_promoted,
+    )
+    metadata.update({
+        "market": "crypto",
+        "market_lane": "crypto",
+        "session_model": "24x7",
+        "strategy_family": settings.crypto_strategy_family,
+        "strategy_version_id": settings.crypto_strategy_version_id,
+        "model_version": settings.crypto_model_version,
+        "calibration_version": settings.crypto_calibration_version,
+        "regime_version": settings.crypto_regime_version,
+        "execution_adapter_version": settings.crypto_execution_adapter_version,
+        "feature_state": state,
+        "raw_features": state["raw"],
+        "normalized_features": state["normalized"],
+        "time_state": state["time_state"],
+        "nostra": nostra,
+        "ads_crypto": ads,
+    })
+    signal.metadata = metadata
+    return signal
 
 
 def _d(value: Any) -> Decimal:
@@ -299,6 +417,55 @@ class CryptoMarketDataClient:
                     pages += 1
                     if pages >= 20:
                         raise RuntimeError("crypto market-data pagination exceeded safety limit")
+        return output
+
+    async def historical_bars_many(
+        self,
+        symbols: list[str] | tuple[str, ...],
+        *,
+        start: datetime,
+        end: datetime,
+        timeframe: str = "1Min",
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
+        if end_utc <= start_utc:
+            return {symbol: [] for symbol in self._normalize(symbols)}
+        batches = self._batches(symbols)
+        output = {symbol: [] for batch in batches for symbol in batch}
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            for batch in batches:
+                page_token: str | None = None
+                pages = 0
+                while True:
+                    params: dict[str, Any] = {
+                        "symbols": ",".join(batch),
+                        "timeframe": timeframe,
+                        "start": start_utc.isoformat().replace("+00:00", "Z"),
+                        "end": end_utc.isoformat().replace("+00:00", "Z"),
+                        "limit": 10000,
+                        "sort": "asc",
+                    }
+                    if page_token:
+                        params["page_token"] = page_token
+                    response = await http.get(
+                        f"{self.settings.data_base_url}/v1beta3/crypto/"
+                        f"{self.settings.crypto_location}/bars",
+                        headers=self.headers,
+                        params=params,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    for symbol, rows in (data.get("bars") or {}).items():
+                        output.setdefault(symbol.upper(), []).extend(rows or [])
+                    page_token = data.get("next_page_token")
+                    if not page_token:
+                        break
+                    pages += 1
+                    if pages >= 40:
+                        raise RuntimeError("crypto historical pagination exceeded safety limit")
         return output
 
 

@@ -91,24 +91,31 @@ scanner = ReadOnlyScanner(
 )
 crypto_market_data = CryptoMarketDataClient(settings)
 crypto_strategy = CryptoRollingMomentumStrategy(
-    fast_window=settings.fast_window,
-    slow_window=settings.slow_window,
-    min_momentum_pct=settings.min_momentum_pct,
-    min_vwap_edge_pct=settings.min_vwap_edge_pct,
+    fast_window=settings.crypto_fast_window,
+    slow_window=settings.crypto_slow_window,
+    min_momentum_pct=settings.crypto_min_momentum_pct,
+    min_vwap_edge_pct=settings.crypto_min_vwap_edge_pct,
     stop_pct=settings.crypto_stop_pct,
     target_pct=settings.crypto_target_pct,
     entry_start=settings.entry_start,
     entry_cutoff=settings.entry_cutoff,
     confirmation_symbols=settings.crypto_confirmation_symbols,
     min_confirmations=1,
-    regime_window=settings.regime_window,
+    regime_window=settings.crypto_regime_window,
     regime_min_confirmations=1,
-    regime_min_return_pct=settings.regime_min_return_pct,
-    max_vwap_extension_pct=settings.max_vwap_extension_pct,
-    volatility_stop_enabled=settings.volatility_stop_enabled,
-    volatility_stop_multiplier=settings.volatility_stop_multiplier,
-    volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
-    max_dynamic_stop_pct=settings.max_dynamic_stop_pct,
+    regime_min_return_pct=settings.crypto_regime_min_return_pct,
+    max_vwap_extension_pct=settings.crypto_max_vwap_extension_pct,
+    volatility_stop_enabled=settings.crypto_volatility_stop_enabled,
+    volatility_stop_multiplier=settings.crypto_volatility_stop_multiplier,
+    volatility_stop_lookback_bars=settings.crypto_volatility_lookback_bars,
+    max_dynamic_stop_pct=settings.crypto_max_dynamic_stop_pct,
+    strategy_version_id=settings.crypto_strategy_version_id,
+    model_version=settings.crypto_model_version,
+    calibration_version=settings.crypto_calibration_version,
+    calibration_promoted=settings.crypto_calibration_promoted,
+    regime_version=settings.crypto_regime_version,
+    execution_adapter_version=settings.crypto_execution_adapter_version,
+    feature_volatility_lookback=settings.crypto_volatility_lookback_bars,
 )
 crypto_universe = CryptoUniverse(
     settings, client, crypto_market_data, runtime_state
@@ -681,6 +688,9 @@ async def crypto_monitor_loop():
                     flush=True,
                 )
             except Exception as exc:
+                runtime_state.crypto_scanner_healthy = False
+                runtime_state.crypto_execution_healthy = False
+                runtime_state.crypto_last_error = f"{type(exc).__name__}: {exc}"
                 runtime_state.crypto_last_decision = (
                     f"crypto lane error: {type(exc).__name__}: {exc}"
                 )
@@ -886,6 +896,32 @@ async def lifespan(app: FastAPI):
         strategy_version_id=settings.strategy_version_id,
         execution_authorized=settings.execution_authorized,
     )
+    if settings.crypto_lane_enabled:
+        runtime_state.record_event(
+            kind="crypto_runtime",
+            action="startup",
+            message=(
+                "24/7 crypto lane online; "
+                + ("live entry flag enabled" if settings.crypto_execution_enabled else "live entries gated")
+            ),
+            reason=(
+                f"strategy={settings.crypto_strategy_version_id}; "
+                f"model={settings.crypto_model_version}; "
+                f"calibration={settings.crypto_calibration_version}; "
+                f"regime={settings.crypto_regime_version}"
+            ),
+            payload={
+                "market_lane": "crypto",
+                "strategy_family": settings.crypto_strategy_family,
+                "strategy_version_id": settings.crypto_strategy_version_id,
+                "model_version": settings.crypto_model_version,
+                "calibration_version": settings.crypto_calibration_version,
+                "regime_version": settings.crypto_regime_version,
+                "execution_adapter_version": settings.crypto_execution_adapter_version,
+                "execution_enabled": settings.crypto_execution_enabled,
+                "calibration_promoted": settings.crypto_calibration_promoted,
+            },
+        )
 
     if settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
@@ -970,6 +1006,36 @@ async def health():
             "enabled": settings.crypto_lane_enabled,
             "execution_enabled": settings.crypto_execution_enabled,
             "session_model": "24x7",
+            "market_lane": "crypto",
+            "strategy_family": settings.crypto_strategy_family,
+            "strategy_version_id": settings.crypto_strategy_version_id,
+            "model_version": settings.crypto_model_version,
+            "calibration_version": settings.crypto_calibration_version,
+            "regime_version": settings.crypto_regime_version,
+            "execution_adapter_version": settings.crypto_execution_adapter_version,
+            "calibration_promoted": settings.crypto_calibration_promoted,
+            "graen_promotion": runtime_state.crypto_graen_promotion,
+            "scanner_healthy": runtime_state.crypto_scanner_healthy,
+            "execution_healthy": runtime_state.crypto_execution_healthy,
+            "last_market_data_at": runtime_state.crypto_last_market_data_at,
+            "last_scan_at": runtime_state.crypto_last_scan_at,
+            "symbols_scanned": runtime_state.crypto_candidates_generated,
+            "candidates_generated": runtime_state.crypto_candidates_generated,
+            "qualified_candidates": runtime_state.crypto_qualified_candidates,
+            "rejection_counts": runtime_state.crypto_rejection_counts,
+            "active_positions": runtime_state.crypto_active_positions,
+            "aggregate_exposure_utilization_pct": (
+                round(
+                    float(Decimal(runtime_state.crypto_aggregate_exposure)
+                          / settings.crypto_max_total_position_notional) * 100.0,
+                    3,
+                )
+                if settings.crypto_max_total_position_notional > 0 else None
+            ),
+            "forward_evidence": runtime_state.crypto_forward_evidence_state,
+            "latest_replay": runtime_state.crypto_replay_state,
+            "breaker_state": runtime_state.crypto_breaker_state,
+            "protective_order_status": runtime_state.crypto_protective_status,
             "universe_source": runtime_state.crypto_universe_source,
             "active_count": len(runtime_state.crypto_universe_active_symbols),
             "candidate_count": runtime_state.crypto_universe_candidate_count,
@@ -1077,6 +1143,50 @@ async def status(authorization: str | None = Header(default=None)):
         },
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
+        "crypto": {
+            "enabled": settings.crypto_lane_enabled,
+            "execution_enabled": settings.crypto_execution_enabled,
+            "session_model": "24x7",
+            "market_lane": "crypto",
+            "strategy_family": settings.crypto_strategy_family,
+            "strategy_version_id": settings.crypto_strategy_version_id,
+            "model_version": settings.crypto_model_version,
+            "calibration_version": settings.crypto_calibration_version,
+            "regime_version": settings.crypto_regime_version,
+            "execution_adapter_version": settings.crypto_execution_adapter_version,
+            "calibration_promoted": settings.crypto_calibration_promoted,
+            "graen_promotion": runtime_state.crypto_graen_promotion,
+            "scanner_healthy": runtime_state.crypto_scanner_healthy,
+            "execution_healthy": runtime_state.crypto_execution_healthy,
+            "universe": {
+                "source": runtime_state.crypto_universe_source,
+                "active_symbols": runtime_state.crypto_universe_active_symbols,
+                "candidate_count": runtime_state.crypto_universe_candidate_count,
+                "eligible_count": runtime_state.crypto_universe_eligible_count,
+                "updated_at": runtime_state.crypto_universe_updated_at,
+                "error": runtime_state.crypto_universe_error,
+            },
+            "scan": {
+                "last_scan_at": runtime_state.crypto_last_scan_at,
+                "last_market_data_at": runtime_state.crypto_last_market_data_at,
+                "symbols_scanned": runtime_state.crypto_candidates_generated,
+                "candidates_generated": runtime_state.crypto_candidates_generated,
+                "qualified_candidates": runtime_state.crypto_qualified_candidates,
+                "rejection_counts": runtime_state.crypto_rejection_counts,
+            },
+            "positions": {
+                "active_count": runtime_state.crypto_active_positions,
+                "aggregate_exposure": runtime_state.crypto_aggregate_exposure,
+                "max_aggregate_exposure": str(settings.crypto_max_total_position_notional),
+            },
+            "recent_orders": runtime_state.crypto_recent_orders,
+            "last_order": runtime_state.crypto_last_order,
+            "protective_order_status": runtime_state.crypto_protective_status,
+            "forward_evidence": runtime_state.crypto_forward_evidence_state,
+            "latest_replay": runtime_state.crypto_replay_state,
+            "breaker_state": runtime_state.crypto_breaker_state,
+            "last_error": runtime_state.crypto_last_error,
+        },
         "runtime": {
             "started_at": runtime_state.started_at,
             "last_poll_at": runtime_state.last_poll_at,

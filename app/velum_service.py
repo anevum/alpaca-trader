@@ -17,6 +17,7 @@ from .market_data import MarketDataClient
 from .replay import ReplayEngine
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
 from .velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
+from .crypto_velum import run_crypto_challengers
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -90,6 +91,20 @@ def _crypto_settings(settings: Settings) -> Settings:
             "scan_symbols_raw": symbols,
             "confirmation_symbols_raw": confirmations,
             "dynamic_universe_enabled": False,
+            "fast_window": settings.crypto_fast_window,
+            "slow_window": settings.crypto_slow_window,
+            "min_momentum_pct": settings.crypto_min_momentum_pct,
+            "min_vwap_edge_pct": settings.crypto_min_vwap_edge_pct,
+            "stop_pct": settings.crypto_stop_pct,
+            "target_pct": settings.crypto_target_pct,
+            "regime_window": settings.crypto_regime_window,
+            "regime_min_return_pct": settings.crypto_regime_min_return_pct,
+            "max_vwap_extension_pct": settings.crypto_max_vwap_extension_pct,
+            "volatility_stop_enabled": settings.crypto_volatility_stop_enabled,
+            "volatility_stop_multiplier": settings.crypto_volatility_stop_multiplier,
+            "volatility_stop_lookback_bars": settings.crypto_volatility_lookback_bars,
+            "max_dynamic_stop_pct": settings.crypto_max_dynamic_stop_pct,
+            "max_hold_minutes": settings.crypto_max_hold_minutes,
         }
     )
 
@@ -117,6 +132,13 @@ def _build_crypto_strategy(settings: Settings) -> CryptoRollingMomentumStrategy:
         volatility_stop_multiplier=settings.volatility_stop_multiplier,
         volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
         max_dynamic_stop_pct=settings.max_dynamic_stop_pct,
+        strategy_version_id=settings.crypto_strategy_version_id,
+        model_version=settings.crypto_model_version,
+        calibration_version=settings.crypto_calibration_version,
+        calibration_promoted=settings.crypto_calibration_promoted,
+        regime_version=settings.crypto_regime_version,
+        execution_adapter_version=settings.crypto_execution_adapter_version,
+        feature_volatility_lookback=settings.crypto_volatility_lookback_bars,
     )
 
 
@@ -365,6 +387,14 @@ class VelumRuntime:
             paths=self.bootstrap_paths,
             seed=int(end.strftime("%Y%m%d%H")),
         )
+        challenger_experiment = run_crypto_challengers(
+            settings=crypto_settings,
+            bars_by_symbol=bars,
+            initial_equity=self.initial_equity,
+            spread_bps=self.crypto_spread_bps,
+            slippage_bps=self.crypto_slippage_bps,
+            equity_settings=self.settings,
+        )
         payload = self._payload(
             asset_class="crypto",
             start=start,
@@ -378,8 +408,14 @@ class VelumRuntime:
                 "crypto_location": crypto_settings.crypto_location,
                 "symbols": list(crypto_settings.scan_symbols),
                 "confirmation_symbols": list(crypto_settings.confirmation_symbols),
+                "strategy_version_id": crypto_settings.crypto_strategy_version_id,
+                "model_version": crypto_settings.crypto_model_version,
+                "calibration_version": crypto_settings.crypto_calibration_version,
+                "regime_version": crypto_settings.crypto_regime_version,
+                "execution_adapter_version": crypto_settings.crypto_execution_adapter_version,
             },
         )
+        payload["challenger_experiment"] = challenger_experiment
         await self._emit(
             "velum_replay_result",
             payload,
