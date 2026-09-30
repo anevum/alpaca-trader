@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 import re
+
+import httpx
 from typing import Any, Awaitable, Callable
 
 UTC = timezone.utc
@@ -183,6 +186,8 @@ class IrenWorkEngine:
         self.last_error: str | None = None
         self.last_command_at: str | None = None
         self.last_job_at: str | None = None
+        self.executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip()
+        self.executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
 
     async def snapshot(self) -> dict[str, Any]:
         return await self.gateway("iren_work_snapshot")
@@ -225,34 +230,96 @@ class IrenWorkEngine:
                 self.last_error = type(exc).__name__
                 await self.gateway("iren_command_complete", command_id=command_id, status="FAILED", response={"error": type(exc).__name__})
 
+    async def _route_job(self, job: dict[str, Any]) -> None:
+        job_id = _text(job.get("job_id"))
+        job_type = _text(job.get("job_type")) or "AGENT_WORK"
+        routable = {"AGENT_WORK", "GRAEN_RESEARCH_PROBLEM", "SOFTWARE_BUILD"}
+        if job_type not in routable:
+            await self.gateway(
+                "iren_job_update",
+                job_id=job_id,
+                status="BLOCKED",
+                error={"reason": "unsupported_job_type", "job_type": job_type},
+            )
+            return
+
+        if not self.executor_url or len(self.executor_token) < 32:
+            await self.gateway(
+                "iren_job_update",
+                job_id=job_id,
+                status="WAITING",
+                result={
+                    "reason": "execution_router_not_configured",
+                    "handoff_ready": True,
+                    "owner_system": job.get("owner_system"),
+                },
+            )
+            return
+
+        payload = {
+            "job_id": job_id,
+            "objective_key": job.get("objective_key"),
+            "title": job.get("title") or job_type,
+            "instructions": job.get("instructions") or "",
+            "owner_system": job.get("owner_system") or "IREN",
+            "job_type": job_type,
+            "protected_action": bool(job.get("protected_action")),
+            "requires_human": bool(job.get("requires_human")),
+            "metadata": job.get("metadata") or {},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(
+                    self.executor_url,
+                    headers={"x-anevum-scheduler-token": self.executor_token},
+                    json=payload,
+                )
+                response.raise_for_status()
+                routed = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            await self.gateway(
+                "iren_job_update",
+                job_id=job_id,
+                status="WAITING",
+                result={
+                    "reason": "execution_router_unavailable",
+                    "error_type": type(exc).__name__,
+                    "handoff_ready": True,
+                },
+            )
+            return
+
+        status = str(routed.get("status") or "WAITING").upper()
+        if status not in {"WAITING", "BLOCKED", "NEEDS_APPROVAL", "SUCCEEDED", "FAILED"}:
+            status = "BLOCKED"
+            routed = {**routed, "reason": "invalid_executor_status"}
+
+        await self.gateway(
+            "iren_job_update",
+            job_id=job_id,
+            status=status,
+            result={
+                "execution_router": routed,
+                "routed_at": datetime.now(UTC).isoformat(),
+            },
+            error={} if status != "FAILED" else {"reason": routed.get("reason") or "executor_failed"},
+        )
+
     async def _execute_jobs(self) -> None:
         claimed = await self.gateway("iren_jobs_claim", owner="iren-work-engine", limit=3)
         for job in claimed.get("jobs") or []:
             job_id = _text(job.get("job_id"))
-            job_type = _text(job.get("job_type")) or "AGENT_WORK"
             try:
-                if job_type in {"AGENT_WORK", "GRAEN_RESEARCH_PROBLEM", "SOFTWARE_BUILD"}:
-                    await self.gateway(
-                        "iren_job_update",
-                        job_id=job_id,
-                        status="WAITING",
-                        result={
-                            "reason": "external_or_subsystem_agent_required",
-                            "handoff_ready": True,
-                            "owner_system": job.get("owner_system"),
-                        },
-                    )
-                else:
-                    await self.gateway(
-                        "iren_job_update",
-                        job_id=job_id,
-                        status="BLOCKED",
-                        error={"reason": "unsupported_job_type", "job_type": job_type},
-                    )
+                await self._route_job(job)
                 self.last_job_at = datetime.now(UTC).isoformat()
             except Exception as exc:
                 self.last_error = type(exc).__name__
-                await self.gateway("iren_job_update", job_id=job_id, status="FAILED", error={"type": type(exc).__name__, "message": str(exc)[:500]})
+                await self.gateway(
+                    "iren_job_update",
+                    job_id=job_id,
+                    status="FAILED",
+                    error={"type": type(exc).__name__, "message": str(exc)[:500]},
+                )
 
     async def tick(self) -> None:
         await self._process_commands()
