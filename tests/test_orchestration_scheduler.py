@@ -198,3 +198,39 @@ def test_failure_classification_bounds_retry_eligibility():
     )
     assert SchedulerRuntime._classify_failure(auth) == "authentication"
     assert SchedulerRuntime._classify_failure(unavailable) == "dependency_unavailable"
+
+
+def test_historical_missed_job_is_durable_but_does_not_alert(monkeypatch):
+    runtime = runtime_for_process_test()
+    w = workflow(
+        workflow_id="rhen.preflight",
+        catchup_policy="skip_after_window",
+        stale_after_minutes=45,
+    )
+    scheduled = datetime(2026, 9, 29, 12, 45, tzinfo=UTC)
+    item = ScheduledItem(w, scheduled, "2026-09-29", {"session": "2026-09-29"})
+    monkeypatch.setenv("SCHEDULER_HISTORICAL_ALERT_MINUTES", "120")
+    asyncio.run(runtime._process(item, scheduled + timedelta(hours=6)))
+
+    assert runtime._notify.await_count == 0
+    assert runtime.ledger.completions[0][1]["status"] == "MISSED"
+    assert (
+        runtime.ledger.completions[0][1]["slack_status"]
+        == "suppressed:historical_reconciliation"
+    )
+
+
+def test_recent_missed_job_still_alerts(monkeypatch):
+    runtime = runtime_for_process_test()
+    w = workflow(
+        workflow_id="rhen.preflight",
+        catchup_policy="skip_after_window",
+        stale_after_minutes=45,
+    )
+    scheduled = datetime(2026, 9, 29, 12, 45, tzinfo=UTC)
+    item = ScheduledItem(w, scheduled, "2026-09-29", {"session": "2026-09-29"})
+    monkeypatch.setenv("SCHEDULER_HISTORICAL_ALERT_MINUTES", "120")
+    asyncio.run(runtime._process(item, scheduled + timedelta(minutes=60)))
+
+    assert runtime._notify.await_count == 1
+    assert runtime.ledger.completions[0][1]["status"] == "MISSED"
