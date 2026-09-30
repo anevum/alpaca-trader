@@ -230,6 +230,11 @@ Deno.serve(async (req) => {
           cross join bounds b
           where c.observed_at >= b.starts_at
             and c.observed_at < b.ends_at
+            and not (
+              coalesce(c.market_lane,'')='crypto'
+              or c.strategy_version_id like 'CRYPTO-%'
+              or c.features->>'market'='crypto'
+            )
         ),
         cycle_rows as materialized (
           select distinct on (c.scan_cycle_id)
