@@ -48,7 +48,7 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
-async function rpc(name: "claim" | "complete", payload: Record<string, unknown>) {
+async function rpc(name: "claim" | "complete", payload: any) {
   if (name === "claim") {
     const required = [
       "job_key",
@@ -67,14 +67,14 @@ async function rpc(name: "claim" | "complete", payload: Record<string, unknown>)
       throw new Error("invalid_claim_shape:" + missing.join(","));
     }
     const rows = await sql<{ result: Record<string, unknown> }[]>`
-      select private.anevum_scheduler_claim(${sql.json(payload as any)}::jsonb) as result
+      select private.anevum_scheduler_claim(${sql.json(payload)}::jsonb) as result
     `;
     if (!rows[0]?.result) throw new Error("scheduler_rpc_empty");
     return rows[0].result;
   }
 
   const rows = await sql<{ result: Record<string, unknown> }[]>`
-    select private.anevum_scheduler_complete(${sql.json(payload as any)}::jsonb) as result
+    select private.anevum_scheduler_complete(${sql.json(payload)}::jsonb) as result
   `;
   if (!rows[0]?.result) throw new Error("scheduler_rpc_empty");
   return rows[0].result;
