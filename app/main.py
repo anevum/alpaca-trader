@@ -1258,15 +1258,6 @@ async def scheduler_session_close(
     session = await scheduler_session_detail(request.session)
     account = await refresh_account_state()
     reconciliation = await reconcile_broker_state(account, force=True)
-    if not reconciliation or reconciliation.get("safe_to_enter") is not True:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "session_close_reconciliation_not_safe",
-                "reconciliation": reconciliation,
-            },
-        )
-
     post_event = await research_reports.generate_post_event_evidence(request.session)
     report = await research_reports.generate_daily(request.session)
     return {
