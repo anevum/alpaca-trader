@@ -320,3 +320,46 @@ def test_crypto_evidence_reader_uses_fast_endpoint_parameter():
 
     assert result == {"ok": True, "candidates": []}
     assert calls == [{"crypto_evidence_session": "2026-09-29"}]
+
+
+def test_crypto_forward_tick_executes_with_utc_timestamp():
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    class State:
+        def __init__(self):
+            self.crypto_forward_evidence_state = {}
+            self.events = []
+
+        def record_event(self, **event):
+            self.events.append(event)
+
+    class Runner:
+        def __init__(self):
+            self.calls = []
+
+        async def run_recent(self, now):
+            self.calls.append(now)
+            return SimpleNamespace(errors=0)
+
+    state = State()
+    event_sink = SimpleNamespace(enabled=True)
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(crypto_lane_enabled=True),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        state,
+        event_sink,
+    )
+    runner = Runner()
+    scheduler.crypto_forward_runner = runner
+    now = datetime(2026, 9, 30, 1, 0, tzinfo=timezone.utc)
+
+    asyncio.run(scheduler._crypto_forward_tick(now))
+
+    assert runner.calls == [now]
+    assert scheduler.last_crypto_forward_at == now
+    assert state.events == []
