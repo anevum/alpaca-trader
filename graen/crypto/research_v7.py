@@ -748,6 +748,207 @@ def _verify_uninspected_corpus(
             raise ValueError(f"v7 corpus overlaps previously inspected range: {label}")
 
 
+def verify_v7_corpus_contract(
+    *,
+    development_start: datetime,
+    validation_start: datetime,
+    holdout_start: datetime,
+    holdout_end: datetime,
+    corpus_provenance_verified: bool,
+    previously_inspected_ranges: Sequence[Mapping[str, Any]] = (),
+) -> tuple[datetime, datetime, datetime, datetime]:
+    values = _validate_ranges(
+        development_start,
+        validation_start,
+        holdout_start,
+        holdout_end,
+    )
+    _verify_uninspected_corpus(
+        start=values[0],
+        end=values[3],
+        corpus_provenance_verified=corpus_provenance_verified,
+        previously_inspected_ranges=previously_inspected_ranges,
+    )
+    return values
+
+
+def evaluate_v7_development(
+    *,
+    bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    start = _aware(start, "start")
+    end = _aware(end, "end")
+    series = build_series(bars_by_symbol, start=start, end=end)
+    specs = candidate_specs()
+    results: dict[str, dict[str, Any]] = {}
+    gates: list[dict[str, Any]] = []
+    survivors: list[str] = []
+    for index, spec in enumerate(specs):
+        result = evaluate_candidate(
+            series,
+            spec,
+            start=start,
+            end=end,
+            scenario="high",
+            seed=78000 + index * 10,
+        )
+        results[spec.candidate_id] = result
+        passed, reasons = _development_gate(result)
+        gates.append({
+            "candidate_id": spec.candidate_id,
+            "family": spec.family,
+            "passed": passed,
+            "reasons": reasons,
+        })
+        if passed:
+            survivors.append(spec.candidate_id)
+    return {
+        "stage": "DEVELOPMENT",
+        "opened": True,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "results": results,
+        "gates": gates,
+        "survivors": survivors,
+    }
+
+
+def evaluate_v7_validation(
+    *,
+    bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    development_results: Mapping[str, Mapping[str, Any]],
+    survivor_ids: Sequence[str],
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    start = _aware(start, "start")
+    end = _aware(end, "end")
+    survivor_set = set(survivor_ids)
+    specs = [spec for spec in candidate_specs() if spec.candidate_id in survivor_set]
+    if not specs:
+        return {
+            "stage": "VALIDATION",
+            "opened": False,
+            "reason": "no development survivor",
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "results": {},
+            "gates": [],
+            "survivors": [],
+            "selected_candidate_id": None,
+            "multiplicity": benjamini_yekutieli([], alpha=VALIDATION_ALPHA).to_dict(),
+        }
+
+    series = build_series(bars_by_symbol, start=start, end=end)
+    results: dict[str, dict[str, Any]] = {}
+    p_values: list[float] = []
+    for index, spec in enumerate(specs):
+        result = evaluate_candidate(
+            series,
+            spec,
+            start=start,
+            end=end,
+            scenario="high",
+            seed=79000 + index * 10,
+        )
+        results[spec.candidate_id] = result
+        p_values.append(float(result["primary"]["dependence_adjusted_null"]["p_value"]))
+
+    multiplicity = benjamini_yekutieli(p_values, alpha=VALIDATION_ALPHA)
+    rejected = set(multiplicity.rejected_indices)
+    gates: list[dict[str, Any]] = []
+    survivors: list[dict[str, Any]] = []
+    for position, spec in enumerate(specs):
+        development = development_results[spec.candidate_id]
+        passed, reasons = _validation_gate(
+            spec,
+            development,
+            results[spec.candidate_id],
+            multiplicity_rejected=position in rejected,
+        )
+        primary = results[spec.candidate_id]["primary"]
+        score = float(primary["expectancy_per_trade"]) * sqrt(
+            max(int(primary["trade_count"]), 1)
+        )
+        row = {
+            "candidate_id": spec.candidate_id,
+            "family": spec.family,
+            "passed": passed,
+            "reasons": reasons,
+            "multiplicity_rejected": position in rejected,
+            "selection_score": score,
+        }
+        gates.append(row)
+        if passed:
+            survivors.append(row)
+
+    selected = (
+        max(
+            survivors,
+            key=lambda row: (
+                float(row["selection_score"]),
+                str(row["candidate_id"]),
+            ),
+        )
+        if survivors
+        else None
+    )
+    return {
+        "stage": "VALIDATION",
+        "opened": True,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "results": results,
+        "gates": gates,
+        "survivors": [row["candidate_id"] for row in survivors],
+        "selected_candidate_id": selected["candidate_id"] if selected else None,
+        "selection_rule": "max_validation_expectancy_times_sqrt_trade_count",
+        "multiplicity": multiplicity.to_dict(),
+    }
+
+
+def evaluate_v7_holdout(
+    *,
+    bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    candidate_id: str,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    start = _aware(start, "start")
+    end = _aware(end, "end")
+    spec = next(
+        (row for row in candidate_specs() if row.candidate_id == candidate_id),
+        None,
+    )
+    if spec is None:
+        raise ValueError(f"unknown v7 candidate: {candidate_id}")
+    series = build_series(bars_by_symbol, start=start, end=end)
+    scenarios = {
+        scenario: evaluate_candidate(
+            series,
+            spec,
+            start=start,
+            end=end,
+            scenario=scenario,
+            seed=80000 + offset * 20,
+        )
+        for offset, scenario in enumerate(("low", "base", "high"))
+    }
+    passed, reasons = _holdout_gate(spec, scenarios)
+    return {
+        "stage": "HOLDOUT",
+        "opened": True,
+        "candidate_id": candidate_id,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "scenarios": scenarios,
+        "passed": passed,
+        "reasons": reasons,
+    }
+
+
 def run_crypto_research_v7(
     *,
     bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],

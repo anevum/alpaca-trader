@@ -44,44 +44,50 @@ class FakeGateway:
         return {"ok": True}
 
 
-def test_executor_persists_batch_and_waits_when_no_survivor(monkeypatch):
-    async def fake_fetch():
-        return {}
+def test_v7_development_rejection_never_fetches_validation_or_holdout(monkeypatch):
+    fetches = []
 
-    def fake_research(**kwargs):
+    async def fake_fetch(symbols, *, start, end, warmup_hours=169):
+        fetches.append((start, end, warmup_hours))
+        return {symbol: [] for symbol in symbols}
+
+    def fake_development(**kwargs):
         return {
-            "methodology_version": "graen-crypto-native-v7",
-            "research_batch_id": "test-batch",
-            "status": "NO_VALIDATION_SURVIVOR",
-            "decision": "CONTINUE_RESEARCH",
-            "candidate_count": 13,
-            "candidate_family_count": 3,
-            "validation_survivors": [],
-            "selected_candidate": None,
-            "holdout": {"opened": False},
-            "next_action": "DESIGN_NEXT_FROZEN_RESEARCH_BATCH",
-            "model_invoked": False,
-            "execution_authority": False,
-            "production_state_changed": False,
+            "stage": "DEVELOPMENT",
+            "opened": True,
+            "results": {},
+            "gates": [],
+            "survivors": [],
         }
 
     async def scenario():
         runtime = service.GraenResearchExecutor()
         runtime.gateway = FakeGateway()
-        runtime._fetch_corpus = fake_fetch
+        runtime._fetch_stage = fake_fetch
         runtime.callback_base_url = ""
         runtime.callback_token = ""
-        monkeypatch.setattr(service, "run_crypto_research_v7", fake_research)
-        result = await runtime.process_once()
+        monkeypatch.setattr(service, "evaluate_v7_development", fake_development)
+        result = await runtime._execute_v7_staged(
+            {
+                "problem_id": "11111111-1111-1111-1111-111111111111",
+                "linked_iren_job_id": None,
+            },
+            {"run_id": "22222222-2222-2222-2222-222222222222"},
+        )
         assert result["state"] == "RESEARCH_BATCH_COMPLETE"
+        assert result["status"] == "NO_DEVELOPMENT_SURVIVOR"
         assert result["decision"] == "CONTINUE_RESEARCH"
-        assert result["model_invoked"] is False
-        assert runtime.gateway.artifacts[0]["artifact_type"] == "CRYPTO_RESEARCH_BATCH_RESULT"
-        assert runtime.gateway.completions[0]["status"] == "WAITING"
-        assert runtime.active_problem_id is None
+        assert len(fetches) == 1
+        assert fetches[0][0] == service.DEVELOPMENT_START
+        assert fetches[0][1] == service.VALIDATION_START
+        assert runtime.gateway.completions[-1]["status"] == "WAITING"
+        artifact_types = [row["artifact_type"] for row in runtime.gateway.artifacts]
+        assert "CRYPTO_V7_BATCH_SPECIFICATION" in artifact_types
+        assert "CRYPTO_V7_DEVELOPMENT_RESULT" in artifact_types
+        assert "CRYPTO_V7_VALIDATION_RESULT" not in artifact_types
+        assert "CRYPTO_V7_HOLDOUT_RESULT" not in artifact_types
 
     asyncio.run(scenario())
-
 
 def test_executor_health_never_has_trading_authority():
     runtime = service.GraenResearchExecutor()

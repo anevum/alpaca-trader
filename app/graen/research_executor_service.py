@@ -15,7 +15,12 @@ from app.graen.service import GraenGateway
 from graen.crypto.research_v7 import (
     CONTEXT_UNIVERSE,
     METHODOLOGY_VERSION as V7_METHODOLOGY_VERSION,
-    run_crypto_research_v7,
+    RESEARCH_BATCH_ID as V7_RESEARCH_BATCH_ID,
+    candidate_specs as v7_candidate_specs,
+    verify_v7_corpus_contract,
+    evaluate_v7_development,
+    evaluate_v7_validation,
+    evaluate_v7_holdout,
 )
 from graen.crypto.leadlag_r2 import (
     UNIVERSE as LEADLAG_UNIVERSE,
@@ -376,6 +381,302 @@ class GraenResearchExecutor:
         self.last_error = None
         await self._heartbeat()
         return {"claimed": True, "problem_id": problem_id, **summary}
+
+    async def _execute_v7_staged(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        self.active_methodology_version = V7_METHODOLOGY_VERSION
+
+        verify_v7_corpus_contract(
+            development_start=DEVELOPMENT_START,
+            validation_start=VALIDATION_START,
+            holdout_start=HOLDOUT_START,
+            holdout_end=HOLDOUT_END,
+            corpus_provenance_verified=True,
+            previously_inspected_ranges=PREVIOUSLY_INSPECTED_RANGES,
+        )
+
+        prespec = {
+            "schema_version": "graen.crypto_v7.batch_specification.v2",
+            "methodology_version": V7_METHODOLOGY_VERSION,
+            "research_batch_id": V7_RESEARCH_BATCH_ID,
+            "candidate_registry": [row.to_dict() for row in v7_candidate_specs()],
+            "candidate_count": len(v7_candidate_specs()),
+            "stage_order": ["DEVELOPMENT", "VALIDATION", "HOLDOUT"],
+            "development": [DEVELOPMENT_START.isoformat(), VALIDATION_START.isoformat()],
+            "validation": [VALIDATION_START.isoformat(), HOLDOUT_START.isoformat()],
+            "holdout": [HOLDOUT_START.isoformat(), HOLDOUT_END.isoformat()],
+            "validation_fetch_requires_development_survivor": True,
+            "holdout_fetch_requires_validation_survivor": True,
+            "corpus_provenance_verified": True,
+            "previously_inspected_ranges": list(PREVIOUSLY_INSPECTED_RANGES),
+            "source_commit": _source_commit(),
+            "deployment_id": _deployment_id(),
+            "problem_id": problem_id,
+            "graen_run_id": run_id,
+            "frozen_before_corpus_access": True,
+            "authority": {
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "risk_or_sizing_authority": False,
+                "production_promotion_authority": False,
+            },
+        }
+        prespec_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V7_BATCH_SPECIFICATION",
+            methodology_version=V7_METHODOLOGY_VERSION,
+            content=prespec,
+        )
+
+        development_bars = await self._fetch_stage(
+            CONTEXT_UNIVERSE,
+            start=DEVELOPMENT_START,
+            end=VALIDATION_START,
+            warmup_hours=8,
+        )
+        development = evaluate_v7_development(
+            bars_by_symbol=development_bars,
+            start=DEVELOPMENT_START,
+            end=VALIDATION_START,
+        )
+        development_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V7_DEVELOPMENT_RESULT",
+            methodology_version=V7_METHODOLOGY_VERSION,
+            content={
+                **development,
+                "bar_counts": {
+                    symbol: len(rows) for symbol, rows in development_bars.items()
+                },
+                "source_commit": _source_commit(),
+            },
+        )
+
+        result: dict[str, Any] = {
+            "methodology_version": V7_METHODOLOGY_VERSION,
+            "research_batch_id": V7_RESEARCH_BATCH_ID,
+            "problem_id": problem_id,
+            "graen_run_id": run_id,
+            "source_commit": _source_commit(),
+            "deployment_id": _deployment_id(),
+            "research_only": True,
+            "model_invoked": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "risk_or_sizing_authority": False,
+            "production_promotion_authority": False,
+            "production_state_changed": False,
+            "prespec_artifact_id": (
+                (prespec_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(prespec_artifact.get("artifact"), Mapping) else None
+            ),
+            "development_artifact_id": (
+                (development_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(development_artifact.get("artifact"), Mapping) else None
+            ),
+            "development": development,
+            "validation": {"opened": False},
+            "holdout": {"opened": False},
+        }
+
+        if not development.get("survivors"):
+            result.update({
+                "status": "NO_DEVELOPMENT_SURVIVOR",
+                "decision": "CONTINUE_RESEARCH",
+                "next_action": "DESIGN_NEXT_FROZEN_RESEARCH_BATCH",
+            })
+            final_artifact = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type="CRYPTO_RESEARCH_BATCH_RESULT",
+                methodology_version=V7_METHODOLOGY_VERSION,
+                content=result,
+            )
+            summary = {
+                "state": "RESEARCH_BATCH_COMPLETE",
+                "decision": result["decision"],
+                "status": result["status"],
+                "methodology_version": V7_METHODOLOGY_VERSION,
+                "research_batch_id": V7_RESEARCH_BATCH_ID,
+                "candidate_count": len(v7_candidate_specs()),
+                "development_survivors": [],
+                "validation_opened": False,
+                "holdout_opened": False,
+                "artifact_id": (
+                    (final_artifact.get("artifact") or {}).get("artifact_id")
+                    if isinstance(final_artifact.get("artifact"), Mapping) else None
+                ),
+                "content_hash": final_artifact.get("content_hash"),
+                "model_invoked": False,
+                "execution_authority": False,
+                "production_state_changed": False,
+                "next_action": result["next_action"],
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+            )
+
+        validation_bars = await self._fetch_stage(
+            CONTEXT_UNIVERSE,
+            start=VALIDATION_START,
+            end=HOLDOUT_START,
+            warmup_hours=8,
+        )
+        validation = evaluate_v7_validation(
+            bars_by_symbol=validation_bars,
+            development_results=development["results"],
+            survivor_ids=development["survivors"],
+            start=VALIDATION_START,
+            end=HOLDOUT_START,
+        )
+        validation_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V7_VALIDATION_RESULT",
+            methodology_version=V7_METHODOLOGY_VERSION,
+            content={
+                **validation,
+                "bar_counts": {
+                    symbol: len(rows) for symbol, rows in validation_bars.items()
+                },
+                "source_commit": _source_commit(),
+            },
+        )
+        result["validation"] = {
+            **validation,
+            "artifact_id": (
+                (validation_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(validation_artifact.get("artifact"), Mapping) else None
+            ),
+        }
+
+        selected = validation.get("selected_candidate_id")
+        if not selected:
+            result.update({
+                "status": "NO_VALIDATION_SURVIVOR",
+                "decision": "CONTINUE_RESEARCH",
+                "next_action": "DESIGN_NEXT_FROZEN_RESEARCH_BATCH",
+            })
+            final_artifact = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type="CRYPTO_RESEARCH_BATCH_RESULT",
+                methodology_version=V7_METHODOLOGY_VERSION,
+                content=result,
+            )
+            summary = {
+                "state": "RESEARCH_BATCH_COMPLETE",
+                "decision": result["decision"],
+                "status": result["status"],
+                "methodology_version": V7_METHODOLOGY_VERSION,
+                "research_batch_id": V7_RESEARCH_BATCH_ID,
+                "candidate_count": len(v7_candidate_specs()),
+                "development_survivors": development["survivors"],
+                "validation_survivors": validation.get("survivors") or [],
+                "selected_candidate": None,
+                "holdout_opened": False,
+                "artifact_id": (
+                    (final_artifact.get("artifact") or {}).get("artifact_id")
+                    if isinstance(final_artifact.get("artifact"), Mapping) else None
+                ),
+                "content_hash": final_artifact.get("content_hash"),
+                "model_invoked": False,
+                "execution_authority": False,
+                "production_state_changed": False,
+                "next_action": result["next_action"],
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+            )
+
+        holdout_bars = await self._fetch_stage(
+            CONTEXT_UNIVERSE,
+            start=HOLDOUT_START,
+            end=HOLDOUT_END,
+            warmup_hours=8,
+        )
+        holdout = evaluate_v7_holdout(
+            bars_by_symbol=holdout_bars,
+            candidate_id=str(selected),
+            start=HOLDOUT_START,
+            end=HOLDOUT_END,
+        )
+        holdout_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V7_HOLDOUT_RESULT",
+            methodology_version=V7_METHODOLOGY_VERSION,
+            content={
+                **holdout,
+                "bar_counts": {
+                    symbol: len(rows) for symbol, rows in holdout_bars.items()
+                },
+                "source_commit": _source_commit(),
+            },
+        )
+        result["holdout"] = {
+            **holdout,
+            "artifact_id": (
+                (holdout_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(holdout_artifact.get("artifact"), Mapping) else None
+            ),
+        }
+        passed = bool(holdout.get("passed"))
+        result.update({
+            "status": "HOLDOUT_PASS" if passed else "HOLDOUT_FAIL",
+            "decision": "PROMOTE_TO_VELUM" if passed else "CONTINUE_RESEARCH",
+            "selected_candidate": str(selected),
+            "next_action": "VELUM_REPLAY" if passed else "DESIGN_NEXT_FROZEN_RESEARCH_BATCH",
+        })
+        final_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_RESEARCH_BATCH_RESULT",
+            methodology_version=V7_METHODOLOGY_VERSION,
+            content=result,
+        )
+        summary = {
+            "state": "CANDIDATE_READY_FOR_VELUM" if passed else "RESEARCH_BATCH_COMPLETE",
+            "decision": result["decision"],
+            "status": result["status"],
+            "methodology_version": V7_METHODOLOGY_VERSION,
+            "research_batch_id": V7_RESEARCH_BATCH_ID,
+            "candidate_count": len(v7_candidate_specs()),
+            "development_survivors": development["survivors"],
+            "validation_survivors": validation.get("survivors") or [],
+            "selected_candidate": str(selected),
+            "holdout_opened": True,
+            "holdout_passed": passed,
+            "artifact_id": (
+                (final_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(final_artifact.get("artifact"), Mapping) else None
+            ),
+            "content_hash": final_artifact.get("content_hash"),
+            "model_invoked": False,
+            "execution_authority": False,
+            "production_state_changed": False,
+            "next_action": result["next_action"],
+        }
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="SUCCEEDED" if passed else "WAITING",
+            summary=summary,
+        )
 
     async def _execute_leadlag_r2(
         self,
@@ -762,88 +1063,7 @@ class GraenResearchExecutor:
         if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
             return await self._execute_leadlag_r2(problem, run)
 
-        bars = await self._fetch_corpus()
-        result = run_crypto_research_v7(
-            bars_by_symbol=bars,
-            development_start=DEVELOPMENT_START,
-            validation_start=VALIDATION_START,
-            holdout_start=HOLDOUT_START,
-            holdout_end=HOLDOUT_END,
-            corpus_provenance_verified=True,
-            previously_inspected_ranges=PREVIOUSLY_INSPECTED_RANGES,
-        )
-        result = {
-            **result,
-            "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
-            "source_commit": _source_commit(),
-            "deployment_id": _deployment_id(),
-            "problem_id": problem_id,
-            "graen_run_id": run_id,
-        }
-
-        artifact = await self.gateway.record_artifact(
-            problem_id=problem_id,
-            run_id=run_id,
-            artifact_type="CRYPTO_RESEARCH_BATCH_RESULT",
-            methodology_version=V7_METHODOLOGY_VERSION,
-            content=result,
-        )
-
-        promote = result.get("decision") == "PROMOTE_TO_VELUM"
-        problem_status = "SUCCEEDED" if promote else "WAITING"
-        summary = {
-            "state": (
-                "CANDIDATE_READY_FOR_VELUM"
-                if promote
-                else "RESEARCH_BATCH_COMPLETE"
-            ),
-            "decision": result.get("decision"),
-            "status": result.get("status"),
-            "methodology_version": V7_METHODOLOGY_VERSION,
-            "research_batch_id": result.get("research_batch_id"),
-            "candidate_count": result.get("candidate_count"),
-            "candidate_family_count": result.get("candidate_family_count"),
-            "validation_survivors": result.get("validation_survivors") or [],
-            "selected_candidate": result.get("selected_candidate"),
-            "holdout_passed": bool((result.get("holdout") or {}).get("passed")),
-            "artifact_id": (
-                (artifact.get("artifact") or {}).get("artifact_id")
-                if isinstance(artifact.get("artifact"), Mapping)
-                else None
-            ),
-            "content_hash": artifact.get("content_hash"),
-            "model_invoked": False,
-            "execution_authority": False,
-            "production_state_changed": False,
-            "next_action": result.get("next_action"),
-        }
-        await self.gateway.complete_research_problem(
-            problem_id=problem_id,
-            run_id=run_id,
-            worker_id=self.worker_id,
-            status=problem_status,
-            result_summary=summary,
-            model_usage={"invoked": False},
-        )
-
-        callback_status = "SUCCEEDED" if promote else "WAITING"
-        callback_delivered = await self._callback_iren(
-            linked_job_id,
-            status=callback_status,
-            result={
-                "graen_problem_id": problem_id,
-                "graen_run_id": run_id,
-                **summary,
-            },
-        )
-        summary["iren_callback_delivered"] = callback_delivered
-        self.active_problem_id = None
-        self.last_completion_at = datetime.now(UTC)
-        self.last_result = summary
-        self.last_error = None
-        await self._heartbeat()
-        print("GRAEN_RESEARCH_BATCH_COMPLETE", summary, flush=True)
-        return {"claimed": True, "problem_id": problem_id, **summary}
+        return await self._execute_v7_staged(problem, run)
 
 
 runtime = GraenResearchExecutor()
