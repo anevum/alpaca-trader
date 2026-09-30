@@ -4,6 +4,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from decimal import Decimal
 import random
+from collections.abc import Mapping
 from typing import Any
 
 from .crypto_layer import CryptoRollingMomentumStrategy
@@ -11,6 +12,34 @@ from .opportunity import correlation_checks, score_opportunity
 from .replay import BPS, ReplayEngine, ReplayPosition, d, fractional_qty, price, stamp
 from .sizing import calculate_entry_notional
 from .strategy import Signal
+
+
+CostInput = Decimal | Mapping[str, Decimal | str | int | float]
+
+
+def _cost_bps(value: CostInput, symbol: str) -> Decimal:
+    if isinstance(value, Mapping):
+        normalized = symbol.upper()
+        raw = value.get(normalized)
+        if raw is None:
+            raw = value.get("*")
+        if raw is None:
+            raise ValueError(f"missing replay cost for symbol: {normalized}")
+        result = d(raw)
+    else:
+        result = d(value)
+    if result < 0:
+        raise ValueError("replay costs cannot be negative")
+    return result
+
+
+def _cost_payload(value: CostInput) -> str | dict[str, str]:
+    if isinstance(value, Mapping):
+        return {
+            str(symbol).upper(): str(d(amount))
+            for symbol, amount in sorted(value.items())
+        }
+    return str(d(value))
 
 
 class ContinuousReplayEngine(ReplayEngine):
@@ -74,13 +103,21 @@ class ContinuousReplayEngine(ReplayEngine):
         bars_by_symbol: dict[str, list[dict[str, Any]]],
         *,
         initial_equity: Decimal,
-        spread_bps: Decimal,
-        slippage_bps: Decimal,
+        spread_bps: CostInput,
+        slippage_bps: CostInput,
     ) -> dict[str, Any]:
         if initial_equity <= 0:
             raise ValueError("initial_equity must be positive")
-        if spread_bps < 0 or slippage_bps < 0:
-            raise ValueError("spread_bps and slippage_bps cannot be negative")
+        if isinstance(spread_bps, Mapping):
+            for symbol in self.settings.scan_symbols:
+                _cost_bps(spread_bps, symbol)
+        elif d(spread_bps) < 0:
+            raise ValueError("spread_bps cannot be negative")
+        if isinstance(slippage_bps, Mapping):
+            for symbol in self.settings.scan_symbols:
+                _cost_bps(slippage_bps, symbol)
+        elif d(slippage_bps) < 0:
+            raise ValueError("slippage_bps cannot be negative")
 
         normalized = {
             symbol.upper(): sorted(list(bars), key=stamp)
@@ -104,8 +141,6 @@ class ContinuousReplayEngine(ReplayEngine):
         trades: list[dict[str, Any]] = []
         equity_curve: list[dict[str, Any]] = []
         counters: Counter = Counter()
-        spread_pct = spread_bps / BPS
-
         cash = initial_equity
         prior_close_equity = initial_equity
         current_day = None
@@ -144,7 +179,14 @@ class ContinuousReplayEngine(ReplayEngine):
                 if decision is None:
                     continue
                 exit_reason, exit_reference = decision
-                exit_fill = self._fill(exit_reference, "sell", spread_bps, slippage_bps)
+                symbol_spread_bps = _cost_bps(spread_bps, symbol)
+                symbol_slippage_bps = _cost_bps(slippage_bps, symbol)
+                exit_fill = self._fill(
+                    exit_reference,
+                    "sell",
+                    symbol_spread_bps,
+                    symbol_slippage_bps,
+                )
                 proceeds = position.qty * exit_fill
                 cost_basis = position.qty * position.entry_price
                 net_pnl = proceeds - cost_basis
@@ -199,11 +241,12 @@ class ContinuousReplayEngine(ReplayEngine):
                 if signal.action != "buy":
                     continue
 
+                symbol_spread_bps = _cost_bps(spread_bps, signal.symbol)
                 allowed, _, quality = self._historical_market_quality(
                     signal,
                     visible,
                     now,
-                    spread_pct,
+                    symbol_spread_bps / BPS,
                 )
                 if not allowed:
                     continue
@@ -281,7 +324,14 @@ class ContinuousReplayEngine(ReplayEngine):
                 reference = signal.reference_price
                 if reference <= 0:
                     continue
-                entry_fill = self._fill(reference, "buy", spread_bps, slippage_bps)
+                symbol_spread_bps = _cost_bps(spread_bps, symbol)
+                symbol_slippage_bps = _cost_bps(slippage_bps, symbol)
+                entry_fill = self._fill(
+                    reference,
+                    "buy",
+                    symbol_spread_bps,
+                    symbol_slippage_bps,
+                )
                 qty = fractional_qty(notional, reference)
                 if qty <= 0:
                     continue
@@ -309,7 +359,14 @@ class ContinuousReplayEngine(ReplayEngine):
                 if not current:
                     continue
                 position = positions[symbol]
-                exit_fill = self._fill(price(current[-1]), "sell", spread_bps, slippage_bps)
+                symbol_spread_bps = _cost_bps(spread_bps, symbol)
+                symbol_slippage_bps = _cost_bps(slippage_bps, symbol)
+                exit_fill = self._fill(
+                    price(current[-1]),
+                    "sell",
+                    symbol_spread_bps,
+                    symbol_slippage_bps,
+                )
                 proceeds = position.qty * exit_fill
                 cost_basis = position.qty * position.entry_price
                 net_pnl = proceeds - cost_basis
@@ -344,8 +401,8 @@ class ContinuousReplayEngine(ReplayEngine):
         return {
             "summary": summary,
             "assumptions": {
-                "spread_bps": str(spread_bps),
-                "slippage_bps_per_side": str(slippage_bps),
+                "spread_bps": _cost_payload(spread_bps),
+                "slippage_bps_per_side": _cost_payload(slippage_bps),
                 "commission_per_order": "0",
                 "intrabar_stop_target_policy": "stop_first",
                 "historical_quotes_available": False,
