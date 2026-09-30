@@ -11,6 +11,9 @@ class FakeGateway:
         self.completions = []
         self.heartbeats = []
 
+    async def snapshot(self):
+        return {"problems": []}
+
     async def claim_research_problem(self, **kwargs):
         return {
             "problem": {
