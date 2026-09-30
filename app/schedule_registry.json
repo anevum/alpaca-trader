@@ -1,0 +1,382 @@
+{
+  "scheduler_version": "anevum-scheduler-v1.0.0",
+  "schema_version": "anevum-schedule-registry-v1",
+  "timezone": "America/New_York",
+  "timestamp_storage": "UTC",
+  "market_calendar_source": "Alpaca /v2/calendar via RHEN",
+  "workflows": [
+    {
+      "workflow_id": "rhen.preflight",
+      "subsystem": "RHEN",
+      "owner": "IREN",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_open-45m",
+      "anchor": "open",
+      "offset_minutes": -45,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "skip_after_window",
+      "stale_after_minutes": 45,
+      "recovery_after_minutes": 10,
+      "retry_policy": {
+        "max_attempts": 3,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": true,
+        "success_route": "rhen-daily",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "trader_preflight",
+      "version": "1.0.0",
+      "protected_action_level": "read_only"
+    },
+    {
+      "workflow_id": "rhen.market_open",
+      "subsystem": "RHEN",
+      "owner": "IREN",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_open",
+      "anchor": "open",
+      "offset_minutes": 0,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "skip_after_window",
+      "stale_after_minutes": 30,
+      "recovery_after_minutes": 10,
+      "retry_policy": {
+        "max_attempts": 3,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": true,
+        "success_route": "rhen-live",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "trader_market_open",
+      "version": "1.0.0",
+      "protected_action_level": "read_only"
+    },
+    {
+      "workflow_id": "rhen.session_close",
+      "subsystem": "RHEN",
+      "owner": "IREN",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_close+15m",
+      "anchor": "close",
+      "offset_minutes": 15,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 720,
+      "recovery_after_minutes": 15,
+      "retry_policy": {
+        "max_attempts": 3,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": true,
+        "success_route": "rhen-daily",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "trader_session_close",
+      "version": "1.0.0",
+      "protected_action_level": "evidence_write_only"
+    },
+    {
+      "workflow_id": "rhen.research.daily",
+      "subsystem": "RHEN",
+      "owner": "GRAEN",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_close+25m",
+      "anchor": "close",
+      "offset_minutes": 25,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 720,
+      "recovery_after_minutes": 15,
+      "retry_policy": {
+        "max_attempts": 3,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": true,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "research_agent_daily",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    },
+    {
+      "workflow_id": "velum.equity.replay",
+      "subsystem": "VELUM",
+      "owner": "RHEN",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_close+35m",
+      "anchor": "close",
+      "offset_minutes": 35,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 720,
+      "recovery_after_minutes": 20,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "velum_equity",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    },
+    {
+      "workflow_id": "graen.research.checkpoint",
+      "subsystem": "GRAEN",
+      "owner": "GRAEN",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_close+50m",
+      "anchor": "close",
+      "offset_minutes": 50,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 720,
+      "recovery_after_minutes": 10,
+      "retry_policy": {
+        "max_attempts": 3,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "graen_checkpoint",
+      "version": "1.0.0",
+      "protected_action_level": "read_only_research"
+    },
+    {
+      "workflow_id": "rhen.weekly_review",
+      "subsystem": "RHEN",
+      "owner": "IREN",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "last_session_of_week:market_close+90m",
+      "anchor": "close",
+      "offset_minutes": 90,
+      "last_session_of_week": true,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 2880,
+      "recovery_after_minutes": 20,
+      "retry_policy": {
+        "max_attempts": 3,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": true,
+        "success_route": "rhen-daily",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "weekly_operating_review",
+      "version": "1.0.0",
+      "protected_action_level": "research_and_evidence_only"
+    },
+    {
+      "workflow_id": "velum.crypto.replay",
+      "subsystem": "VELUM",
+      "owner": "RHEN",
+      "enabled": true,
+      "schedule_type": "hourly",
+      "schedule_expression": "hourly+05m; replay completed hour",
+      "minute": 5,
+      "timezone": "UTC",
+      "market_calendar_dependency": false,
+      "catchup_policy": "latest_only",
+      "stale_after_minutes": 70,
+      "recovery_after_minutes": 20,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "velum_crypto",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    },
+    {
+      "workflow_id": "iren.scheduler.health",
+      "subsystem": "IREN",
+      "owner": "IREN",
+      "enabled": true,
+      "schedule_type": "interval",
+      "schedule_expression": "every_15_minutes",
+      "interval_minutes": 15,
+      "timezone": "UTC",
+      "market_calendar_dependency": false,
+      "catchup_policy": "latest_only",
+      "stale_after_minutes": 20,
+      "recovery_after_minutes": 5,
+      "retry_policy": {
+        "max_attempts": 1,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "iren-control",
+        "failure_route": "iren-control"
+      },
+      "implementation_target": "scheduler_self_health",
+      "version": "1.0.0",
+      "protected_action_level": "read_only"
+    },
+    {
+      "workflow_id": "nostra.snapshot",
+      "subsystem": "NOSTRA",
+      "owner": "NOSTRA",
+      "enabled": false,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_open-10m",
+      "anchor": "open",
+      "offset_minutes": -10,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "skip_after_window",
+      "stale_after_minutes": 10,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "nostra_snapshot_hook",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    },
+    {
+      "workflow_id": "nostra.forecast",
+      "subsystem": "NOSTRA",
+      "owner": "NOSTRA",
+      "enabled": false,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_open-5m",
+      "anchor": "open",
+      "offset_minutes": -5,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "skip_after_window",
+      "stale_after_minutes": 5,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "nostra_forecast_hook",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    },
+    {
+      "workflow_id": "nostra.outcome_resolution",
+      "subsystem": "NOSTRA",
+      "owner": "NOSTRA",
+      "enabled": false,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_close+30m",
+      "anchor": "close",
+      "offset_minutes": 30,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 720,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "nostra_outcome_hook",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    },
+    {
+      "workflow_id": "nostra.scoring.daily",
+      "subsystem": "NOSTRA",
+      "owner": "NOSTRA",
+      "enabled": false,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_close+60m",
+      "anchor": "close",
+      "offset_minutes": 60,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 720,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "nostra_score_hook",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    },
+    {
+      "workflow_id": "nostra.scoring.weekly",
+      "subsystem": "NOSTRA",
+      "owner": "NOSTRA",
+      "enabled": false,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "last_session_of_week:market_close+105m",
+      "anchor": "close",
+      "offset_minutes": 105,
+      "last_session_of_week": true,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 2880,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "nostra_weekly_hook",
+      "version": "1.0.0",
+      "protected_action_level": "research_only"
+    }
+  ]
+}
