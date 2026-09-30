@@ -82,7 +82,9 @@ def test_velum_runtime_declares_no_broker_order_authority():
     assert status["mode"] == "research_replay_only"
     assert status["broker_orders_possible"] is False
     assert status["execution_authority"] is False
-    assert status["credential_scope"]["broker_client_present"] is False
+    assert status["credential_scope"]["broker_execution_runtime_loaded"] is False
+    assert status["credential_scope"]["broker_client_instantiated"] is False
+    assert status["credential_scope"]["shared_crypto_strategy_imports_broker_client_module"] is True
     assert status["credential_scope"]["provider_scope_verified"] is False
 
 
