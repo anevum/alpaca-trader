@@ -5,9 +5,10 @@ if (!connectionString) throw new Error("SUPABASE_DB_URL is not configured");
 
 const sql = postgres(connectionString, {
   prepare: false,
-  max: 3,
-  idle_timeout: 20,
-  connect_timeout: 10,
+  max: 1,
+  idle_timeout: 5,
+  connect_timeout: 5,
+  connection: { statement_timeout: 10000 },
 });
 
 const corsHeaders = {
