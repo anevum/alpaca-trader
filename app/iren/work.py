@@ -17,7 +17,7 @@ def _text(value: Any) -> str:
 
 
 def normalize_command(command: str) -> str:
-    value = re.sub(r"\s+", " ", command.strip().lower())
+    value = re.sub(r"\s+", " ", command.strip().lower()).rstrip(" ?!.")
     if not value:
         return "STATUS"
     if value in {"status", "status?", "where are we", "where are we at", "update", "progress"}:
@@ -36,11 +36,11 @@ def normalize_command(command: str) -> str:
 
 
 def _completed_objectives(objectives: list[dict[str, Any]]) -> set[str]:
-    return {_text(row.get("objective_id")) for row in objectives if row.get("status") == "COMPLETE"}
+    return {_text(row.get("objective_key")) for row in objectives if row.get("status") == "COMPLETE"}
 
 
 def _has_active_job(objective_id: str, jobs: list[dict[str, Any]]) -> bool:
-    return any(_text(row.get("objective_id")) == objective_id and row.get("status") in ACTIVE_JOB_STATES for row in jobs)
+    return any(_text(row.get("objective_key")) == objective_id and row.get("status") in ACTIVE_JOB_STATES for row in jobs)
 
 
 def objective_ready(objective: dict[str, Any], objectives: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> bool:
@@ -67,7 +67,7 @@ def choose_next_action(snapshot: dict[str, Any]) -> dict[str, Any] | None:
         key=lambda row: (
             -int(row.get("priority") or 0),
             _text(row.get("created_at")),
-            _text(row.get("objective_id")),
+            _text(row.get("objective_key")),
         )
     )
     row = candidates[0]
@@ -151,7 +151,7 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
         "message": "Directive captured as durable work for IREN triage.",
         **summary,
     }, {
-        "objective_id": None,
+        "objective_key": None,
         "title": command.strip()[:180] or "Operator directive",
         "instructions": command.strip(),
         "owner_system": "IREN",
