@@ -13,8 +13,10 @@ from .crypto_layer import (
     CryptoMarketDataClient,
     CryptoRollingMomentumStrategy,
     CryptoUniverse,
+    enrich_crypto_signal_market_state,
 )
 from .persistence import TradingEventSink
+from .research_agent.crypto_graen import assess_crypto_promotion
 from .risk import validate_crypto_buy, validate_crypto_sell_to_flat
 from .state import RuntimeState
 from .strategy import Signal
@@ -465,6 +467,17 @@ class CryptoExecutionEngine:
 
         active_symbols = list(await self.universe.active_symbols(now=now))
         owned_symbols = self._owned_symbols(positions, recent_orders)
+        crypto_positions = self._crypto_positions(positions)
+        self.state.crypto_active_positions = len(crypto_positions)
+        self.state.crypto_aggregate_exposure = str(sum(
+            (abs(_d(position.get("market_value"))) for position in crypto_positions),
+            Decimal("0"),
+        ))
+        self.state.crypto_recent_orders = self._bot_crypto_orders(recent_orders)[:20]
+        self.state.crypto_execution_healthy = True
+        self.state.crypto_graen_promotion = assess_crypto_promotion(
+            self.settings.crypto_promotion_evidence
+        )
         data_symbols = list(dict.fromkeys([
             *active_symbols,
             *self.settings.crypto_confirmation_symbols,
@@ -506,6 +519,14 @@ class CryptoExecutionEngine:
                 now=now,
             )
             quote = quotes.get(symbol, {})
+            signal = enrich_crypto_signal_market_state(
+                signal,
+                bars=bars.get(symbol, []),
+                quote=quote,
+                now=now,
+                settings=self.settings,
+            )
+            self.state.crypto_last_market_data_at = now
             bid = _d(quote.get("bp"))
             ask = _d(quote.get("ap"))
             midpoint = (bid + ask) / Decimal("2") if bid > 0 and ask > 0 else Decimal("0")
@@ -516,13 +537,61 @@ class CryptoExecutionEngine:
             )
             signal.metadata["market"] = "crypto"
             signal.metadata["session_model"] = "24x7"
+            raw_features = dict((signal.metadata.get("feature_state") or {}).get("raw") or {})
             signal.metadata["market_quality"] = {
                 "bid": str(bid) if bid > 0 else None,
                 "ask": str(ask) if ask > 0 else None,
                 "midpoint": str(midpoint) if midpoint > 0 else None,
                 "spread_pct": str(spread_pct),
+                "spread_bps": raw_features.get("spread_bps"),
+                "available_depth": raw_features.get("available_depth"),
+                "trade_volume": raw_features.get("trade_volume"),
+                "trade_count": raw_features.get("trade_count"),
+                "quote_age_ms": raw_features.get("quote_age_ms"),
                 "quote_timestamp": quote.get("t"),
             }
+            quote_age_ms = raw_features.get("quote_age_ms")
+            available_depth = _d(raw_features.get("available_depth"))
+            trade_activity = _d(
+                raw_features.get("trade_count")
+                if raw_features.get("trade_count") is not None
+                else raw_features.get("trade_volume")
+            )
+            if (
+                signal.action == "buy"
+                and (
+                    quote_age_ms is None
+                    or float(quote_age_ms) > self.settings.crypto_max_quote_age_seconds * 1000
+                )
+            ):
+                signal = Signal(
+                    action="hold",
+                    symbol=symbol,
+                    reason="crypto quote is stale or timestamp unavailable",
+                    metadata=signal.metadata,
+                )
+            if (
+                signal.action == "buy"
+                and self.settings.crypto_min_quoted_depth > 0
+                and available_depth < self.settings.crypto_min_quoted_depth
+            ):
+                signal = Signal(
+                    action="hold",
+                    symbol=symbol,
+                    reason="crypto quoted depth is below execution threshold",
+                    metadata=signal.metadata,
+                )
+            if (
+                signal.action == "buy"
+                and self.settings.crypto_min_trade_activity > 0
+                and trade_activity < self.settings.crypto_min_trade_activity
+            ):
+                signal = Signal(
+                    action="hold",
+                    symbol=symbol,
+                    reason="crypto trade activity is below execution threshold",
+                    metadata=signal.metadata,
+                )
             if signal.action == "buy" and spread_pct > self.settings.crypto_max_spread_pct:
                 signal = Signal(
                     action="hold",
@@ -549,6 +618,26 @@ class CryptoExecutionEngine:
         prepared: list[tuple[Signal, Decimal, str, dict[str, str] | None]] = []
         errors: list[dict[str, str]] = []
         for signal in buy_signals:
+            if not bool(self.state.crypto_graen_promotion.get("promotion_ready")):
+                errors.append({
+                    "symbol": signal.symbol,
+                    "reason": "crypto GRAEN promotion gate not satisfied",
+                })
+                continue
+            if not self.settings.crypto_calibration_promoted:
+                errors.append({
+                    "symbol": signal.symbol,
+                    "reason": "crypto ADS calibration has not been promoted",
+                })
+                continue
+            ads_state = dict((signal.metadata or {}).get("ads_crypto") or {})
+            ads_score = ads_state.get("score")
+            if ads_score is None or Decimal(str(ads_score)) < self.settings.crypto_ads_threshold:
+                errors.append({
+                    "symbol": signal.symbol,
+                    "reason": "crypto ADS threshold not satisfied",
+                })
+                continue
             latest_exit = self._latest_exit(recent_orders, signal.symbol)
             if (
                 latest_exit is not None
