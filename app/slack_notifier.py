@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from .slack_brand import decorate_slack_message
+from .slack_brand import decorate_slack_message, event_system
 
 
 class SlackNotifier:
@@ -169,15 +169,23 @@ class SlackNotifier:
         label = f"{kind.upper()} {action.upper()}".strip()
         symbol_text = f" | `{symbol}`" if symbol else ""
         key = None if kind == "reconciliation" else f"event:{kind}:{action}:{symbol}:{message}"
+        system = event_system(kind)
         self._enqueue(
-            f"*RHEN // {label}*\n{at}{symbol_text} | {message}",
+            f"*{system} // {label}*\n{at}{symbol_text} | {message}",
             key=key,
+            system=system,
         )
 
-    def _enqueue(self, text: str, *, key: str | None = None) -> None:
+    def _enqueue(
+        self,
+        text: str,
+        *,
+        key: str | None = None,
+        system: str = "RHEN",
+    ) -> None:
         if not self.enabled:
             return
-        text = decorate_slack_message(text, system="RHEN")
+        text = decorate_slack_message(text, system=system)
         if key is not None:
             now = time.monotonic()
             if key in self._dedupe and now - self._dedupe[key] < 600:
