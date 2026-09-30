@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -70,14 +70,29 @@ class AlpacaClient:
         session_date = observed_at.astimezone(NY).date()
 
         try:
-            # Alpaca's last_equity is the previous trading day's 4:00 PM ET
-            # equity. Reconcile owner cash movements over that same reference
+            # Alpaca's last_equity is the previous trading session's closing
+            # equity. Reconcile owner cash movements over that exact reference
             # window rather than only activities whose settlement date is today.
-            # A 7-day creation-time lookback safely spans weekends and exchange
-            # holidays; detected_session_cash_flow still accepts only CSD/CSW.
-            activity_after = (session_date - timedelta(days=7)).isoformat()
+            calendar = await self._request(
+                "GET",
+                "/v2/calendar",
+                params={
+                    "start": (session_date - timedelta(days=10)).isoformat(),
+                    "end": (session_date - timedelta(days=1)).isoformat(),
+                },
+            )
+            prior_sessions = [
+                item for item in (calendar if isinstance(calendar, list) else [])
+                if str(item.get("date") or "") < session_date.isoformat()
+            ]
+            if not prior_sessions:
+                raise RuntimeError("previous trading session unavailable")
+            prior_session = prior_sessions[-1]
+            prior_date = datetime.fromisoformat(str(prior_session["date"])).date()
+            prior_close = time.fromisoformat(str(prior_session["close"]))
+            prior_close_at = datetime.combine(prior_date, prior_close, tzinfo=NY)
             activities = await self.transfer_activities(
-                after=activity_after,
+                after=prior_close_at.isoformat(),
                 until=observed_at.isoformat(),
             )
             detected = detected_session_cash_flow(
