@@ -506,6 +506,8 @@ def run_crypto_edge_discovery_v2(
             "low_slippage_bps_per_side": _cost_payload(LOW_SLIPPAGE_BPS),
             "base_slippage_bps_per_side": _cost_payload(BASE_SLIPPAGE_BPS),
             "high_slippage_bps_per_side": _cost_payload(HIGH_SLIPPAGE_BPS),
+            "high_spread_max_bps": str(max(HIGH_SPREAD_BPS.values())),
+            "high_slippage_max_bps_per_side": str(max(HIGH_SLIPPAGE_BPS.values())),
         },
         "corpus": {
             "start": start.isoformat(),
