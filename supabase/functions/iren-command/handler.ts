@@ -56,7 +56,8 @@ export function project(row: Row | null, work: WorkSnapshot, now: number) {
   const incidents = Object.entries(state.incidents || {}).filter(([, value]: any) => value.status === "OPEN")
     .map(([key, value]: any) => ({ key, severity: value.severity, reason: value.reason, opened_at: value.opened_at }));
   return {
-    schema_version: "iren_command.v2",
+    schema_version: "iren_command.v1",
+    work_schema_version: "iren_work.v1",
     revision: row?.revision ?? null,
     observed_at: state.observed_at ?? null,
     stale,
