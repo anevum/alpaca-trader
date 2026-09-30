@@ -176,3 +176,48 @@ def test_separate_process_import_boundaries(module, forbidden):
     code = "import importlib,sys; importlib.import_module(" + repr(module) + "); assert not set(" + repr(forbidden) + ") & set(sys.modules)"
     completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)
     assert completed.returncode == 0, completed.stderr
+
+
+def test_worker_program_is_observed_not_hardcoded():
+    health = bounded_health("GRAEN", {"ok": True, "program": "graen-crypto-native-v6"})
+    assert health["runtime_identity"]["system_version"] == "graen-crypto-native-v6"
+
+def test_rhen_lifespan_starts_and_stops_without_iren_in_isolated_process():
+    code = '''
+import asyncio, sys
+from unittest.mock import AsyncMock, Mock
+import httpx
+from app import main
+
+async def denied(*args, **kwargs):
+    raise AssertionError("network forbidden in lifecycle simulation")
+httpx.AsyncClient.request = denied
+
+async def scenario():
+    main._stop = asyncio.Event()
+    started = []
+    async def loop():
+        started.append(True)
+        await main._stop.wait()
+    main.monitor_loop = loop
+    main.crypto_monitor_loop = loop
+    main.slack_market_observer_loop = loop
+    for target in (main.event_sink, main.slack_notifier, main.mobile_live_activity, main.research_reports):
+        target.start = AsyncMock()
+        target.stop = AsyncMock()
+    main.event_sink.emit_critical = AsyncMock(return_value=True)
+    main.event_sink.emit = Mock()
+    main.slack_notifier.notify_runtime_start = Mock()
+    assert not main.settings.credentials_configured
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert len(started) == 3
+        assert main.runtime_state.startup_reconciled
+        assert "app.iren.service" not in sys.modules
+        assert "app.orchestration_scheduler" not in sys.modules
+    assert main._stop.is_set()
+    main.event_sink.stop.assert_awaited_once()
+asyncio.run(scenario())
+'''
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr

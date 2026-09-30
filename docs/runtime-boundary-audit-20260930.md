@@ -77,7 +77,7 @@ its current health reported idle. Do not infer the redacted autorun value.
 All use /health. IREN has authenticated /v1/iren/status and /v1/iren/policy,
 plus scheduler /v1/status, /v1/diagnostics and /v1/registry.
 RHEN exposes provenance and reconciliation in /health.
-Preopen derives health from worker-task/last-tick freshness.
+Deployed preopen commit f0335375c9811ab3650cde2a8cc33441f4e9f0a6 reports last_error-based health only. Main has a worker freshness check that is not deployed to that older branch.
 VELUM/GRAEN expose limited legacy health; missing version/deployment data must
 remain null, never populated from latest main or a historical deployment.
 
@@ -225,9 +225,9 @@ because of existing Railway watch patterns.
 6. IREN must remain alive through RHEN replacement. Require two fresh observations
    and incident recovery after three healthy observations. Inspect existing
    Slack delivery records; at most one synthetic operational test if still needed.
-7. Roll back RHEN only if reconciliation fails, protected identity changes, or
+7. Preserve concurrent authorized work: capture the immediately preceding RHEN build again before any future deployment; do not blindly restore the initial audit baseline. Roll back RHEN only if reconciliation fails, protected identity changes, or
    execution cannot resume safely: redeploy prior build
-   0e4deb0e-7417-445e-9446-26a699c01b00 to the RHEN service, preserve all credentials
+   captured immediately before that cutover to the RHEN service, preserve all credentials
    and database evidence, and verify reconciliation before declaring recovery.
    Keep IREN running to observe the rollback.
 8. Once merged runtime is verified, unpin IREN/reconnect its intended source and
@@ -253,3 +253,39 @@ because of existing Railway watch patterns.
 This is a partial multi-runtime migration, not full isolation of every branded
 subsystem. Verification results and final deployment identities are recorded in
 the completion report alongside this audit.
+
+## Concurrent changes observed during the pause
+
+At the original IREN rollout, RHEN remained on 0e4deb0e-7417-445e-9446-26a699c01b00,
+started 12:55:49 UTC. An independent main deployment at 15:34 UTC replaced it with
+6b9d38f7-1fab-48e9-bc3e-3cf7bade637c, commit
+b8f98fe1d8db8be1b65765b26a30ac60933b24ad. Its commit changes Alpaca cash-flow
+reference-window handling in app/alpaca_client.py and app/cash_flow.py.
+This migration did not create, merge or deploy that change.
+
+Unchanged strategy ID/configuration fingerprint is NOT evidence that all RHEN
+behavior stayed identical over the whole elapsed session. The broader
+unchanged-runtime claim cannot be made. LIVE-2026-09-25-003 and protected
+fingerprint still match the initial baseline; RHEN remains reconciled.
+
+Crypto GRAEN also changed independently to service_v6:app, deployment
+91c695ce-affb-48d7-8379-968419f501ec, pinned commit
+a4b5147c55c1ffcf46c1b1640b9affde2403fedc, at 15:53 UTC.
+The topology adapter reads its reported program version and no longer hardcodes
+v5 in the scope description. No GRAEN formula or lifecycle is changed here.
+
+IREN deployment 794eed38-e878-4e74-866e-014a7e95353b continued across the
+independently triggered RHEN replacement. Revision 254 at 16:04:47 UTC showed
+RHEN's new identity, IREN's original 14:47:51 start time and healthy scheduler
+ticks. This is observed production isolation evidence; no RHEN restart was
+initiated for testing.
+
+Command production: frontend merge 1462a2c4e92d6f541f8224dbc75118bf5a23867c,
+Cloudflare version 41a94d49-3b4d-4a8a-9aff-c9740b87e94e, deployed 14:50 UTC.
+Production workflow 36732002793 and ANEVUM Verify 36732002519 succeeded.
+Private production route rejects anonymous reads with HTTP 401. A signed-in
+administrator browser session is not available to this agent; successful
+administrator reads are covered by isolated tests, not claimed as an observed
+browser session. The separate Vercel deployment status fails on both the base
+commit and this PR; the Vercel connector repeatedly failed authentication, so
+its root cause remains unverified. Cloudflare is the canonical deployment.

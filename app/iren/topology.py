@@ -7,7 +7,7 @@ from .core import fresh
 INVENTORY = {
     "RHEN": ("SERVICE", "alpaca-trader", "Live execution; research reporting, evidence and legacy NOSTRA/GRAEN calculations remain coupled"),
     "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; counterfactual functions also remain in RHEN research reporting"),
-    "GRAEN": ("WORKER", "rhen-crypto-edge-discovery", "Crypto research v5 only; other GRAEN validation remains coupled to RHEN"),
+    "GRAEN": ("WORKER", "rhen-crypto-edge-discovery", "Crypto research worker; other GRAEN validation remains coupled to RHEN"),
     "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
 }
 
@@ -26,6 +26,8 @@ def bounded_health(name, body):
         raise ValueError("malformed_provenance")
     result["runtime_identity"] = {k: provenance.get(k) for k in
         ("system_version", "git_commit", "deployment_id", "runtime_started_at")}
+    if name == "GRAEN" and not result["runtime_identity"].get("system_version"):
+        result["runtime_identity"]["system_version"] = body.get("program")
     for key, value in result["runtime_identity"].items():
         if value is not None and (not isinstance(value, str) or len(value) > 128):
             raise ValueError("malformed_runtime_identity")
