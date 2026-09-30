@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from app.config import Settings, get_settings
 from app.market_data import MarketDataClient
+from app.slack_brand import decorate_slack_message
 from .research_v6 import (
     CONTEXT_UNIVERSE,
     METHODOLOGY_VERSION,
@@ -382,7 +383,7 @@ class GraenCryptoV6Runtime:
             return
         try:
             async with httpx.AsyncClient(timeout=8.0) as http:
-                response = await http.post(url, json={"text": message})
+                response = await http.post(url, json={"text": decorate_slack_message(message, system="GRAEN")})
                 response.raise_for_status()
         except Exception as exc:
             print("GRAEN_CRYPTO_V6_SLACK_ERROR", {"error": type(exc).__name__}, flush=True)
