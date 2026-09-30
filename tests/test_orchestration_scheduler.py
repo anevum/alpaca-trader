@@ -284,3 +284,32 @@ def test_recent_missed_job_still_alerts(monkeypatch):
 
     assert runtime._notify.await_count == 1
     assert runtime.ledger.completions[0][1]["status"] == "MISSED"
+
+
+def test_scheduler_notification_uses_workflow_subsystem_identity():
+    runtime = object.__new__(SchedulerRuntime)
+    runtime.slack = type(
+        "Slack",
+        (),
+        {"send": AsyncMock(return_value="delivered:rhen-research")},
+    )()
+    item = ScheduledItem(
+        workflow(
+            workflow_id="graen.research.checkpoint",
+            subsystem="GRAEN",
+            owner="GRAEN",
+            notification_policy={
+                "success": True,
+                "success_route": "rhen-research",
+                "failure_route": "rhen-alerts",
+            },
+        ),
+        datetime(2026, 9, 30, 20, 50, tzinfo=UTC),
+        "2026-09-30",
+        {"session": "2026-09-30"},
+    )
+    asyncio.run(runtime._notify(item, status="SUCCEEDED", result={"ok": True}, error=None))
+    args, _ = runtime.slack.send.call_args
+    assert args[0] == "rhen-research"
+    assert args[1].startswith("*GRAEN // graen.research.checkpoint // SUCCEEDED*")
+    assert "scheduled by IREN:" in args[1]
