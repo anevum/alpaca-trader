@@ -236,7 +236,8 @@ async def health():
         "runtime_identity": controller.runtime_identity,
         "last_heartbeat_at": controller.last_persisted_at,
         "work_engine": {"running": work_alive, "last_error": work_engine.last_error,
-            "last_command_at": work_engine.last_command_at, "last_job_at": work_engine.last_job_at}}
+            "last_command_at": work_engine.last_command_at, "last_job_at": work_engine.last_job_at,
+            "execution_router_configured": bool(work_engine.executor_url and len(work_engine.executor_token) >= 32)}}
     if not body["ok"]:
         raise HTTPException(status_code=503, detail=body)
     return body
@@ -293,6 +294,34 @@ async def create_command(
         requested_by=requested_by,
     )
     return {"ok": True, **created}
+
+
+@app.post("/v1/iren/jobs/{job_id}/callback")
+async def job_callback(
+    job_id: str,
+    body: dict,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    status = str(body.get("status") or "").strip().upper()
+    if status not in {"WAITING", "BLOCKED", "NEEDS_APPROVAL", "SUCCEEDED", "FAILED"}:
+        raise HTTPException(status_code=400, detail="invalid_job_status")
+    snapshot = await work_engine.snapshot()
+    job = next((row for row in snapshot.get("jobs") or [] if str(row.get("job_id")) == job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    if bool(job.get("protected_action")) and status in {"SUCCEEDED"}:
+        raise HTTPException(status_code=409, detail="protected_job_requires_human_authority")
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    updated = await controller.gateway(
+        "iren_job_update",
+        job_id=job_id,
+        status=status,
+        result=result,
+        error=error,
+    )
+    return {"ok": True, **updated}
 
 
 # Preserve all existing scheduler URLs and its single durable scheduling authority.
