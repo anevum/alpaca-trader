@@ -1,4 +1,5 @@
 import hashlib
+import json
 from datetime import datetime, time, timezone
 from decimal import Decimal
 from functools import lru_cache
@@ -187,6 +188,66 @@ class Settings(BaseSettings):
     crypto_strategy_version_id: str = Field(
         default="CRYPTO-2026-09-29-001", alias="CRYPTO_STRATEGY_VERSION_ID"
     )
+    crypto_strategy_family: str = Field(
+        default="rolling_momentum_vwap", alias="CRYPTO_STRATEGY_FAMILY"
+    )
+    crypto_model_version: str = Field(
+        default="crypto-rmvwap-model-v1", alias="CRYPTO_MODEL_VERSION"
+    )
+    crypto_calibration_version: str = Field(
+        default="crypto-calibration-unvalidated-v1", alias="CRYPTO_CALIBRATION_VERSION"
+    )
+    crypto_regime_version: str = Field(
+        default="nostra-crypto-regime-v1", alias="CRYPTO_REGIME_VERSION"
+    )
+    crypto_execution_adapter_version: str = Field(
+        default="alpaca-crypto-execution-v1", alias="CRYPTO_EXECUTION_ADAPTER_VERSION"
+    )
+    crypto_fast_window: int = Field(default=3, alias="CRYPTO_FAST_WINDOW")
+    crypto_slow_window: int = Field(default=8, alias="CRYPTO_SLOW_WINDOW")
+    crypto_volatility_lookback_bars: int = Field(
+        default=30, alias="CRYPTO_VOLATILITY_LOOKBACK_BARS"
+    )
+    crypto_min_momentum_pct: Decimal = Field(
+        default=Decimal("0.0005"), alias="CRYPTO_MIN_MOMENTUM_PCT"
+    )
+    crypto_min_vwap_edge_pct: Decimal = Field(
+        default=Decimal("0"), alias="CRYPTO_MIN_VWAP_EDGE_PCT"
+    )
+    crypto_max_vwap_extension_pct: Decimal = Field(
+        default=Decimal("0.008"), alias="CRYPTO_MAX_VWAP_EXTENSION_PCT"
+    )
+    crypto_regime_window: int = Field(default=5, alias="CRYPTO_REGIME_WINDOW")
+    crypto_regime_min_return_pct: Decimal = Field(
+        default=Decimal("0"), alias="CRYPTO_REGIME_MIN_RETURN_PCT"
+    )
+    crypto_volatility_stop_enabled: bool = Field(
+        default=False, alias="CRYPTO_VOLATILITY_STOP_ENABLED"
+    )
+    crypto_volatility_stop_multiplier: Decimal = Field(
+        default=Decimal("2.0"), alias="CRYPTO_VOLATILITY_STOP_MULTIPLIER"
+    )
+    crypto_max_dynamic_stop_pct: Decimal = Field(
+        default=Decimal("0.006"), alias="CRYPTO_MAX_DYNAMIC_STOP_PCT"
+    )
+    crypto_max_quote_age_seconds: int = Field(
+        default=15, alias="CRYPTO_MAX_QUOTE_AGE_SECONDS"
+    )
+    crypto_min_quoted_depth: Decimal = Field(
+        default=Decimal("0"), alias="CRYPTO_MIN_QUOTED_DEPTH"
+    )
+    crypto_min_trade_activity: Decimal = Field(
+        default=Decimal("0"), alias="CRYPTO_MIN_TRADE_ACTIVITY"
+    )
+    crypto_ads_threshold: Decimal = Field(
+        default=Decimal("0"), alias="CRYPTO_ADS_THRESHOLD"
+    )
+    crypto_calibration_promoted: bool = Field(
+        default=False, alias="CRYPTO_CALIBRATION_PROMOTED"
+    )
+    crypto_promotion_evidence_json: str = Field(
+        default="{}", alias="CRYPTO_PROMOTION_EVIDENCE_JSON"
+    )
     crypto_order_notional: Decimal = Field(
         default=Decimal("5.00"), alias="CRYPTO_ORDER_NOTIONAL"
     )
@@ -355,6 +416,14 @@ class Settings(BaseSettings):
     @property
     def universe_always_include(self) -> tuple[str, ...]:
         return parse_csv(self.universe_always_include_raw)
+
+    @property
+    def crypto_promotion_evidence(self) -> dict:
+        try:
+            value = json.loads(self.crypto_promotion_evidence_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     @property
     def crypto_quote_currencies(self) -> set[str]:
@@ -576,6 +645,18 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_MAX_CONCURRENT_POSITIONS must be between 1 and 10")
         if not 0 <= self.crypto_max_entries_24h <= 100:
             raise ValueError("CRYPTO_MAX_ENTRIES_24H must be between 0 and 100")
+        if not 1 <= self.crypto_fast_window < self.crypto_slow_window <= 240:
+            raise ValueError("crypto windows must satisfy 1 <= fast < slow <= 240")
+        if not 3 <= self.crypto_volatility_lookback_bars <= 1440:
+            raise ValueError("CRYPTO_VOLATILITY_LOOKBACK_BARS must be between 3 and 1440")
+        if not 1 <= self.crypto_regime_window <= 240:
+            raise ValueError("CRYPTO_REGIME_WINDOW must be between 1 and 240")
+        if not 1 <= self.crypto_max_quote_age_seconds <= 300:
+            raise ValueError("CRYPTO_MAX_QUOTE_AGE_SECONDS must be between 1 and 300")
+        if self.crypto_min_quoted_depth < 0 or self.crypto_min_trade_activity < 0:
+            raise ValueError("crypto depth/activity thresholds cannot be negative")
+        if not Decimal("-20") <= self.crypto_ads_threshold <= Decimal("20"):
+            raise ValueError("CRYPTO_ADS_THRESHOLD must be between -20 and 20")
         if not Decimal("0") < self.crypto_max_spread_pct < Decimal("0.10"):
             raise ValueError("CRYPTO_MAX_SPREAD_PCT must be between 0 and 0.10")
         if not Decimal("0") < self.crypto_stop_pct < Decimal("0.20"):
