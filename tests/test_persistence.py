@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -561,3 +562,32 @@ def test_entry_intent_carries_cycle_and_decision_evidence():
     assert payload["intent"]["payload"]["cycle_key"] == "run-1:cycle-2"
     assert payload["intent"]["payload"]["decision_quote"]["midpoint"] == "100.00"
     assert payload["intent"]["payload"]["decision_reference_price"] == "100"
+
+
+def test_transport_chunks_respect_count_and_body_limits():
+    events = [
+        {
+            "event_key": f"event-{index}",
+            "event_type": "decision_cycle",
+            "occurred_at": "2026-09-30T12:00:00+00:00",
+            "payload": {"blob": "x" * 220},
+        }
+        for index in range(7)
+    ]
+
+    chunks = TradingEventSink._transport_chunks(
+        events,
+        max_events=2,
+        max_body_bytes=900,
+    )
+
+    assert len(chunks) >= 4
+    assert sum(len(chunk) for chunk in chunks) == len(events)
+    for chunk in chunks:
+        assert len(chunk) <= 2
+        encoded = json.dumps(
+            {"events": chunk},
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        assert len(encoded) <= 900
