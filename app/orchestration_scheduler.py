@@ -670,6 +670,39 @@ class SchedulerRuntime:
                 "system_state": await self._weekly_system_state(),
             }
 
+        if target == "velum_counterfactual":
+            snapshot_response = await self._post(
+                self.trader_url + "/counterfactual-snapshot",
+                self.scheduler_headers,
+                {
+                    "session": session,
+                    "scheduled_at": _iso(item.scheduled_at),
+                },
+                timeout=300,
+            )
+            snapshot = snapshot_response.get("snapshot")
+            if not isinstance(snapshot, dict):
+                raise RuntimeError("counterfactual_snapshot_missing")
+            result = await self._post(
+                self.velum_url + "/counterfactual",
+                self.scheduler_headers,
+                {
+                    "snapshot": snapshot,
+                    "scheduled_at": _iso(item.scheduled_at),
+                },
+                timeout=600,
+            )
+            if result.get("persisted") is not True:
+                raise RuntimeError("velum_counterfactual_persistence_unconfirmed")
+            return {
+                "input_identity": snapshot.get("input_identity"),
+                "output_identity": result.get("output_identity"),
+                "expected_output_identity": result.get("expected_output_identity"),
+                "parity_match": result.get("parity_match"),
+                "persisted": True,
+                "execution_authority": False,
+            }
+
         if target == "velum_equity":
             return await self._post(
                 self.velum_url + "/equity",
