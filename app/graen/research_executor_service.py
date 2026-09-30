@@ -14,13 +14,22 @@ from app.market_data import MarketDataClient
 from app.graen.service import GraenGateway
 from graen.crypto.research_v7 import (
     CONTEXT_UNIVERSE,
-    METHODOLOGY_VERSION,
+    METHODOLOGY_VERSION as V7_METHODOLOGY_VERSION,
     run_crypto_research_v7,
+)
+from graen.crypto.leadlag_r2 import (
+    UNIVERSE as LEADLAG_UNIVERSE,
+    METHODOLOGY_VERSION as LEADLAG_METHODOLOGY_VERSION,
+    research_specification as leadlag_research_specification,
+    evaluate_stage as evaluate_leadlag_stage,
+    development_gate as leadlag_development_gate,
+    validation_gate as leadlag_validation_gate,
+    holdout_gate as leadlag_holdout_gate,
 )
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.0.0"
+RUNTIME_VERSION = "graen-research-executor-v1.1.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -134,6 +143,7 @@ class GraenResearchExecutor:
         self.active_problem_id: str | None = None
         self.last_error: str | None = None
         self.last_result: dict[str, Any] | None = None
+        self.active_methodology_version = V7_METHODOLOGY_VERSION
 
     @property
     def callback_configured(self) -> bool:
@@ -153,7 +163,8 @@ class GraenResearchExecutor:
             "system": "GRAEN",
             "service": "graen-research-executor",
             "runtime_version": RUNTIME_VERSION,
-            "methodology_version": METHODOLOGY_VERSION,
+            "methodology_version": self.active_methodology_version,
+            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION],
             "running": running,
             "autorun": self.autorun,
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
@@ -200,7 +211,7 @@ class GraenResearchExecutor:
         await self.gateway.executor_heartbeat(
             worker_id=self.worker_id,
             runtime_version=RUNTIME_VERSION,
-            methodology_version=METHODOLOGY_VERSION,
+            methodology_version=self.active_methodology_version,
             active_problem_id=self.active_problem_id,
             last_error=self.last_error,
         )
@@ -297,7 +308,7 @@ class GraenResearchExecutor:
         claimed = await self.gateway.claim_research_problem(
             worker_id=self.worker_id,
             runtime_version=RUNTIME_VERSION,
-            methodology_version=METHODOLOGY_VERSION,
+            methodology_version=self.active_methodology_version,
             domain=PROBLEM_DOMAIN,
         )
         self.last_heartbeat_at = datetime.now(UTC)
