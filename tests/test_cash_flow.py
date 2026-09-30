@@ -220,7 +220,7 @@ def test_detected_cash_deposit_is_removed_from_trading_pnl():
     )
     assert snapshot["risk_reference_equity"] == "110.00"
     assert day_pnl(snapshot) == Decimal("-1.00")
-    assert snapshot["cash_flow_accounting"]["source"] == "alpaca_account_activities_reference_window"
+    assert snapshot["cash_flow_accounting"]["source"] == "alpaca_account_activities"
 
 
 def test_detected_cash_withdrawal_is_removed_from_trading_pnl():
