@@ -105,6 +105,65 @@ def status_summary(snapshot: dict[str, Any], control_state: dict[str, Any]) -> d
     }
 
 
+def format_slack_response(response: dict[str, Any]) -> str:
+    intent = _text(response.get("intent")).upper()
+    state = _text(response.get("control_state")) or "UNKNOWN"
+    complete = int(response.get("objectives_complete") or 0)
+    total = int(response.get("objective_count") or 0)
+    active = int(response.get("active_jobs") or 0)
+    needs = int(response.get("requires_human") or 0)
+    blocked = int(response.get("blocked_objectives") or 0)
+    next_action = response.get("next_action")
+    next_action = next_action if isinstance(next_action, dict) else None
+    job = response.get("job")
+    job = job if isinstance(job, dict) else None
+
+    lines = [f"*IREN // {intent or 'STATUS'}*", f"State: *{state}*"]
+    if total:
+        lines.append(f"Objectives: *{complete}/{total} complete*")
+    lines.append(f"Active jobs: *{active}*  ·  Needs you: *{needs}*  ·  Blocked: *{blocked}*")
+
+    if intent == "DECISIONS":
+        items = response.get("items") or []
+        if isinstance(items, list) and items:
+            lines.extend(["", "*REQUIRES YOU*"])
+            for item in items[:5]:
+                if not isinstance(item, dict):
+                    continue
+                title = _text(item.get("title")) or "Decision"
+                job_id = _text(item.get("job_id"))
+                lines.append(f"• {title}" + (f"  ·  `{job_id[:8]}`" if job_id else ""))
+        else:
+            lines.extend(["", "No decisions currently require human authority."])
+    elif job:
+        lines.extend([
+            "",
+            "*JOB CREATED*",
+            f"{_text(job.get('title')) or 'IREN work item'}",
+            f"Owner: *{_text(job.get('owner_system')) or 'IREN'}*  ·  Status: *{_text(job.get('status')) or 'QUEUED'}*",
+        ])
+        job_id = _text(job.get("job_id"))
+        if job_id:
+            lines.append(f"Job: `{job_id}`")
+    elif next_action:
+        lines.extend([
+            "",
+            "*NEXT*",
+            f"{_text(next_action.get('title')) or _text(next_action.get('objective_key'))}",
+            f"Owner: *{_text(next_action.get('owner_system')) or 'IREN'}*  ·  Type: *{_text(next_action.get('job_type')) or 'AGENT_WORK'}*",
+        ])
+        objective_key = _text(next_action.get("objective_key"))
+        if objective_key:
+            lines.append(f"Objective: `{objective_key}`")
+
+    message = _text(response.get("message"))
+    if message and intent not in {"STATUS", "NEXT", "DECISIONS", "EXECUTE_NEXT", "FIX"}:
+        lines.extend(["", message])
+
+    rendered = "\n".join(lines).strip()
+    return rendered[:2900]
+
+
 def build_job(next_action: dict[str, Any], requested_by: str, source: str) -> dict[str, Any]:
     protected = bool(next_action.get("protected_action"))
     return {
@@ -186,6 +245,8 @@ class IrenWorkEngine:
         self.last_error: str | None = None
         self.last_command_at: str | None = None
         self.last_job_at: str | None = None
+        self.last_autopilot_at: str | None = None
+        self.autopilot_enabled = os.getenv("IREN_AUTOPILOT_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
         self.executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip()
         self.executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
 
@@ -222,10 +283,10 @@ class IrenWorkEngine:
                 await self.gateway("iren_command_complete", command_id=command_id, status="SUCCEEDED", response=response, linked_job_id=(job_row or {}).get("job_id"))
                 self.last_command_at = datetime.now(UTC).isoformat()
                 if source == "slack":
-                    line = response.get("message") or "IREN command completed."
-                    if job_row:
-                        line += f" Job {job_row.get('job_id')} is {job_row.get('status')}."
-                    await self._notify(line, command.get("context") or {})
+                    await self._notify(
+                        format_slack_response(response),
+                        command.get("context") or {},
+                    )
             except Exception as exc:
                 self.last_error = type(exc).__name__
                 await self.gateway("iren_command_complete", command_id=command_id, status="FAILED", response={"error": type(exc).__name__})
@@ -321,9 +382,29 @@ class IrenWorkEngine:
                     error={"type": type(exc).__name__, "message": str(exc)[:500]},
                 )
 
+    async def _autopilot(self) -> None:
+        if not self.autopilot_enabled:
+            return
+        snapshot = await self.snapshot()
+        action = choose_next_action(snapshot)
+        if not action or bool(action.get("protected_action")):
+            return
+        job = build_job(action, "IREN // AUTOPILOT", "autopilot")
+        created = await self.gateway("iren_job_create", job=job)
+        row = created.get("job") or {}
+        self.last_autopilot_at = datetime.now(UTC).isoformat()
+        await self._notify(
+            "*IREN // AUTOPILOT*\n"
+            f"Queued *{_text(row.get('title')) or _text(action.get('title'))}*\n"
+            f"Owner: *{_text(row.get('owner_system')) or _text(action.get('owner_system'))}*  ·  "
+            f"Job: `{_text(row.get('job_id'))[:8]}`",
+            {},
+        )
+
     async def tick(self) -> None:
         await self._process_commands()
         await self._execute_jobs()
+        await self._autopilot()
         self.last_error = None
 
     async def run(self) -> None:
