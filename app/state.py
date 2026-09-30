@@ -209,6 +209,12 @@ class RuntimeState:
                 or old.get("reason") != payload.get("reason")
             )
             if changed:
+                # Per-symbol equity scan transitions are retained in the
+                # in-memory operator history, but are not emitted to the
+                # durable transport. The canonical decision_cycle event
+                # persists the complete scan once per cycle; emitting every
+                # changed symbol here duplicates that evidence and can
+                # overwhelm the bounded telemetry queue.
                 self.record_event(
                     kind="scan",
                     symbol=symbol,
@@ -217,6 +223,7 @@ class RuntimeState:
                     reason=str(payload.get("reason") or ""),
                     at=at,
                     payload={"signal": payload},
+                    emit=False,
                 )
         self.last_scan = scan
         self.last_completed_scan = scan
