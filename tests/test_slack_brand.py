@@ -1,4 +1,10 @@
-from app.slack_brand import decorate_slack_message, emoji_prefix, infer_iren_state, infer_system
+from app.slack_brand import (
+    decorate_slack_message,
+    emoji_prefix,
+    event_system,
+    infer_iren_state,
+    infer_system,
+)
 
 
 def test_system_prefixes_match_installed_slack_emoji():
@@ -33,3 +39,12 @@ def test_iren_state_inference():
     assert infer_iren_state("*IREN // x // DEGRADED*") == "DEGRADED"
     assert infer_iren_state("*IREN // x // FAILED*") == "INCIDENT"
     assert infer_iren_state("*IREN // x // RUNNING*") is None
+
+
+def test_runtime_event_kind_maps_to_subsystem_identity():
+    assert event_system("execution") == "RHEN"
+    assert event_system("research_agent") == "GRAEN"
+    assert event_system("crypto_promotion") == "GRAEN"
+    assert event_system("asc") == "IREN"
+    assert event_system("nostra_forecast") == "NOSTRA"
+    assert event_system("velum_replay") == "VELUM"
