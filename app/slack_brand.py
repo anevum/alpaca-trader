@@ -12,9 +12,9 @@ SYSTEM_EMOJI = {
 }
 
 IREN_STATE_EMOJI = {
-    "HEALTHY": ":iren_healthy:",
-    "DEGRADED": ":iren_degraded:",
-    "INCIDENT": ":iren_incident:",
+    "HEALTHY": ":iren:",
+    "DEGRADED": ":iren_alert:",
+    "INCIDENT": ":iren_alert:",
 }
 
 _ROUTE_SYSTEM = {
@@ -26,7 +26,7 @@ _ROUTE_SYSTEM = {
 }
 
 _KNOWN_PREFIX = re.compile(
-    r"^:(?:anevum|iren|rhen|nostra|graen|velum|iren_healthy|iren_degraded|iren_incident):\s*",
+    r"^:(?:anevum|iren|rhen|nostra|graen|velum)(?:_[a-z0-9_]+)?:\s*",
     re.IGNORECASE,
 )
 
@@ -47,7 +47,7 @@ def infer_system(text: str, *, route: str | None = None) -> str:
 
 
 def infer_iren_state(text: str) -> str | None:
-    """Map IREN operational wording to the installed IREN state emoji."""
+    """Map IREN operational wording into broad health states."""
     upper = str(text or "").upper()
     if any(
         token in upper
@@ -84,6 +84,122 @@ def infer_iren_state(text: str) -> str | None:
     return None
 
 
+def _word(upper: str, token: str) -> bool:
+    return re.search(rf"\b{re.escape(token)}\b", upper) is not None
+
+
+def infer_semantic_emoji(
+    text: str,
+    *,
+    system: str,
+    iren_state: str | None = None,
+) -> str:
+    """Choose the most specific installed ANEVUM Slack emoji for a message."""
+    upper = str(text or "").upper()
+    resolved = system.upper()
+
+    if resolved == "IREN":
+        if any(token in upper for token in ("FAILED", "FAILURE", "ERROR")):
+            return ":iren_failed:"
+        if any(token in upper for token in ("WAITING", "MISSED", "STALE", "PENDING", "QUEUED")):
+            return ":iren_waiting:"
+        if any(token in upper for token in ("CONFIG", "DRIFT")):
+            return ":iren_config:"
+        if any(token in upper for token in ("WORKING", "RUNNING", "STARTED", "STARTING")):
+            return ":iren_working:"
+        if any(
+            token in upper
+            for token in (
+                "ALERT",
+                "DEGRADED",
+                "WARNING",
+                "CRITICAL",
+                "INCIDENT",
+                "// OPEN //",
+                "// ESCALATED //",
+                "ATTENTION_REQUIRED",
+            )
+        ):
+            return ":iren_alert:"
+        state = (iren_state or infer_iren_state(text) or "").upper()
+        if state in IREN_STATE_EMOJI:
+            return IREN_STATE_EMOJI[state]
+        return ":iren:"
+
+    if resolved == "RHEN":
+        if _word(upper, "BUY"):
+            return ":rhen_buy:"
+        if _word(upper, "SELL"):
+            return ":rhen_sell:"
+        if any(token in upper for token in ("EVIDENCE", "PERSISTENCE", "TELEMETRY")):
+            return ":rhen_evidence:"
+        if any(token in upper for token in ("RISK", "PROTECTION", "BREAKER", "BLOCKED", "STOP")):
+            return ":rhen_risk:"
+        if "SCAN" in upper:
+            return ":rhen_scan:"
+        if any(token in upper for token in ("EXECUTION", "SUBMITTED", "ORDER")):
+            return ":rhen_execution:"
+        if any(token in upper for token in ("LIVE", "ONLINE", "MARKET OPEN", "MARKET CLOSED")):
+            return ":rhen_live:"
+        return ":rhen:"
+
+    if resolved == "GRAEN":
+        if any(token in upper for token in ("REJECTED", "REJECT")):
+            return ":graen_rejected:"
+        if any(token in upper for token in ("VALIDATED", "VALIDATION", "PROMOTION_READY")):
+            return ":graen_validated:"
+        if "HYPOTHESIS" in upper:
+            return ":graen_hypothesis:"
+        if "TEST" in upper:
+            return ":graen_test:"
+        if any(token in upper for token in ("RESEARCH", "DISCOVERY", "EXPERIMENT")):
+            return ":graen_research:"
+        return ":graen:"
+
+    if resolved == "NOSTRA":
+        if "FORECAST" in upper:
+            return ":nostra_forecast:"
+        if "SIGNAL" in upper:
+            return ":nostra_signal:"
+        if _word(upper, "UP"):
+            return ":nostra_up:"
+        if _word(upper, "DOWN"):
+            return ":nostra_down:"
+        if "NEUTRAL" in upper:
+            return ":nostra_neutral:"
+        return ":nostra:"
+
+    if resolved == "VELUM":
+        if any(token in upper for token in ("FAILED", "FAILURE", "ERROR")):
+            return ":velum_fail:"
+        if "ARCHIVE" in upper:
+            return ":velum_archive:"
+        if "DATA" in upper:
+            return ":velum_data:"
+        if "REPLAY" in upper:
+            return ":velum_replay:"
+        if any(token in upper for token in ("PASS", "PASSED", "SUCCEEDED", "COMPLETE", "COMPLETED")):
+            return ":velum_pass:"
+        return ":velum:"
+
+    if resolved == "ANEVUM":
+        if any(token in upper for token in ("DEPLOY", "RELEASE")):
+            return ":anevum_deploy:"
+        if any(token in upper for token in ("MAINTENANCE", "REPAIR", "HOTFIX")):
+            return ":anevum_maintenance:"
+        if any(token in upper for token in ("WARNING", "FAILED", "FAILURE", "ERROR", "DEGRADED")):
+            return ":anevum_warning:"
+        if any(token in upper for token in ("PRIORITY", "ATTENTION_REQUIRED", "URGENT")):
+            return ":anevum_priority:"
+        if any(token in upper for token in ("COMPLETE", "COMPLETED", "SUCCEEDED", "RECOVERED")):
+            return ":anevum_complete:"
+        if "MESSAGE" in upper:
+            return ":anevum_message:"
+        return ":anevum:"
+
+    return SYSTEM_EMOJI.get(resolved, SYSTEM_EMOJI["ANEVUM"])
+
+
 def emoji_prefix(
     text: str,
     *,
@@ -92,11 +208,11 @@ def emoji_prefix(
     iren_state: str | None = None,
 ) -> str:
     resolved_system = (system or infer_system(text, route=route)).upper()
-    if resolved_system == "IREN":
-        state = (iren_state or infer_iren_state(text) or "").upper()
-        if state in IREN_STATE_EMOJI:
-            return IREN_STATE_EMOJI[state]
-    return SYSTEM_EMOJI.get(resolved_system, SYSTEM_EMOJI["ANEVUM"])
+    return infer_semantic_emoji(
+        text,
+        system=resolved_system,
+        iren_state=iren_state,
+    )
 
 
 def decorate_slack_message(
@@ -106,7 +222,7 @@ def decorate_slack_message(
     route: str | None = None,
     iren_state: str | None = None,
 ) -> str:
-    """Prefix a Slack message with one installed ANEVUM custom emoji.
+    """Prefix a Slack message with the most specific installed ANEVUM emoji.
 
     Existing branded messages are returned unchanged so routing layers may safely
     call this helper more than once.
