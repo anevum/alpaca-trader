@@ -7,7 +7,7 @@ import logging
 import os
 
 import httpx
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
