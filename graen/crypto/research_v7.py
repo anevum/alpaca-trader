@@ -778,10 +778,11 @@ def run_crypto_research_v7(
     specs = candidate_specs()
     development: dict[str, dict[str, Any]] = {}
     validation: dict[str, dict[str, Any]] = {}
-    p_values: list[float] = []
+    development_gates: list[dict[str, Any]] = []
+    development_survivors: list[tuple[int, CandidateSpec]] = []
 
     for index, spec in enumerate(specs):
-        development[spec.candidate_id] = evaluate_candidate(
+        development_result = evaluate_candidate(
             series,
             spec,
             start=development_start,
@@ -789,7 +790,21 @@ def run_crypto_research_v7(
             scenario="high",
             seed=78000 + index * 10,
         )
-        validation[spec.candidate_id] = evaluate_candidate(
+        development[spec.candidate_id] = development_result
+        passed, reasons = _development_gate(development_result)
+        development_gates.append({
+            "candidate_id": spec.candidate_id,
+            "family": spec.family,
+            "passed": passed,
+            "reasons": reasons,
+        })
+        if passed:
+            development_survivors.append((index, spec))
+
+    validation_order: list[tuple[int, CandidateSpec]] = []
+    p_values: list[float] = []
+    for index, spec in development_survivors:
+        validation_result = evaluate_candidate(
             series,
             spec,
             start=validation_start,
@@ -797,21 +812,36 @@ def run_crypto_research_v7(
             scenario="high",
             seed=79000 + index * 10,
         )
+        validation[spec.candidate_id] = validation_result
+        validation_order.append((index, spec))
         p_values.append(
-            float(validation[spec.candidate_id]["primary"]["dependence_adjusted_null"]["p_value"])
+            float(validation_result["primary"]["dependence_adjusted_null"]["p_value"])
         )
 
     multiplicity = benjamini_yekutieli(p_values, alpha=VALIDATION_ALPHA)
-    rejected = set(multiplicity.rejected_indices)
+    rejected_positions = set(multiplicity.rejected_indices)
     survivors: list[dict[str, Any]] = []
     gate_rows: list[dict[str, Any]] = []
 
+    survivor_ids = {spec.candidate_id for _, spec in development_survivors}
     for index, spec in enumerate(specs):
+        if spec.candidate_id not in survivor_ids:
+            _, reasons = _development_gate(development[spec.candidate_id])
+            gate_rows.append({
+                "candidate_id": spec.candidate_id,
+                "family": spec.family,
+                "passed": False,
+                "reasons": sorted(set([*reasons, "validation_not_opened"])),
+                "multiplicity_rejected": False,
+                "selection_score": None,
+            })
+
+    for position, (index, spec) in enumerate(validation_order):
         passed, reasons = _validation_gate(
             spec,
             development[spec.candidate_id],
             validation[spec.candidate_id],
-            multiplicity_rejected=index in rejected,
+            multiplicity_rejected=position in rejected_positions,
         )
         primary = validation[spec.candidate_id]["primary"]
         score = float(primary["expectancy_per_trade"]) * sqrt(max(int(primary["trade_count"]), 1))
@@ -820,12 +850,16 @@ def run_crypto_research_v7(
             "family": spec.family,
             "passed": passed,
             "reasons": reasons,
-            "multiplicity_rejected": index in rejected,
+            "multiplicity_rejected": position in rejected_positions,
             "selection_score": score,
         }
         gate_rows.append(row)
         if passed:
             survivors.append(row)
+
+    gate_rows.sort(key=lambda row: next(
+        idx for idx, spec in enumerate(specs) if spec.candidate_id == row["candidate_id"]
+    ))
 
     selected = (
         max(survivors, key=lambda row: (float(row["selection_score"]), str(row["candidate_id"])))
@@ -906,6 +940,8 @@ def run_crypto_research_v7(
         },
         "validation_multiplicity": multiplicity.to_dict(),
         "development": development,
+        "development_gates": development_gates,
+        "development_survivors": [spec.candidate_id for _, spec in development_survivors],
         "validation": validation,
         "validation_gates": gate_rows,
         "validation_survivors": [row["candidate_id"] for row in survivors],

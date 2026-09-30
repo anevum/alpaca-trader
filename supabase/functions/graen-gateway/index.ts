@@ -232,7 +232,7 @@ Deno.serve(async (req: Request) => {
                 order by r.started_at desc
                 limit 1
               )='READY_FOR_RESEARCH_EXECUTOR'
-              or p.metadata->>'research_stage'='CRYPTO_LEADLAG_R2_READY'
+              or p.metadata->>'research_stage' in ('CRYPTO_LEADLAG_R2_READY','CRYPTO_V7_BATCH_READY')
             )
           order by p.priority desc, p.created_at asc
           limit 1
@@ -246,21 +246,20 @@ Deno.serve(async (req: Request) => {
       `;
       const problem = rows[0] || null;
       if (!problem) {
+        const executorState = {
+          worker_id: workerId,
+          runtime_version: runtimeVersion,
+          methodology_version: methodologyVersion,
+          source_commit: sourceCommit,
+          deployment_id: deploymentId,
+          heartbeat_at: new Date().toISOString(),
+          active_problem_id: null,
+          last_error: null,
+        };
         await sql`
           update private.graen_runtime_state
-          set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
-                'research_executor',
-                jsonb_build_object(
-                  'worker_id',${workerId},
-                  'runtime_version',${runtimeVersion},
-                  'methodology_version',${methodologyVersion},
-                  'source_commit',${sourceCommit},
-                  'deployment_id',${deploymentId},
-                  'heartbeat_at',now(),
-                  'active_problem_id',null,
-                  'last_error',null
-                )
-              ),
+          set metadata=coalesce(metadata,'{}'::jsonb)
+                || jsonb_build_object('research_executor', ${sql.json(executorState as any)}::jsonb),
               updated_at=now()
           where singleton
         `;
@@ -283,21 +282,20 @@ Deno.serve(async (req: Request) => {
         )
         returning *
       `;
+      const executorState = {
+        worker_id: workerId,
+        runtime_version: runtimeVersion,
+        methodology_version: methodologyVersion,
+        source_commit: sourceCommit,
+        deployment_id: deploymentId,
+        heartbeat_at: new Date().toISOString(),
+        active_problem_id: problem.problem_id,
+        last_error: null,
+      };
       await sql`
         update private.graen_runtime_state
-        set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
-              'research_executor',
-              jsonb_build_object(
-                'worker_id',${workerId},
-                'runtime_version',${runtimeVersion},
-                'methodology_version',${methodologyVersion},
-                'source_commit',${sourceCommit},
-                'deployment_id',${deploymentId},
-                'heartbeat_at',now(),
-                'active_problem_id',${problem.problem_id},
-                'last_error',null
-              )
-            ),
+        set metadata=coalesce(metadata,'{}'::jsonb)
+              || jsonb_build_object('research_executor', ${sql.json(executorState as any)}::jsonb),
             updated_at=now()
         where singleton
       `;
@@ -313,21 +311,20 @@ Deno.serve(async (req: Request) => {
       const activeProblem = String((body as any).active_problem_id || "").trim() || null;
       const lastError = String((body as any).last_error || "").trim().slice(0, 1000) || null;
       if (!workerId || !runtimeVersion || !methodologyVersion) throw new Error("invalid_executor_heartbeat");
+      const executorState = {
+        worker_id: workerId,
+        runtime_version: runtimeVersion,
+        methodology_version: methodologyVersion,
+        source_commit: sourceCommit,
+        deployment_id: deploymentId,
+        heartbeat_at: new Date().toISOString(),
+        active_problem_id: activeProblem,
+        last_error: lastError,
+      };
       await sql`
         update private.graen_runtime_state
-        set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
-              'research_executor',
-              jsonb_build_object(
-                'worker_id',${workerId},
-                'runtime_version',${runtimeVersion},
-                'methodology_version',${methodologyVersion},
-                'source_commit',${sourceCommit},
-                'deployment_id',${deploymentId},
-                'heartbeat_at',now(),
-                'active_problem_id',${activeProblem},
-                'last_error',${lastError}
-              )
-            ),
+        set metadata=coalesce(metadata,'{}'::jsonb)
+              || jsonb_build_object('research_executor', ${sql.json(executorState as any)}::jsonb),
             updated_at=now()
         where singleton
       `;
@@ -359,21 +356,20 @@ Deno.serve(async (req: Request) => {
               metadata=coalesce(metadata,'{}'::jsonb) - 'research_stage'
           where problem_id=${problemId}::uuid
         `;
+        const completionState = {
+          worker_id: workerId,
+          heartbeat_at: new Date().toISOString(),
+          active_problem_id: null,
+          last_completion_at: new Date().toISOString(),
+          last_status: status,
+          last_error: status === "FAILED"
+            ? String((resultSummary as any).error || "research_failed").slice(0,1000)
+            : null,
+        };
         await tx`
           update private.graen_runtime_state
-          set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
-                'research_executor',
-                jsonb_build_object(
-                  'worker_id',${workerId},
-                  'heartbeat_at',now(),
-                  'active_problem_id',null,
-                  'last_completion_at',now(),
-                  'last_status',${status},
-                  'last_error',case when ${status}='FAILED'
-                    then ${String((resultSummary as any).error || "research_failed").slice(0,1000)}
-                    else null end
-                )
-              ),
+          set metadata=coalesce(metadata,'{}'::jsonb)
+                || jsonb_build_object('research_executor', ${sql.json(completionState as any)}::jsonb),
               updated_at=now()
           where singleton
         `;
