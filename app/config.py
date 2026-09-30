@@ -55,19 +55,6 @@ class Settings(BaseSettings):
     trading_ingest_url: str = Field(default="", alias="TRADING_INGEST_URL")
     trading_ingest_token: str = Field(default="", alias="TRADING_INGEST_TOKEN")
 
-    # PushWard is the active no-Xcode Lock Screen / Live Activity delivery path.
-    # Best-effort display only; it never participates in trading decisions.
-    pushward_api_key: str = Field(default="", alias="PUSHWARD_API_KEY")
-    pushward_api_url: str = Field(
-        default="https://api.pushward.app", alias="PUSHWARD_API_URL"
-    )
-    pushward_interval_seconds: int = Field(
-        default=300, alias="PUSHWARD_INTERVAL_SECONDS"
-    )
-    pushward_heartbeat_seconds: int = Field(
-        default=1800, alias="PUSHWARD_HEARTBEAT_SECONDS"
-    )
-
     # IREN native / ActivityKit delivery. All APNs signing values remain server-side.
     iren_mobile_registry_url: str = Field(
         default="https://mfntzxheldzdvlokyntk.supabase.co/functions/v1/iren-mobile-registry",
