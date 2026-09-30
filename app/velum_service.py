@@ -17,6 +17,7 @@ from .market_data import MarketDataClient
 from .replay import ReplayEngine
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
 from .velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
+from .crypto_velum import run_crypto_challengers
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -386,6 +387,13 @@ class VelumRuntime:
             paths=self.bootstrap_paths,
             seed=int(end.strftime("%Y%m%d%H")),
         )
+        challenger_experiment = run_crypto_challengers(
+            settings=crypto_settings,
+            bars_by_symbol=bars,
+            initial_equity=self.initial_equity,
+            spread_bps=self.crypto_spread_bps,
+            slippage_bps=self.crypto_slippage_bps,
+        )
         payload = self._payload(
             asset_class="crypto",
             start=start,
@@ -399,8 +407,14 @@ class VelumRuntime:
                 "crypto_location": crypto_settings.crypto_location,
                 "symbols": list(crypto_settings.scan_symbols),
                 "confirmation_symbols": list(crypto_settings.confirmation_symbols),
+                "strategy_version_id": crypto_settings.crypto_strategy_version_id,
+                "model_version": crypto_settings.crypto_model_version,
+                "calibration_version": crypto_settings.crypto_calibration_version,
+                "regime_version": crypto_settings.crypto_regime_version,
+                "execution_adapter_version": crypto_settings.crypto_execution_adapter_version,
             },
         )
+        payload["challenger_experiment"] = challenger_experiment
         await self._emit(
             "velum_replay_result",
             payload,
