@@ -332,7 +332,7 @@ Deno.serve(async (req) => {
     ] = await Promise.all([
       sql.unsafe("select version_id, strategy_name, environment, status, activated_at from private.trading_strategy_versions where environment = 'live' and status = 'active' order by activated_at desc limit 1"),
       sql.unsafe("select version_id, strategy_name, environment, status, activated_at, retired_at from private.trading_strategy_versions where environment = 'live' order by coalesce(activated_at,created_at) desc limit 12"),
-      sql.unsafe("select max(occurred_at) as latest_event_at, count(*) filter (where occurred_at >= now() - interval '60 minutes') as events_60m, count(*) filter (where event_type = 'scan' and occurred_at >= now() - interval '10 minutes') as scan_events_10m, count(distinct symbol) filter (where event_type = 'scan' and occurred_at >= now() - interval '10 minutes') as symbols_10m, count(*) filter (where event_type in ('execution','broker_order','broker_fill') and occurred_at >= now() - interval '2 hours') as execution_events_2h, count(*) filter (where event_type = 'reconciliation' and occurred_at >= now() - interval '2 hours') as reconciliations_2h, count(*) filter (where event_type = 'runtime_error' and occurred_at >= now() - interval '2 hours') as errors_2h from private.trading_events where occurred_at >= now() - interval '2 hours'"),
+      sql.unsafe("select max(occurred_at) as latest_event_at, count(*) filter (where occurred_at >= now() - interval '60 minutes') as events_60m, count(*) filter (where event_type = 'scan' and occurred_at >= now() - interval '10 minutes') as scan_events_10m, count(distinct symbol) filter (where event_type = 'scan' and occurred_at >= now() - interval '10 minutes') as symbols_10m, count(*) filter (where event_type in ('execution','broker_order','broker_fill') and occurred_at >= now() - interval '2 hours') as execution_events_2h, count(*) filter (where event_type = 'reconciliation' and occurred_at >= now() - interval '2 hours') as reconciliations_2h, count(*) filter (where event_type = 'runtime_error' and occurred_at >= now() - interval '2 hours') as errors_2h, (select count(*)::int from private.trading_positions where status = 'closed') as closed_trades, (select count(*)::int from private.trading_positions where status = 'closed' and coalesce(net_pnl, realized_pnl, 0) > 0) as wins, (select count(*)::int from private.trading_positions where status = 'closed' and coalesce(net_pnl, realized_pnl, 0) <= 0) as losses, (select min(opened_at) from private.trading_positions where status = 'closed') as first_trade_at, (select max(closed_at) from private.trading_positions where status = 'closed') as last_trade_at from private.trading_events where occurred_at >= now() - interval '2 hours'"),
       sql.unsafe("select event_type, occurred_at from private.trading_events where occurred_at >= now() - interval '2 hours' and event_type in ('scan','allocation','signal','order_intent','execution','broker_order','broker_fill','exit','reconciliation','runtime_error','runtime_start','runtime_stop') order by occurred_at desc limit 18"),
       sql.unsafe("select date_bin(interval '10 minutes', occurred_at, timestamptz '2001-01-01') as bucket, count(*) as event_count from private.trading_events where occurred_at >= now() - interval '60 minutes' group by 1 order by 1 asc"),
       sql.unsafe("select event_type, occurred_at, payload from private.trading_events where event_type='research_daily_report' order by coalesce(nullif(payload->>'generated_at','')::timestamptz,occurred_at) desc,received_at desc limit 1"),
@@ -426,6 +426,29 @@ Deno.serve(async (req) => {
           }
         : null,
       strategy_history: strategyHistoryRows,
+      performance: {
+        methodology_version: "public-live-counts-v1",
+        basis: "broker-derived closed live positions",
+        status: numberOrZero(summary.closed_trades) > 0 ? "TRACKING" : "AWAITING_SAMPLE",
+        sample_state: numberOrZero(summary.closed_trades) > 0 ? "MEASURED_LIVE_SAMPLE" : "NO_CLOSED_LIVE_TRADES",
+        tracking_started_at: summary.first_trade_at ? String(summary.first_trade_at) : null,
+        last_observed_at: summary.last_trade_at ? String(summary.last_trade_at) : null,
+        first_trade_at: summary.first_trade_at ? String(summary.first_trade_at) : null,
+        last_trade_at: summary.last_trade_at ? String(summary.last_trade_at) : null,
+        closed_trades: numberOrZero(summary.closed_trades),
+        wins: numberOrZero(summary.wins),
+        losses: numberOrZero(summary.losses),
+        win_rate_pct: numberOrZero(summary.closed_trades) > 0
+          ? (numberOrZero(summary.wins) / numberOrZero(summary.closed_trades)) * 100
+          : null,
+        realized_return_pct: null,
+        max_drawdown_pct: null,
+        curve: [],
+        limitations: [
+          "Public count metrics are broker-derived closed live positions.",
+          "A normalized return curve is withheld here until a canonical lane-aware performance denominator is available.",
+        ],
+      },
       telemetry: {
         events_60m: numberOrZero(summary.events_60m),
         scan_events_10m: numberOrZero(summary.scan_events_10m),
@@ -485,6 +508,7 @@ Deno.serve(async (req) => {
           "sanitized evidence availability",
           "sanitized strategy history",
           "sanitized per-system runtime and tracking state",
+          "broker-derived closed live trade counts",
         ]
       }
     });
