@@ -7,6 +7,7 @@ from app.research_agent.crypto_edge_discovery_v2 import (
     HIGH_SLIPPAGE_BPS,
     HIGH_SPREAD_BPS,
     METHODOLOGY_VERSION,
+    V1_EVALUATION_START,
     candidate_specs_v2,
     run_crypto_edge_discovery_v2,
 )
@@ -116,3 +117,28 @@ def test_v2_archived_walk_forward_contract_and_cost_model():
 def test_v2_cost_maps_cover_frozen_major_universe():
     assert set(HIGH_SPREAD_BPS) == {"BTC/USD", "ETH/USD", "SOL/USD"}
     assert set(HIGH_SLIPPAGE_BPS) == set(HIGH_SPREAD_BPS)
+
+
+def test_v21_fails_closed_when_provider_returns_boundary_bar():
+    cfg = settings()
+    start = V1_EVALUATION_START - timedelta(days=6)
+    hours = 24 * 6 + 1
+    bars = {
+        "BTC/USD": _bars(start, hours=hours, base=Decimal("60000")),
+        "ETH/USD": _bars(start, hours=hours, base=Decimal("3000")),
+        "SOL/USD": _bars(start, hours=hours, base=Decimal("150")),
+    }
+    result = run_crypto_edge_discovery_v2(
+        settings=cfg,
+        bars_by_symbol=bars,
+        initial_equity=Decimal("100"),
+        min_train_days=1,
+        validation_days=1,
+        holdout_days=1,
+        minimum_validation_trades=2,
+    )
+
+    assert result["methodology_version"] == METHODOLOGY_VERSION
+    assert result["status"] == "CORPUS_OVERLAP_INVALID"
+    assert result["promotion_authority"] is False
+    assert result["live_configuration_changed"] is False
