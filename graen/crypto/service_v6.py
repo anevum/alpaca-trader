@@ -18,6 +18,7 @@ from .research_v6 import (
     STRATEGY_VERSION_ID,
     run_crypto_research_v6,
 )
+from .shadow_v6 import CryptoResidualReclaimShadow
 
 
 DEVELOPMENT_START = datetime(2025, 9, 1, tzinfo=timezone.utc)
@@ -78,7 +79,14 @@ class GraenCryptoV6Runtime:
         self.market_data = MarketDataClient(self.settings)
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
+        self.shadow_task: asyncio.Task | None = None
         self.interval_seconds = _env_int("GRAEN_CRYPTO_V6_INTERVAL_SECONDS", 86400, minimum=3600)
+        self.shadow_interval_seconds = _env_int(
+            "GRAEN_CRYPTO_V6_SHADOW_INTERVAL_SECONDS",
+            30,
+            minimum=15,
+        )
+        self.shadow = CryptoResidualReclaimShadow(self.settings)
         self.last_error: str | None = None
         self.last_result_summary: dict[str, Any] | None = None
 
@@ -101,18 +109,27 @@ class GraenCryptoV6Runtime:
             },
             "last_error": self.last_error,
             "last_result_summary": self.last_result_summary,
+            "shadow": self.shadow.status(),
         }
 
     async def start(self) -> None:
         if self.task is None:
             self.task = asyncio.create_task(self._run(), name="graen-crypto-native-v6")
+        if self.shadow_task is None:
+            self.shadow_task = asyncio.create_task(
+                self._run_shadow(),
+                name="graen-crypto-native-v6-shadow",
+            )
 
     async def stop(self) -> None:
         self.stop_event.set()
-        if self.task is not None:
-            self.task.cancel()
-            await asyncio.gather(self.task, return_exceptions=True)
-            self.task = None
+        tasks = [task for task in (self.task, self.shadow_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.task = None
+        self.shadow_task = None
 
     async def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -137,6 +154,68 @@ class GraenCryptoV6Runtime:
                 )
             try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=self.interval_seconds)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _run_shadow(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                events = await self.shadow.cycle()
+                for event in events:
+                    event_type = str(event.get("event_type") or "crypto_shadow_v6_event")
+                    symbol = str(event.get("symbol") or "")
+                    occurred_at = str(event.get("occurred_at") or datetime.now(timezone.utc).isoformat())
+                    payload = dict(event.get("payload") or {})
+                    payload.update({
+                        "system": "GRAEN",
+                        "program": "Crypto Native Research v6 Shadow",
+                        "strategy_version_id": STRATEGY_VERSION_ID,
+                        "mode": "shadow",
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                        "crypto_execution_enabled": False,
+                    })
+                    key_material = f"{event_type}:{symbol}:{occurred_at}"
+                    await self._emit(
+                        event_type,
+                        payload,
+                        key_suffix=hashlib.sha256(key_material.encode()).hexdigest()[:24],
+                        symbol=symbol,
+                        occurred_at=occurred_at,
+                    )
+                    if event_type == "crypto_shadow_v6_entry":
+                        await self._slack(
+                            "*GRAEN // CRYPTO SHADOW ENTRY*\n"
+                            + str(symbol)
+                            + " | CRR-001 simulated entry"
+                            + " | broker orders: disabled"
+                        )
+                    elif event_type == "crypto_shadow_v6_exit":
+                        net = payload.get("stressed_cost_net_return")
+                        pct = (
+                            f"{float(net) * 100:.3f}%"
+                            if net is not None
+                            else "n/a"
+                        )
+                        await self._slack(
+                            "*GRAEN // CRYPTO SHADOW EXIT*\n"
+                            + str(symbol)
+                            + " | CRR-001 | stressed-cost return: "
+                            + pct
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(
+                    "GRAEN_CRYPTO_V6_SHADOW_ERROR",
+                    {"error": f"{type(exc).__name__}: {exc}"},
+                    flush=True,
+                )
+            try:
+                await asyncio.wait_for(
+                    self.stop_event.wait(),
+                    timeout=self.shadow_interval_seconds,
+                )
             except asyncio.TimeoutError:
                 pass
 
@@ -253,6 +332,8 @@ class GraenCryptoV6Runtime:
         payload: dict[str, Any],
         *,
         key_suffix: str,
+        symbol: str = "",
+        occurred_at: str | None = None,
     ) -> bool:
         url = str(self.settings.trading_ingest_url or "").strip()
         token = str(self.settings.trading_ingest_token or "").strip()
@@ -270,18 +351,30 @@ class GraenCryptoV6Runtime:
             "run_id": None,
             "strategy_version_id": STRATEGY_VERSION_ID,
             "event_type": event_type,
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol or None,
             "source": "graen-crypto-native-v6",
             "payload": payload,
         }
-        async with httpx.AsyncClient(timeout=60.0) as http:
-            response = await http.post(
-                url,
-                headers={"x-anevum-ingest-token": token},
-                json={"events": [event]},
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http:
+                response = await http.post(
+                    url,
+                    headers={"x-anevum-ingest-token": token},
+                    json={"events": [event]},
+                )
+                response.raise_for_status()
+            return True
+        except Exception as exc:
+            print(
+                "GRAEN_CRYPTO_V6_INGEST_ERROR",
+                {
+                    "event_type": event_type,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                flush=True,
             )
-            response.raise_for_status()
-        return True
+            return False
 
     async def _slack(self, message: str) -> None:
         url = str(self.settings.slack_webhook_url or "").strip()
