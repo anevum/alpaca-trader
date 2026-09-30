@@ -87,6 +87,33 @@
       "protected_action_level": "evidence_write_only"
     },
     {
+      "workflow_id": "velum.counterfactual.parity",
+      "subsystem": "VELUM",
+      "owner": "VELUM",
+      "enabled": true,
+      "schedule_type": "market_session_offset",
+      "schedule_expression": "market_close+20m",
+      "anchor": "close",
+      "offset_minutes": 20,
+      "timezone": "America/New_York",
+      "market_calendar_dependency": true,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 720,
+      "recovery_after_minutes": 15,
+      "retry_policy": {
+        "max_attempts": 2,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "success_route": "rhen-research",
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "velum_counterfactual",
+      "version": "0.1.0",
+      "protected_action_level": "read_only_research"
+    },
+    {
       "workflow_id": "rhen.research.daily",
       "subsystem": "RHEN",
       "owner": "GRAEN",
