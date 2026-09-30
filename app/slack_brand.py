@@ -115,3 +115,22 @@ def decorate_slack_message(
     if not message or _KNOWN_PREFIX.match(message):
         return message
     return f"{emoji_prefix(message, system=system, route=route, iren_state=iren_state)} {message}"
+
+
+def event_system(kind: str | None) -> str:
+    """Resolve the subsystem identity for direct runtime event notifications."""
+    normalized = str(kind or "").strip().lower()
+    if normalized.startswith("nostra"):
+        return "NOSTRA"
+    if normalized.startswith("velum"):
+        return "VELUM"
+    if normalized.startswith("graen") or normalized in {
+        "research_agent",
+        "research_reporting",
+        "research_scheduler",
+        "crypto_promotion",
+    }:
+        return "GRAEN"
+    if normalized.startswith("iren") or normalized == "asc":
+        return "IREN"
+    return "RHEN"
