@@ -182,7 +182,16 @@ class IrenController:
 controller = IrenController()
 
 
-async def _work_notify(message: str) -> None:
+async def _work_notify(message: str, context: dict[str, object]) -> None:
+    response_url = str(context.get("response_url") or "").strip()
+    if response_url.startswith("https://hooks.slack.com/commands/"):
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.post(
+                response_url,
+                json={"response_type": "ephemeral", "text": message},
+            )
+            response.raise_for_status()
+        return
     body = decorate_slack_message(
         "*IREN // WORK*\n" + message,
         system="IREN",
