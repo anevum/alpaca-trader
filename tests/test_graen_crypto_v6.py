@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from graen.crypto.research_v6 import (
     COST_HURDLE_MULTIPLE,
     EXECUTION_UNIVERSE,
@@ -16,6 +18,7 @@ from graen.crypto.research_v6 import (
     round_trip_cost_bps,
     shock_threshold,
     simulate_candidate,
+    run_crypto_research_v6,
 )
 
 
@@ -194,3 +197,35 @@ def test_reclaim_candidate_enters_later_than_immediate_control_and_never_execute
     assert reclaim[0].entry_at == opportunity_end + timedelta(minutes=5)
     assert reclaim[0].candidate_id == STRATEGY_VERSION_ID
     assert reclaim[0].nostra_snapshot_id == opportunities[0].snapshot["snapshot_id"]
+
+
+def test_v6_fails_closed_without_verified_new_corpus():
+    start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="provenance"):
+        run_crypto_research_v6(
+            bars_by_symbol={},
+            development_start=start,
+            validation_start=start + timedelta(days=10),
+            holdout_start=start + timedelta(days=20),
+            holdout_end=start + timedelta(days=30),
+        )
+
+
+def test_v6_rejects_overlap_with_prior_research_range():
+    start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="overlaps"):
+        run_crypto_research_v6(
+            bars_by_symbol={},
+            development_start=start,
+            validation_start=start + timedelta(days=10),
+            holdout_start=start + timedelta(days=20),
+            holdout_end=start + timedelta(days=30),
+            corpus_provenance_verified=True,
+            previously_inspected_ranges=[
+                {
+                    "id": "prior",
+                    "start": (start - timedelta(days=1)).isoformat(),
+                    "end": (start + timedelta(days=1)).isoformat(),
+                }
+            ],
+        )
