@@ -93,7 +93,7 @@ class ResearchReportScheduler:
         self.crypto_forward_runner = CryptoForwardEvidenceRunner(
             market_data=self.crypto_market_data,
             event_sink=event_sink,
-            evidence_reader=self._report_api_get,
+            evidence_reader=self._crypto_evidence_api_get,
             state=state,
         )
         self.last_crypto_forward_at: datetime | None = None
@@ -160,6 +160,15 @@ class ResearchReportScheduler:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
+
+    async def _crypto_evidence_api_get(
+        self,
+        *,
+        evidence_session: str,
+    ) -> dict[str, Any]:
+        return await self._report_api_get(
+            crypto_evidence_session=evidence_session,
+        )
 
     async def _crypto_forward_tick(self, now: datetime | None = None) -> None:
         if not getattr(self.settings, "crypto_lane_enabled", False):
