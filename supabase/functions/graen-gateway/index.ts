@@ -232,7 +232,7 @@ Deno.serve(async (req: Request) => {
                 order by r.started_at desc
                 limit 1
               )='READY_FOR_RESEARCH_EXECUTOR'
-              or p.metadata->>'research_stage'='CRYPTO_LEADLAG_R2_READY'
+              or p.metadata->>'research_stage' in ('CRYPTO_LEADLAG_R2_READY','CRYPTO_V7_BATCH_READY')
             )
           order by p.priority desc, p.created_at asc
           limit 1
