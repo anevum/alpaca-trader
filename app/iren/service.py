@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 from app import orchestration_scheduler as scheduler
 from .core import fresh, identity, reduce_state
+from .work import IrenWorkEngine, status_summary
 from app.slack_brand import decorate_slack_message
 from .topology import bounded_health, topology, project_status
 
@@ -181,13 +182,32 @@ class IrenController:
 controller = IrenController()
 
 
+async def _work_notify(message: str) -> None:
+    body = decorate_slack_message(
+        "*IREN // WORK*\n" + message,
+        system="IREN",
+        iren_state="HEALTHY",
+    )
+    await scheduler.runtime.slack.send("iren-control", body)
+
+
+work_engine = IrenWorkEngine(
+    controller.gateway,
+    lambda: controller.state,
+    notify=_work_notify,
+    interval_seconds=float(os.getenv("IREN_WORK_TICK_SECONDS", "5")),
+)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await scheduler.runtime.start()
     await controller.start()
+    await work_engine.start()
     try:
         yield
     finally:
+        await work_engine.stop()
         await controller.stop()
         await scheduler.runtime.stop()
 
@@ -199,12 +219,15 @@ app = FastAPI(title="IREN Deterministic Control Plane", version=POLICY["version"
 async def health():
     # Process readiness differs from the health of the systems being supervised.
     alive = controller.task is not None and not controller.task.done()
-    body = {"ok": alive and scheduler.runtime.configured, "system": "IREN", "version": POLICY["version"],
+    work_alive = work_engine.task is not None and not work_engine.task.done()
+    body = {"ok": alive and work_alive and scheduler.runtime.configured, "system": "IREN", "version": POLICY["version"],
         "durable_state_current": fresh(controller.last_persisted_at, datetime.now(UTC), POLICY["stale_after_seconds"]),
         "control_state": controller.state.get("state", "STARTING"), "last_error": controller.last_error,
         "scheduler_version": scheduler.runtime.scheduler_version, "model_invoked": False,
         "runtime_identity": controller.runtime_identity,
-        "last_heartbeat_at": controller.last_persisted_at}
+        "last_heartbeat_at": controller.last_persisted_at,
+        "work_engine": {"running": work_alive, "last_error": work_engine.last_error,
+            "last_command_at": work_engine.last_command_at, "last_job_at": work_engine.last_job_at}}
     if not body["ok"]:
         raise HTTPException(status_code=503, detail=body)
     return body
@@ -231,6 +254,36 @@ async def status(x_anevum_scheduler_token: str | None = Header(default=None)):
 async def policy(x_anevum_scheduler_token: str | None = Header(default=None)):
     scheduler._require_scheduler_token(x_anevum_scheduler_token)
     return POLICY
+
+
+@app.get("/v1/iren/work")
+async def work_status(x_anevum_scheduler_token: str | None = Header(default=None)):
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    snapshot = await work_engine.snapshot()
+    return {
+        "schema_version": "iren_work.v1",
+        "summary": status_summary(snapshot, controller.state),
+        **snapshot,
+    }
+
+
+@app.post("/v1/iren/commands")
+async def create_command(
+    body: dict,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    command = str(body.get("command") or "").strip()
+    source = str(body.get("source") or "api").strip()
+    requested_by = str(body.get("requested_by") or "operator").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="command_required")
+    created = await work_engine.enqueue_command(
+        command,
+        source=source,
+        requested_by=requested_by,
+    )
+    return {"ok": True, **created}
 
 
 # Preserve all existing scheduler URLs and its single durable scheduling authority.
