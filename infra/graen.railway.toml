@@ -1,0 +1,14 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = [
+  "/app/graen/**",
+  "/requirements.txt",
+  "/Dockerfile"
+]
+
+[deploy]
+startCommand = "uvicorn app.graen.service:app --host 0.0.0.0 --port 8080"
+healthcheckPath = "/health"
+healthcheckTimeout = 180
+restartPolicyType = "ALWAYS"
