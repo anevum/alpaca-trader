@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import hmac
+import json
 import os
 from typing import Any
 
@@ -24,6 +25,14 @@ from .velum_manifest import (
     build_run_manifest,
     dataset_fingerprint,
     evidence_fingerprint,
+)
+from .research_agent.counterfactual_lab import (
+    COST_MODEL_VERSION,
+    PARAMETER_FEATURES,
+    STRESS_ROUND_TRIP_COST_V1,
+    aggregate_counterfactual_searches,
+    prepare_counterfactual_rows,
+    run_counterfactual_search,
 )
 
 
@@ -51,6 +60,111 @@ def _env_bool(name: str, default: bool = False) -> bool:
 async def _run_blocking(func: Any, /, *args: Any, **kwargs: Any) -> Any:
     """Keep CPU-heavy deterministic replay work off the FastAPI event loop."""
     return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def _canonical_identity(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def build_counterfactual_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    if snapshot.get("schema_version") != "velum_counterfactual_input.v1":
+        raise ValueError("unsupported_counterfactual_snapshot")
+    session = str(snapshot.get("session") or "")
+    if not session:
+        raise ValueError("counterfactual_snapshot_missing_session")
+    current_version = str(snapshot.get("strategy_version_id") or "")
+    baseline_parameters = dict(snapshot.get("baseline_parameters") or {})
+    candidates = [
+        row
+        for row in list(snapshot.get("candidates") or [])
+        if isinstance(row, dict)
+    ]
+    prior_reports = [
+        row
+        for row in list(snapshot.get("prior_reports") or [])
+        if isinstance(row, dict)
+    ]
+    scoped_candidates = [
+        row
+        for row in candidates
+        if not current_version
+        or str(row.get("strategy_version_id") or "") == current_version
+    ]
+
+    session_searches: dict[str, Any] = {}
+    for parameter, current_value in baseline_parameters.items():
+        if parameter not in PARAMETER_FEATURES or current_value in (None, ""):
+            continue
+        rows = prepare_counterfactual_rows(
+            scoped_candidates,
+            parameter=parameter,
+        )
+        session_searches[parameter] = run_counterfactual_search(
+            rows=rows,
+            parameter=parameter,
+            current_value=current_value,
+            horizon_minutes=15,
+            round_trip_cost=STRESS_ROUND_TRIP_COST_V1,
+            cadence="daily",
+        )
+
+    rolling_searches: dict[str, Any] = {}
+    for parameter, current_search in session_searches.items():
+        searches: list[dict[str, Any]] = []
+        for report in prior_reports:
+            if (
+                current_version
+                and str(report.get("strategy_version_id") or "")
+                != current_version
+            ):
+                continue
+            lab = report.get("counterfactual_lab")
+            if not isinstance(lab, dict):
+                continue
+            prior = (lab.get("session_searches") or {}).get(parameter)
+            if isinstance(prior, dict):
+                searches.append(prior)
+        searches.append(current_search)
+        rolling = aggregate_counterfactual_searches(searches)
+        if rolling is not None:
+            rolling_searches[parameter] = rolling
+
+    ready = sorted(
+        parameter
+        for parameter, result in rolling_searches.items()
+        if isinstance(result, dict) and result.get("validity_passed") is True
+    )
+    return {
+        "methodology_version": "asc-counterfactual-lab-v1",
+        "session": session,
+        "strategy_version_id": current_version or None,
+        "baseline_parameters": baseline_parameters,
+        "candidate_rows_received": len(candidates),
+        "candidate_rows_in_strategy_scope": len(scoped_candidates),
+        "history_window_calendar_days": 35,
+        "cost_model": {
+            "version": COST_MODEL_VERSION,
+            "round_trip_cost": str(STRESS_ROUND_TRIP_COST_V1),
+            "round_trip_bps": "22",
+            "role": "conservative research stress floor",
+        },
+        "session_searches": session_searches,
+        "rolling_searches": rolling_searches,
+        "proposal_ready_parameters": ready,
+        "screening_only": True,
+        "counterfactual_not_realized_trades": True,
+        "read_only": True,
+        "execution_authority": False,
+        "risk_or_sizing_authority": False,
+        "live_configuration_changed": False,
+        "promotion_authorized": False,
+    }
 
 
 def _build_equity_strategy(settings: Settings):
@@ -566,6 +680,55 @@ class VelumRuntime:
                 + " | mode: 24/7 research-only"
             )
 
+    async def run_counterfactual(
+        self,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        lab = await _run_blocking(build_counterfactual_from_snapshot, snapshot)
+        output_identity = _canonical_identity(lab)
+        expected = snapshot.get("expected_counterfactual_lab")
+        expected_identity = snapshot.get("expected_output_identity")
+        if isinstance(expected, dict) and not expected_identity:
+            expected_identity = _canonical_identity(expected)
+        parity_match = (
+            output_identity == expected_identity
+            if isinstance(expected_identity, str) and expected_identity
+            else None
+        )
+        session = str(snapshot.get("session") or lab.get("session") or "")
+        input_identity = str(snapshot.get("input_identity") or "")
+        payload = {
+            "system": "VELUM",
+            "methodology_version": "velum-counterfactual-execution-v1",
+            "session": session,
+            "strategy_version_id": lab.get("strategy_version_id"),
+            "input_identity": input_identity or None,
+            "output_identity": output_identity,
+            "expected_output_identity": expected_identity,
+            "parity_match": parity_match,
+            "counterfactual_lab": lab,
+            "runtime_provenance": self.runtime_provenance(),
+            "research_only": True,
+            "read_only": True,
+            "broker_orders_possible": False,
+            "execution_authority": False,
+            "risk_or_sizing_authority": False,
+            "live_configuration_changed": False,
+            "promotion_authorized": False,
+        }
+        key_suffix = (
+            "counterfactual:"
+            + session
+            + ":"
+            + (input_identity[-24:] if input_identity else output_identity[-24:])
+        )
+        payload["persisted"] = await self._emit(
+            "velum_counterfactual_result",
+            payload,
+            key_suffix=key_suffix,
+        )
+        return payload
+
     def _payload(
         self,
         *,
@@ -688,6 +851,11 @@ class VelumCryptoRequest(BaseModel):
     scheduled_at: datetime | None = None
 
 
+class VelumCounterfactualRequest(BaseModel):
+    snapshot: dict[str, Any]
+    scheduled_at: datetime | None = None
+
+
 def require_scheduler_token(x_anevum_scheduler_token: str | None) -> None:
     expected = str(getattr(settings, "trading_ingest_token", "") or "").strip()
     if not expected:
@@ -739,6 +907,23 @@ async def health():
 @app.get("/status")
 async def status():
     return velum.status()
+
+
+@app.post("/v1/scheduler/counterfactual")
+async def scheduler_counterfactual(
+    request: VelumCounterfactualRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    if request.snapshot.get("schema_version") != "velum_counterfactual_input.v1":
+        raise HTTPException(status_code=422, detail="unsupported counterfactual snapshot")
+    async with velum.run_lock:
+        result = await velum.run_counterfactual(request.snapshot)
+    return {
+        "ok": True,
+        "scheduled_at": request.scheduled_at.isoformat() if request.scheduled_at else None,
+        **result,
+    }
 
 
 @app.post("/v1/scheduler/equity")
