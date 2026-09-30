@@ -46,7 +46,7 @@
     {
       "id": "GRAEN",
       "url_env": "IREN_GRAEN_HEALTH_URL",
-      "default_url": "http://rhen-crypto-edge-discovery.railway.internal:8080/health"
+      "default_url": "http://graen.railway.internal:8080/health"
     }
   ]
 }
