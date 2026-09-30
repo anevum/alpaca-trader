@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any
+from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
 
@@ -75,7 +76,7 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
     scheduler = observation.get("scheduler", {})
     if scheduler.get("configured") is not True or scheduler.get("last_error"):
         issue("scheduler.health", "critical", "canonical_scheduler_degraded")
-    elif not scheduler.get("running_job") and not fresh(scheduler.get("last_success_at"), now, policy["stale_after_seconds"]):
+    elif not scheduler.get("running_job") and not fresh(scheduler.get("last_success_at"), now, policy["stale_after_seconds"]) and not fresh(scheduler.get("started_at"), now, policy["stale_after_seconds"]):
         issue("scheduler.stale", "critical", "scheduler_tick_stale")
     # Use only the latest current execution per workflow; old misses remain history.
     latest: dict[str, dict] = {}
@@ -86,6 +87,10 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
     for key, row in latest.items():
         if key.startswith("verification.") or not fresh(row.get("scheduled_at"), now, 86400):
             continue
+        if key in {"rhen.preflight", "rhen.market_open"}:
+            scheduled = datetime.fromisoformat(row["scheduled_at"].replace("Z", "+00:00"))
+            if scheduled.astimezone(ZoneInfo("America/New_York")).date() != now.astimezone(ZoneInfo("America/New_York")).date():
+                continue
         if row.get("status") in {"FAILED", "MISSED"}:
             issue("workflow." + key, "warning", "current_workflow_" + row["status"].lower())
         if row.get("status") == "RUNNING" and row.get("lease_until"):

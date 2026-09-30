@@ -226,10 +226,10 @@ class IntegrityTests(unittest.TestCase):
         mapping = load_role_map()
         status = [{"id": row["service_id"], "name": row["expected_name"],
                    "latestDeployment": {"status": "SUCCESS"},
-                   "cronSchedule": "5 22 * * 1-5" if row["role"] == "research_scheduler" else None}
+                   "cronSchedule": None}
                   for row in mapping["assignments"]]
         configs = {row["service_id"]: {
-            "start_command": f"uvicorn {row['command_marker']}" if row["role"] != "research_scheduler" else "python -m scripts.research_cron",
+            "start_command": f"uvicorn {row['command_marker']}",
             "source": {"repo": row["source_repo"]} if row.get("source_repo") else {"image": row["source_image"]},
         } for row in mapping["assignments"]}
         normalized = normalize_services(status, configs, project_id=mapping["project_id"],

@@ -78,6 +78,7 @@ class IrenController:
         return {"observed_at": datetime.now(UTC).isoformat(), "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
             "services": services, "configuration": config, "runs": recent,
             "scheduler": {"configured": rt.configured, "version": rt.scheduler_version,
+                "started_at": rt.started_at.isoformat(),
                 "last_success_at": rt.last_success_at.isoformat() if rt.last_success_at else None,
                 "last_error": bool(rt.last_error), "running_job": rt.running_job,
                 "next_expected_runs": dict(rt.next_runs)}}
@@ -87,6 +88,14 @@ class IrenController:
             # Read the authoritative revision each cycle. Restarts preserve hysteresis.
             saved = await self.gateway("iren_read")
             previous = saved.get("state") or {}
+            # During rolling deployment, only one observation per minute counts.
+            # A replacement process reads the current state instead of accelerating hysteresis.
+            if fresh(previous.get("observed_at"), datetime.now(UTC), POLICY["tick_seconds"] - 1):
+                self.state = previous
+                self.revision = int(saved.get("revision", 0))
+                self.last_persisted_at = previous["observed_at"]
+                self.last_error = None
+                return
             observation = await self.observe()
             state, events = reduce_state(previous, observation, POLICY)
             written = await self.gateway("iren_commit", expected_revision=saved.get("revision", 0),
@@ -120,7 +129,7 @@ class IrenController:
             response = await client.get(root + "/v1/iren/status", headers=scheduler.runtime.scheduler_headers)
             response.raise_for_status()
             body = response.json()
-            if body.get("stale") is not False or body.get("revision", 0) < self.revision:
+            if body.get("stale") is not False or int(body.get("revision", 0)) < self.revision:
                 raise RuntimeError("iren_api_durable_state_not_current")
             registry = await client.get(root + "/v1/registry")
             registry.raise_for_status()

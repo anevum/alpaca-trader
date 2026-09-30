@@ -6,6 +6,6 @@
     {"service_id": "f933a669-8591-4233-8510-e0db1548e463", "role": "production_trading", "expected_name": "alpaca-trader", "source_repo": "anevum/alpaca-trader", "command_marker": "app.main:app"},
     {"service_id": "76ca1598-068e-43a2-b2a7-37ff9bb2fe15", "role": "research_agent", "expected_name": "rhen-research-agent", "source_repo": "anevum/alpaca-trader", "command_marker": "app.research_agent.service:app"},
     {"service_id": "ea227e06-1532-45aa-89b1-2e39215db9a5", "role": "preopen_state", "expected_name": "rhen-preopen-state", "source_repo": "anevum/alpaca-trader", "command_marker": "app.preopen_state.service:app"},
-    {"service_id": "8f52c715-c4fa-453f-a120-2183b5ace5c4", "role": "research_scheduler", "expected_name": "rhen-research-scheduler", "source_repo": "anevum/alpaca-trader", "command_marker": "scripts.research_cron", "cron_required": true}
+    {"service_id": "8f52c715-c4fa-453f-a120-2183b5ace5c4", "role": "research_scheduler", "expected_name": "rhen-research-scheduler", "source_repo": "anevum/alpaca-trader", "command_marker": "app.iren.service:app", "cron_required": false}
   ]
 }
