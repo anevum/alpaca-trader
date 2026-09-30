@@ -328,3 +328,63 @@ def test_recent_missed_job_still_alerts(monkeypatch):
 
     assert runtime._notify.await_count == 1
     assert runtime.ledger.completions[0][1]["status"] == "MISSED"
+
+
+def test_velum_counterfactual_scheduler_routes_frozen_snapshot_through_ledger_worker():
+    runtime = object.__new__(SchedulerRuntime)
+    runtime.trader_url = "http://rhen/v1/scheduler"
+    runtime.velum_url = "http://velum/v1/scheduler"
+    runtime.token = "test-token"
+    snapshot = {
+        "schema_version": "velum_counterfactual_input.v1",
+        "session": "2026-09-30",
+        "input_identity": "sha256:input",
+    }
+    runtime._post = AsyncMock(side_effect=[
+        {"ok": True, "snapshot": snapshot},
+        {
+            "ok": True,
+            "persisted": True,
+            "output_identity": "sha256:output",
+            "expected_output_identity": "sha256:output",
+            "parity_match": True,
+        },
+    ])
+    item = ScheduledItem(
+        workflow(
+            workflow_id="velum.counterfactual.parity",
+            implementation_target="velum_counterfactual",
+        ),
+        datetime(2026, 9, 30, 20, 20, tzinfo=UTC),
+        "2026-09-30",
+        {"session": "2026-09-30"},
+    )
+
+    result = asyncio.run(runtime._execute(item))
+
+    assert result["input_identity"] == "sha256:input"
+    assert result["parity_match"] is True
+    assert result["execution_authority"] is False
+    assert runtime._post.await_count == 2
+    first = runtime._post.await_args_list[0]
+    second = runtime._post.await_args_list[1]
+    assert first.args[0].endswith("/counterfactual-snapshot")
+    assert second.args[0].endswith("/counterfactual")
+    assert second.args[2]["snapshot"] == snapshot
+
+
+def test_counterfactual_parity_runs_after_authoritative_close_report():
+    import json
+    from pathlib import Path
+
+    registry = json.loads(Path("app/schedule_registry.json").read_text())
+    rows = {row["workflow_id"]: row for row in registry["workflows"]}
+    assert rows["rhen.session_close"]["offset_minutes"] == 15
+    assert rows["velum.counterfactual.parity"]["offset_minutes"] == 20
+    assert rows["rhen.research.daily"]["offset_minutes"] == 25
+    assert (
+        rows["rhen.session_close"]["offset_minutes"]
+        < rows["velum.counterfactual.parity"]["offset_minutes"]
+        < rows["rhen.research.daily"]["offset_minutes"]
+    )
+    assert rows["velum.counterfactual.parity"]["protected_action_level"] == "read_only_research"
