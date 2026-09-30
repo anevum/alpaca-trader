@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -70,7 +70,16 @@ class AlpacaClient:
         session_date = observed_at.astimezone(NY).date()
 
         try:
-            activities = await self.transfer_activities(date=session_date.isoformat())
+            # Alpaca's last_equity is the previous trading day's 4:00 PM ET
+            # equity. Reconcile owner cash movements over that same reference
+            # window rather than only activities whose settlement date is today.
+            # A 7-day creation-time lookback safely spans weekends and exchange
+            # holidays; detected_session_cash_flow still accepts only CSD/CSW.
+            activity_after = (session_date - timedelta(days=7)).isoformat()
+            activities = await self.transfer_activities(
+                after=activity_after,
+                until=observed_at.isoformat(),
+            )
             detected = detected_session_cash_flow(
                 activities,
                 session_date=session_date,
@@ -148,6 +157,8 @@ class AlpacaClient:
         self,
         *,
         date: str | None = None,
+        after: str | None = None,
+        until: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
@@ -156,6 +167,10 @@ class AlpacaClient:
         }
         if date:
             params["date"] = date
+        if after:
+            params["after"] = after
+        if until:
+            params["until"] = until
         result = await self._request(
             "GET",
             "/v2/account/activities/TRANS",
