@@ -171,6 +171,7 @@ def test_readiness_requires_fresh_durable_state(monkeypatch):
 @pytest.mark.parametrize("module,forbidden", [
     ("app.iren.service", ["app.main", "app.alpaca_client", "app.execution", "app.config"]),
     ("app.main", ["app.iren.service", "app.orchestration_scheduler"]),
+    ("app.velum_service", ["app.main", "app.alpaca_client", "app.execution"]),
 ])
 def test_separate_process_import_boundaries(module, forbidden):
     code = "import importlib,sys; importlib.import_module(" + repr(module) + "); assert not set(" + repr(forbidden) + ") & set(sys.modules)"
