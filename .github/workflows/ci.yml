@@ -21,6 +21,6 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pip install pytest==8.3.5
       - run: python -m scripts.staging_check
-      - run: python -m py_compile graen/crypto/service_v6.py
+      - run: python -m py_compile graen/crypto/service_v6.py graen/crypto/shadow_v6.py
       - run: python -m pytest -q tests/test_iren_control_plane.py
-      - run: python -m pytest -q tests/test_strategy_health.py tests/test_research_agent_runner.py tests/test_research_scheduler.py tests/test_slack_notifier.py tests/test_replay.py tests/test_velum.py tests/test_velum_manifest.py tests/test_orchestration_scheduler.py tests/test_scheduler_ledger_schema.py tests/test_preopen_safety.py tests/test_production_hardening.py tests/test_graen_crypto_v5.py tests/test_graen_crypto_v6.py
+      - run: python -m pytest -q tests/test_strategy_health.py tests/test_research_agent_runner.py tests/test_research_scheduler.py tests/test_slack_notifier.py tests/test_replay.py tests/test_velum.py tests/test_velum_manifest.py tests/test_orchestration_scheduler.py tests/test_scheduler_ledger_schema.py tests/test_preopen_safety.py tests/test_production_hardening.py tests/test_graen_crypto_v5.py tests/test_graen_crypto_v6.py tests/test_graen_crypto_shadow_v6.py
