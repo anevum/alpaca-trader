@@ -251,3 +251,44 @@ def test_weekly_report_read_uses_durable_report_api():
 
     assert calls == [{"latest": "weekly", "week_end": "2026-09-25"}]
     assert report["completeness_state"] == "PARTIAL"
+
+
+def test_crypto_forward_tick_runs_even_when_equity_reporting_fails():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    class State:
+        def __init__(self):
+            self.events = []
+
+        def record_event(self, **event):
+            self.events.append(event)
+
+    state = State()
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        state,
+        SimpleNamespace(),
+    )
+    calls = []
+
+    async def crypto_tick(now=None):
+        calls.append("crypto")
+
+    async def failing_catch_up(now=None):
+        calls.append("equity")
+        scheduler.stop_event.set()
+        raise TypeError("synthetic equity reporting failure")
+
+    scheduler._crypto_forward_tick = crypto_tick
+    scheduler._catch_up_latest_completed = failing_catch_up
+
+    asyncio.run(scheduler._run())
+
+    assert calls == ["crypto", "equity"]
+    assert state.events[-1]["kind"] == "research_reporting"
+    assert "TypeError" in state.events[-1]["reason"]
