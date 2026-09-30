@@ -16,7 +16,6 @@ from .crypto_layer import (
     enrich_crypto_signal_market_state,
 )
 from .persistence import TradingEventSink
-from .research_agent.crypto_graen import assess_crypto_promotion
 from .risk import validate_crypto_buy, validate_crypto_sell_to_flat
 from .state import RuntimeState
 from .strategy import Signal
@@ -475,9 +474,6 @@ class CryptoExecutionEngine:
         ))
         self.state.crypto_recent_orders = self._bot_crypto_orders(recent_orders)[:20]
         self.state.crypto_execution_healthy = True
-        self.state.crypto_graen_promotion = assess_crypto_promotion(
-            self.settings.crypto_promotion_evidence
-        )
         data_symbols = list(dict.fromkeys([
             *active_symbols,
             *self.settings.crypto_confirmation_symbols,
