@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -140,8 +140,15 @@ class AlpacaClient:
         if not close_raw:
             raise ValueError("prior market close is missing close timestamp")
         try:
-            close_at = datetime.fromisoformat(close_raw.replace("Z", "+00:00"))
-        except ValueError as exc:
+            if "T" not in close_raw:
+                close_at = datetime.combine(
+                    date.fromisoformat(str(prior_session["date"])[:10]),
+                    time.fromisoformat(close_raw),
+                    tzinfo=NY,
+                )
+            else:
+                close_at = datetime.fromisoformat(close_raw.replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("prior market close timestamp is invalid") from exc
         if close_at.tzinfo is None or close_at.utcoffset() is None:
             close_at = close_at.replace(tzinfo=NY)
