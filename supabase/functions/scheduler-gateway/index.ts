@@ -148,7 +148,13 @@ async function irenAction(action: string, body: Record<string, unknown>) {
       order by created_at desc
       limit 100
     `;
-    return { objectives, jobs, commands };
+    const settingsRows = await sql`
+      select autopilot_enabled,autopilot_max_jobs_per_day,model_execution_authorized,
+             updated_by,updated_at
+      from private.iren_settings
+      where singleton
+    `;
+    return { objectives, jobs, commands, settings: settingsRows[0] || {} };
   }
   if (action === "iren_command_create") {
     const commandText = String(body.command_text || "").trim().slice(0, 4000);
@@ -287,6 +293,32 @@ async function irenAction(action: string, body: Record<string, unknown>) {
     `;
     return { job: rows[0] };
   }
+  if (action === "iren_settings_update") {
+    const requested = objectValue(body.settings);
+    const updatedBy = String(body.updated_by || "iren").trim().slice(0,160);
+    const autopilotEnabled = typeof requested.autopilot_enabled === "boolean"
+      ? requested.autopilot_enabled
+      : null;
+    const rawCap = requested.autopilot_max_jobs_per_day;
+    const cap = rawCap == null ? null : Math.max(1, Math.min(12, Number(rawCap)));
+    const modelAuthorized = typeof requested.model_execution_authorized === "boolean"
+      ? requested.model_execution_authorized
+      : null;
+    const rows = await sql`
+      update private.iren_settings
+      set autopilot_enabled=coalesce(${autopilotEnabled},autopilot_enabled),
+          autopilot_max_jobs_per_day=coalesce(${cap},autopilot_max_jobs_per_day),
+          model_execution_authorized=coalesce(${modelAuthorized},model_execution_authorized),
+          updated_by=${updatedBy},
+          updated_at=now()
+      where singleton
+      returning autopilot_enabled,autopilot_max_jobs_per_day,model_execution_authorized,
+                updated_by,updated_at
+    `;
+    if (!rows[0]) throw new Error("iren_settings_not_found");
+    return { settings: rows[0] };
+  }
+
   if (action === "iren_objective_update") {
     const objectiveKey = String(body.objective_key || "").trim();
     const status = String(body.status || "").trim().toUpperCase();
@@ -324,7 +356,7 @@ Deno.serve(async (req: Request) => {
 
     const body = objectValue(await req.json());
     const action = String(body.action || "");
-    if (["iren_read", "iren_commit", "iren_notifications_claim", "iren_notification_complete", "iren_work_snapshot", "iren_command_create", "iren_commands_claim", "iren_command_complete", "iren_job_create", "iren_jobs_claim", "iren_job_update", "iren_objective_update"].includes(action)) {
+    if (["iren_read", "iren_commit", "iren_notifications_claim", "iren_notification_complete", "iren_work_snapshot", "iren_command_create", "iren_commands_claim", "iren_command_complete", "iren_job_create", "iren_jobs_claim", "iren_job_update", "iren_settings_update", "iren_objective_update"].includes(action)) {
       return json(200, { ok: true, ...(await irenAction(action, body)) });
     }
     if (action === "claim") {
