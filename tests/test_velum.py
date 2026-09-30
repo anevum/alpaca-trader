@@ -278,7 +278,7 @@ def test_velum_counterfactual_matches_rhen_inline_lab_identity():
         "baseline_parameters": {
             "min_momentum_pct": str(settings_obj.min_momentum_pct),
             "min_vwap_edge_pct": str(settings_obj.min_vwap_edge_pct),
-            "min_confirmations": str(settings_obj.min_confirmations),
+            "min_confirmations": settings_obj.min_confirmations,
             "max_vwap_extension_pct": str(settings_obj.max_vwap_extension_pct),
         },
         "candidates": [candidate],
