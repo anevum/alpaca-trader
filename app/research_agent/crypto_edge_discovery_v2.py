@@ -26,7 +26,8 @@ from .dependence import diagnose_cross_candidate, diagnose_path
 from .multiplicity import benjamini_yekutieli
 
 
-METHODOLOGY_VERSION = "graen-crypto-edge-discovery-v2"
+METHODOLOGY_VERSION = "graen-crypto-edge-discovery-v2.1"
+V1_EVALUATION_START = datetime(2026, 8, 31, 1, 53, tzinfo=timezone.utc)
 GENERATION_SOURCE = "graen-crypto-edge-discovery-v1:NO_EDGE:2026-09-30"
 DEFAULT_ALPHA = 0.05
 
@@ -295,6 +296,17 @@ def run_crypto_edge_discovery_v2(
         }
 
     start, end = bounds
+    if end > V1_EVALUATION_START:
+        return {
+            "methodology_version": METHODOLOGY_VERSION,
+            "status": "CORPUS_OVERLAP_INVALID",
+            "reason": "v2.1 evaluation bars overlap the v1 evaluation corpus",
+            "corpus_start": start.isoformat(),
+            "corpus_end": end.isoformat(),
+            "v1_evaluation_start": V1_EVALUATION_START.isoformat(),
+            "promotion_authority": False,
+            "live_configuration_changed": False,
+        }
     corpus_days = (end - start).total_seconds() / 86400.0
     minimum_days = min_train_days + validation_days * 2 + holdout_days
     if corpus_days < minimum_days:
@@ -518,9 +530,7 @@ def run_crypto_edge_discovery_v2(
                 symbol: len(rows)
                 for symbol, rows in sorted(bars.items())
             },
-            "nonoverlap_with_v1_evaluation": end <= datetime(
-                2026, 8, 31, 1, 53, tzinfo=timezone.utc
-            ),
+            "nonoverlap_with_v1_evaluation": end <= V1_EVALUATION_START,
         },
         "contract": {
             "candidate_set_frozen_before_validation": True,
