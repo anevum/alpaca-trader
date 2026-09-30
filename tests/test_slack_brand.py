@@ -11,7 +11,7 @@ def test_system_prefixes_match_installed_slack_emoji():
     assert decorate_slack_message("*RHEN // ONLINE*") == ":rhen_live: *RHEN // ONLINE*"
     assert decorate_slack_message("*GRAEN // RESEARCH COMPLETE*") == ":graen_research: *GRAEN // RESEARCH COMPLETE*"
     assert decorate_slack_message("*VELUM // EQUITY REPLAY COMPLETE*") == ":velum_replay: *VELUM // EQUITY REPLAY COMPLETE*"
-    assert decorate_slack_message("*NOSTRA // STATE UPDATE*") == ":nostra_up: *NOSTRA // STATE UPDATE*"
+    assert decorate_slack_message("*NOSTRA // STATE UPDATE*") == ":nostra: *NOSTRA // STATE UPDATE*"
     assert decorate_slack_message("*ANEVUM // DEPLOYED*") == ":anevum_deploy: *ANEVUM // DEPLOYED*"
 
 
