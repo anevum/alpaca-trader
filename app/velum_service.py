@@ -72,6 +72,23 @@ def _canonical_identity(value: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _restore_counterfactual_parameter(
+    parameter: str,
+    value: Any,
+) -> Any:
+    if value in (None, ""):
+        return value
+    if parameter == "min_confirmations":
+        return int(Decimal(str(value)))
+    if parameter in {
+        "min_momentum_pct",
+        "min_vwap_edge_pct",
+        "max_vwap_extension_pct",
+    }:
+        return Decimal(str(value))
+    return value
+
+
 def build_counterfactual_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     if snapshot.get("schema_version") != "velum_counterfactual_input.v1":
         raise ValueError("unsupported_counterfactual_snapshot")
@@ -79,7 +96,12 @@ def build_counterfactual_from_snapshot(snapshot: dict[str, Any]) -> dict[str, An
     if not session:
         raise ValueError("counterfactual_snapshot_missing_session")
     current_version = str(snapshot.get("strategy_version_id") or "")
-    baseline_parameters = dict(snapshot.get("baseline_parameters") or {})
+    baseline_parameters = {
+        parameter: _restore_counterfactual_parameter(parameter, value)
+        for parameter, value in dict(
+            snapshot.get("baseline_parameters") or {}
+        ).items()
+    }
     candidates = [
         row
         for row in list(snapshot.get("candidates") or [])
