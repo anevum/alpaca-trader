@@ -29,7 +29,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "trader_preflight",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "protected_action_level": "read_only"
     },
     {

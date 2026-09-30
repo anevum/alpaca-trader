@@ -4,6 +4,8 @@ import asyncio
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.orchestration_scheduler import (
     NY,
     ScheduledItem,
@@ -108,6 +110,54 @@ def test_hourly_crypto_bucket_uses_completed_hour():
     item = rolling_item(w, now)
     assert item.scheduled_at == datetime(2026, 9, 30, 3, 5, tzinfo=UTC)
     assert item.details["window_end"] == "2026-09-30T03:00:00+00:00"
+
+
+def test_preflight_allows_sleeping_optional_research_agent():
+    runtime = object.__new__(SchedulerRuntime)
+    runtime.trader_url = "http://rhen/v1/scheduler"
+    runtime.token = "test"
+    runtime._post = AsyncMock(return_value={"ok": True})
+    runtime._dependency_health = AsyncMock(
+        return_value={
+            "rhen": {"ok": True, "required_for_preflight": True},
+            "velum": {"ok": True, "required_for_preflight": True},
+            "research_agent": {"ok": False, "required_for_preflight": False},
+        }
+    )
+    item = ScheduledItem(
+        workflow(implementation_target="trader_preflight"),
+        datetime(2026, 9, 30, 12, 45, tzinfo=UTC),
+        "2026-09-30",
+        {"session": "2026-09-30"},
+    )
+
+    result = asyncio.run(runtime._execute(item))
+
+    assert result["local"]["ok"] is True
+    assert result["dependencies"]["research_agent"]["ok"] is False
+
+
+def test_preflight_still_blocks_unhealthy_required_dependency():
+    runtime = object.__new__(SchedulerRuntime)
+    runtime.trader_url = "http://rhen/v1/scheduler"
+    runtime.token = "test"
+    runtime._post = AsyncMock(return_value={"ok": True})
+    runtime._dependency_health = AsyncMock(
+        return_value={
+            "rhen": {"ok": False, "required_for_preflight": True},
+            "velum": {"ok": True, "required_for_preflight": True},
+            "research_agent": {"ok": False, "required_for_preflight": False},
+        }
+    )
+    item = ScheduledItem(
+        workflow(implementation_target="trader_preflight"),
+        datetime(2026, 9, 30, 12, 45, tzinfo=UTC),
+        "2026-09-30",
+        {"session": "2026-09-30"},
+    )
+
+    with pytest.raises(RuntimeError, match="preflight_dependency_unhealthy:rhen"):
+        asyncio.run(runtime._execute(item))
 
 
 class FakeLedger:

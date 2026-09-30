@@ -623,8 +623,15 @@ class SchedulerRuntime:
                 {"session": session, "scheduled_at": _iso(item.scheduled_at)},
             )
             dependencies = await self._dependency_health()
-            if not all(row.get("ok") for row in dependencies.values()):
-                raise RuntimeError("preflight_dependency_unhealthy")
+            blocking = sorted(
+                name
+                for name, row in dependencies.items()
+                if row.get("required_for_preflight") and not row.get("ok")
+            )
+            if blocking:
+                raise RuntimeError(
+                    "preflight_dependency_unhealthy:" + ",".join(blocking)
+                )
             return {"local": local, "dependencies": dependencies}
 
         if target == "trader_market_open":
@@ -811,6 +818,13 @@ class SchedulerRuntime:
             "velum": self.velum_url.split("/v1/scheduler", 1)[0] + "/health",
             "research_agent": self.research_url.split("/v1/", 1)[0] + "/health",
         }
+        required_for_preflight = {
+            "rhen": True,
+            "velum": True,
+            # The research agent is intentionally sleep-capable/on-demand.
+            # Its availability is reported, but it must not gate market preflight.
+            "research_agent": False,
+        }
         output: dict[str, dict[str, Any]] = {}
         async with httpx.AsyncClient(timeout=20) as client:
             for name, url in urls.items():
@@ -820,9 +834,14 @@ class SchedulerRuntime:
                     output[name] = {
                         "ok": response.is_success and payload.get("ok", True) is not False,
                         "http_status": response.status_code,
+                        "required_for_preflight": required_for_preflight[name],
                     }
                 except Exception as exc:
-                    output[name] = {"ok": False, "error": type(exc).__name__}
+                    output[name] = {
+                        "ok": False,
+                        "error": type(exc).__name__,
+                        "required_for_preflight": required_for_preflight[name],
+                    }
         return output
 
     async def _post(
