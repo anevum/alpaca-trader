@@ -178,6 +178,36 @@ def test_separate_process_import_boundaries(module, forbidden):
     assert completed.returncode == 0, completed.stderr
 
 
+def test_native_velum_heartbeat_and_provenance_are_preserved():
+    heartbeat = "2020-09-30T14:59:30+00:00"
+    health = bounded_health("VELUM", {
+        "ok": True,
+        "running": False,
+        "worker_alive": True,
+        "last_heartbeat_at": heartbeat,
+        "last_success_at": "2020-09-30T14:58:00+00:00",
+        "runtime_provenance": {
+            "system_version": "velum-replay-v2",
+            "git_commit": "abc123",
+            "deployment_id": "deployment-1",
+            "runtime_started_at": "2020-09-30T14:00:00+00:00",
+        },
+    })
+    obs = observation()
+    obs["services"]["VELUM"] = health
+    reduced, _ = reduce_state({}, obs, service.POLICY)
+    rows = {
+        row["service_id"]: row
+        for row in topology(obs, reduced, service.IrenController().runtime_identity)["services"]
+    }
+    assert rows["VELUM"]["status"] == "IDLE"
+    assert rows["VELUM"]["last_heartbeat_at"] == heartbeat
+    assert rows["VELUM"]["last_success"] == "2020-09-30T14:58:00+00:00"
+    assert rows["VELUM"]["service_version"] == "velum-replay-v2"
+    assert rows["VELUM"]["deployment"] == "deployment-1"
+    assert rows["VELUM"]["revision"] == "abc123"
+
+
 def test_worker_program_is_observed_not_hardcoded():
     health = bounded_health("GRAEN", {"ok": True, "program": "graen-crypto-native-v6"})
     assert health["runtime_identity"]["system_version"] == "graen-crypto-native-v6"
