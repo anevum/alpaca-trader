@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 
+from .slack_brand import decorate_slack_message
+
 UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
 REGISTRY_PATH = Path(os.getenv("SCHEDULER_REGISTRY_PATH", "app/schedule_registry.json"))
@@ -295,7 +297,7 @@ class RoutedSlack:
             return f"not_configured:{route}"
         try:
             async with httpx.AsyncClient(timeout=8) as client:
-                response = await client.post(url, json={"text": text})
+                response = await client.post(url, json={"text": decorate_slack_message(text, route=route)})
                 response.raise_for_status()
             return (
                 f"delivered:{route}"
