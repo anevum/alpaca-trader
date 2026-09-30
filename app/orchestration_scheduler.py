@@ -647,7 +647,11 @@ class SchedulerRuntime:
                 str(session),
                 invoke_model=True,
             )
-            return {"operating_review": operating, "research_review": research}
+            return {
+                "operating_review": operating,
+                "research_review": research,
+                "system_state": await self._weekly_system_state(),
+            }
 
         if target == "velum_equity":
             return await self._post(
@@ -693,6 +697,63 @@ class SchedulerRuntime:
             }
 
         raise RuntimeError("unsupported_implementation_target")
+
+    async def _weekly_system_state(self) -> dict[str, Any]:
+        dependencies = await self._dependency_health()
+        recent = await self.ledger.recent(limit=250)
+        failures = [
+            row for row in recent
+            if row.get("status") in {"FAILED", "MISSED", "STALE"}
+        ]
+        successes = [row for row in recent if row.get("status") == "SUCCEEDED"]
+
+        velum_status: dict[str, Any]
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    self.velum_url.split("/v1/scheduler", 1)[0] + "/status"
+                )
+                response.raise_for_status()
+                velum_status = response.json()
+        except Exception as exc:
+            velum_status = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        nostra = {
+            row["workflow_id"]: {
+                "enabled": bool(row.get("enabled")),
+                "version": row.get("version"),
+                "schedule_expression": row.get("schedule_expression"),
+            }
+            for row in self.workflows
+            if row.get("subsystem") == "NOSTRA"
+        }
+        return {
+            "scheduler_version": self.scheduler_version,
+            "dependency_health": dependencies,
+            "scheduler_reliability": {
+                "recent_run_count": len(recent),
+                "successful_run_count": len(successes),
+                "failed_missed_or_stale_count": len(failures),
+                "recent_failures": failures[:20],
+            },
+            "velum": velum_status,
+            "nostra": nostra,
+            "disabled_workflows": [
+                row["workflow_id"]
+                for row in self.workflows
+                if not row.get("enabled")
+            ],
+            "protected_actions": {
+                "live_strategy_mutation": False,
+                "risk_mutation": False,
+                "capital_allocation_mutation": False,
+                "crypto_live_activation": False,
+            },
+        }
+
 
     async def _research_review(
         self,
