@@ -353,7 +353,7 @@ class GraenResearchExecutor:
             problem_id=problem_id,
             run_id=run_id,
             artifact_type="CRYPTO_RESEARCH_BATCH_RESULT",
-            methodology_version=METHODOLOGY_VERSION,
+            methodology_version=V7_METHODOLOGY_VERSION,
             content=result,
         )
 
@@ -367,7 +367,7 @@ class GraenResearchExecutor:
             ),
             "decision": result.get("decision"),
             "status": result.get("status"),
-            "methodology_version": METHODOLOGY_VERSION,
+            "methodology_version": V7_METHODOLOGY_VERSION,
             "research_batch_id": result.get("research_batch_id"),
             "candidate_count": result.get("candidate_count"),
             "candidate_family_count": result.get("candidate_family_count"),
