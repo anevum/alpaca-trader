@@ -669,10 +669,10 @@ class SchedulerRuntime:
             )
 
         if target == "graen_checkpoint":
-            base = self.research_url.rsplit("/", 2)[0]
+            base = self.research_url.split("/v1/", 1)[0]
             async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.get(
-                    base + "/status",
+                    base + "/v1/status",
                     headers=self.research_headers,
                 )
                 response.raise_for_status()
