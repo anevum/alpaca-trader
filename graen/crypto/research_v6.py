@@ -418,6 +418,9 @@ def opportunity_state(
     residual = float(state["residual_15"])
     if residual >= 0:
         return None
+    cost_floor = COST_HURDLE_MULTIPLE * round_trip_cost_bps(symbol, "high") / 10000.0
+    if abs(residual) <= cost_floor:
+        return None
     history = _residual_history(series, symbol, end)
     if len(history) < MIN_RESIDUAL_HISTORY:
         return None
@@ -886,6 +889,25 @@ def _validate_ranges(
     return values
 
 
+def _verify_uninspected_corpus(
+    *,
+    start: datetime,
+    end: datetime,
+    corpus_provenance_verified: bool,
+    previously_inspected_ranges: Sequence[Mapping[str, Any]],
+) -> None:
+    if not corpus_provenance_verified:
+        raise ValueError("v6 corpus provenance must be explicitly verified before inspection")
+    for row in previously_inspected_ranges:
+        prior_start = _stamp(row.get("start"))
+        prior_end = _stamp(row.get("end"))
+        if prior_end <= prior_start:
+            raise ValueError("previously inspected corpus range is invalid")
+        if start < prior_end and prior_start < end:
+            label = str(row.get("id") or row.get("methodology") or "prior research")
+            raise ValueError(f"v6 corpus overlaps previously inspected range: {label}")
+
+
 def run_crypto_research_v6(
     *,
     bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -893,12 +915,20 @@ def run_crypto_research_v6(
     validation_start: datetime,
     holdout_start: datetime,
     holdout_end: datetime,
+    corpus_provenance_verified: bool = False,
+    previously_inspected_ranges: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     development_start, validation_start, holdout_start, holdout_end = _validate_ranges(
         development_start,
         validation_start,
         holdout_start,
         holdout_end,
+    )
+    _verify_uninspected_corpus(
+        start=development_start,
+        end=holdout_end,
+        corpus_provenance_verified=corpus_provenance_verified,
+        previously_inspected_ranges=previously_inspected_ranges,
     )
     series = build_series(
         bars_by_symbol,
@@ -958,6 +988,12 @@ def run_crypto_research_v6(
         "candidate_family": list(candidate_specs()),
         "context_universe": list(CONTEXT_UNIVERSE),
         "execution_universe": list(EXECUTION_UNIVERSE),
+        "corpus_contract": {
+            "provenance_verified": corpus_provenance_verified,
+            "prior_range_count": len(previously_inspected_ranges),
+            "overlap_allowed": False,
+            "holdout_opened_only_after_validation_gate": True,
+        },
         "frozen_parameters": {
             "shock_lookback_minutes": SHOCK_LOOKBACK_MINUTES,
             "residual_vol_lookback_minutes": RESIDUAL_VOL_LOOKBACK_MINUTES,
