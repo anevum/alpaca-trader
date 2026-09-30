@@ -39,6 +39,12 @@ def test_v7_empty_corpus_rejects_without_opening_holdout_or_execution():
     assert result["status"] == "NO_VALIDATION_SURVIVOR"
     assert result["decision"] == "CONTINUE_RESEARCH"
     assert result["holdout"]["opened"] is False
+    assert result["development_survivors"] == []
+    assert result["validation"] == {}
+    assert all(
+        "validation_not_opened" in row["reasons"]
+        for row in result["validation_gates"]
+    )
     assert result["execution_authority"] is False
     assert result["broker_orders_possible"] is False
     assert result["risk_or_sizing_authority"] is False
