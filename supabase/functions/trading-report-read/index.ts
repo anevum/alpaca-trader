@@ -147,10 +147,18 @@ Deno.serve(async (req) => {
         ),
         edge as (
           select payload, occurred_at
-          from private.trading_events
-          where event_type='crypto_edge_discovery_result'
-            and payload->>'methodology_version'='graen-crypto-edge-discovery-v1'
-          order by occurred_at desc
+          from (
+            select payload, occurred_at, 2 as methodology_priority
+            from private.trading_events
+            where event_type='crypto_edge_discovery_v2_result'
+              and payload->>'methodology_version'='graen-crypto-edge-discovery-v2'
+            union all
+            select payload, occurred_at, 1 as methodology_priority
+            from private.trading_events
+            where event_type='crypto_edge_discovery_result'
+              and payload->>'methodology_version'='graen-crypto-edge-discovery-v1'
+          ) ranked
+          order by methodology_priority desc, occurred_at desc
           limit 1
         )
         select jsonb_build_object(
@@ -184,7 +192,12 @@ Deno.serve(async (req) => {
             'mfe',e.mfe,
             'mae',e.mae,
             'slippage',coalesce(
-              nullif(ed.payload#>>'{holdout,cost_scenarios,high,assumptions,slippage_bps_per_side}','')::double precision,
+              nullif(ed.payload#>>'{cost_model,high_slippage_max_bps_per_side}','')::double precision,
+              case
+                when jsonb_typeof(ed.payload#>'{holdout,cost_scenarios,high,assumptions,slippage_bps_per_side}')='string'
+                then nullif(ed.payload#>>'{holdout,cost_scenarios,high,assumptions,slippage_bps_per_side}','')::double precision
+                else null
+              end,
               nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,assumptions,slippage_bps_per_side}','')::double precision
             ),
             'spread_sensitivity',coalesce(
