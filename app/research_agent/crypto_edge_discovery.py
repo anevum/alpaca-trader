@@ -114,6 +114,37 @@ def _positive_fraction(values: Sequence[float]) -> float:
     )
 
 
+def _tail_loss(values: Sequence[float], fraction: float = 0.05) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    count = max(1, int(ceil(len(ordered) * fraction)))
+    return fmean(ordered[:count])
+
+
+def _time_of_week_stability(trades: Sequence[dict[str, Any]]) -> float | None:
+    groups: dict[tuple[int, int], list[float]] = {}
+    for trade in trades:
+        raw = trade.get("entry_at")
+        if not raw:
+            continue
+        try:
+            stamp_value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if stamp_value.tzinfo is None:
+            stamp_value = stamp_value.replace(tzinfo=timezone.utc)
+        key = (
+            stamp_value.astimezone(timezone.utc).weekday(),
+            stamp_value.astimezone(timezone.utc).hour,
+        )
+        groups.setdefault(key, []).append(float(trade.get("return_pct") or 0.0))
+    eligible = [values for values in groups.values() if len(values) >= 2]
+    if not eligible:
+        return None
+    return sum(_expectancy(values) > 0 for values in eligible) / len(eligible)
+
+
 def _moving_block_null_pvalue(
     returns: Sequence[float],
     *,
@@ -851,6 +882,8 @@ def run_crypto_edge_discovery(
                 "assumptions": run["assumptions"],
                 "expectancy_return": _expectancy(returns),
                 "trade_count": len(returns),
+                "tail_loss_05": _tail_loss(returns),
+                "time_of_week_stability": _time_of_week_stability(run["trades"]),
             }
             if label == "high":
                 high_returns = returns
