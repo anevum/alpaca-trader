@@ -11,6 +11,7 @@ from typing import Any, Iterable, Sequence
 from ..crypto_layer import CryptoRollingMomentumStrategy
 from ..math_kernel import arithmetic_return, rolling_realized_volatility, volatility_normalized_momentum
 from ..strategy import Signal
+from ..replay import stamp
 from ..velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
 from .dependence import diagnose_cross_candidate, diagnose_path
 from .multiplicity import benjamini_yekutieli
@@ -155,6 +156,41 @@ def _moving_block_null_pvalue(
         "method": "moving_block_bootstrap_centered_null",
         "dependence_adjusted": True,
     }
+
+
+class CryptoResearchReplayEngine(ContinuousReplayEngine):
+    """Research replay quality gate without inherited strategy confirmations.
+
+    Production config validation remains unchanged. Research families must encode
+    their own cross-asset/context requirements inside their signal logic.
+    """
+
+    def _historical_market_quality(
+        self,
+        signal: Signal,
+        visible: dict[str, list[dict[str, Any]]],
+        now: datetime,
+        spread_pct: Decimal,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        if spread_pct > self.settings.max_spread_pct:
+            return False, "assumed spread exceeds MAX_SPREAD_PCT", {
+                "spread_pct": str(spread_pct)
+            }
+        bars = visible.get(signal.symbol, [])
+        if not bars:
+            return False, "no candidate bars", {}
+        age_seconds = max(
+            (now - (stamp(bars[-1]) + timedelta(minutes=1))).total_seconds(),
+            0.0,
+        )
+        details = {
+            "bar_age_seconds": round(age_seconds, 3),
+            "spread_pct": str(spread_pct),
+            "research_quality_gate": "bar_freshness_and_cost_only",
+        }
+        if age_seconds > self.settings.max_bar_age_seconds:
+            return False, "candidate bar is stale", details
+        return True, "research market-quality assumptions passed", details
 
 
 class _ResearchStrategyBase(CryptoRollingMomentumStrategy):
@@ -564,12 +600,7 @@ def _build_strategy(spec: CandidateSpec, settings: Any) -> tuple[Any, Any]:
     if spec.family == "rolling_momentum_vwap":
         return settings, CryptoRollingMomentumStrategy(**kwargs)
 
-    research_settings = settings.model_copy(
-        update={
-            "min_confirmations": 0,
-            "regime_min_confirmations": 0,
-        }
-    )
+    research_settings = settings
     kwargs = _base_strategy_kwargs(research_settings, candidate_id=spec.candidate_id)
     if spec.family == "volatility_normalized_trend":
         strategy = VolatilityNormalizedTrendStrategy(**kwargs, **spec.parameters)
@@ -628,7 +659,12 @@ def _run_high_cost(
     slippage_bps: Decimal,
 ) -> dict[str, Any]:
     candidate_settings, strategy = _build_strategy(spec, settings)
-    engine = ContinuousReplayEngine(candidate_settings, strategy)
+    engine_cls = (
+        ContinuousReplayEngine
+        if spec.family == "rolling_momentum_vwap"
+        else CryptoResearchReplayEngine
+    )
+    engine = engine_cls(candidate_settings, strategy)
     return engine.run(
         bars,
         initial_equity=initial_equity,
@@ -798,7 +834,12 @@ def run_crypto_edge_discovery(
         high_trades: list[dict[str, Any]] = []
         for label, (spread, slippage) in cost_scenarios.items():
             candidate_settings, strategy = _build_strategy(spec, settings)
-            run = ContinuousReplayEngine(candidate_settings, strategy).run(
+            engine_cls = (
+                ContinuousReplayEngine
+                if spec.family == "rolling_momentum_vwap"
+                else CryptoResearchReplayEngine
+            )
+            run = engine_cls(candidate_settings, strategy).run(
                 holdout_bars,
                 initial_equity=initial_equity,
                 spread_bps=spread,
