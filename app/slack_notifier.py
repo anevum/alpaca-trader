@@ -122,6 +122,29 @@ class SlackNotifier:
             or (kind == "control" and action in {"entries_disabled", "entries_enabled", "cancel_orders"})
             or (kind == "risk" and action in {"blocked", "warning"})
             or (kind == "runtime" and action in {"warning", "error"})
+            or (
+                kind in {
+                    "crypto_runtime",
+                    "crypto_runtime_error",
+                    "crypto_execution",
+                    "crypto_protection",
+                    "crypto_evidence",
+                    "crypto_promotion",
+                    "crypto_breaker",
+                }
+                and action in {
+                    "startup",
+                    "buy",
+                    "sell",
+                    "submitted",
+                    "activated",
+                    "promotion_ready",
+                    "blocked",
+                    "warning",
+                    "error",
+                    "recovered",
+                }
+            )
             or (kind in {"research_agent", "research_reporting", "research_scheduler", "preopen_state"}
                 and action in {"completed", "recovered", "warning", "error"})
             or (
