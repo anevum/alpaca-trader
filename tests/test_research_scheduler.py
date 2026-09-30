@@ -363,3 +363,84 @@ def test_crypto_forward_tick_executes_with_utc_timestamp():
     assert runner.calls == [now]
     assert scheduler.last_crypto_forward_at == now
     assert state.events == []
+
+
+def test_crypto_promotion_tick_fails_closed_from_durable_evidence():
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    class State:
+        def __init__(self):
+            self.crypto_graen_promotion = {
+                "status": "GATED",
+                "promotion_ready": False,
+            }
+            self.crypto_graen_evidence = {}
+            self.events = []
+
+        def record_event(self, **event):
+            self.events.append(event)
+
+    state = State()
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(crypto_lane_enabled=True),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        state,
+        SimpleNamespace(),
+    )
+    calls = []
+
+    async def fake_report_api_get(**params):
+        calls.append(params)
+        return {
+            "ok": True,
+            "evidence": {
+                "resolved_candidate_predictions": 174,
+                "paper_round_trips": 0,
+                "utc_hours_covered": [23],
+                "weekdays_covered": [2],
+                "volatility_regimes": ["high"],
+                "liquidity_regimes": ["wide"],
+                "pairs_covered": ["BTC/USD", "ETH/USD", "SOL/USD"],
+                "metrics": {
+                    "net_expectancy_after_costs": -0.09,
+                    "brier_score": None,
+                    "log_loss": None,
+                    "calibration_intercept": None,
+                    "calibration_slope": None,
+                    "discrimination": None,
+                    "max_drawdown": 0.0175,
+                    "tail_loss": None,
+                    "mfe": 0.01,
+                    "mae": -0.01,
+                    "slippage": 10.0,
+                    "spread_sensitivity": 0.07,
+                    "regime_stability": None,
+                    "time_of_week_stability": None,
+                },
+                "net_expectancy_positive_after_high_costs": False,
+                "walk_forward_passed": False,
+                "holdout_passed": False,
+                "dependence_adjusted": False,
+                "multiplicity_adjusted": False,
+                "no_lookahead_verified": False,
+            },
+        }
+
+    scheduler._report_api_get = fake_report_api_get
+    now = datetime(2026, 9, 30, 1, 15, tzinfo=timezone.utc)
+    asyncio.run(scheduler._crypto_promotion_tick(now))
+
+    assert calls == [{"crypto_promotion": "1"}]
+    assert state.crypto_graen_promotion["promotion_ready"] is False
+    assert state.crypto_graen_promotion["status"] == "GATED"
+    assert "CANDIDATE_FLOOR" in state.crypto_graen_promotion["reason_codes"]
+    assert "NET_EXPECTANCY_POSITIVE_AFTER_HIGH_COSTS" in state.crypto_graen_promotion["reason_codes"]
+    assert state.crypto_graen_evidence["resolved_candidate_predictions"] == 174
+    assert scheduler.last_crypto_promotion_at == now
+    assert state.events[-1]["kind"] == "crypto_promotion"
+    assert state.events[-1]["action"] == "blocked"

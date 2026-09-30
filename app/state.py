@@ -65,6 +65,7 @@ class RuntimeState:
     crypto_forward_evidence_state: dict[str, Any] = field(default_factory=lambda: {"status": "pending"})
     crypto_replay_state: dict[str, Any] = field(default_factory=lambda: {"status": "unknown"})
     crypto_graen_promotion: dict[str, Any] = field(default_factory=lambda: {"status": "GATED", "promotion_ready": False})
+    crypto_graen_evidence: dict[str, Any] = field(default_factory=dict)
     crypto_breaker_state: dict[str, Any] = field(default_factory=dict)
     crypto_exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     exit_states: dict[str, dict[str, Any]] = field(default_factory=dict)

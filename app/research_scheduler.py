@@ -33,6 +33,7 @@ from .research_agent.counterfactual_lab import (
 )
 from .research_agent.control_state import transition_control_state
 from .research_agent.graen_adaptive_validation import assess_adaptive_validation
+from .research_agent.crypto_graen import assess_crypto_promotion
 from .research_agent.nostra_session import derive_nostra_regime_timeline
 from .research_agent.nostra_transition import (
     build_transition_model,
@@ -100,6 +101,7 @@ class ResearchReportScheduler:
             state=state,
         )
         self.last_crypto_forward_at: datetime | None = None
+        self.last_crypto_promotion_at: datetime | None = None
 
     def status(self) -> dict[str, Any]:
         return {
@@ -119,6 +121,8 @@ class ResearchReportScheduler:
             "daily_report_version": DAILY_REPORT_VERSION,
             "weekly_report_version": REPORT_VERSION,
             "last_post_event_summary": self.last_post_event_summary,
+            "crypto_graen_promotion": getattr(self.state, "crypto_graen_promotion", {}),
+            "crypto_graen_evidence": getattr(self.state, "crypto_graen_evidence", {}),
             "last_weekly_completeness": (
                 self.last_weekly_report.get("completeness_state")
                 if self.last_weekly_report
@@ -145,6 +149,7 @@ class ResearchReportScheduler:
         catch_up_done = False
         while not self.stop_event.is_set():
             await self._crypto_forward_tick()
+            await self._crypto_promotion_tick()
             try:
                 if not catch_up_done:
                     await self._catch_up_latest_completed()
@@ -173,6 +178,55 @@ class ResearchReportScheduler:
         return await self._report_api_get(
             crypto_evidence_session=evidence_session,
         )
+
+    async def _crypto_promotion_tick(self, now: datetime | None = None) -> None:
+        if not getattr(self.settings, "crypto_lane_enabled", False):
+            return
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if (
+            self.last_crypto_promotion_at is not None
+            and (current - self.last_crypto_promotion_at).total_seconds() < 300
+        ):
+            return
+        try:
+            response = await self._report_api_get(crypto_promotion="1")
+            evidence = dict(response.get("evidence") or {})
+            result = assess_crypto_promotion(evidence)
+            previous = dict(getattr(self.state, "crypto_graen_promotion", {}) or {})
+            self.state.crypto_graen_evidence = evidence
+            self.state.crypto_graen_promotion = result
+            self.last_crypto_promotion_at = current
+            changed = (
+                previous.get("status") != result.get("status")
+                or previous.get("reason_codes") != result.get("reason_codes")
+            )
+            if changed:
+                self.state.record_event(
+                    kind="crypto_promotion",
+                    action=(
+                        "promotion_ready"
+                        if result.get("promotion_ready")
+                        else "blocked"
+                    ),
+                    message=(
+                        "GRAEN crypto promotion gate passed"
+                        if result.get("promotion_ready")
+                        else "GRAEN crypto promotion remains gated"
+                    ),
+                    reason=",".join(result.get("reason_codes") or []) or "ALL_GATES_PASSED",
+                    payload={
+                        "promotion": result,
+                        "evidence": evidence,
+                    },
+                )
+        except Exception as exc:
+            logger.exception("GRAEN crypto promotion evaluation failed")
+            self.state.record_event(
+                kind="crypto_promotion",
+                action="error",
+                message="GRAEN crypto promotion evaluation failed",
+                reason=f"{type(exc).__name__}: {exc}",
+            )
 
     async def _crypto_forward_tick(self, now: datetime | None = None) -> None:
         if not getattr(self.settings, "crypto_lane_enabled", False):
