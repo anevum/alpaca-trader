@@ -44,3 +44,11 @@ def test_registry_contains_one_owner_for_required_workflows():
     assert required.issubset(ids)
     nostra = [row for row in registry["workflows"] if row["subsystem"] == "NOSTRA"]
     assert nostra and all(row["enabled"] is False for row in nostra)
+
+
+def test_scheduler_image_packages_canonical_registry():
+    dockerfile = Path("infra/scheduler.Dockerfile").read_text()
+    assert "COPY infra/schedule_registry.json ./infra/schedule_registry.json" in dockerfile
+    railway = Path("infra/scheduler.railway.toml").read_text()
+    assert 'dockerfilePath = "infra/scheduler.Dockerfile"' in railway
+    assert '--port 8080' in railway
