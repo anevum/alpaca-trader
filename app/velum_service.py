@@ -46,6 +46,11 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+async def _run_blocking(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Keep CPU-heavy deterministic replay work off the FastAPI event loop."""
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 def _build_equity_strategy(settings: Settings):
     if settings.strategy_name == "rolling_momentum_vwap":
         return RollingMomentumVwapStrategy(
@@ -310,20 +315,23 @@ class VelumRuntime:
             start=start,
             end=end,
         )
-        baseline = engine.run(
+        baseline = await _run_blocking(
+            engine.run,
             bars,
             initial_equity=self.initial_equity,
             spread_bps=self.equity_spread_bps,
             slippage_bps=self.equity_slippage_bps,
         )
-        stress = engine.run(
+        stress = await _run_blocking(
+            engine.run,
             bars,
             initial_equity=self.initial_equity,
             spread_bps=self.equity_spread_bps * Decimal("2"),
             slippage_bps=self.equity_slippage_bps * Decimal("2"),
         )
         seed = int(session.strftime("%Y%m%d"))
-        bootstrap = bootstrap_trade_distribution(
+        bootstrap = await _run_blocking(
+            bootstrap_trade_distribution,
             baseline["trades"],
             paths=self.bootstrap_paths,
             seed=seed,
@@ -350,14 +358,14 @@ class VelumRuntime:
             methodology_version=payload["methodology_version"],
             start=start,
             end=end,
-            dataset_hash=dataset_fingerprint(bars),
+            dataset_hash=await _run_blocking(dataset_fingerprint, bars),
             coverage=coverage,
             strategy_version_id=self.settings.strategy_version_id or None,
             strategy=baseline["strategy"],
             execution_assumptions=baseline["assumptions"],
             random_seed=seed,
             runtime_git_commit=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            evidence_hash=evidence_fingerprint(payload),
+            evidence_hash=await _run_blocking(evidence_fingerprint, payload),
         )
         payload["run_manifest"] = manifest
         await self._emit(
@@ -399,25 +407,29 @@ class VelumRuntime:
             start=start,
             end=end,
         )
-        baseline = engine.run(
+        baseline = await _run_blocking(
+            engine.run,
             bars,
             initial_equity=self.initial_equity,
             spread_bps=self.crypto_spread_bps,
             slippage_bps=self.crypto_slippage_bps,
         )
-        stress = engine.run(
+        stress = await _run_blocking(
+            engine.run,
             bars,
             initial_equity=self.initial_equity,
             spread_bps=self.crypto_spread_bps * Decimal("2"),
             slippage_bps=self.crypto_slippage_bps * Decimal("2"),
         )
         seed = int(end.strftime("%Y%m%d%H"))
-        bootstrap = bootstrap_trade_distribution(
+        bootstrap = await _run_blocking(
+            bootstrap_trade_distribution,
             baseline["trades"],
             paths=self.bootstrap_paths,
             seed=seed,
         )
-        challenger_experiment = run_crypto_challengers(
+        challenger_experiment = await _run_blocking(
+            run_crypto_challengers,
             settings=crypto_settings,
             bars_by_symbol=bars,
             initial_equity=self.initial_equity,
@@ -454,14 +466,14 @@ class VelumRuntime:
             methodology_version=payload["methodology_version"],
             start=start,
             end=end,
-            dataset_hash=dataset_fingerprint(bars),
+            dataset_hash=await _run_blocking(dataset_fingerprint, bars),
             coverage=coverage,
             strategy_version_id=crypto_settings.crypto_strategy_version_id or None,
             strategy=baseline["strategy"],
             execution_assumptions=baseline["assumptions"],
             random_seed=seed,
             runtime_git_commit=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            evidence_hash=evidence_fingerprint(payload),
+            evidence_hash=await _run_blocking(evidence_fingerprint, payload),
         )
         payload["run_manifest"] = manifest
         await self._emit(

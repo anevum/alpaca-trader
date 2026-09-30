@@ -1,10 +1,11 @@
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.config import Settings
 from app.replay import ReplayPosition
 from app.velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
-from app.velum_service import VelumRuntime, _crypto_settings
+from app.velum_service import VelumRuntime, _crypto_settings, _run_blocking
 
 
 class HoldStrategy:
@@ -108,3 +109,21 @@ def test_velum_event_key_versions_replay_methodology():
     assert v1 != v2
     assert "velum-replay-v2" in v2
     assert len(v2) <= 200
+
+
+def test_velum_blocking_work_is_thread_offloaded(monkeypatch):
+    calls = []
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        calls.append((func, args, kwargs))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+    def add(left, *, right):
+        return left + right
+
+    result = asyncio.run(_run_blocking(add, 2, right=3))
+    assert result == 5
+    assert len(calls) == 1
+    assert calls[0][0] is add
