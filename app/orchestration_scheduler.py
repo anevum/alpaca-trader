@@ -521,12 +521,22 @@ class SchedulerRuntime:
             return
 
         if terminal_without_run:
-            slack_status = await self._notify(
-                item,
-                status=terminal_without_run,
-                result=None,
-                error=catchup_state,
+            # Historical startup reconciliation belongs in the durable ledger,
+            # not in Slack. Only a recently missed operational window is still
+            # actionable enough to alert an operator.
+            historical_alert_minutes = max(
+                30,
+                int(os.getenv("SCHEDULER_HISTORICAL_ALERT_MINUTES", "120")),
             )
+            if age_minutes > historical_alert_minutes:
+                slack_status = "suppressed:historical_reconciliation"
+            else:
+                slack_status = await self._notify(
+                    item,
+                    status=terminal_without_run,
+                    result=None,
+                    error=catchup_state,
+                )
             await self.ledger.complete(
                 item,
                 status=terminal_without_run,
