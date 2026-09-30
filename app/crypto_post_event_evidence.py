@@ -248,6 +248,7 @@ class CryptoForwardEvidenceRunner:
                     summary.errors += 1
                     continue
 
+                summary.complete += 1
                 if summary.emitted >= MAX_EMITTED_OUTCOMES_PER_RUN:
                     summary.deferred += 1
                     continue
@@ -262,7 +263,6 @@ class CryptoForwardEvidenceRunner:
                     payload=outcome,
                 )
                 summary.emitted += 1
-                summary.complete += 1
 
         queue = getattr(self.event_sink, "queue", None)
         if queue is not None:
