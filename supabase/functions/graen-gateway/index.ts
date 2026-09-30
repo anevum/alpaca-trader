@@ -355,7 +355,8 @@ Deno.serve(async (req: Request) => {
         await tx`
           update private.graen_problems
           set status=${status},updated_at=now(),
-              completed_at=case when ${["SUCCEEDED","FAILED","CANCELLED"].includes(status)} then now() else null end
+              completed_at=case when ${["SUCCEEDED","FAILED","CANCELLED"].includes(status)} then now() else null end,
+              metadata=coalesce(metadata,'{}'::jsonb) - 'research_stage'
           where problem_id=${problemId}::uuid
         `;
         await tx`
