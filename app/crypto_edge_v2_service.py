@@ -15,12 +15,13 @@ from .config import Settings, get_settings
 from .market_data import MarketDataClient
 from .research_agent.crypto_edge_discovery_v2 import (
     METHODOLOGY_VERSION,
+    V1_EVALUATION_START,
     run_crypto_edge_discovery_v2,
 )
 
 
 DEFAULT_SYMBOLS = ("BTC/USD", "ETH/USD", "SOL/USD")
-V1_CORPUS_START = datetime(2026, 8, 31, 1, 53, tzinfo=timezone.utc)
+V1_CORPUS_START = V1_EVALUATION_START
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -28,6 +29,19 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
         return max(int(os.getenv(name, str(default))), minimum)
     except ValueError:
         return default
+
+
+def _bar_time(bar: dict[str, Any]) -> datetime | None:
+    raw = bar.get("t")
+    if raw in (None, ""):
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _research_settings(settings: Settings, symbols: tuple[str, ...]) -> Settings:
@@ -112,7 +126,7 @@ class CryptoEdgeDiscoveryV2Runtime:
         return {
             "ok": self.last_error is None,
             "system": "GRAEN",
-            "program": "Crypto Edge Discovery v2",
+            "program": "Crypto Edge Discovery v2.1",
             "methodology_version": METHODOLOGY_VERSION,
             "enabled": self.enabled,
             "running": self.task is not None and not self.task.done(),
@@ -178,11 +192,19 @@ class CryptoEdgeDiscoveryV2Runtime:
         start = end - timedelta(days=self.corpus_days)
         research_settings = _research_settings(self.settings, self.symbols)
 
-        bars = await self.market_data.historical_crypto_bars_many(
+        raw_bars = await self.market_data.historical_crypto_bars_many(
             list(self.symbols),
             start=start,
             end=end,
         )
+        bars = {
+            symbol: [
+                bar
+                for bar in rows
+                if (_bar_time(bar) is not None and _bar_time(bar) < end)
+            ]
+            for symbol, rows in raw_bars.items()
+        }
         result = run_crypto_edge_discovery_v2(
             settings=research_settings,
             bars_by_symbol=bars,
@@ -233,7 +255,7 @@ class CryptoEdgeDiscoveryV2Runtime:
         }
         print("CRYPTO_EDGE_V2_COMPLETE", self.last_result_summary, flush=True)
         await self._slack(
-            "*GRAEN // CRYPTO EDGE DISCOVERY V2*\n"
+            "*GRAEN // CRYPTO EDGE DISCOVERY V2.1*\n"
             + "status: " + self.last_status
             + " | selected: " + str(self.last_result_summary["selected_candidate"] or "none")
             + " | holdout: " + ("PASS" if self.last_result_summary["holdout_passed"] else "not passed")
@@ -303,7 +325,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="ANEVUM GRAEN Crypto Edge Discovery v2",
+    title="ANEVUM GRAEN Crypto Edge Discovery v2.1",
     lifespan=lifespan,
 )
 
