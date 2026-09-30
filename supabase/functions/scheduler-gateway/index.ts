@@ -154,10 +154,11 @@ async function irenAction(action: string, body: Record<string, unknown>) {
     const commandText = String(body.command_text || "").trim().slice(0, 4000);
     const source = String(body.source || "iren").trim().slice(0, 40);
     const requestedBy = String(body.requested_by || "").trim().slice(0, 160) || null;
+    const context = objectValue(body.context);
     if (!commandText) throw new Error("invalid_iren_command");
     const rows = await sql`
-      insert into private.iren_commands (command_text,source,requested_by)
-      values (${commandText},${source},${requestedBy})
+      insert into private.iren_commands (command_text,source,requested_by,context)
+      values (${commandText},${source},${requestedBy},${sql.json(context)}::jsonb)
       returning command_id,command_text,source,requested_by,status,created_at
     `;
     return { command: rows[0] };
@@ -180,7 +181,7 @@ async function irenAction(action: string, body: Record<string, unknown>) {
           updated_at=now()
       from candidates x
       where c.command_id=x.command_id
-      returning c.command_id,c.command_text,c.source,c.requested_by,c.status,c.created_at
+      returning c.command_id,c.command_text,c.source,c.requested_by,c.status,c.context,c.created_at
     `;
     return { commands: rows };
   }
