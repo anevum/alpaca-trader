@@ -151,7 +151,7 @@ Deno.serve(async (req) => {
             select payload, occurred_at, 2 as methodology_priority
             from private.trading_events
             where event_type='crypto_edge_discovery_v2_result'
-              and payload->>'methodology_version'='graen-crypto-edge-discovery-v2'
+              and payload->>'methodology_version'='graen-crypto-edge-discovery-v2.1'
             union all
             select payload, occurred_at, 1 as methodology_priority
             from private.trading_events
