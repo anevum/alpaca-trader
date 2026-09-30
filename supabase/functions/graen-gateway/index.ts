@@ -184,6 +184,32 @@ Deno.serve(async (req: Request) => {
       return json(200, { ok: true });
     }
 
+    if (action === "queue_research_stage") {
+      const problemId = String((body as any).problem_id || "").trim();
+      const stage = String((body as any).stage || "").trim().slice(0, 120);
+      const metadata = objectValue((body as any).metadata);
+      if (!problemId || !stage) throw new Error("invalid_research_stage");
+      const active = await sql`
+        select count(*)::int as count
+        from private.graen_runs
+        where problem_id=${problemId}::uuid and status='RUNNING'
+      `;
+      if (Number(active[0]?.count || 0) > 0) throw new Error("research_problem_run_active");
+      const rows = await sql`
+        update private.graen_problems
+        set status='WAITING',
+            completed_at=null,
+            metadata=coalesce(metadata,'{}'::jsonb)
+              || jsonb_build_object('research_stage',${stage})
+              || ${sql.json(metadata as any)}::jsonb,
+            updated_at=now()
+        where problem_id=${problemId}::uuid
+        returning *
+      `;
+      if (!rows[0]) throw new Error("graen_problem_not_found");
+      return json(200, { ok: true, problem: rows[0] });
+    }
+
     if (action === "claim_research_problem") {
       const workerId = String((body as any).worker_id || "").trim().slice(0, 160);
       const runtimeVersion = String((body as any).runtime_version || "").trim().slice(0, 160);
@@ -199,12 +225,15 @@ Deno.serve(async (req: Request) => {
           where p.status='WAITING'
             and p.domain=${domain}
             and (
-              select r.result_summary->>'state'
-              from private.graen_runs r
-              where r.problem_id=p.problem_id
-              order by r.started_at desc
-              limit 1
-            )='READY_FOR_RESEARCH_EXECUTOR'
+              (
+                select r.result_summary->>'state'
+                from private.graen_runs r
+                where r.problem_id=p.problem_id
+                order by r.started_at desc
+                limit 1
+              )='READY_FOR_RESEARCH_EXECUTOR'
+              or p.metadata->>'research_stage'='CRYPTO_LEADLAG_R2_READY'
+            )
           order by p.priority desc, p.created_at asc
           limit 1
           for update skip locked
