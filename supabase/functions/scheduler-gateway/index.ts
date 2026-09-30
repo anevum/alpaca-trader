@@ -67,14 +67,14 @@ async function rpc(name: "claim" | "complete", payload: Record<string, unknown>)
       throw new Error("invalid_claim_shape:" + missing.join(","));
     }
     const rows = await sql<{ result: Record<string, unknown> }[]>`
-      select private.anevum_scheduler_claim(${sql.json(payload)}::jsonb) as result
+      select private.anevum_scheduler_claim(${sql.json(payload as any)}::jsonb) as result
     `;
     if (!rows[0]?.result) throw new Error("scheduler_rpc_empty");
     return rows[0].result;
   }
 
   const rows = await sql<{ result: Record<string, unknown> }[]>`
-    select private.anevum_scheduler_complete(${sql.json(payload)}::jsonb) as result
+    select private.anevum_scheduler_complete(${sql.json(payload as any)}::jsonb) as result
   `;
   if (!rows[0]?.result) throw new Error("scheduler_rpc_empty");
   return rows[0].result;
@@ -100,7 +100,7 @@ async function irenAction(action: string, body: Record<string, unknown>) {
     return { ...rows[0], events };
   }
   if (action === "iren_commit") {
-    const rows = await sql`select private.iren_control_commit(${sql.json(body)}::jsonb) as result`;
+    const rows = await sql`select private.iren_control_commit(${sql.json(body as any)}::jsonb) as result`;
     return rows[0].result;
   }
   if (action === "iren_notifications_claim") {
@@ -158,7 +158,7 @@ async function irenAction(action: string, body: Record<string, unknown>) {
     if (!commandText) throw new Error("invalid_iren_command");
     const rows = await sql`
       insert into private.iren_commands (command_text,source,requested_by,context)
-      values (${commandText},${source},${requestedBy},${sql.json(context)}::jsonb)
+      values (${commandText},${source},${requestedBy},${sql.json(context as any)}::jsonb)
       returning command_id,command_text,source,requested_by,status,created_at
     `;
     return { command: rows[0] };
@@ -195,7 +195,7 @@ async function irenAction(action: string, body: Record<string, unknown>) {
     const rows = linked
       ? await sql`
           update private.iren_commands
-          set status=${status}, response=${sql.json(response)}::jsonb,
+          set status=${status}, response=${sql.json(response as any)}::jsonb,
               linked_job_id=${linked}::uuid, completed_at=now(), updated_at=now(),
               lease_until=null, owner=null
           where command_id=${commandId}::uuid
@@ -203,7 +203,7 @@ async function irenAction(action: string, body: Record<string, unknown>) {
         `
       : await sql`
           update private.iren_commands
-          set status=${status}, response=${sql.json(response)}::jsonb,
+          set status=${status}, response=${sql.json(response as any)}::jsonb,
               completed_at=now(), updated_at=now(), lease_until=null, owner=null
           where command_id=${commandId}::uuid
           returning command_id,status,response,linked_job_id,completed_at
@@ -231,13 +231,13 @@ async function irenAction(action: string, body: Record<string, unknown>) {
         ${Boolean(job.protected_action)},${Boolean(job.requires_human)},
         ${String(job.requested_by || "").slice(0,160) || null},
         ${String(job.requested_via || "iren").slice(0,40)},
-        ${sql.json(objectValue(job.metadata))}::jsonb
+        ${sql.json(objectValue(job.metadata) as any)}::jsonb
       )
       returning *
     `;
     await sql`
       insert into private.iren_job_events (job_id,event_type,event)
-      values (${rows[0].job_id},'CREATED',${sql.json({source:"iren_work_engine"})}::jsonb)
+      values (${rows[0].job_id},'CREATED',${sql.json({source:"iren_work_engine"} as any)}::jsonb)
     `;
     return { job: rows[0] };
   }
@@ -274,7 +274,7 @@ async function irenAction(action: string, body: Record<string, unknown>) {
     const terminal = ["SUCCEEDED","FAILED","CANCELLED"].includes(status);
     const rows = await sql`
       update private.iren_jobs
-      set status=${status}, result=${sql.json(result)}::jsonb, error=${sql.json(error)}::jsonb,
+      set status=${status}, result=${sql.json(result as any)}::jsonb, error=${sql.json(error as any)}::jsonb,
           completed_at=case when ${terminal} then now() else completed_at end,
           lease_until=null, claimed_by=null, updated_at=now()
       where job_id=${jobId}::uuid
@@ -283,7 +283,7 @@ async function irenAction(action: string, body: Record<string, unknown>) {
     if (!rows[0]) throw new Error("iren_job_not_found");
     await sql`
       insert into private.iren_job_events (job_id,event_type,event)
-      values (${jobId}::uuid,${status},${sql.json({result,error})}::jsonb)
+      values (${jobId}::uuid,${status},${sql.json({result,error} as any)}::jsonb)
     `;
     return { job: rows[0] };
   }
