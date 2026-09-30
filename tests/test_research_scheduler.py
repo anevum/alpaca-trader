@@ -165,6 +165,56 @@ def test_canonical_weekly_generation_persists_once_with_deterministic_key():
     assert report["live_configuration_changed"] is False
 
 
+def test_counterfactual_snapshot_identity_is_deterministic():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(
+            strategy_version_id="LIVE-2026-09-25-003",
+            min_momentum_pct="0.0005",
+            min_vwap_edge_pct="0",
+            min_confirmations=2,
+            max_vwap_extension_pct="0.008",
+        ),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+
+    async def daily_inputs(session):
+        return {
+            "candidates": [
+                {
+                    "strategy_version_id": "LIVE-2026-09-25-003",
+                    "symbol": "TEST",
+                }
+            ],
+            "latest_daily_report": {
+                "session": session.isoformat(),
+                "counterfactual_lab": {"methodology_version": "asc-counterfactual-lab-v1"},
+            },
+        }
+
+    async def history(session):
+        return ([{"session": "2026-09-29", "counterfactual_lab": {}}], None)
+
+    scheduler._daily_post_event_inputs = daily_inputs
+    scheduler._counterfactual_history_reports = history
+
+    first = asyncio.run(scheduler.counterfactual_snapshot(date(2026, 9, 30)))
+    second = asyncio.run(scheduler.counterfactual_snapshot(date(2026, 9, 30)))
+
+    assert first["input_identity"] == second["input_identity"]
+    assert first["expected_output_identity"] == second["expected_output_identity"]
+    assert first["schema_version"] == "velum_counterfactual_input.v1"
+    assert first["execution_authority"] is False
+    assert first["live_configuration_changed"] is False
+
+
 def test_manual_regeneration_rejects_non_session_week_end():
     import asyncio
     from types import SimpleNamespace
