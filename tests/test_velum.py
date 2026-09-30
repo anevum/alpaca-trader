@@ -5,7 +5,13 @@ from decimal import Decimal
 from app.config import Settings
 from app.replay import ReplayPosition
 from app.velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
-from app.velum_service import VelumRuntime, _crypto_settings, _run_blocking
+from app.velum_service import (
+    VelumRuntime,
+    _canonical_identity,
+    _crypto_settings,
+    _run_blocking,
+    build_counterfactual_from_snapshot,
+)
 
 
 class HoldStrategy:
@@ -116,6 +122,33 @@ def test_velum_native_heartbeat_runs_when_replay_is_scheduler_managed():
         assert runtime.heartbeat_task is None
 
     asyncio.run(scenario())
+
+
+def test_counterfactual_snapshot_executes_in_velum_with_parity():
+    snapshot = {
+        "schema_version": "velum_counterfactual_input.v1",
+        "session": "2026-09-30",
+        "strategy_version_id": "LIVE-2026-09-25-003",
+        "baseline_parameters": {},
+        "candidates": [],
+        "prior_reports": [],
+        "input_identity": "sha256:immutable-input",
+    }
+    expected = build_counterfactual_from_snapshot(snapshot)
+    snapshot["expected_counterfactual_lab"] = expected
+    snapshot["expected_output_identity"] = _canonical_identity(expected)
+    runtime = VelumRuntime(settings())
+
+    async def emit(*args, **kwargs):
+        return True
+
+    runtime._emit = emit
+    result = asyncio.run(runtime.run_counterfactual(snapshot))
+    assert result["parity_match"] is True
+    assert result["persisted"] is True
+    assert result["counterfactual_lab"] == expected
+    assert result["execution_authority"] is False
+    assert result["live_configuration_changed"] is False
 
 
 def test_crypto_bucket_is_hourly_by_default(monkeypatch):
