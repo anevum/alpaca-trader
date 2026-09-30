@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 
 import httpx
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 from .post_event_evidence import PostEventEvidenceRunner
 from .crypto_layer import CryptoMarketDataClient
@@ -148,6 +151,7 @@ class ResearchReportScheduler:
                     catch_up_done = True
                 await self._tick()
             except Exception as exc:
+                logger.exception("post-close research reporting failed")
                 message = f"research reporting {type(exc).__name__}: {exc}"
                 self.last_error = message
                 self.state.record_event(
@@ -192,6 +196,7 @@ class ResearchReportScheduler:
                     reason=f"{summary.errors} outcome errors",
                 )
         except Exception as exc:
+            logger.exception("crypto forward evidence failed")
             self.state.crypto_forward_evidence_state = {
                 "status": "error",
                 "last_run_at": current.isoformat(),
