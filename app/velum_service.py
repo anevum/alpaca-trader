@@ -224,7 +224,9 @@ class VelumRuntime:
             "last_heartbeat_at": self.last_heartbeat_at,
             "runtime_provenance": self.runtime_provenance(),
             "credential_scope": {
-                "broker_client_present": False,
+                "broker_execution_runtime_loaded": False,
+                "broker_client_instantiated": False,
+                "shared_crypto_strategy_imports_broker_client_module": True,
                 "provider_scope_verified": False,
                 "alpaca_credentials_present": bool(
                     os.getenv("ALPACA_API_KEY") and os.getenv("ALPACA_API_SECRET")
