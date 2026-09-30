@@ -1,0 +1,19 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = [
+  "/app/graen/**",
+  "/graen/crypto/**",
+  "/app/config.py",
+  "/app/market_data.py",
+  "/app/research_agent/crypto_edge_discovery.py",
+  "/app/research_agent/multiplicity.py",
+  "/requirements.txt",
+  "/Dockerfile"
+]
+
+[deploy]
+startCommand = "uvicorn app.graen.research_executor_service:app --host 0.0.0.0 --port 8080"
+healthcheckPath = "/health"
+healthcheckTimeout = 600
+restartPolicyType = "ALWAYS"
