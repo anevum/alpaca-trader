@@ -538,7 +538,13 @@ class ResearchReportScheduler:
             parameter: getattr(self.settings, parameter, None)
             for parameter in PARAMETER_FEATURES
         })
-        expected_report = canonical.get("latest_daily_report")
+        expected_record = canonical.get("latest_daily_report")
+        expected_report = (
+            expected_record.get("payload")
+            if isinstance(expected_record, dict)
+            and isinstance(expected_record.get("payload"), dict)
+            else expected_record
+        )
         expected_lab = (
             expected_report.get("counterfactual_lab")
             if isinstance(expected_report, dict)
