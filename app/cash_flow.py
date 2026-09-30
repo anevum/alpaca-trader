@@ -1,8 +1,11 @@
 """Dated external-cash-flow accounting for trading P&L and risk.
 
-Automatic detection uses Alpaca account activities for current-session cash
-deposits/withdrawals. The operator-reviewed manifest remains a fallback and a
-cross-check. Raw broker equity/last_equity are never rewritten.
+Automatic detection uses Alpaca cash-transfer activities scoped by the caller
+to the interval after the previous trading session close through the current
+observation. This matches Alpaca's last_equity reference window and prevents
+owner deposits/withdrawals from being misclassified as trading P&L. The
+operator-reviewed manifest remains a fallback and cross-check. Raw broker
+equity/last_equity are never rewritten.
 """
 from __future__ import annotations
 
@@ -73,7 +76,13 @@ def detected_session_cash_flow(
     run_id: str,
     observed_at: datetime,
 ) -> SessionCashFlow | None:
-    """Build a current-session adjustment from Alpaca CSD/CSW activities.
+    """Build a session adjustment from window-scoped Alpaca CSD/CSW activities.
+
+    The caller must provide activities created after the previous trading
+    session close and through observed_at. The activity object's date is
+    validated for auditability but is not used as the inclusion boundary:
+    Alpaca documents that non-trade activity dates can represent the activity
+    or settlement date, while the REST query window is based on creation time.
 
     Only explicit cash deposits (CSD) and cash withdrawals (CSW) are treated as
     owner capital movement. Dividends, fees, interest, fills, journals, and
@@ -98,11 +107,9 @@ def detected_session_cash_flow(
         if not raw_date:
             raise ValueError("cash-flow activity is missing date")
         try:
-            activity_date = date.fromisoformat(raw_date[:10])
+            date.fromisoformat(raw_date[:10])
         except ValueError as exc:
             raise ValueError("cash-flow activity date is invalid") from exc
-        if activity_date != session_date:
-            continue
 
         activity_id = str(activity.get("id") or "").strip()
         if not activity_id:
