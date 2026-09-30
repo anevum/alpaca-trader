@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -45,13 +45,13 @@ class StructuralCryptoMomentumStrategy(CryptoRollingMomentumStrategy):
         order_notional: Decimal,
         now: datetime | None = None,
     ) -> Signal:
-        current = now or datetime.now()
+        current = now or datetime.now(timezone.utc)
         if has_position:
             return Signal(action="hold", symbol=symbol, reason="position already open")
         session = self._completed_session_bars(bars, current)
         if len(session) < max(self.slow_window + 1, self.feature_volatility_lookback + 1):
             return Signal(action="hold", symbol=symbol, reason="not enough continuous crypto bars")
-        closes = [self._d(bar["c"]) for bar in session]
+        closes = [Decimal(str(bar["c"])) for bar in session]
         z = volatility_normalized_momentum(
             closes,
             self.fast_window,
@@ -67,10 +67,10 @@ class StructuralCryptoMomentumStrategy(CryptoRollingMomentumStrategy):
                     "market_lane": "crypto",
                     "strategy_family": "structural_crypto_momentum",
                     "volatility_normalized_momentum": z,
-                    "bar_time": self._timestamp(session[-1]).isoformat(),
+                    "bar_time": str(session[-1].get("t") or ""),
                 },
             )
-        price = self._d(session[-1]["c"])
+        price = Decimal(str(session[-1]["c"]))
         stop_pct, stop_meta = self._effective_stop_pct(session)
         return Signal(
             action="buy",
@@ -90,7 +90,7 @@ class StructuralCryptoMomentumStrategy(CryptoRollingMomentumStrategy):
                 "regime_version": self.regime_version,
                 "volatility_normalized_momentum": z,
                 "volatility_stop": stop_meta,
-                "bar_time": self._timestamp(session[-1]).isoformat(),
+                "bar_time": str(session[-1].get("t") or ""),
             },
         )
 
@@ -125,19 +125,23 @@ def _strategy(settings: Any, cls=CryptoRollingMomentumStrategy):
     )
 
 
-def challenger_settings(base: Any) -> dict[str, tuple[Any, type[CryptoRollingMomentumStrategy]]]:
+def challenger_settings(
+    base: Any,
+    equity_source: Any | None = None,
+) -> dict[str, tuple[Any, type[CryptoRollingMomentumStrategy]]]:
+    equity = equity_source or base
     transferred = base.model_copy(update={
-        "fast_window": base.__class__.model_fields["fast_window"].default,
-        "slow_window": base.__class__.model_fields["slow_window"].default,
-        "min_momentum_pct": base.__class__.model_fields["min_momentum_pct"].default,
-        "min_vwap_edge_pct": base.__class__.model_fields["min_vwap_edge_pct"].default,
-        "regime_window": base.__class__.model_fields["regime_window"].default,
-        "regime_min_return_pct": base.__class__.model_fields["regime_min_return_pct"].default,
-        "max_vwap_extension_pct": base.__class__.model_fields["max_vwap_extension_pct"].default,
-        "volatility_stop_enabled": base.__class__.model_fields["volatility_stop_enabled"].default,
-        "volatility_stop_multiplier": base.__class__.model_fields["volatility_stop_multiplier"].default,
-        "volatility_stop_lookback_bars": base.__class__.model_fields["volatility_stop_lookback_bars"].default,
-        "max_dynamic_stop_pct": base.__class__.model_fields["max_dynamic_stop_pct"].default,
+        "fast_window": equity.fast_window,
+        "slow_window": equity.slow_window,
+        "min_momentum_pct": equity.min_momentum_pct,
+        "min_vwap_edge_pct": equity.min_vwap_edge_pct,
+        "regime_window": equity.regime_window,
+        "regime_min_return_pct": equity.regime_min_return_pct,
+        "max_vwap_extension_pct": equity.max_vwap_extension_pct,
+        "volatility_stop_enabled": equity.volatility_stop_enabled,
+        "volatility_stop_multiplier": equity.volatility_stop_multiplier,
+        "volatility_stop_lookback_bars": equity.volatility_stop_lookback_bars,
+        "max_dynamic_stop_pct": equity.max_dynamic_stop_pct,
     })
     return {
         "A_FULL_TRANSFER": (transferred, CryptoRollingMomentumStrategy),
@@ -154,6 +158,7 @@ def run_crypto_challengers(
     initial_equity: Decimal,
     spread_bps: Decimal,
     slippage_bps: Decimal,
+    equity_settings: Any | None = None,
 ) -> dict[str, Any]:
     scenarios = {
         "low": (spread_bps * Decimal("0.5"), slippage_bps * Decimal("0.5")),
@@ -161,7 +166,7 @@ def run_crypto_challengers(
         "high": (spread_bps * Decimal("2"), slippage_bps * Decimal("2")),
     }
     results: dict[str, Any] = {}
-    for name, (candidate_settings, cls) in challenger_settings(settings).items():
+    for name, (candidate_settings, cls) in challenger_settings(settings, equity_settings).items():
         strategy = _strategy(candidate_settings, cls)
         engine = ContinuousReplayEngine(candidate_settings, strategy)
         costs = {}
