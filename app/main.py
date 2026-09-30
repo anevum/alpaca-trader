@@ -688,6 +688,9 @@ async def crypto_monitor_loop():
                     flush=True,
                 )
             except Exception as exc:
+                runtime_state.crypto_scanner_healthy = False
+                runtime_state.crypto_execution_healthy = False
+                runtime_state.crypto_last_error = f"{type(exc).__name__}: {exc}"
                 runtime_state.crypto_last_decision = (
                     f"crypto lane error: {type(exc).__name__}: {exc}"
                 )
@@ -893,6 +896,32 @@ async def lifespan(app: FastAPI):
         strategy_version_id=settings.strategy_version_id,
         execution_authorized=settings.execution_authorized,
     )
+    if settings.crypto_lane_enabled:
+        runtime_state.record_event(
+            kind="crypto_runtime",
+            action="startup",
+            message=(
+                "24/7 crypto lane online; "
+                + ("live entry flag enabled" if settings.crypto_execution_enabled else "live entries gated")
+            ),
+            reason=(
+                f"strategy={settings.crypto_strategy_version_id}; "
+                f"model={settings.crypto_model_version}; "
+                f"calibration={settings.crypto_calibration_version}; "
+                f"regime={settings.crypto_regime_version}"
+            ),
+            payload={
+                "market_lane": "crypto",
+                "strategy_family": settings.crypto_strategy_family,
+                "strategy_version_id": settings.crypto_strategy_version_id,
+                "model_version": settings.crypto_model_version,
+                "calibration_version": settings.crypto_calibration_version,
+                "regime_version": settings.crypto_regime_version,
+                "execution_adapter_version": settings.crypto_execution_adapter_version,
+                "execution_enabled": settings.crypto_execution_enabled,
+                "calibration_promoted": settings.crypto_calibration_promoted,
+            },
+        )
 
     if settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
