@@ -716,3 +716,58 @@ def test_ads002_incomplete_candidate_still_gets_outcomes_but_not_model_validatio
         event["event_type"] == "live_offline_comparison"
         for event in sink.events
     )
+
+
+def test_equity_post_event_runner_excludes_crypto_candidates():
+    crypto_row = {
+        "candidate_id": 99,
+        "scan_cycle_id": 199,
+        "strategy_version_id": "LIVE-2026-09-25-003",
+        "market_lane": "crypto",
+        "symbol": "BTC/USD",
+        "observed_at": "2026-09-29T20:00:05-04:00",
+        "decision_reference_price": "80000",
+        "qualified": False,
+        "action": "hold",
+        "features": {
+            "market": "crypto",
+            "bar_time": "2026-09-29T20:00:00-04:00",
+            "strategy_version_id": "CRYPTO-2026-09-29-001",
+        },
+        "research_attribution": {
+            "market": "crypto",
+            "live_strategy_version": "CRYPTO-2026-09-29-001",
+        },
+    }
+
+    class MarketData:
+        async def market_calendar_details(self, **kwargs):
+            raise AssertionError("equity market data must not receive crypto-only evidence")
+
+        async def historical_bars_many(self, *args, **kwargs):
+            raise AssertionError("equity historical path must not receive crypto symbols")
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def reader(**params):
+        assert params == {"evidence_session": "2026-09-29"}
+        return {"candidates": [crypto_row]}
+
+    sink = Sink()
+    runner = PostEventEvidenceRunner(
+        settings=type("Settings", (), {"data_feed": "iex", "bar_timeframe": "1Min"})(),
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=reader,
+    )
+    summary = asyncio.run(runner.run_session(date(2026, 9, 29)))
+
+    assert summary.candidates == 0
+    assert summary.outcome_events == 0
+    assert summary.comparison_events == 0
+    assert sink.events == []

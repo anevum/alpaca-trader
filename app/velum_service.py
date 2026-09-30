@@ -455,7 +455,7 @@ class VelumRuntime:
     ) -> dict[str, Any]:
         return {
             "system": "VELUM",
-            "methodology_version": "velum-replay-v1",
+            "methodology_version": "velum-replay-v2",
             "asset_class": asset_class,
             "range": {"start": start.isoformat(), "end": end.isoformat()},
             "baseline": {
@@ -480,6 +480,24 @@ class VelumRuntime:
             "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         }
 
+    @staticmethod
+    def _event_key(
+        strategy: str,
+        event_type: str,
+        methodology_version: str,
+        key_suffix: str,
+    ) -> str:
+        return (
+            "velum:"
+            + strategy
+            + ":"
+            + event_type
+            + ":"
+            + methodology_version
+            + ":"
+            + key_suffix
+        )[:200]
+
     async def _emit(
         self,
         event_type: str,
@@ -493,10 +511,14 @@ class VelumRuntime:
             return False
 
         strategy = self.settings.strategy_version_id or "unversioned"
+        methodology = str(payload.get("methodology_version") or "unversioned")
         event = {
-            "event_key": (
-                "velum:" + strategy + ":" + event_type + ":" + key_suffix
-            )[:200],
+            "event_key": self._event_key(
+                strategy,
+                event_type,
+                methodology,
+                key_suffix,
+            ),
             "run_id": None,
             "strategy_version_id": self.settings.strategy_version_id or None,
             "event_type": event_type,

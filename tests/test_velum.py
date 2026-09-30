@@ -89,3 +89,22 @@ def test_crypto_bucket_is_hourly_by_default(monkeypatch):
         datetime(2026, 9, 29, 23, 22, 45, tzinfo=timezone.utc)
     )
     assert bucket == datetime(2026, 9, 29, 23, 0, tzinfo=timezone.utc)
+
+
+def test_velum_event_key_versions_replay_methodology():
+    suffix = "crypto:2026-09-30T00:00:00+00:00:24h"
+    v1 = VelumRuntime._event_key(
+        "LIVE-2026-09-25-003",
+        "velum_replay_result",
+        "velum-replay-v1",
+        suffix,
+    )
+    v2 = VelumRuntime._event_key(
+        "LIVE-2026-09-25-003",
+        "velum_replay_result",
+        "velum-replay-v2",
+        suffix,
+    )
+    assert v1 != v2
+    assert "velum-replay-v2" in v2
+    assert len(v2) <= 200
