@@ -1,0 +1,16 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = [
+  "/app/iren/executor_service.py",
+  "/app/iren/work.py",
+  "/app/iren/service.py",
+  "/requirements.txt",
+  "/Dockerfile"
+]
+
+[deploy]
+startCommand = "uvicorn app.iren.executor_service:app --host 0.0.0.0 --port 8080"
+healthcheckPath = "/health"
+healthcheckTimeout = 180
+restartPolicyType = "ALWAYS"
