@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -153,11 +154,32 @@ class FakeUniverse:
 
 class FakeMarketData:
     async def bars_many(self, symbols):
-        return {symbol: [{"c": "100"}] for symbol in symbols}
+        now = datetime.now(timezone.utc)
+        return {
+            symbol: [
+                {
+                    "t": now.isoformat(),
+                    "o": "100",
+                    "h": "100.1",
+                    "l": "99.9",
+                    "c": "100",
+                    "v": "10",
+                    "n": 5,
+                }
+            ]
+            for symbol in symbols
+        }
 
     async def latest_quotes(self, symbols):
+        now = datetime.now(timezone.utc).isoformat()
         return {
-            symbol: {"bp": "99.95", "ap": "100.05", "t": "2026-09-29T23:00:00Z"}
+            symbol: {
+                "bp": "99.95",
+                "ap": "100.05",
+                "bs": "2",
+                "as": "2",
+                "t": now,
+            }
             for symbol in symbols
         }
 
@@ -195,6 +217,50 @@ def _engine_settings():
         crypto_target_pct=Decimal("0.005"),
         crypto_max_hold_minutes=60,
         crypto_stop_limit_buffer_pct=Decimal("0.0025"),
+        crypto_fast_window=3,
+        crypto_volatility_lookback_bars=30,
+        crypto_strategy_family="rolling_momentum_vwap",
+        crypto_strategy_version_id="CRYPTO-2026-09-29-001",
+        crypto_model_version="crypto-rmvwap-model-v1",
+        crypto_calibration_version="crypto-calibration-test-v1",
+        crypto_regime_version="nostra-crypto-regime-v1",
+        crypto_execution_adapter_version="alpaca-crypto-execution-v1",
+        crypto_calibration_promoted=True,
+        crypto_max_quote_age_seconds=15,
+        crypto_min_quoted_depth=Decimal("0"),
+        crypto_min_trade_activity=Decimal("0"),
+        crypto_ads_threshold=Decimal("-20"),
+        crypto_promotion_evidence={
+            "resolved_candidate_predictions": 1000,
+            "paper_round_trips": 100,
+            "utc_hours_covered": list(range(24)),
+            "weekdays_covered": list(range(7)),
+            "volatility_regimes": ["low", "high"],
+            "liquidity_regimes": ["low", "high"],
+            "pairs_covered": ["BTC/USD", "ETH/USD", "SOL/USD"],
+            "metrics": {
+                "net_expectancy_after_costs": 0.01,
+                "brier_score": 0.2,
+                "log_loss": 0.5,
+                "calibration_intercept": 0.0,
+                "calibration_slope": 1.0,
+                "discrimination": 0.6,
+                "max_drawdown": -0.05,
+                "tail_loss": -0.02,
+                "mfe": 0.01,
+                "mae": -0.005,
+                "slippage": 0.001,
+                "spread_sensitivity": 0.1,
+                "regime_stability": 0.8,
+                "time_of_week_stability": 0.8,
+            },
+            "net_expectancy_positive_after_high_costs": True,
+            "walk_forward_passed": True,
+            "holdout_passed": True,
+            "dependence_adjusted": True,
+            "multiplicity_adjusted": True,
+            "no_lookahead_verified": True,
+        },
         order_owner_tag="deadbeef",
     )
 
