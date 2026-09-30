@@ -36,6 +36,16 @@ def bounded_health(name, body):
         parsed = datetime.fromisoformat(started.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             raise ValueError("malformed_runtime_timestamp")
+    for field in ("last_heartbeat_at", "last_success_at"):
+        value = body.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or len(value) > 128:
+            raise ValueError("malformed_runtime_timestamp")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("malformed_runtime_timestamp")
+        result[field] = parsed.astimezone(timezone.utc).isoformat()
     if name == "RHEN":
         persistence = body.get("persistence")
         crypto = body.get("crypto")
@@ -69,9 +79,10 @@ def topology(observation, state, self_identity):
             service_name=service_name, service_version=identity.get("system_version"),
             deployment=identity.get("deployment_id"), revision=identity.get("git_commit"),
             started_at=identity.get("runtime_started_at"), observed_at=stamp,
-            last_heartbeat_at=stamp if alive else None, liveness=alive, readiness=ready, status=status,
+            last_heartbeat_at=health.get("last_heartbeat_at") or (stamp if alive else None),
+            liveness=alive, readiness=ready, status=status,
             current_activity="worker active" if health.get("running") else None,
-            last_success=stamp if ready else None,
+            last_success=health.get("last_success_at") or (stamp if ready else None),
             last_failure=health.get("error_type") or ("reported_error" if health.get("last_error") else None),
             configuration_identity=observation.get("configuration", {}).get("fingerprint") if name == "RHEN" else None,
             observation_source="iren_http_probe", scope=scope)
