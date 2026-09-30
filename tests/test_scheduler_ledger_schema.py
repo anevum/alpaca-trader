@@ -27,7 +27,7 @@ def test_scheduler_ledger_has_no_live_execution_authority():
 def test_registry_contains_one_owner_for_required_workflows():
     import json
 
-    registry = json.loads(Path("infra/schedule_registry.json").read_text())
+    registry = json.loads(Path("app/schedule_registry.json").read_text())
     ids = [row["workflow_id"] for row in registry["workflows"]]
     assert len(ids) == len(set(ids))
     required = {
@@ -46,9 +46,8 @@ def test_registry_contains_one_owner_for_required_workflows():
     assert nostra and all(row["enabled"] is False for row in nostra)
 
 
-def test_scheduler_image_packages_canonical_registry():
-    dockerfile = Path("infra/scheduler.Dockerfile").read_text()
-    assert "COPY infra/schedule_registry.json ./infra/schedule_registry.json" in dockerfile
-    railway = Path("infra/scheduler.railway.toml").read_text()
-    assert 'dockerfilePath = "infra/scheduler.Dockerfile"' in railway
-    assert '--port 8080' in railway
+def test_scheduler_registry_is_packaged_by_production_image():
+    registry = Path("app/schedule_registry.json")
+    assert registry.exists()
+    dockerfile = Path("Dockerfile").read_text()
+    assert "COPY app ./app" in dockerfile
