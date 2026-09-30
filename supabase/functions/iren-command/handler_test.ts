@@ -51,7 +51,8 @@ for (const [label, stamp] of [
 Deno.test("fresh canonical state includes durable work summary", () => {
   const value = project(fixture(), work(), now);
   assert(!value.stale);
-  assert(value.schema_version === "iren_command.v2");
+  assert(value.schema_version === "iren_command.v1");
+  assert(value.work_schema_version === "iren_work.v1");
   assert(value.work.objective_count === 2);
   assert(value.work.objectives_complete === 1);
   assert(value.work.active_jobs === 1);
