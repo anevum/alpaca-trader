@@ -21,7 +21,7 @@ from .crypto_velum import run_crypto_challengers
 from .velum_manifest import (
     build_run_manifest,
     dataset_fingerprint,
-    replay_result_fingerprint,
+    evidence_fingerprint,
 )
 
 
@@ -357,7 +357,7 @@ class VelumRuntime:
             execution_assumptions=baseline["assumptions"],
             random_seed=seed,
             runtime_git_commit=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            result_hash=replay_result_fingerprint(baseline),
+            evidence_hash=evidence_fingerprint(payload),
         )
         payload["run_manifest"] = manifest
         await self._emit(
@@ -461,7 +461,7 @@ class VelumRuntime:
             execution_assumptions=baseline["assumptions"],
             random_seed=seed,
             runtime_git_commit=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            result_hash=replay_result_fingerprint(baseline),
+            evidence_hash=evidence_fingerprint(payload),
         )
         payload["run_manifest"] = manifest
         await self._emit(
@@ -567,7 +567,12 @@ class VelumRuntime:
         if not url or not token:
             return False
 
-        strategy = self.settings.strategy_version_id or "unversioned"
+        event_strategy_version = (
+            payload.get("strategy_version_id")
+            or self.settings.strategy_version_id
+            or None
+        )
+        strategy = str(event_strategy_version or "unversioned")
         methodology = str(payload.get("methodology_version") or "unversioned")
         event = {
             "event_key": self._event_key(
@@ -577,7 +582,7 @@ class VelumRuntime:
                 key_suffix,
             ),
             "run_id": None,
-            "strategy_version_id": self.settings.strategy_version_id or None,
+            "strategy_version_id": event_strategy_version,
             "event_type": event_type,
             "occurred_at": datetime.now(timezone.utc).isoformat(),
             "source": "velum-replay",
