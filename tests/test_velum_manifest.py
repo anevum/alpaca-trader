@@ -1,11 +1,10 @@
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from app.velum_manifest import (
     MANIFEST_SCHEMA_VERSION,
     build_run_manifest,
     dataset_fingerprint,
-    replay_result_fingerprint,
+    evidence_fingerprint,
 )
 
 
@@ -34,32 +33,51 @@ def bars():
     }
 
 
-def replay_result():
+def evidence():
     return {
-        "summary": {"trades": 1, "return_pct": 0.001},
-        "assumptions": {
-            "spread_bps": "5",
-            "slippage_bps_per_side": "2",
-            "broker_orders_possible": False,
+        "system": "VELUM",
+        "methodology_version": "velum-replay-v2",
+        "asset_class": "equity",
+        "baseline": {
+            "summary": {"trades": 1, "return_pct": 0.001},
+            "assumptions": {
+                "spread_bps": "5",
+                "slippage_bps_per_side": "2",
+                "broker_orders_possible": False,
+            },
+            "strategy": {
+                "name": "rolling_momentum_vwap",
+                "fast_window": 3,
+                "slow_window": 8,
+            },
         },
-        "strategy": {
-            "name": "rolling_momentum_vwap",
-            "fast_window": 3,
-            "slow_window": 8,
+        "stress": {
+            "summary": {"trades": 1, "return_pct": 0.0005},
+            "assumptions": {
+                "spread_bps": "10",
+                "slippage_bps_per_side": "4",
+            },
         },
-        "sessions": 1,
-        "trades": [
-            {
-                "symbol": "SPY",
-                "entry_at": "2026-09-29T13:31:00+00:00",
-                "exit_at": "2026-09-29T13:45:00+00:00",
-                "net_pnl": "0.10",
-            }
-        ],
-        "equity_curve": [
-            {"at": "2026-09-29T13:31:00+00:00", "equity": "100"},
-            {"at": "2026-09-29T13:45:00+00:00", "equity": "100.10"},
-        ],
+        "bootstrap": {"paths": 500, "positive_path_fraction": 0.6},
+    }
+
+
+def manifest_kwargs(evidence_hash: str):
+    payload = evidence()
+    return {
+        "asset_class": "equity",
+        "mode": "REPLAY",
+        "methodology_version": "velum-replay-v2",
+        "start": datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
+        "end": datetime(2026, 9, 30, 4, 0, tzinfo=timezone.utc),
+        "dataset_hash": dataset_fingerprint(bars()),
+        "coverage": {"SPY": 1, "QQQ": 1},
+        "strategy_version_id": "LIVE-2026-09-25-003",
+        "strategy": payload["baseline"]["strategy"],
+        "execution_assumptions": payload["baseline"]["assumptions"],
+        "random_seed": 20260929,
+        "runtime_git_commit": "abc123",
+        "evidence_hash": evidence_hash,
     }
 
 
@@ -68,83 +86,70 @@ def test_dataset_fingerprint_is_order_independent_and_data_sensitive():
     reordered = {"QQQ": list(source["QQQ"]), "SPY": list(source["SPY"])}
     assert dataset_fingerprint(source) == dataset_fingerprint(reordered)
 
+    lower_case = {"spy": list(source["SPY"]), "qqq": list(source["QQQ"])}
+    assert dataset_fingerprint(source) == dataset_fingerprint(lower_case)
+
     changed = bars()
     changed["SPY"][0]["c"] = 100.6
     assert dataset_fingerprint(source) != dataset_fingerprint(changed)
 
 
-def test_replay_result_fingerprint_is_deterministic():
-    result = replay_result()
-    assert replay_result_fingerprint(result) == replay_result_fingerprint(result)
+def test_evidence_fingerprint_covers_stress_and_diagnostics():
+    payload = evidence()
+    assert evidence_fingerprint(payload) == evidence_fingerprint(payload)
 
-    changed = replay_result()
-    changed["trades"][0]["net_pnl"] = "0.11"
-    assert replay_result_fingerprint(result) != replay_result_fingerprint(changed)
+    changed = evidence()
+    changed["stress"]["summary"]["return_pct"] = -0.001
+    assert evidence_fingerprint(payload) != evidence_fingerprint(changed)
+
+    changed = evidence()
+    changed["bootstrap"]["paths"] = 1000
+    assert evidence_fingerprint(payload) != evidence_fingerprint(changed)
 
 
 def test_run_manifest_is_stable_and_reproducible():
-    source = bars()
-    result = replay_result()
-    kwargs = {
-        "asset_class": "equity",
-        "mode": "REPLAY",
-        "methodology_version": "velum-replay-v2",
-        "start": datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 9, 30, 4, 0, tzinfo=timezone.utc),
-        "dataset_hash": dataset_fingerprint(source),
-        "coverage": {"SPY": 1, "QQQ": 1},
-        "strategy_version_id": "LIVE-2026-09-25-003",
-        "strategy": result["strategy"],
-        "execution_assumptions": result["assumptions"],
-        "random_seed": 20260929,
-        "runtime_git_commit": "abc123",
-        "result_hash": replay_result_fingerprint(result),
-    }
-    first = build_run_manifest(**kwargs)
-    second = build_run_manifest(**kwargs)
+    payload_hash = evidence_fingerprint(evidence())
+    first = build_run_manifest(**manifest_kwargs(payload_hash))
+    second = build_run_manifest(**manifest_kwargs(payload_hash))
 
     assert first == second
     assert first["schema_version"] == MANIFEST_SCHEMA_VERSION
     assert first["velum_run_id"].startswith("VELUM-EQUITY-REPLAY-")
     assert first["experiment_fingerprint"].startswith("sha256:")
+    assert first["evidence_fingerprint"] == payload_hash
+    assert first["run_fingerprint"].startswith("sha256:")
     assert first["safety"]["broker_orders_possible"] is False
 
 
-def test_run_id_changes_when_reproducibility_inputs_change():
-    source = bars()
-    result = replay_result()
+def test_experiment_and_run_fingerprints_have_distinct_meanings():
+    base_evidence = evidence()
+    changed_evidence = evidence()
+    changed_evidence["stress"]["summary"]["return_pct"] = -0.001
+
     base = build_run_manifest(
-        asset_class="crypto",
-        mode="REPLAY",
-        methodology_version="velum-replay-v2",
-        start=datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc),
-        end=datetime(2026, 9, 30, 0, 0, tzinfo=timezone.utc),
-        dataset_hash=dataset_fingerprint(source),
-        coverage={"SPY": 1, "QQQ": 1},
-        strategy_version_id="CRYPTO-2026-09-29-001",
-        strategy=result["strategy"],
-        execution_assumptions=result["assumptions"],
-        random_seed=2026092900,
-        runtime_git_commit="abc123",
-        result_hash=replay_result_fingerprint(result),
+        **manifest_kwargs(evidence_fingerprint(base_evidence))
     )
-    changed_execution = dict(result["assumptions"])
-    changed_execution["spread_bps"] = "10"
     changed = build_run_manifest(
-        asset_class="crypto",
-        mode="REPLAY",
-        methodology_version="velum-replay-v2",
-        start=datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc),
-        end=datetime(2026, 9, 30, 0, 0, tzinfo=timezone.utc),
-        dataset_hash=dataset_fingerprint(source),
-        coverage={"SPY": 1, "QQQ": 1},
-        strategy_version_id="CRYPTO-2026-09-29-001",
-        strategy=result["strategy"],
-        execution_assumptions=changed_execution,
-        random_seed=2026092900,
-        runtime_git_commit="abc123",
-        result_hash=replay_result_fingerprint(result),
+        **manifest_kwargs(evidence_fingerprint(changed_evidence))
     )
 
+    assert base["experiment_fingerprint"] == changed["experiment_fingerprint"]
+    assert base["evidence_fingerprint"] != changed["evidence_fingerprint"]
+    assert base["run_fingerprint"] != changed["run_fingerprint"]
     assert base["velum_run_id"] != changed["velum_run_id"]
+
+
+def test_experiment_fingerprint_changes_when_inputs_change():
+    payload_hash = evidence_fingerprint(evidence())
+    base_kwargs = manifest_kwargs(payload_hash)
+    base = build_run_manifest(**base_kwargs)
+
+    changed_execution = dict(base_kwargs["execution_assumptions"])
+    changed_execution["spread_bps"] = "10"
+    changed_kwargs = dict(base_kwargs)
+    changed_kwargs["execution_assumptions"] = changed_execution
+    changed = build_run_manifest(**changed_kwargs)
+
     assert base["experiment_fingerprint"] != changed["experiment_fingerprint"]
+    assert base["run_fingerprint"] != changed["run_fingerprint"]
+    assert base["velum_run_id"] != changed["velum_run_id"]
