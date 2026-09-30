@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -1624,6 +1625,42 @@ class TradingEventSink:
         async with httpx.AsyncClient(timeout=8.0) as http:
             return await self._send_batch(http, [event])
 
+    @staticmethod
+    def _transport_chunks(
+        events: list[dict[str, Any]],
+        *,
+        max_events: int = 100,
+        max_body_bytes: int = 200_000,
+    ) -> list[list[dict[str, Any]]]:
+        """Split telemetry below both ingest count and body-size ceilings."""
+        if not events:
+            return []
+
+        chunks: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+
+        for event in events:
+            candidate = [*current, event]
+            encoded_size = len(
+                json.dumps(
+                    {"events": candidate},
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            )
+            if current and (
+                len(candidate) > max_events
+                or encoded_size > max_body_bytes
+            ):
+                chunks.append(current)
+                current = [event]
+            else:
+                current = candidate
+
+        if current:
+            chunks.append(current)
+        return chunks
+
     async def _send_batch(
         self,
         http: httpx.AsyncClient,
@@ -1633,12 +1670,12 @@ class TradingEventSink:
             return True
 
         try:
-            # The trading-ingest Edge Function accepts at most 100 events per
-            # request. Reconciliation can legitimately exceed that once a run
-            # has accumulated enough broker orders and fills, so keep the
-            # transport bounded while preserving idempotent event keys.
-            for start in range(0, len(events), 100):
-                chunk = events[start : start + 100]
+            # The trading-ingest Edge Function accepts at most 100 events and
+            # rejects request bodies above 256 KB. Some decision-cycle payloads
+            # are tens of KB each, so count-only batching is insufficient.
+            # Keep a conservative byte margin to account for HTTP serialization
+            # details while preserving idempotent event keys.
+            for chunk in self._transport_chunks(events):
                 response = await http.post(
                     self.settings.trading_ingest_url,
                     headers={
