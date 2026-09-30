@@ -17,7 +17,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
-REGISTRY_PATH = Path(os.getenv("SCHEDULER_REGISTRY_PATH", "infra/schedule_registry.json"))
+REGISTRY_PATH = Path(os.getenv("SCHEDULER_REGISTRY_PATH", "app/schedule_registry.json"))
 TERMINAL_OK = {"COMPLETED", "NOOP", "BLOCKED"}
 
 
