@@ -1,0 +1,80 @@
+{
+  "registry_version": "graen-crypto-candidate-registry-v6",
+  "methodology_version": "graen-crypto-native-v6",
+  "research_state": "IMPLEMENTED_NOT_EXECUTED",
+  "execution_authority": false,
+  "crypto_execution_required_state": false,
+  "primary_strategy_version_id": "CRYPTO-RESIDUAL-RECLAIM-001",
+  "source_generation": {
+    "methodology": "graen-crypto-native-v5",
+    "role": "hypothesis_generation_only",
+    "clue": "negative_market_residual_15 -> 120m forward return",
+    "validated": false
+  },
+  "context_universe": [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD",
+    "AVAX/USD",
+    "LINK/USD"
+  ],
+  "execution_universe": [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD"
+  ],
+  "feature_family": {
+    "features": [
+      "negative_market_residual_15"
+    ],
+    "forward_horizons_minutes": [
+      90,
+      120,
+      180
+    ],
+    "multiplicity_method": "Benjamini-Yekutieli",
+    "alpha": 0.05
+  },
+  "frozen_parameters": {
+    "bar_minutes": 5,
+    "shock_lookback_minutes": 15,
+    "residual_vol_lookback_minutes": 360,
+    "shock_sigma_multiple": 1.5,
+    "cost_hurdle_multiple": 2.0,
+    "reclaim_window_minutes": 15,
+    "hold_minutes": 120,
+    "cost_snapshot_version": "graen-crypto-cost-snapshot-v5"
+  },
+  "candidate_family": [
+    {
+      "candidate_id": "CRR_IMMEDIATE_CONTROL",
+      "family": "controlled_residual_reversal",
+      "timing": "immediate",
+      "hold_minutes": 120,
+      "confirmatory": false,
+      "role": "timing_control"
+    },
+    {
+      "candidate_id": "CRYPTO-RESIDUAL-RECLAIM-001",
+      "family": "controlled_residual_reversal",
+      "timing": "reclaim",
+      "hold_minutes": 120,
+      "confirmatory": true,
+      "role": "primary_v6_candidate"
+    }
+  ],
+  "nostra": {
+    "mode": "shadow_snapshot_only",
+    "feature_set_version": "crypto-residual-reclaim-v6-snapshot-v1",
+    "forecast_gate_applied": false,
+    "execution_authority": false,
+    "canonical_ledger_pending": true
+  },
+  "corpus_contract": {
+    "must_be_new_and_uninspected": true,
+    "provenance_must_be_explicitly_verified": true,
+    "overlap_with_prior_inspected_ranges_allowed": false,
+    "holdout_opens_only_after_validation_gate": true
+  }
+}
