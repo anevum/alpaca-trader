@@ -56,15 +56,17 @@ def dataset_fingerprint(
     bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> str:
     """Hash normalized market data without depending on mapping insertion order."""
+    normalized: dict[str, list[Mapping[str, Any]]] = {}
+    for raw_symbol, rows in bars_by_symbol.items():
+        symbol = str(raw_symbol).upper()
+        normalized.setdefault(symbol, []).extend(rows)
+
     digest = hashlib.sha256()
-    for symbol in sorted((str(symbol).upper() for symbol in bars_by_symbol)):
-        source = bars_by_symbol.get(symbol)
-        if source is None:
-            source = bars_by_symbol.get(symbol.lower(), ())
+    for symbol in sorted(normalized):
         digest.update(symbol.encode("utf-8"))
         digest.update(b"\0")
         ordered = sorted(
-            (dict(bar) for bar in (source or ())),
+            (dict(bar) for bar in normalized[symbol]),
             key=lambda bar: str(bar.get("t") or ""),
         )
         for bar in ordered:
@@ -73,18 +75,9 @@ def dataset_fingerprint(
     return "sha256:" + digest.hexdigest()
 
 
-def replay_result_fingerprint(result: Mapping[str, Any]) -> str:
-    """Fingerprint the deterministic, inspectable portion of a replay result."""
-    return fingerprint(
-        {
-            "summary": result.get("summary") or {},
-            "assumptions": result.get("assumptions") or {},
-            "strategy": result.get("strategy") or {},
-            "sessions": result.get("sessions"),
-            "trades": result.get("trades") or [],
-            "equity_curve": result.get("equity_curve") or [],
-        }
-    )
+def evidence_fingerprint(evidence: Mapping[str, Any]) -> str:
+    """Fingerprint the complete persisted VELUM evidence payload before its manifest."""
+    return fingerprint(evidence)
 
 
 def build_run_manifest(
@@ -101,7 +94,7 @@ def build_run_manifest(
     execution_assumptions: Mapping[str, Any],
     random_seed: int | None,
     runtime_git_commit: str | None,
-    result_hash: str,
+    evidence_hash: str,
 ) -> dict[str, Any]:
     """Create an immutable provenance envelope for a completed VELUM run."""
     if end <= start:
@@ -114,10 +107,10 @@ def build_run_manifest(
         raise ValueError("VELUM manifest mode is required")
     if not str(dataset_hash).startswith("sha256:"):
         raise ValueError("VELUM dataset fingerprint must be sha256")
-    if not str(result_hash).startswith("sha256:"):
-        raise ValueError("VELUM result fingerprint must be sha256")
+    if not str(evidence_hash).startswith("sha256:"):
+        raise ValueError("VELUM evidence fingerprint must be sha256")
 
-    core = {
+    experiment_core = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "system": "VELUM",
         "mode": normalized_mode,
@@ -144,7 +137,6 @@ def build_run_manifest(
             "repository": "anevum/alpaca-trader",
             "git_commit": runtime_git_commit,
         },
-        "result_fingerprint": result_hash,
         "safety": {
             "research_only": True,
             "broker_orders_possible": False,
@@ -152,10 +144,18 @@ def build_run_manifest(
             "promotion_authority": False,
         },
     }
-    experiment_fingerprint = fingerprint(core)
-    suffix = experiment_fingerprint.split(":", 1)[1][:20].upper()
+    experiment_hash = fingerprint(experiment_core)
+    run_hash = fingerprint(
+        {
+            "experiment_fingerprint": experiment_hash,
+            "evidence_fingerprint": evidence_hash,
+        }
+    )
+    suffix = run_hash.split(":", 1)[1][:20].upper()
     return {
-        **_normalize(core),
-        "experiment_fingerprint": experiment_fingerprint,
+        **_normalize(experiment_core),
+        "experiment_fingerprint": experiment_hash,
+        "evidence_fingerprint": evidence_hash,
+        "run_fingerprint": run_hash,
         "velum_run_id": f"VELUM-{normalized_asset.upper()}-{normalized_mode}-{suffix}",
     }
