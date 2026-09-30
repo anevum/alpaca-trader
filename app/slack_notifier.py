@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from .slack_brand import decorate_slack_message
+
 
 class SlackNotifier:
     """Best-effort, non-blocking RHEN -> Slack incoming-webhook delivery."""
@@ -175,6 +177,7 @@ class SlackNotifier:
     def _enqueue(self, text: str, *, key: str | None = None) -> None:
         if not self.enabled:
             return
+        text = decorate_slack_message(text, system="RHEN")
         if key is not None:
             now = time.monotonic()
             if key in self._dedupe and now - self._dedupe[key] < 600:

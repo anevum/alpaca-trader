@@ -10,6 +10,8 @@ import os
 from typing import Any
 
 import httpx
+
+from .slack_brand import decorate_slack_message
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
@@ -621,7 +623,7 @@ class VelumRuntime:
             return
         try:
             async with httpx.AsyncClient(timeout=5.0) as http:
-                response = await http.post(url, json={"text": message})
+                response = await http.post(url, json={"text": decorate_slack_message(message, system="VELUM")})
                 response.raise_for_status()
         except Exception as exc:
             print("VELUM_SLACK_ERROR", {"error": type(exc).__name__}, flush=True)
