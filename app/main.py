@@ -1282,6 +1282,26 @@ async def scheduler_session_close(
     }
 
 
+@app.post("/v1/scheduler/counterfactual-snapshot")
+async def scheduler_counterfactual_snapshot(
+    request: SchedulerSessionRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    session = await scheduler_session_detail(request.session)
+    snapshot = await research_reports.counterfactual_snapshot(request.session)
+    return {
+        "ok": True,
+        "workflow": "velum.counterfactual.parity",
+        "session": session,
+        "scheduled_at": request.scheduled_at.isoformat() if request.scheduled_at else None,
+        "snapshot": snapshot,
+        "configuration": scheduler_configuration_snapshot(),
+        "execution_authority": False,
+        "live_configuration_changed": False,
+    }
+
+
 @app.post("/v1/scheduler/weekly-review")
 async def scheduler_weekly_review(
     request: SchedulerSessionRequest,
