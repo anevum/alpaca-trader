@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -10,7 +10,7 @@ from .config import Settings
 from .cash_flow import (
     NY,
     annotate_account,
-    detected_session_cash_flow,
+    detected_reference_window_cash_flow,
     reconcile_cash_flow_adjustments,
 )
 
@@ -24,6 +24,7 @@ class AlpacaClient:
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._previous_market_close_cache: dict[str, datetime] = {}
 
     @property
     def headers(self) -> dict[str, str]:
@@ -70,13 +71,17 @@ class AlpacaClient:
         session_date = observed_at.astimezone(NY).date()
 
         try:
-            activities = await self.transfer_activities(date=session_date.isoformat())
-            detected = detected_session_cash_flow(
+            reference_start = await self.previous_market_close(session_date)
+            activities = await self.transfer_activities(
+                after=reference_start.isoformat(),
+            )
+            detected = detected_reference_window_cash_flow(
                 activities,
                 session_date=session_date,
                 expected_last_equity=raw.get("last_equity"),
                 run_id=self.settings.trading_run_id,
                 observed_at=observed_at,
+                reference_start=reference_start,
             )
             adjustment = reconcile_cash_flow_adjustments(
                 self.settings.session_cash_flow_adjustment,
@@ -90,7 +95,7 @@ class AlpacaClient:
             )
             result["cash_flow_accounting"] = {
                 "status": "unavailable",
-                "source": "alpaca_account_activities",
+                "source": "alpaca_account_activities_reference_window",
                 "session_date": session_date.isoformat(),
                 "observed_at": observed_at.isoformat(),
             }
@@ -102,6 +107,47 @@ class AlpacaClient:
             run_id=self.settings.trading_run_id,
             observed_at=observed_at,
         )
+
+    async def previous_market_close(self, session_date: date) -> datetime:
+        """Return the most recent regular-session close before session_date."""
+        cache_key = session_date.isoformat()
+        cached = self._previous_market_close_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        start_date = session_date - timedelta(days=14)
+        result = await self._request(
+            "GET",
+            "/v2/calendar",
+            params={
+                "start": start_date.isoformat(),
+                "end": session_date.isoformat(),
+            },
+        )
+        sessions = []
+        for item in result if isinstance(result, list) else []:
+            try:
+                item_date = date.fromisoformat(str(item.get("date") or "")[:10])
+            except (TypeError, ValueError):
+                continue
+            if item_date < session_date:
+                sessions.append((item_date, item))
+
+        if not sessions:
+            raise ValueError("prior market close is unavailable")
+        _, prior_session = max(sessions, key=lambda pair: pair[0])
+        close_raw = str(prior_session.get("close") or "").strip()
+        if not close_raw:
+            raise ValueError("prior market close is missing close timestamp")
+        try:
+            close_at = datetime.fromisoformat(close_raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("prior market close timestamp is invalid") from exc
+        if close_at.tzinfo is None or close_at.utcoffset() is None:
+            close_at = close_at.replace(tzinfo=NY)
+        close_at = close_at.astimezone(timezone.utc)
+        self._previous_market_close_cache[cache_key] = close_at
+        return close_at
 
     async def clock(self) -> dict[str, Any]:
         return await self._request("GET", "/v2/clock")
@@ -148,6 +194,8 @@ class AlpacaClient:
         self,
         *,
         date: str | None = None,
+        after: str | None = None,
+        until: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
@@ -156,6 +204,10 @@ class AlpacaClient:
         }
         if date:
             params["date"] = date
+        if after:
+            params["after"] = after
+        if until:
+            params["until"] = until
         result = await self._request(
             "GET",
             "/v2/account/activities/TRANS",
