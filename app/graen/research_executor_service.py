@@ -37,6 +37,12 @@ VALIDATION_START = datetime(2025, 7, 1, tzinfo=UTC)
 HOLDOUT_START = datetime(2025, 8, 1, tzinfo=UTC)
 HOLDOUT_END = datetime(2025, 9, 1, tzinfo=UTC)
 
+LEADLAG_DEVELOPMENT_START = datetime(2025, 12, 1, tzinfo=UTC)
+LEADLAG_VALIDATION_START = datetime(2025, 12, 21, tzinfo=UTC)
+LEADLAG_HOLDOUT_START = datetime(2026, 1, 11, tzinfo=UTC)
+LEADLAG_HOLDOUT_END = datetime(2026, 1, 31, 16, 0, tzinfo=UTC)
+LEADLAG_STAGE_KEY = "CRYPTO_LEADLAG_R2_READY"
+
 PREVIOUSLY_INSPECTED_RANGES = (
     {
         "id": "graen-crypto-v6",
@@ -184,10 +190,18 @@ class GraenResearchExecutor:
             "last_error": self.last_error,
             "last_result": self.last_result,
             "research_window": {
-                "development_start": DEVELOPMENT_START.isoformat(),
-                "validation_start": VALIDATION_START.isoformat(),
-                "holdout_start": HOLDOUT_START.isoformat(),
-                "holdout_end": HOLDOUT_END.isoformat(),
+                "generic_v7": {
+                    "development_start": DEVELOPMENT_START.isoformat(),
+                    "validation_start": VALIDATION_START.isoformat(),
+                    "holdout_start": HOLDOUT_START.isoformat(),
+                    "holdout_end": HOLDOUT_END.isoformat(),
+                },
+                "leadlag_r2_confirmatory": {
+                    "development_start": LEADLAG_DEVELOPMENT_START.isoformat(),
+                    "validation_start": LEADLAG_VALIDATION_START.isoformat(),
+                    "holdout_start": LEADLAG_HOLDOUT_START.isoformat(),
+                    "holdout_end": LEADLAG_HOLDOUT_END.isoformat(),
+                },
             },
             "runtime_provenance": {
                 "git_commit": _source_commit(),
@@ -278,6 +292,408 @@ class GraenResearchExecutor:
             clean[symbol] = rows
         return clean
 
+    async def _fetch_stage(
+        self,
+        symbols: tuple[str, ...],
+        *,
+        start: datetime,
+        end: datetime,
+        warmup_hours: int = 169,
+    ) -> dict[str, list[dict[str, Any]]]:
+        fetch_start = start - timedelta(hours=warmup_hours)
+        fetch_end = end + timedelta(minutes=40)
+        raw: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+        chunk_start = fetch_start
+        while chunk_start < fetch_end:
+            chunk_end = min(chunk_start + timedelta(days=20), fetch_end)
+            chunk = await self.market_data.historical_crypto_bars_many(
+                list(symbols),
+                start=chunk_start,
+                end=chunk_end,
+            )
+            for symbol in symbols:
+                raw[symbol].extend(chunk.get(symbol, []))
+            chunk_start = chunk_end
+
+        clean: dict[str, list[dict[str, Any]]] = {}
+        for symbol in symbols:
+            seen: set[str] = set()
+            rows: list[dict[str, Any]] = []
+            for bar in raw.get(symbol, []):
+                identity = str(bar.get("t") or "")
+                if not identity or identity in seen:
+                    continue
+                seen.add(identity)
+                try:
+                    stamp = datetime.fromisoformat(identity.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=UTC)
+                stamp = stamp.astimezone(UTC)
+                if fetch_start <= stamp < fetch_end:
+                    rows.append(bar)
+            clean[symbol] = rows
+        return clean
+
+    async def _finalize(
+        self,
+        *,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+        status: str,
+        summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        linked_job_id = (
+            str(problem.get("linked_iren_job_id"))
+            if problem.get("linked_iren_job_id")
+            else None
+        )
+        await self.gateway.complete_research_problem(
+            problem_id=problem_id,
+            run_id=run_id,
+            worker_id=self.worker_id,
+            status=status,
+            result_summary=summary,
+            model_usage={"invoked": False},
+        )
+        callback_status = "SUCCEEDED" if status == "SUCCEEDED" else "WAITING"
+        callback_delivered = await self._callback_iren(
+            linked_job_id,
+            status=callback_status,
+            result={
+                "graen_problem_id": problem_id,
+                "graen_run_id": run_id,
+                **summary,
+            },
+        )
+        summary["iren_callback_delivered"] = callback_delivered
+        self.active_problem_id = None
+        self.last_completion_at = datetime.now(UTC)
+        self.last_result = summary
+        self.last_error = None
+        await self._heartbeat()
+        return {"claimed": True, "problem_id": problem_id, **summary}
+
+    async def _execute_leadlag_r2(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        self.active_methodology_version = LEADLAG_METHODOLOGY_VERSION
+
+        prespec = {
+            **leadlag_research_specification(),
+            "corpus": {
+                "development": [
+                    LEADLAG_DEVELOPMENT_START.isoformat(),
+                    LEADLAG_VALIDATION_START.isoformat(),
+                ],
+                "validation": [
+                    LEADLAG_VALIDATION_START.isoformat(),
+                    LEADLAG_HOLDOUT_START.isoformat(),
+                ],
+                "holdout": [
+                    LEADLAG_HOLDOUT_START.isoformat(),
+                    LEADLAG_HOLDOUT_END.isoformat(),
+                ],
+                "overlap_allowed": False,
+                "holdout_fetch_before_validation_pass": False,
+            },
+            "source_commit": _source_commit(),
+            "deployment_id": _deployment_id(),
+            "problem_id": problem_id,
+            "graen_run_id": run_id,
+            "frozen_before_corpus_access": True,
+        }
+        prespec_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="RESEARCH_HYPOTHESIS_SPECIFICATION_REVISION",
+            methodology_version=LEADLAG_METHODOLOGY_VERSION,
+            content=prespec,
+        )
+
+        development_bars = await self._fetch_stage(
+            LEADLAG_UNIVERSE,
+            start=LEADLAG_DEVELOPMENT_START,
+            end=LEADLAG_VALIDATION_START,
+        )
+        development = evaluate_leadlag_stage(
+            development_bars,
+            start=LEADLAG_DEVELOPMENT_START,
+            end=LEADLAG_VALIDATION_START,
+            scenario="high",
+            seed=82101,
+        )
+        development_passed, development_reasons = leadlag_development_gate(development)
+        development_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_LEADLAG_DEVELOPMENT_RESULT",
+            methodology_version=LEADLAG_METHODOLOGY_VERSION,
+            content={
+                "stage": "DEVELOPMENT",
+                "passed": development_passed,
+                "reasons": development_reasons,
+                "bar_counts": {symbol: len(rows) for symbol, rows in development_bars.items()},
+                "result": development,
+                "source_commit": _source_commit(),
+            },
+        )
+
+        result: dict[str, Any] = {
+            "methodology_version": LEADLAG_METHODOLOGY_VERSION,
+            "hypothesis_id": "CRYPTO-LEADLAG-001",
+            "candidate_id": "CRYPTO-LEADLAG-001-R2",
+            "prespec_revision": 2,
+            "problem_id": problem_id,
+            "graen_run_id": run_id,
+            "source_commit": _source_commit(),
+            "deployment_id": _deployment_id(),
+            "research_only": True,
+            "model_invoked": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "risk_or_sizing_authority": False,
+            "production_promotion_authority": False,
+            "production_state_changed": False,
+            "prespec_artifact_id": (
+                (prespec_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(prespec_artifact.get("artifact"), Mapping) else None
+            ),
+            "development_artifact_id": (
+                (development_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(development_artifact.get("artifact"), Mapping) else None
+            ),
+            "development": {
+                "opened": True,
+                "passed": development_passed,
+                "reasons": development_reasons,
+                "result": development,
+            },
+            "validation": {"opened": False},
+            "holdout": {"opened": False},
+        }
+
+        if not development_passed:
+            result.update({
+                "status": "REJECTED_IN_DEVELOPMENT",
+                "decision": "CONTINUE_RESEARCH",
+                "next_action": "DESIGN_NEXT_FROZEN_RESEARCH_BATCH",
+            })
+            final_artifact = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type="CRYPTO_LEADLAG_R2_RESULT",
+                methodology_version=LEADLAG_METHODOLOGY_VERSION,
+                content=result,
+            )
+            summary = {
+                "state": "CANDIDATE_REJECTED_DEVELOPMENT",
+                "decision": result["decision"],
+                "status": result["status"],
+                "methodology_version": LEADLAG_METHODOLOGY_VERSION,
+                "candidate_id": result["candidate_id"],
+                "development_passed": False,
+                "validation_opened": False,
+                "holdout_opened": False,
+                "artifact_id": (
+                    (final_artifact.get("artifact") or {}).get("artifact_id")
+                    if isinstance(final_artifact.get("artifact"), Mapping) else None
+                ),
+                "content_hash": final_artifact.get("content_hash"),
+                "model_invoked": False,
+                "execution_authority": False,
+                "production_state_changed": False,
+                "next_action": result["next_action"],
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+            )
+
+        validation_bars = await self._fetch_stage(
+            LEADLAG_UNIVERSE,
+            start=LEADLAG_VALIDATION_START,
+            end=LEADLAG_HOLDOUT_START,
+        )
+        validation = evaluate_leadlag_stage(
+            validation_bars,
+            start=LEADLAG_VALIDATION_START,
+            end=LEADLAG_HOLDOUT_START,
+            scenario="high",
+            seed=82201,
+        )
+        validation_passed, validation_reasons = leadlag_validation_gate(validation)
+        validation_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_LEADLAG_VALIDATION_RESULT",
+            methodology_version=LEADLAG_METHODOLOGY_VERSION,
+            content={
+                "stage": "VALIDATION",
+                "passed": validation_passed,
+                "reasons": validation_reasons,
+                "bar_counts": {symbol: len(rows) for symbol, rows in validation_bars.items()},
+                "result": validation,
+                "source_commit": _source_commit(),
+            },
+        )
+        result["validation"] = {
+            "opened": True,
+            "passed": validation_passed,
+            "reasons": validation_reasons,
+            "artifact_id": (
+                (validation_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(validation_artifact.get("artifact"), Mapping) else None
+            ),
+            "result": validation,
+        }
+
+        if not validation_passed:
+            result.update({
+                "status": "REJECTED_IN_VALIDATION",
+                "decision": "CONTINUE_RESEARCH",
+                "next_action": "DESIGN_NEXT_FROZEN_RESEARCH_BATCH",
+            })
+            final_artifact = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type="CRYPTO_LEADLAG_R2_RESULT",
+                methodology_version=LEADLAG_METHODOLOGY_VERSION,
+                content=result,
+            )
+            summary = {
+                "state": "CANDIDATE_REJECTED_VALIDATION",
+                "decision": result["decision"],
+                "status": result["status"],
+                "methodology_version": LEADLAG_METHODOLOGY_VERSION,
+                "candidate_id": result["candidate_id"],
+                "development_passed": True,
+                "validation_passed": False,
+                "holdout_opened": False,
+                "artifact_id": (
+                    (final_artifact.get("artifact") or {}).get("artifact_id")
+                    if isinstance(final_artifact.get("artifact"), Mapping) else None
+                ),
+                "content_hash": final_artifact.get("content_hash"),
+                "model_invoked": False,
+                "execution_authority": False,
+                "production_state_changed": False,
+                "next_action": result["next_action"],
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+            )
+
+        holdout_bars = await self._fetch_stage(
+            LEADLAG_UNIVERSE,
+            start=LEADLAG_HOLDOUT_START,
+            end=LEADLAG_HOLDOUT_END,
+        )
+        holdout_high = evaluate_leadlag_stage(
+            holdout_bars,
+            start=LEADLAG_HOLDOUT_START,
+            end=LEADLAG_HOLDOUT_END,
+            scenario="high",
+            seed=82301,
+        )
+        holdout_base = evaluate_leadlag_stage(
+            holdout_bars,
+            start=LEADLAG_HOLDOUT_START,
+            end=LEADLAG_HOLDOUT_END,
+            scenario="base",
+            seed=82311,
+        )
+        holdout_low = evaluate_leadlag_stage(
+            holdout_bars,
+            start=LEADLAG_HOLDOUT_START,
+            end=LEADLAG_HOLDOUT_END,
+            scenario="low",
+            seed=82321,
+        )
+        holdout_passed, holdout_reasons = leadlag_holdout_gate(holdout_high)
+        holdout_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_LEADLAG_HOLDOUT_RESULT",
+            methodology_version=LEADLAG_METHODOLOGY_VERSION,
+            content={
+                "stage": "HOLDOUT",
+                "passed": holdout_passed,
+                "reasons": holdout_reasons,
+                "bar_counts": {symbol: len(rows) for symbol, rows in holdout_bars.items()},
+                "scenarios": {
+                    "high": holdout_high,
+                    "base": holdout_base,
+                    "low": holdout_low,
+                },
+                "source_commit": _source_commit(),
+            },
+        )
+        result["holdout"] = {
+            "opened": True,
+            "passed": holdout_passed,
+            "reasons": holdout_reasons,
+            "artifact_id": (
+                (holdout_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(holdout_artifact.get("artifact"), Mapping) else None
+            ),
+            "scenarios": {
+                "high": holdout_high,
+                "base": holdout_base,
+                "low": holdout_low,
+            },
+        }
+        result.update({
+            "status": "HOLDOUT_PASS" if holdout_passed else "HOLDOUT_FAIL",
+            "decision": "PROMOTE_TO_VELUM" if holdout_passed else "CONTINUE_RESEARCH",
+            "next_action": "VELUM_REPLAY" if holdout_passed else "DESIGN_NEXT_FROZEN_RESEARCH_BATCH",
+        })
+        final_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_LEADLAG_R2_RESULT",
+            methodology_version=LEADLAG_METHODOLOGY_VERSION,
+            content=result,
+        )
+        summary = {
+            "state": "CANDIDATE_READY_FOR_VELUM" if holdout_passed else "CANDIDATE_REJECTED_HOLDOUT",
+            "decision": result["decision"],
+            "status": result["status"],
+            "methodology_version": LEADLAG_METHODOLOGY_VERSION,
+            "candidate_id": result["candidate_id"],
+            "development_passed": True,
+            "validation_passed": True,
+            "holdout_opened": True,
+            "holdout_passed": holdout_passed,
+            "artifact_id": (
+                (final_artifact.get("artifact") or {}).get("artifact_id")
+                if isinstance(final_artifact.get("artifact"), Mapping) else None
+            ),
+            "content_hash": final_artifact.get("content_hash"),
+            "model_invoked": False,
+            "execution_authority": False,
+            "production_state_changed": False,
+            "next_action": result["next_action"],
+        }
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="SUCCEEDED" if holdout_passed else "WAITING",
+            summary=summary,
+        )
+
     async def _callback_iren(
         self,
         linked_job_id: str | None,
@@ -305,6 +721,18 @@ class GraenResearchExecutor:
             return False
 
     async def process_once(self) -> dict[str, Any]:
+        snapshot = await self.gateway.snapshot()
+        staged_leadlag = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") == LEADLAG_STAGE_KEY
+            for row in (snapshot.get("problems") or [])
+        )
+        self.active_methodology_version = (
+            LEADLAG_METHODOLOGY_VERSION if staged_leadlag else V7_METHODOLOGY_VERSION
+        )
         claimed = await self.gateway.claim_research_problem(
             worker_id=self.worker_id,
             runtime_version=RUNTIME_VERSION,
@@ -329,6 +757,10 @@ class GraenResearchExecutor:
         self.active_problem_id = problem_id
         self.last_claim_at = datetime.now(UTC)
         await self._heartbeat()
+
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
+            return await self._execute_leadlag_r2(problem, run)
 
         bars = await self._fetch_corpus()
         result = run_crypto_research_v7(
