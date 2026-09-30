@@ -117,6 +117,32 @@ def test_old_misses_do_not_become_current_incidents():
     assert state["state"] == "HEALTHY"
 
 
+def test_newer_workflow_version_supersedes_failure_at_same_schedule():
+    obs = observation()
+    scheduled = "2026-09-30T10:45:00+00:00"
+    obs["runs"] = [
+        {
+            "workflow_id": "rhen.preflight",
+            "workflow_version": "1.0.0",
+            "scheduled_at": scheduled,
+            "started_at": "2026-09-30T10:45:01+00:00",
+            "completed_at": "2026-09-30T10:45:02+00:00",
+            "status": "FAILED",
+        },
+        {
+            "workflow_id": "rhen.preflight",
+            "workflow_version": "1.0.1",
+            "scheduled_at": scheduled,
+            "started_at": "2026-09-30T10:55:01+00:00",
+            "completed_at": "2026-09-30T10:55:02+00:00",
+            "status": "SUCCEEDED",
+        },
+    ]
+    state, events = reduce_state({}, obs, POLICY)
+    assert state["state"] == "HEALTHY"
+    assert not any(event["key"] == "workflow.rhen.preflight" for event in events)
+
+
 def test_yesterday_preflight_before_todays_due_time_is_historical():
     obs = observation()
     obs["runs"] = [{"workflow_id": "rhen.preflight", "scheduled_at": "2026-09-29T12:45:00+00:00", "status": "MISSED"}]
