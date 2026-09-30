@@ -11,6 +11,11 @@ from .math_kernel import forward_return, mae, mfe
 METHODOLOGY_VERSION = "candidate-forward-crypto-v1"
 HORIZONS_MINUTES = (1, 3, 5, 10, 15, 30, 60)
 
+# Forward evidence is research-only and shares RHEN's telemetry transport with
+# operational events. Keep each catch-up pass bounded so a historical backlog
+# can never starve current runtime telemetry.
+MAX_EMITTED_OUTCOMES_PER_RUN = 500
+
 
 def _d(value: Any) -> Decimal | None:
     try:
@@ -164,6 +169,7 @@ class CryptoForwardEvidenceSummary:
     emitted: int = 0
     complete: int = 0
     incomplete: int = 0
+    deferred: int = 0
     errors: int = 0
 
 
@@ -229,22 +235,34 @@ class CryptoForwardEvidenceRunner:
                 )
                 if outcome is None:
                     continue
+
+                # Incomplete/error states are diagnostic observations, not
+                # finalized forward evidence. Re-emitting them every minute
+                # previously flooded the shared telemetry queue with tens of
+                # thousands of idempotent duplicates. Recompute them on the
+                # next pass instead and persist only complete outcomes.
+                if outcome["status"] == "insufficient_future_data":
+                    summary.incomplete += 1
+                    continue
+                if outcome["status"] != "complete":
+                    summary.errors += 1
+                    continue
+
+                summary.complete += 1
+                if summary.emitted >= MAX_EMITTED_OUTCOMES_PER_RUN:
+                    summary.deferred += 1
+                    continue
+
                 outcome["computed_at"] = current.isoformat()
                 identity = candidate.get("candidate_id") or candidate.get("candidate_key")
                 self.event_sink.emit(
                     event_type="candidate_forward_outcome",
-                    event_key=f"candidate-forward-crypto:{identity}:{horizon}:{METHODOLOGY_VERSION}:{outcome['status']}",
+                    event_key=f"candidate-forward-crypto:{identity}:{horizon}:{METHODOLOGY_VERSION}:complete",
                     occurred_at=current.isoformat(),
                     symbol=symbol,
                     payload=outcome,
                 )
                 summary.emitted += 1
-                if outcome["status"] == "complete":
-                    summary.complete += 1
-                elif outcome["status"] == "insufficient_future_data":
-                    summary.incomplete += 1
-                else:
-                    summary.errors += 1
 
         queue = getattr(self.event_sink, "queue", None)
         if queue is not None:
@@ -255,6 +273,7 @@ class CryptoForwardEvidenceRunner:
             "emitted": summary.emitted,
             "complete": summary.complete,
             "incomplete": summary.incomplete,
+            "deferred": summary.deferred,
             "errors": summary.errors,
             "last_run_at": current.isoformat(),
         }

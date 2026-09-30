@@ -1,6 +1,9 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 
+import app.crypto_post_event_evidence as crypto_evidence
 from app.crypto_features import bar_activity_state, crypto_feature_state, cyclic_time_features
 from app.crypto_post_event_evidence import calculate_continuous_forward_outcome
 from app.research_agent.crypto_ads import score_crypto_ads
@@ -94,3 +97,108 @@ def test_continuous_forward_outcome_crosses_equity_close_and_midnight():
     assert outcome["status"] == "complete"
     assert outcome["details"]["continuous_market"] is True
     assert Decimal(outcome["forward_return"]) > 0
+
+
+def test_crypto_forward_evidence_bounds_catchup_and_skips_nonfinal_states(monkeypatch):
+    reference_bar = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    now = reference_bar + timedelta(minutes=10)
+    candidates = [
+        {
+            "candidate_id": candidate_id,
+            "candidate_key": f"crypto-{candidate_id}",
+            "symbol": "BTC/USD",
+            "decision_reference_price": "100",
+            "features": {"bar_time": reference_bar.isoformat(), "market": "crypto"},
+            "market_lane": "crypto",
+            "strategy_version_id": "CRYPTO-2026-09-29-001",
+            "forward_outcomes": {},
+        }
+        for candidate_id in range(1, 4)
+    ]
+    bars = [
+        _bar(reference_bar + timedelta(minutes=i), 100 + i)
+        for i in range(1, 7)
+    ]
+
+    class MarketData:
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {"BTC/USD": bars}
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def evidence_reader(*, evidence_session):
+        return {"candidates": candidates}
+
+    monkeypatch.setattr(
+        crypto_evidence,
+        "MAX_EMITTED_OUTCOMES_PER_RUN",
+        2,
+    )
+    sink = Sink()
+    state = SimpleNamespace(crypto_forward_evidence_state={})
+    runner = crypto_evidence.CryptoForwardEvidenceRunner(
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=evidence_reader,
+        state=state,
+    )
+
+    summary = asyncio.run(runner.run_recent(now))
+
+    assert summary.emitted == 2
+    assert summary.complete > summary.emitted
+    assert summary.deferred == summary.complete - summary.emitted
+    assert summary.incomplete == 0
+    assert all(
+        event["payload"]["status"] == "complete"
+        for event in sink.events
+    )
+    assert state.crypto_forward_evidence_state["deferred"] == summary.deferred
+
+
+def test_crypto_forward_evidence_does_not_emit_incomplete_outcomes():
+    reference_bar = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    now = reference_bar + timedelta(minutes=5)
+    candidate = {
+        "candidate_id": 77,
+        "candidate_key": "crypto-incomplete",
+        "symbol": "BTC/USD",
+        "decision_reference_price": "100",
+        "features": {"bar_time": reference_bar.isoformat(), "market": "crypto"},
+        "market_lane": "crypto",
+        "strategy_version_id": "CRYPTO-2026-09-29-001",
+        "forward_outcomes": {},
+    }
+
+    class MarketData:
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {"BTC/USD": []}
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def evidence_reader(*, evidence_session):
+        return {"candidates": [candidate]}
+
+    sink = Sink()
+    runner = crypto_evidence.CryptoForwardEvidenceRunner(
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=evidence_reader,
+        state=SimpleNamespace(crypto_forward_evidence_state={}),
+    )
+
+    summary = asyncio.run(runner.run_recent(now))
+
+    assert summary.incomplete > 0
+    assert summary.emitted == 0
+    assert sink.events == []
