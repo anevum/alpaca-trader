@@ -14,6 +14,8 @@ from fastapi import FastAPI, Header, HTTPException
 from app import orchestration_scheduler as scheduler
 from .core import fresh, identity, reduce_state
 
+from app.slack_brand import decorate_slack_message
+
 UTC = timezone.utc
 POLICY = json.loads(Path(__file__).with_name("policy.json").read_text())
 
@@ -116,8 +118,21 @@ class IrenController:
         owner = str(uuid4())
         batch = await self.gateway("iren_notifications_claim", owner=owner)
         for event in batch.get("events", []):
-            result = await scheduler.runtime.slack.send(event["route"],
-                f"*IREN // {event['transition']} // {event['key']}*\n{event['reason']}\nDeterministic supervision; no trading configuration changed.")
+            transition = str(event.get("transition") or "").upper()
+            severity = str(event.get("severity") or "").lower()
+            iren_state = (
+                "HEALTHY"
+                if transition == "RECOVERED"
+                else "INCIDENT"
+                if transition == "ESCALATED" or severity == "critical"
+                else "DEGRADED"
+            )
+            message = decorate_slack_message(
+                f"*IREN // {event['transition']} // {event['key']}*\n{event['reason']}\nDeterministic supervision; no trading configuration changed.",
+                system="IREN",
+                iren_state=iren_state,
+            )
+            result = await scheduler.runtime.slack.send(event["route"], message)
             await self.gateway("iren_notification_complete", event_key=event["event_key"], owner=owner, delivery_status=result)
 
     async def verify_api(self):
