@@ -117,6 +117,34 @@ def test_old_misses_do_not_become_current_incidents():
     assert state["state"] == "HEALTHY"
 
 
+def test_yesterday_preflight_before_todays_due_time_is_historical():
+    obs = observation()
+    obs["runs"] = [{"workflow_id": "rhen.preflight", "scheduled_at": "2026-09-29T12:45:00+00:00", "status": "MISSED"}]
+    state, _ = reduce_state({}, obs, POLICY)
+    assert state["state"] == "HEALTHY"
+
+
+def test_scheduler_startup_grace_does_not_fabricate_success():
+    obs = observation()
+    obs["scheduler"]["started_at"] = obs["observed_at"]
+    obs["scheduler"]["last_success_at"] = None
+    state, events = reduce_state({}, obs, POLICY)
+    assert not any(e["key"] == "scheduler.stale" for e in events)
+    assert state["scheduler"]["last_success_at"] is None
+
+
+def test_rolling_restart_does_not_count_an_extra_observation():
+    async def scenario():
+        c = IrenController()
+        stamp = datetime.now(timezone.utc).isoformat()
+        c.gateway = AsyncMock(return_value={"state": {"observed_at": stamp, "state": "DEGRADED"}, "revision": "9"})
+        c.observe = AsyncMock()
+        await c.tick()
+        c.observe.assert_not_awaited()
+        assert c.revision == 9 and c.state["state"] == "DEGRADED"
+    asyncio.run(scenario())
+
+
 def test_scheduler_staleness_and_expired_lease():
     obs = observation(1000)
     obs["scheduler"]["last_success_at"] = observation()["observed_at"]
@@ -166,7 +194,7 @@ def test_production_api_check_requires_auth_and_fresh_state(monkeypatch):
         if request.url.path == "/v1/iren/status":
             if request.headers.get("x-anevum-scheduler-token") != "synthetic-token":
                 return httpx.Response(401)
-            return httpx.Response(200, json={"stale": False, "revision": 7})
+            return httpx.Response(200, json={"stale": False, "revision": "7"})
         return httpx.Response(200, json={"scheduler_version": scheduler.runtime.scheduler_version})
     factory = httpx.AsyncClient
     monkeypatch.setattr(scheduler.runtime, "token", "synthetic-token")

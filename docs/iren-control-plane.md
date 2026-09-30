@@ -20,6 +20,9 @@ immediate critical incident. Service and evidence warnings open after two
 observations. Recovery requires three healthy observations. Pending warnings
 already make aggregate health DEGRADED. Old scheduler misses remain history;
 only the latest execution per workflow within 24 hours affects current state.
+Preflight and market-open misses from earlier local dates are historical.
+Scheduler restarts receive a 180-second startup grace period, and overlapping
+deployments cannot accelerate the once-per-minute observation counters.
 
 The first protected fingerprint is an **observed** baseline, not evidence of
 human approval. IREN does not automatically accept later drift. The live
