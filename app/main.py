@@ -1131,6 +1131,12 @@ async def health():
     }
 
 
+@app.get("/v1/scheduler/configuration")
+async def scheduler_configuration(x_anevum_scheduler_token: str | None = Header(default=None)):
+    require_scheduler_token(x_anevum_scheduler_token)
+    return scheduler_configuration_snapshot()
+
+
 @app.get("/v1/scheduler/calendar")
 async def scheduler_calendar(
     start: date,
