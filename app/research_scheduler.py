@@ -527,6 +527,64 @@ class ResearchReportScheduler:
             reports.append(payload)
         return reports, None
 
+    async def counterfactual_snapshot(self, session: date) -> dict[str, Any]:
+        canonical = await self._daily_post_event_inputs(session)
+        candidates = list(canonical.get("candidates") or [])
+        prior_reports, history_warning = await self._counterfactual_history_reports(session)
+        current_version = str(
+            getattr(self.settings, "strategy_version_id", "") or ""
+        )
+        baseline_parameters = {
+            parameter: (
+                None
+                if getattr(self.settings, parameter, None) in (None, "")
+                else str(getattr(self.settings, parameter))
+            )
+            for parameter in PARAMETER_FEATURES
+        }
+        expected_report = canonical.get("latest_daily_report")
+        expected_lab = (
+            expected_report.get("counterfactual_lab")
+            if isinstance(expected_report, dict)
+            and str(expected_report.get("session") or "") == session.isoformat()
+            else None
+        )
+        material = {
+            "schema_version": "velum_counterfactual_input.v1",
+            "session": session.isoformat(),
+            "strategy_version_id": current_version or None,
+            "baseline_parameters": baseline_parameters,
+            "candidates": candidates,
+            "prior_reports": prior_reports,
+        }
+        encoded = json.dumps(
+            material,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        expected_identity = None
+        if isinstance(expected_lab, dict):
+            expected_identity = "sha256:" + hashlib.sha256(
+                json.dumps(
+                    expected_lab,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode()
+            ).hexdigest()
+        return {
+            **material,
+            "input_identity": "sha256:" + hashlib.sha256(encoded.encode()).hexdigest(),
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "history_warning": history_warning,
+            "expected_counterfactual_lab": expected_lab,
+            "expected_output_identity": expected_identity,
+            "read_only": True,
+            "execution_authority": False,
+            "live_configuration_changed": False,
+        }
+
     async def _build_counterfactual_lab(
         self,
         session: date,
