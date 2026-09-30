@@ -267,6 +267,11 @@ def _engine_settings():
 
 def test_crypto_execution_engine_submits_crypto_only_order():
     state = RuntimeState()
+    state.crypto_graen_promotion = {
+        "status": "PROMOTION_READY",
+        "promotion_ready": True,
+        "reason_codes": [],
+    }
     state.begin_crypto_cycle("crypto-test-cycle")
     engine = CryptoExecutionEngine(
         _engine_settings(),
