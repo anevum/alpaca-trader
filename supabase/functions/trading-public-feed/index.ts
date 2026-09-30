@@ -357,6 +357,341 @@ Deno.serve(async (req) => {
         (select count(*)::int from private.nostra_snapshots where created_at >= now() - interval '24 hours') as nostra_snapshots_24h`),
     ]);
 
+    const [performanceRows, performanceCurveRows] = await Promise.all([
+      sql.unsafe(`with active_epoch as (
+          select epoch_id, baseline_snapshot_id, started_at, ended_at, reason
+          from private.trading_performance_epochs
+          order by started_at desc
+          limit 1
+        ),
+        baseline as (
+          select
+            e.epoch_id,
+            e.started_at as tracking_started_at,
+            e.ended_at as tracking_ended_at,
+            e.reason as baseline_reason,
+            p.equity::numeric as first_equity
+          from active_epoch e
+          join public.trading_public_equity p
+            on p.snapshot_id = e.baseline_snapshot_id
+        ),
+        epoch_equity as (
+          select p.observed_at, p.equity::numeric
+          from public.trading_public_equity p
+          cross join baseline b
+          where p.observed_at >= b.tracking_started_at
+            and p.observed_at <= coalesce(b.tracking_ended_at, now())
+        ),
+        drawdowns as (
+          select
+            observed_at,
+            equity,
+            max(equity) over (
+              order by observed_at
+              rows between unbounded preceding and current row
+            ) as peak_equity
+          from epoch_equity
+        ),
+        equity as (
+          select
+            b.tracking_started_at,
+            b.baseline_reason,
+            b.first_equity,
+            max(e.observed_at) as last_observed_at,
+            (array_agg(e.equity order by e.observed_at desc))[1]::numeric as latest_equity,
+            count(e.*)::int as snapshot_count,
+            coalesce(max(
+              case when d.peak_equity > 0
+                then (d.peak_equity - d.equity) / d.peak_equity
+                else 0 end
+            ), 0)::numeric as max_drawdown_fraction
+          from baseline b
+          left join epoch_equity e on true
+          left join drawdowns d on d.observed_at = e.observed_at
+          group by b.tracking_started_at, b.tracking_ended_at, b.baseline_reason, b.first_equity
+        ),
+        trades as (
+          select
+            count(*)::int as closed_trades,
+            count(*) filter (where coalesce(t.net_pnl, t.realized_pnl, 0) > 0)::int as wins,
+            count(*) filter (where coalesce(t.net_pnl, t.realized_pnl, 0) < 0)::int as losses,
+            count(distinct (t.closed_at at time zone 'America/New_York')::date)::int as trading_sessions,
+            min(t.opened_at) as first_trade_at,
+            max(t.closed_at) as last_trade_at
+          from public.trading_public_trades t
+          join public.trading_public_strategies s on s.version_id = t.strategy_version_id
+          where s.environment = 'live'
+        ),
+        epoch_trades as (
+          select
+            coalesce(sum(coalesce(t.net_pnl, t.realized_pnl, 0)), 0)::numeric as net_realized_pnl
+          from public.trading_public_trades t
+          join public.trading_public_strategies s on s.version_id = t.strategy_version_id
+          cross join baseline b
+          where s.environment = 'live'
+            and t.closed_at >= b.tracking_started_at
+            and t.closed_at <= coalesce(b.tracking_ended_at, now())
+        )
+        select
+          equity.tracking_started_at,
+          equity.last_observed_at,
+          equity.first_equity,
+          equity.latest_equity,
+          equity.max_drawdown_fraction,
+          equity.snapshot_count,
+          equity.baseline_reason,
+          trades.closed_trades,
+          trades.wins,
+          trades.losses,
+          trades.trading_sessions,
+          trades.first_trade_at,
+          trades.last_trade_at,
+          case
+            when equity.first_equity > 0 and equity.latest_equity is not null
+              then ((equity.latest_equity / equity.first_equity) - 1) * 100
+            else null
+          end as account_return_pct,
+          case
+            when equity.first_equity > 0
+              then (epoch_trades.net_realized_pnl / equity.first_equity) * 100
+            else null
+          end as realized_return_pct
+        from equity cross join trades cross join epoch_trades`),
+      sql.unsafe(`with active_epoch as (
+          select baseline_snapshot_id, started_at, ended_at
+          from private.trading_performance_epochs
+          order by started_at desc
+          limit 1
+        ),
+        baseline as (
+          select e.started_at, e.ended_at, p.equity::numeric as first_equity
+          from active_epoch e
+          join public.trading_public_equity p
+            on p.snapshot_id = e.baseline_snapshot_id
+        ),
+        ordered as (
+          select
+            p.observed_at,
+            p.equity,
+            row_number() over (order by p.observed_at) as rn,
+            count(*) over () as n
+          from public.trading_public_equity p
+          cross join baseline b
+          where p.observed_at >= b.started_at
+            and p.observed_at <= coalesce(b.ended_at, now())
+        ),
+        sampled as (
+          select *
+          from ordered
+          where rn = 1
+             or rn = n
+             or mod(rn - 1, greatest(1, ceil(n / 72.0)::int)) = 0
+        )
+        select
+          sampled.observed_at as at,
+          case
+            when baseline.first_equity > 0
+              then ((sampled.equity / baseline.first_equity) - 1) * 100
+            else null
+          end as return_pct
+        from sampled cross join baseline
+        order by sampled.observed_at asc`),
+    ]);
+
+
+    const [marketPerformanceRows, marketPerformanceCurveRows, marketStrategyRows] = await Promise.all([
+      sql.unsafe(`with current_epoch as (
+          select baseline_snapshot_id, started_at, ended_at, reason
+          from private.trading_performance_epochs
+          order by started_at desc
+          limit 1
+        ),
+        baseline as (
+          select
+            e.started_at,
+            e.ended_at,
+            e.reason,
+            p.equity::numeric as first_equity
+          from current_epoch e
+          join public.trading_public_equity p
+            on p.snapshot_id = e.baseline_snapshot_id
+        ),
+        position_lanes as (
+          select
+            p.position_id,
+            p.strategy_version_id,
+            p.opened_at,
+            p.closed_at,
+            coalesce(p.realized_pnl, 0)::numeric as pnl,
+            coalesce(
+              o.market_lane,
+              i.market_lane,
+              sg.market_lane,
+              case when p.strategy_version_id like 'CRYPTO-%' then 'crypto' else 'us_equity' end
+            ) as lane
+          from private.trading_positions p
+          join private.trading_strategy_versions sv
+            on sv.version_id = p.strategy_version_id
+           and sv.environment = 'live'
+          left join private.trading_orders o
+            on o.broker_order_id = p.payload->>'entry_order_id'
+          left join private.trading_order_intents i
+            on i.intent_id = o.order_intent_id
+          left join private.trading_signals sg
+            on sg.signal_id = i.signal_id
+          where p.status = 'closed'
+            and p.closed_at is not null
+        ),
+        epoch_trades as (
+          select pl.*
+          from position_lanes pl
+          cross join baseline b
+          where pl.closed_at >= b.started_at
+            and pl.closed_at <= coalesce(b.ended_at, now())
+        ),
+        cumulative as (
+          select
+            lane,
+            closed_at,
+            sum(pnl) over (
+              partition by lane
+              order by closed_at
+              rows between unbounded preceding and current row
+            ) as cumulative_pnl
+          from epoch_trades
+        ),
+        peaks as (
+          select
+            lane,
+            closed_at,
+            cumulative_pnl,
+            max(cumulative_pnl) over (
+              partition by lane
+              order by closed_at
+              rows between unbounded preceding and current row
+            ) as peak_pnl
+          from cumulative
+        ),
+        drawdowns as (
+          select
+            lane,
+            max(greatest(peak_pnl - cumulative_pnl, 0))::numeric as max_realized_drawdown
+          from peaks
+          group by lane
+        )
+        select
+          pl.lane,
+          count(*)::int as closed_trades,
+          count(*) filter (where pl.pnl > 0)::int as wins,
+          count(*) filter (where pl.pnl < 0)::int as losses,
+          count(distinct (pl.closed_at at time zone 'America/New_York')::date)::int as active_periods,
+          min(pl.opened_at) as first_trade_at,
+          max(pl.closed_at) as last_trade_at,
+          (array_agg(pl.strategy_version_id order by pl.closed_at desc))[1] as latest_trade_strategy_version,
+          case
+            when b.first_equity > 0
+              then coalesce(sum(pl.pnl) filter (
+                where pl.closed_at >= b.started_at
+                  and pl.closed_at <= coalesce(b.ended_at, now())
+              ), 0) / b.first_equity * 100
+            else null
+          end as realized_return_pct,
+          case
+            when b.first_equity > 0
+              then coalesce(d.max_realized_drawdown, 0) / b.first_equity * 100
+            else null
+          end as max_drawdown_pct,
+          b.started_at as tracking_started_at,
+          b.ended_at as tracking_ended_at,
+          b.reason as baseline_reason
+        from position_lanes pl
+        cross join baseline b
+        left join drawdowns d on d.lane = pl.lane
+        group by pl.lane, b.first_equity, b.started_at, b.ended_at, b.reason, d.max_realized_drawdown
+        order by pl.lane`),
+      sql.unsafe(`with current_epoch as (
+          select baseline_snapshot_id, started_at, ended_at
+          from private.trading_performance_epochs
+          order by started_at desc
+          limit 1
+        ),
+        baseline as (
+          select e.started_at, e.ended_at, p.equity::numeric as first_equity
+          from current_epoch e
+          join public.trading_public_equity p
+            on p.snapshot_id = e.baseline_snapshot_id
+        ),
+        live_trades as (
+          select
+            p.closed_at,
+            coalesce(p.realized_pnl, 0)::numeric as pnl,
+            coalesce(
+              o.market_lane,
+              i.market_lane,
+              sg.market_lane,
+              case when p.strategy_version_id like 'CRYPTO-%' then 'crypto' else 'us_equity' end
+            ) as lane
+          from private.trading_positions p
+          join private.trading_strategy_versions sv
+            on sv.version_id = p.strategy_version_id
+           and sv.environment = 'live'
+          left join private.trading_orders o
+            on o.broker_order_id = p.payload->>'entry_order_id'
+          left join private.trading_order_intents i
+            on i.intent_id = o.order_intent_id
+          left join private.trading_signals sg
+            on sg.signal_id = i.signal_id
+          cross join baseline b
+          where p.status = 'closed'
+            and p.closed_at is not null
+            and p.closed_at >= b.started_at
+            and p.closed_at <= coalesce(b.ended_at, now())
+        ),
+        lanes as (
+          select distinct lane from live_trades
+        ),
+        cumulative as (
+          select
+            lane,
+            closed_at,
+            sum(pnl) over (
+              partition by lane
+              order by closed_at
+              rows between unbounded preceding and current row
+            ) as cumulative_pnl
+          from live_trades
+        )
+        select lane, at, return_pct
+        from (
+          select
+            lanes.lane,
+            b.started_at as at,
+            0::numeric as return_pct
+          from lanes cross join baseline b
+          union all
+          select
+            c.lane,
+            c.closed_at as at,
+            case when b.first_equity > 0
+              then c.cumulative_pnl / b.first_equity * 100
+              else null
+            end as return_pct
+          from cumulative c cross join baseline b
+        ) q
+        order by lane, at`),
+      sql.unsafe(`select distinct on (lane)
+          lane, version_id, strategy_name, environment, status, activated_at, created_at
+        from (
+          select
+            case when version_id like 'CRYPTO-%' then 'crypto' else 'us_equity' end as lane,
+            version_id, strategy_name, environment, status, activated_at, created_at
+          from private.trading_strategy_versions
+          where environment = 'live'
+             or version_id like 'CRYPTO-%'
+        ) versions
+        order by lane, coalesce(activated_at, created_at) desc`),
+    ]);
+
     const strategy = strategyRows[0] ?? null;
     const summary = summaryRows[0] ?? {};
     const latestEventAt = summary.latest_event_at ? String(summary.latest_event_at) : null;
@@ -381,6 +716,91 @@ Deno.serve(async (req) => {
     );
     const missingSessions = weekly ? safeStringArray(weekly.missing_sessions) : [];
     const includedSessions = weekly ? safeStringArray(weekly.included_sessions) : [];
+
+    const performance = performanceRows[0] ?? {};
+    const closedTrades = numberOrZero(performance.closed_trades);
+    const wins = numberOrZero(performance.wins);
+    const losses = numberOrZero(performance.losses);
+    const tradingSessions = numberOrZero(performance.trading_sessions);
+    const baselineReset = String(performance.baseline_reason || "") === "external_cash_flow";
+    const sampleState =
+      closedTrades >= 100 && tradingSessions >= 20
+        ? "LONGER_HISTORY"
+        : closedTrades >= 50 && tradingSessions >= 10
+          ? "BUILDING_HISTORY"
+          : "EARLY_SAMPLE";
+    const accountReturnPct =
+      performance.account_return_pct == null ? null : Number(performance.account_return_pct);
+    const realizedReturnPct =
+      performance.realized_return_pct == null ? null : Number(performance.realized_return_pct);
+    const maxDrawdownPct =
+      performance.max_drawdown_fraction == null
+        ? null
+        : Number(performance.max_drawdown_fraction) * 100;
+    const winRatePct = closedTrades > 0 ? (wins / closedTrades) * 100 : null;
+    const publicCurve = performanceCurveRows
+      .filter((row) => row.return_pct != null)
+      .map((row) => ({ at: row.at, return_pct: Number(row.return_pct) }));
+
+
+    const marketStrategy = (lane: string) =>
+      marketStrategyRows.find((row) => String(row.lane) === lane) ?? null;
+    const marketStats = (lane: string) =>
+      marketPerformanceRows.find((row) => String(row.lane) === lane) ?? null;
+    const publicMarketPerformance = (lane: "us_equity" | "crypto") => {
+      const row = marketStats(lane);
+      const strategyRow = marketStrategy(lane);
+      const closed = numberOrZero(row?.closed_trades);
+      const winsLane = numberOrZero(row?.wins);
+      const lossesLane = numberOrZero(row?.losses);
+      const activePeriods = numberOrZero(row?.active_periods);
+      const sampleState =
+        closed === 0 ? "AWAITING_LIVE_SAMPLE" :
+        closed >= 100 && activePeriods >= 20 ? "LONGER_HISTORY" :
+        closed >= 50 && activePeriods >= 10 ? "BUILDING_HISTORY" :
+        "EARLY_SAMPLE";
+      const curve = marketPerformanceCurveRows
+        .filter((point) => String(point.lane) === lane && point.return_pct != null)
+        .map((point) => ({ at: point.at, return_pct: Number(point.return_pct) }));
+      return {
+        market_lane: lane,
+        methodology_version: "PUBLIC-MARKET-PERFORMANCE-v1",
+        basis: "market_lane_realized_live_trade_performance_over_current_performance_epoch_baseline",
+        status: closed > 0 ? "TRACKING" : "AWAITING_LIVE_SAMPLE",
+        sample_state: sampleState,
+        tracking_started_at: row?.tracking_started_at || null,
+        tracking_ended_at: row?.tracking_ended_at || null,
+        first_trade_at: row?.first_trade_at || null,
+        last_trade_at: row?.last_trade_at || null,
+        active_periods: activePeriods,
+        closed_trades: closed,
+        wins: winsLane,
+        losses: lossesLane,
+        win_rate_pct: closed > 0 ? (winsLane / closed) * 100 : null,
+        realized_return_pct:
+          closed > 0 && row?.realized_return_pct != null
+            ? Number(row.realized_return_pct)
+            : null,
+        max_drawdown_pct:
+          closed > 0 && row?.max_drawdown_pct != null
+            ? Number(row.max_drawdown_pct)
+            : null,
+        strategy_version_id:
+          row?.latest_trade_strategy_version || strategyRow?.version_id || null,
+        strategy_name: strategyRow?.strategy_name || null,
+        strategy_environment: strategyRow?.environment || null,
+        strategy_status: strategyRow?.status || null,
+        denominator: "current_performance_epoch_baseline_equity",
+        curve,
+        limitations: [
+          "This lane record includes closed live trades only; research, paper, replay, and simulation are excluded.",
+          "Lane realized return is cumulative lane realized P&L within the current performance epoch divided by the shared account epoch baseline. It is not a separately funded account-equity curve.",
+          "Dollar values, symbols, prices, quantities, orders, fills, and execution-sensitive parameters remain private.",
+        ],
+      };
+    };
+    const equityMarketPerformance = publicMarketPerformance("us_equity");
+    const cryptoMarketPerformance = publicMarketPerformance("crypto");
 
     const limitations = [
       ...(missingSessions.length
@@ -426,29 +846,6 @@ Deno.serve(async (req) => {
           }
         : null,
       strategy_history: strategyHistoryRows,
-      performance: {
-        methodology_version: "public-live-counts-v1",
-        basis: "broker-derived closed live positions",
-        status: numberOrZero(summary.closed_trades) > 0 ? "TRACKING" : "AWAITING_SAMPLE",
-        sample_state: numberOrZero(summary.closed_trades) > 0 ? "MEASURED_LIVE_SAMPLE" : "NO_CLOSED_LIVE_TRADES",
-        tracking_started_at: summary.first_trade_at ? String(summary.first_trade_at) : null,
-        last_observed_at: summary.last_trade_at ? String(summary.last_trade_at) : null,
-        first_trade_at: summary.first_trade_at ? String(summary.first_trade_at) : null,
-        last_trade_at: summary.last_trade_at ? String(summary.last_trade_at) : null,
-        closed_trades: numberOrZero(summary.closed_trades),
-        wins: numberOrZero(summary.wins),
-        losses: numberOrZero(summary.losses),
-        win_rate_pct: numberOrZero(summary.closed_trades) > 0
-          ? (numberOrZero(summary.wins) / numberOrZero(summary.closed_trades)) * 100
-          : null,
-        realized_return_pct: null,
-        max_drawdown_pct: null,
-        curve: [],
-        limitations: [
-          "Public count metrics are broker-derived closed live positions.",
-          "A normalized return curve is withheld here until a canonical lane-aware performance denominator is available.",
-        ],
-      },
       telemetry: {
         events_60m: numberOrZero(summary.events_60m),
         scan_events_10m: numberOrZero(summary.scan_events_10m),
@@ -496,6 +893,47 @@ Deno.serve(async (req) => {
         limitations,
         journal,
       },
+      market_performance: {
+        methodology_version: "PUBLIC-MARKET-PERFORMANCE-v1",
+        equities: equityMarketPerformance,
+        crypto: cryptoMarketPerformance,
+        limitations: [
+          "Equities and crypto are reported as separate market lanes and are never combined into one curve.",
+          "Market-lane curves are realized live-trade performance normalized to the shared current performance-epoch baseline; they are not separately funded account-equity curves.",
+          "Replay, simulation, paper, shadow, and development results are excluded from live market performance."
+        ]
+      },
+
+      performance: {
+        methodology_version: "PUBLIC-PERFORMANCE-v2",
+        basis: "broker_derived_live_ledger_with_cash_flow_epochs",
+        status: "TRACKING",
+        sample_state: sampleState,
+        tracking_started_at: performance.tracking_started_at || null,
+        last_observed_at: performance.last_observed_at || null,
+        first_trade_at: performance.first_trade_at || null,
+        last_trade_at: performance.last_trade_at || null,
+        snapshot_count: numberOrZero(performance.snapshot_count),
+        trading_sessions: tradingSessions,
+        closed_trades: closedTrades,
+        wins,
+        losses,
+        win_rate_pct: winRatePct,
+        account_return_pct: accountReturnPct,
+        realized_return_pct: realizedReturnPct,
+        max_drawdown_pct: maxDrawdownPct,
+        external_cash_flows_present: baselineReset,
+        baseline_reason: performance.baseline_reason || null,
+        baseline_reset: baselineReset,
+        curve: publicCurve,
+        limitations: [
+          "This is a short live sample and is not evidence of future performance.",
+          "Dollar account values, symbols, prices, quantities, orders, fills, and individual trade records are excluded from the public feed.",
+          baselineReset
+            ? "An external cash-flow boundary created a new performance epoch; current normalized return and drawdown start from the first post-flow account snapshot while prior history remains preserved."
+            : "Normalized return uses the active performance epoch baseline.",
+        ],
+      },
       disclosure: {
         level: "sanitized",
         public_fields: [
@@ -508,7 +946,21 @@ Deno.serve(async (req) => {
           "sanitized evidence availability",
           "sanitized strategy history",
           "sanitized per-system runtime and tracking state",
-          "broker-derived closed live trade counts",
+          "normalized live performance percentages",
+          "normalized public performance curve",
+          "separate normalized equities and crypto live-trade performance",
+        ],
+        excluded_fields: [
+          "account value",
+          "cash",
+          "buying power",
+          "deposits and withdrawals",
+          "symbols",
+          "prices",
+          "quantities",
+          "orders and fills",
+          "individual trade records",
+          "strategy thresholds and risk parameters",
         ]
       }
     });
