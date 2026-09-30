@@ -45,9 +45,9 @@ def _has_active_job(objective_id: str, jobs: list[dict[str, Any]]) -> bool:
 
 def objective_ready(objective: dict[str, Any], objectives: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> bool:
     status = _text(objective.get("status")).upper()
-    if status not in {"READY", "ACTIVE"}:
+    if status != "READY":
         return False
-    objective_id = _text(objective.get("objective_id"))
+    objective_id = _text(objective.get("objective_key"))
     if not objective_id or _has_active_job(objective_id, jobs):
         return False
     completed = _completed_objectives(objectives)
@@ -72,7 +72,7 @@ def choose_next_action(snapshot: dict[str, Any]) -> dict[str, Any] | None:
     )
     row = candidates[0]
     return {
-        "objective_id": row.get("objective_id"),
+        "objective_key": row.get("objective_key"),
         "title": row.get("title"),
         "owner_system": row.get("owner_system") or "IREN",
         "job_type": (row.get("metadata") or {}).get("job_type") or "AGENT_WORK",
@@ -105,7 +105,7 @@ def status_summary(snapshot: dict[str, Any], control_state: dict[str, Any]) -> d
 def build_job(next_action: dict[str, Any], requested_by: str, source: str) -> dict[str, Any]:
     protected = bool(next_action.get("protected_action"))
     return {
-        "objective_id": next_action.get("objective_id"),
+        "objective_key": next_action.get("objective_key"),
         "title": next_action.get("title") or "IREN work item",
         "instructions": next_action.get("description") or next_action.get("title") or "Continue objective.",
         "owner_system": next_action.get("owner_system") or "IREN",
