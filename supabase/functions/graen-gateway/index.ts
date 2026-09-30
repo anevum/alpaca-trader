@@ -8,7 +8,7 @@ const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, {
   connection: { statement_timeout: 5000 },
 });
 
-const TOKEN_SHA256 = "TO_BE_REPLACED";
+const TOKEN_SHA256 = "c7f42e3a58b0b812ab6095a27a29d5c603f0f135d9fd1f7ecf0b9ac68c627e9e";
 
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
