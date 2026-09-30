@@ -49,13 +49,33 @@ function objectValue(value: unknown): Record<string, unknown> {
 }
 
 async function rpc(name: "claim" | "complete", payload: Record<string, unknown>) {
-  const functionName = name === "claim"
-    ? "private.anevum_scheduler_claim"
-    : "private.anevum_scheduler_complete";
-  const rows = await sql.unsafe<{ result: Record<string, unknown> }[]>(
-    "select " + functionName + "($1::jsonb) as result",
-    [JSON.stringify(payload)],
-  );
+  if (name === "claim") {
+    const required = [
+      "job_key",
+      "workflow_id",
+      "workflow_version",
+      "scheduler_version",
+      "scheduled_at",
+      "trigger_type",
+    ];
+    const missing = required.filter((key) => !String(payload[key] ?? "").trim());
+    if (missing.length > 0) {
+      console.error(
+        "scheduler_gateway_invalid_claim_shape",
+        JSON.stringify({ missing, keys: Object.keys(payload).sort() }),
+      );
+      throw new Error("invalid_claim_shape:" + missing.join(","));
+    }
+    const rows = await sql<{ result: Record<string, unknown> }[]>`
+      select private.anevum_scheduler_claim(${sql.json(payload)}::jsonb) as result
+    `;
+    if (!rows[0]?.result) throw new Error("scheduler_rpc_empty");
+    return rows[0].result;
+  }
+
+  const rows = await sql<{ result: Record<string, unknown> }[]>`
+    select private.anevum_scheduler_complete(${sql.json(payload)}::jsonb) as result
+  `;
   if (!rows[0]?.result) throw new Error("scheduler_rpc_empty");
   return rows[0].result;
 }
