@@ -3,6 +3,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY graen ./graen
+COPY research/crypto ./research/crypto
 COPY scripts ./scripts
 COPY research/theory_registry.json ./research/theory_registry.json
 ENV PYTHONUNBUFFERED=1
