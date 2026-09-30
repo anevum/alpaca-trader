@@ -76,7 +76,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const form = new URLSearchParams(raw);
-  const expectedTeam = Deno.env.get("SLACK_TEAM_ID")?.trim() || "";
+  const expectedTeam = Deno.env.get("SLACK_TEAM_ID")?.trim() || "T0BTXK4S5GS";
   const teamId = form.get("team_id") || "";
   if (expectedTeam && teamId !== expectedTeam) return json(403, { error: "workspace_mismatch" });
 
