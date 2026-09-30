@@ -1,0 +1,92 @@
+{
+  "snapshot_version": "graen-crypto-cost-snapshot-v5",
+  "frozen_at": "2026-09-30T02:35:00Z",
+  "source": "private.trading_candidate_evaluations live quote telemetry; 4-hour pre-archive snapshot",
+  "observation_rule": "observed_spread is a fractional full bid/ask spread; bps = observed_spread * 10000",
+  "slippage_rule": {
+    "low": "max(1.0 bps, 0.10 * p25 spread) per side",
+    "base": "max(2.0 bps, 0.25 * p50 spread) per side",
+    "high": "max(5.0 bps, 0.50 * p90 spread) per side"
+  },
+  "symbols": {
+    "BTC/USD": {
+      "n": 275,
+      "spread_bps": {
+        "low": 2.076962,
+        "base": 2.61788,
+        "high": 3.591734
+      },
+      "slippage_bps_per_side": {
+        "low": 1,
+        "base": 2,
+        "high": 5
+      }
+    },
+    "ETH/USD": {
+      "n": 275,
+      "spread_bps": {
+        "low": 2.200149,
+        "base": 2.620987,
+        "high": 3.710373
+      },
+      "slippage_bps_per_side": {
+        "low": 1,
+        "base": 2,
+        "high": 5
+      }
+    },
+    "SOL/USD": {
+      "n": 275,
+      "spread_bps": {
+        "low": 7.360699,
+        "base": 8.413967,
+        "high": 12.024213
+      },
+      "slippage_bps_per_side": {
+        "low": 1,
+        "base": 2.103492,
+        "high": 6.012106
+      }
+    },
+    "LINK/USD": {
+      "n": 275,
+      "spread_bps": {
+        "low": 17.813954,
+        "base": 19.916186,
+        "high": 23.479042
+      },
+      "slippage_bps_per_side": {
+        "low": 1.781395,
+        "base": 4.979047,
+        "high": 11.739521
+      }
+    },
+    "XRP/USD": {
+      "n": 275,
+      "spread_bps": {
+        "low": 36.689904,
+        "base": 38.695875,
+        "high": 42.133423
+      },
+      "slippage_bps_per_side": {
+        "low": 3.66899,
+        "base": 9.673969,
+        "high": 21.066711
+      }
+    },
+    "AVAX/USD": {
+      "n": 275,
+      "spread_bps": {
+        "low": 56.013078,
+        "base": 59.736209,
+        "high": 63.266699
+      },
+      "slippage_bps_per_side": {
+        "low": 5.601308,
+        "base": 14.934052,
+        "high": 31.63335
+      }
+    }
+  },
+  "caveat": "This is a short live telemetry window, so it is deliberately treated as a frozen provisional execution model and stressed rather than fitted to archive returns."
+}
