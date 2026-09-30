@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import hashlib
+import hmac
 import os
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 
 from .config import Settings, get_settings
 from .crypto_layer import CryptoRollingMomentumStrategy
@@ -185,6 +187,8 @@ class VelumRuntime:
         self.crypto_spread_bps = _env_decimal("VELUM_CRYPTO_SPREAD_BPS", "10")
         self.crypto_slippage_bps = _env_decimal("VELUM_CRYPTO_SLIPPAGE_BPS", "5")
         self.enabled = _env_bool("VELUM_ENABLED", True)
+        self.autorun = _env_bool("VELUM_AUTORUN", True)
+        self.run_lock = asyncio.Lock()
 
     @staticmethod
     def _ny():
@@ -197,6 +201,8 @@ class VelumRuntime:
             "system": "VELUM",
             "mode": "research_replay_only",
             "enabled": self.enabled,
+            "autorun": self.autorun,
+            "scheduler_managed": not self.autorun,
             "running": self.task is not None and not self.task.done(),
             "broker_orders_possible": False,
             "started_at": self.started_at.isoformat(),
@@ -621,17 +627,40 @@ class VelumRuntime:
             print("VELUM_SLACK_ERROR", {"error": type(exc).__name__}, flush=True)
 
 
+class VelumEquityRequest(BaseModel):
+    session: date
+    scheduled_at: datetime | None = None
+
+
+class VelumCryptoRequest(BaseModel):
+    window_end: datetime
+    scheduled_at: datetime | None = None
+
+
+def require_scheduler_token(x_anevum_scheduler_token: str | None) -> None:
+    expected = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="scheduler token is not configured")
+    if x_anevum_scheduler_token is None or not hmac.compare_digest(
+        x_anevum_scheduler_token,
+        expected,
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 settings = get_settings()
 velum = VelumRuntime(settings)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await velum.start()
+    if velum.autorun:
+        await velum.start()
     try:
         yield
     finally:
-        await velum.stop()
+        if velum.autorun:
+            await velum.stop()
 
 
 app = FastAPI(title="ANEVUM VELUM", lifespan=lifespan)
@@ -653,3 +682,85 @@ async def health():
 @app.get("/status")
 async def status():
     return velum.status()
+
+
+@app.post("/v1/scheduler/equity")
+async def scheduler_equity(
+    request: VelumEquityRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    async with velum.run_lock:
+        session_key = request.session.isoformat()
+        if velum.last_equity_session == session_key:
+            return {
+                "ok": True,
+                "duplicate": True,
+                "session": session_key,
+                "velum_run_id": velum.last_equity_run_id,
+                "broker_orders_possible": False,
+            }
+
+        rows = await velum.market_data.market_calendar_details(
+            start=request.session,
+            end=request.session,
+        )
+        if not rows:
+            raise HTTPException(
+                status_code=422,
+                detail="requested date is not a U.S. equity trading session",
+            )
+        close_raw = str(rows[0].get("close") or "16:00")
+        close_at = datetime.combine(
+            request.session,
+            time.fromisoformat(close_raw),
+            tzinfo=velum._ny(),
+        ).astimezone(timezone.utc)
+        if close_at > datetime.now(timezone.utc):
+            raise HTTPException(status_code=409, detail="equity session is not complete")
+
+        await velum._run_equity(request.session)
+        return {
+            "ok": True,
+            "duplicate": False,
+            "session": velum.last_equity_session,
+            "velum_run_id": velum.last_equity_run_id,
+            "summary": velum.last_equity_summary,
+            "broker_orders_possible": False,
+        }
+
+
+@app.post("/v1/scheduler/crypto")
+async def scheduler_crypto(
+    request: VelumCryptoRequest,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    if request.window_end.tzinfo is None:
+        raise HTTPException(status_code=422, detail="window_end must be timezone-aware")
+    window_end = request.window_end.astimezone(timezone.utc)
+    if window_end > datetime.now(timezone.utc):
+        raise HTTPException(status_code=409, detail="crypto replay window is not complete")
+    expected_bucket = velum._crypto_bucket_end(window_end)
+    if expected_bucket != window_end.replace(second=0, microsecond=0):
+        raise HTTPException(status_code=422, detail="window_end is not aligned to VELUM cadence")
+
+    async with velum.run_lock:
+        window_key = window_end.isoformat()
+        if velum.last_crypto_window_end == window_key:
+            return {
+                "ok": True,
+                "duplicate": True,
+                "window_end": window_key,
+                "velum_run_id": velum.last_crypto_run_id,
+                "broker_orders_possible": False,
+            }
+        await velum._run_crypto(window_end)
+        return {
+            "ok": True,
+            "duplicate": False,
+            "window_end": velum.last_crypto_window_end,
+            "velum_run_id": velum.last_crypto_run_id,
+            "summary": velum.last_crypto_summary,
+            "broker_orders_possible": False,
+        }
