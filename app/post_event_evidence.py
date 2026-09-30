@@ -983,6 +983,15 @@ class PostEventEvidenceRunner:
             summary.prediction_backfill_events += 1
 
     @staticmethod
+    def _is_crypto_candidate(candidate: dict[str, Any]) -> bool:
+        return (
+            str(candidate.get("market_lane") or "").lower() == "crypto"
+            or str((candidate.get("research_attribution") or {}).get("market") or "").lower() == "crypto"
+            or str((candidate.get("features") or {}).get("market") or "").lower() == "crypto"
+            or str(candidate.get("strategy_version_id") or "").upper().startswith("CRYPTO-")
+        )
+
+    @staticmethod
     def _cycle_payload(candidate: dict[str, Any]) -> dict[str, Any]:
         scan = dict(candidate.get("scan_cycle") or {})
         source = candidate.get("decision_cycle_payload")
@@ -996,7 +1005,7 @@ class PostEventEvidenceRunner:
         candidates = [
             dict(row)
             for row in (source.get("candidates") or [])
-            if isinstance(row, dict)
+            if isinstance(row, dict) and not self._is_crypto_candidate(row)
         ]
         summary = PostEventRunSummary(
             session=session.isoformat(),
