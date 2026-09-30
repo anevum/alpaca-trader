@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 from app import orchestration_scheduler as scheduler
 from .core import fresh, identity, reduce_state
+from .topology import bounded_health, topology, project_status
 
 UTC = timezone.utc
 POLICY = json.loads(Path(__file__).with_name("policy.json").read_text())
@@ -28,6 +29,14 @@ class IrenController:
         self.task = None
         self.lock = asyncio.Lock()
         self.api_verified = False
+        self.started_at = datetime.now(UTC).isoformat()
+        self.runtime_identity = {
+            "version": POLICY["version"],
+            "deployment": os.getenv("RAILWAY_DEPLOYMENT_ID"),
+            "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            "started_at": self.started_at,
+            "configuration_identity": identity({"policy": POLICY, "registry": scheduler.runtime.registry}),
+        }
 
     async def gateway(self, action: str, **payload):
         async with httpx.AsyncClient(timeout=20) as client:
@@ -53,16 +62,7 @@ class IrenController:
                     response = await client.get(url)
                     response.raise_for_status()
                     body = response.json()
-                    fields = ("ok", "startup_reconciled", "reconciliation_safe", "broker_orders_possible", "execution_authority", "running", "worker_alive", "shadow_only")
-                    bounded = {key: body[key] for key in fields if key in body}
-                    if name == "RHEN":
-                        persistence = body.get("persistence", {})
-                        bounded["persistence"] = {key: persistence.get(key) for key in ("enabled", "dropped_count", "last_sent_at", "last_error")}
-                        # Error bodies are not copied; they may contain provider request details.
-                        bounded["persistence"]["last_error"] = bool(persistence.get("last_error"))
-                        bounded["strategy_version_id"] = persistence.get("strategy_version_id")
-                        bounded["crypto_execution_enabled"] = body.get("crypto", {}).get("execution_enabled")
-                        bounded["source_commit"] = body.get("runtime_provenance", {}).get("git_commit")
+                    bounded = bounded_health(name, body)
                     services[name] = bounded
                 except Exception as exc:
                     services[name] = {"ok": False, "error_type": type(exc).__name__}
@@ -98,6 +98,7 @@ class IrenController:
                 return
             observation = await self.observe()
             state, events = reduce_state(previous, observation, POLICY)
+            state["topology"] = topology(observation, state, self.runtime_identity)
             written = await self.gateway("iren_commit", expected_revision=saved.get("revision", 0),
                 observation_key=identity(observation), state=state, events=events)
             if written.get("committed") is not True:
@@ -187,10 +188,20 @@ async def health():
     body = {"ok": alive and scheduler.runtime.configured, "system": "IREN", "version": POLICY["version"],
         "durable_state_current": fresh(controller.last_persisted_at, datetime.now(UTC), POLICY["stale_after_seconds"]),
         "control_state": controller.state.get("state", "STARTING"), "last_error": controller.last_error,
-        "scheduler_version": scheduler.runtime.scheduler_version, "model_invoked": False}
+        "scheduler_version": scheduler.runtime.scheduler_version, "model_invoked": False,
+        "runtime_identity": controller.runtime_identity,
+        "last_heartbeat_at": controller.last_persisted_at}
     if not body["ok"]:
         raise HTTPException(status_code=503, detail=body)
     return body
+
+
+@app.get("/ready")
+async def ready():
+    current = await health()
+    if not current["durable_state_current"]:
+        raise HTTPException(status_code=503, detail="durable_observation_stale")
+    return current
 
 
 @app.get("/v1/iren/status")
@@ -198,7 +209,7 @@ async def status(x_anevum_scheduler_token: str | None = Header(default=None)):
     scheduler._require_scheduler_token(x_anevum_scheduler_token)
     saved = await controller.gateway("iren_read")
     state = saved.get("state") or {}
-    return {**saved, "stale": not fresh(state.get("observed_at"), datetime.now(UTC), POLICY["stale_after_seconds"]),
+    return {**project_status(saved, datetime.now(UTC), POLICY["stale_after_seconds"]),
         "local_last_error": controller.last_error}
 
 

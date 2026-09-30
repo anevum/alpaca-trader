@@ -1,0 +1,12 @@
+# Use only for rhen-research-scheduler (IREN). Never apply to alpaca-trader.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = ["/app/iren/**", "/app/contracts/**", "/app/orchestration_scheduler.py", "/app/schedule_registry.json", "/requirements.txt", "/Dockerfile"]
+
+[deploy]
+startCommand = "uvicorn app.iren.service:app --host 0.0.0.0 --port 8080"
+healthcheckPath = "/health"
+healthcheckTimeout = 180
+restartPolicyType = "ALWAYS"
+numReplicas = 1
