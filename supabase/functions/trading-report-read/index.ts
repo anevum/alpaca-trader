@@ -59,6 +59,7 @@ Deno.serve(async (req) => {
   const weekEnd = url.searchParams.get("week_end");
   const evidenceSession = url.searchParams.get("evidence_session");
   const cryptoEvidenceSession = url.searchParams.get("crypto_evidence_session");
+  const cryptoPromotion = url.searchParams.get("crypto_promotion");
   const session = url.searchParams.get("session");
 
   try {
@@ -82,6 +83,124 @@ Deno.serve(async (req) => {
       });
     }
 
+
+    if (cryptoPromotion === "1" || cryptoPromotion === "true") {
+      const rows = await sql<{ evidence: Record<string, unknown> }[]>`
+        with resolved as materialized (
+          select distinct
+            c.candidate_id, c.observed_at, c.symbol, c.features
+          from private.trading_candidate_evaluations c
+          join private.trading_candidate_forward_outcomes o
+            on o.candidate_id=c.candidate_id
+           and o.methodology_version='candidate-forward-crypto-v1'
+           and o.status='complete'
+          where c.market_lane='crypto'
+        ),
+        coverage as (
+          select
+            count(*)::int as resolved_candidate_predictions,
+            coalesce(jsonb_agg(distinct extract(hour from observed_at at time zone 'UTC')::int), '[]'::jsonb) as utc_hours_covered,
+            coalesce(jsonb_agg(distinct extract(isodow from observed_at at time zone 'UTC')::int), '[]'::jsonb) as weekdays_covered,
+            coalesce(jsonb_agg(distinct symbol), '[]'::jsonb) as pairs_covered,
+            min(observed_at) as first_observed_at,
+            max(observed_at) as last_observed_at
+          from resolved
+        ),
+        regime_rows as (
+          select
+            case
+              when nullif(features#>>'{feature_state,raw,realized_volatility}','')::numeric < 0.00075 then 'low'
+              when nullif(features#>>'{feature_state,raw,realized_volatility}','')::numeric < 0.0015 then 'mid'
+              when nullif(features#>>'{feature_state,raw,realized_volatility}','')::numeric is not null then 'high'
+              else null
+            end as volatility_regime,
+            case
+              when nullif(features#>>'{feature_state,raw,spread_bps}','')::numeric <= 10 then 'tight'
+              when nullif(features#>>'{feature_state,raw,spread_bps}','')::numeric <= 30 then 'normal'
+              when nullif(features#>>'{feature_state,raw,spread_bps}','')::numeric is not null then 'wide'
+              else null
+            end as liquidity_regime
+          from resolved
+        ),
+        regimes as (
+          select
+            coalesce(jsonb_agg(distinct volatility_regime) filter (where volatility_regime is not null), '[]'::jsonb) as volatility_regimes,
+            coalesce(jsonb_agg(distinct liquidity_regime) filter (where liquidity_regime is not null), '[]'::jsonb) as liquidity_regimes
+          from regime_rows
+        ),
+        excursion as (
+          select
+            avg(o.max_favorable_return)::double precision as mfe,
+            avg(o.max_adverse_return)::double precision as mae
+          from private.trading_candidate_forward_outcomes o
+          join resolved r on r.candidate_id=o.candidate_id
+          where o.methodology_version='candidate-forward-crypto-v1'
+            and o.status='complete'
+        ),
+        velum as (
+          select payload
+          from private.trading_events
+          where event_type='velum_replay_result'
+            and payload->>'asset_class'='crypto'
+          order by occurred_at desc
+          limit 1
+        )
+        select jsonb_build_object(
+          'methodology_version','graen-crypto-promotion-evidence-v1',
+          'market_lane','crypto',
+          'resolved_candidate_predictions',coalesce(c.resolved_candidate_predictions,0),
+          'paper_round_trips',0,
+          'paper_round_trip_source','none',
+          'utc_hours_covered',coalesce(c.utc_hours_covered,'[]'::jsonb),
+          'weekdays_covered',coalesce(c.weekdays_covered,'[]'::jsonb),
+          'volatility_regimes',coalesce(r.volatility_regimes,'[]'::jsonb),
+          'liquidity_regimes',coalesce(r.liquidity_regimes,'[]'::jsonb),
+          'pairs_covered',coalesce(c.pairs_covered,'[]'::jsonb),
+          'coverage_first_observed_at',c.first_observed_at,
+          'coverage_last_observed_at',c.last_observed_at,
+          'metrics',jsonb_build_object(
+            'net_expectancy_after_costs',nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision,
+            'brier_score',null,
+            'log_loss',null,
+            'calibration_intercept',null,
+            'calibration_slope',null,
+            'discrimination',null,
+            'max_drawdown',nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,max_drawdown_pct}','')::double precision,
+            'tail_loss',null,
+            'mfe',e.mfe,
+            'mae',e.mae,
+            'slippage',nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,assumptions,slippage_bps_per_side}','')::double precision,
+            'spread_sensitivity',(
+              nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,low,summary,expectancy_per_trade}','')::double precision
+              - nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision
+            ),
+            'regime_stability',null,
+            'time_of_week_stability',null
+          ),
+          'net_expectancy_positive_after_high_costs',coalesce(
+            nullif(v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,expectancy_per_trade}','')::double precision > 0,
+            false
+          ),
+          'walk_forward_passed',false,
+          'holdout_passed',false,
+          'dependence_adjusted',false,
+          'multiplicity_adjusted',false,
+          'no_lookahead_verified',false,
+          'latest_velum_methodology',v.payload->>'methodology_version',
+          'latest_velum_range',v.payload->'range',
+          'latest_velum_baseline_trades',coalesce((v.payload#>>'{baseline,summary,trades}')::int,0),
+          'latest_velum_high_cost_trades',coalesce((v.payload#>>'{challenger_experiment,challengers,B_PARAMETER_ADAPTATION,cost_scenarios,high,summary,trades}')::int,0)
+        ) as evidence
+        from coverage c
+        cross join regimes r
+        cross join excursion e
+        left join velum v on true
+      `;
+      return json(200, {
+        ok: true,
+        evidence: rows[0]?.evidence ?? {},
+      });
+    }
 
     if (validDate(cryptoEvidenceSession)) {
       const candidateRows = await sql<{
