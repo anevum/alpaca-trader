@@ -147,14 +147,21 @@ class ResearchReportScheduler:
 
     async def _run(self) -> None:
         catch_up_done = False
+        canonical_scheduler = os.getenv(
+            "RHEN_CANONICAL_SCHEDULER_ENABLED", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         while not self.stop_event.is_set():
+            # Crypto forward evidence and promotion-state observation remain
+            # continuous evidence functions. Daily/weekly clock orchestration
+            # belongs exclusively to the canonical IREN scheduler when enabled.
             await self._crypto_promotion_tick()
             await self._crypto_forward_tick()
             try:
-                if not catch_up_done:
-                    await self._catch_up_latest_completed()
-                    catch_up_done = True
-                await self._tick()
+                if not canonical_scheduler:
+                    if not catch_up_done:
+                        await self._catch_up_latest_completed()
+                        catch_up_done = True
+                    await self._tick()
             except Exception as exc:
                 logger.exception("post-close research reporting failed")
                 message = f"research reporting {type(exc).__name__}: {exc}"
