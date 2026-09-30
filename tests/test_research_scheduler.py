@@ -292,3 +292,31 @@ def test_crypto_forward_tick_runs_even_when_equity_reporting_fails():
     assert calls == ["crypto", "equity"]
     assert state.events[-1]["kind"] == "research_reporting"
     assert "TypeError" in state.events[-1]["reason"]
+
+
+def test_crypto_evidence_reader_uses_fast_endpoint_parameter():
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.research_scheduler import ResearchReportScheduler
+
+    scheduler = ResearchReportScheduler(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    calls = []
+
+    async def fake_report_api_get(**params):
+        calls.append(params)
+        return {"ok": True, "candidates": []}
+
+    scheduler._report_api_get = fake_report_api_get
+    result = asyncio.run(
+        scheduler._crypto_evidence_api_get(evidence_session="2026-09-29")
+    )
+
+    assert result == {"ok": True, "candidates": []}
+    assert calls == [{"crypto_evidence_session": "2026-09-29"}]

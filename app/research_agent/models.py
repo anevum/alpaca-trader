@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -216,6 +217,8 @@ class CanonicalEvidence:
 
 
 def _json_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, UUID):

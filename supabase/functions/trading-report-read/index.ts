@@ -58,6 +58,7 @@ Deno.serve(async (req) => {
   const latest = url.searchParams.get("latest");
   const weekEnd = url.searchParams.get("week_end");
   const evidenceSession = url.searchParams.get("evidence_session");
+  const cryptoEvidenceSession = url.searchParams.get("crypto_evidence_session");
   const session = url.searchParams.get("session");
 
   try {
@@ -81,6 +82,91 @@ Deno.serve(async (req) => {
       });
     }
 
+
+    if (validDate(cryptoEvidenceSession)) {
+      const candidateRows = await sql<{
+        candidate: Record<string, unknown>;
+        forward_outcomes: Record<string, unknown>;
+      }[]>`
+        with bounds as (
+          select
+            (${cryptoEvidenceSession}::date::timestamp at time zone 'America/New_York') as starts_at,
+            ((${cryptoEvidenceSession}::date + 1)::timestamp at time zone 'America/New_York') as ends_at
+        )
+        select
+          jsonb_strip_nulls(jsonb_build_object(
+            'candidate_id', c.candidate_id,
+            'candidate_key', c.candidate_key,
+            'scan_cycle_id', c.scan_cycle_id,
+            'run_id', c.run_id,
+            'strategy_version_id', c.strategy_version_id,
+            'strategy_family', c.strategy_family,
+            'market_lane', c.market_lane,
+            'model_version', c.model_version,
+            'calibration_version', c.calibration_version,
+            'regime_version', c.regime_version,
+            'execution_adapter_version', c.execution_adapter_version,
+            'symbol', c.symbol,
+            'observed_at', c.observed_at,
+            'decision_reference_price', c.decision_reference_price,
+            'qualified', c.qualified,
+            'action', c.action,
+            'reason', c.reason,
+            'data_feed', c.data_feed,
+            'bar_interval', c.bar_interval,
+            'features', jsonb_strip_nulls(jsonb_build_object(
+              'market', 'crypto',
+              'market_lane', 'crypto',
+              'bar_time', c.features->'bar_time'
+            ))
+          )) as candidate,
+          outcomes.rows as forward_outcomes
+        from private.trading_candidate_evaluations c
+        cross join bounds b
+        left join lateral (
+          select
+            coalesce(
+              jsonb_object_agg(
+                fo.horizon_minutes::text,
+                jsonb_build_object(
+                  'status', fo.status,
+                  'computed_at', fo.computed_at,
+                  'forward_return', fo.forward_return,
+                  'max_favorable_return', fo.max_favorable_return,
+                  'max_adverse_return', fo.max_adverse_return,
+                  'methodology_version', fo.methodology_version
+                )
+                order by fo.horizon_minutes
+              ),
+              '{}'::jsonb
+            ) as rows,
+            count(*) filter (where fo.status='complete')::int as complete_count
+          from private.trading_candidate_forward_outcomes fo
+          where fo.candidate_id=c.candidate_id
+            and fo.methodology_version='candidate-forward-crypto-v1'
+        ) outcomes on true
+        where c.observed_at >= b.starts_at
+          and c.observed_at < b.ends_at
+          and (
+            c.market_lane='crypto'
+            or c.strategy_version_id like 'CRYPTO-%'
+            or c.features->>'market'='crypto'
+          )
+          and coalesce(outcomes.complete_count,0) < 7
+        order by c.observed_at,c.symbol,c.candidate_id
+        limit 5000
+      `;
+
+      return json(200, {
+        ok: true,
+        evidence_version: "rhen-crypto-forward-evidence-v1",
+        evidence_session: cryptoEvidenceSession,
+        candidates: candidateRows.map((row) => ({
+          ...(row.candidate ?? {}),
+          forward_outcomes: row.forward_outcomes ?? {},
+        })),
+      });
+    }
 
     if (validDate(evidenceSession)) {
       const candidateRows = await sql<{
@@ -144,6 +230,11 @@ Deno.serve(async (req) => {
           cross join bounds b
           where c.observed_at >= b.starts_at
             and c.observed_at < b.ends_at
+            and not (
+              coalesce(c.market_lane,'')='crypto'
+              or c.strategy_version_id like 'CRYPTO-%'
+              or c.features->>'market'='crypto'
+            )
         ),
         cycle_rows as materialized (
           select distinct on (c.scan_cycle_id)

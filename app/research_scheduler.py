@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 
 import httpx
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 from .post_event_evidence import PostEventEvidenceRunner
 from .crypto_layer import CryptoMarketDataClient
@@ -93,7 +96,7 @@ class ResearchReportScheduler:
         self.crypto_forward_runner = CryptoForwardEvidenceRunner(
             market_data=self.crypto_market_data,
             event_sink=event_sink,
-            evidence_reader=self._report_api_get,
+            evidence_reader=self._crypto_evidence_api_get,
             state=state,
         )
         self.last_crypto_forward_at: datetime | None = None
@@ -148,6 +151,7 @@ class ResearchReportScheduler:
                     catch_up_done = True
                 await self._tick()
             except Exception as exc:
+                logger.exception("post-close research reporting failed")
                 message = f"research reporting {type(exc).__name__}: {exc}"
                 self.last_error = message
                 self.state.record_event(
@@ -160,6 +164,15 @@ class ResearchReportScheduler:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
+
+    async def _crypto_evidence_api_get(
+        self,
+        *,
+        evidence_session: str,
+    ) -> dict[str, Any]:
+        return await self._report_api_get(
+            crypto_evidence_session=evidence_session,
+        )
 
     async def _crypto_forward_tick(self, now: datetime | None = None) -> None:
         if not getattr(self.settings, "crypto_lane_enabled", False):
@@ -183,6 +196,7 @@ class ResearchReportScheduler:
                     reason=f"{summary.errors} outcome errors",
                 )
         except Exception as exc:
+            logger.exception("crypto forward evidence failed")
             self.state.crypto_forward_evidence_state = {
                 "status": "error",
                 "last_run_at": current.isoformat(),
