@@ -7,7 +7,7 @@ from .core import fresh
 INVENTORY = {
     "RHEN": ("SERVICE", "alpaca-trader", "Live execution; research reporting, evidence and legacy NOSTRA/GRAEN calculations remain coupled"),
     "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; counterfactual functions also remain in RHEN research reporting"),
-    "GRAEN": ("WORKER", "rhen-crypto-edge-discovery", "Crypto research worker; other GRAEN validation remains coupled to RHEN"),
+    "GRAEN": ("SERVICE", "graen", "Independent mathematical and theoretical research runtime with durable problem queue, run ledger, and artifact store"),
     "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
 }
 
