@@ -18,6 +18,11 @@ from .replay import ReplayEngine
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
 from .velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
 from .crypto_velum import run_crypto_challengers
+from .velum_manifest import (
+    build_run_manifest,
+    dataset_fingerprint,
+    evidence_fingerprint,
+)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -158,6 +163,8 @@ class VelumRuntime:
         self.last_crypto_window_end: str | None = None
         self.last_equity_summary: dict[str, Any] | None = None
         self.last_crypto_summary: dict[str, Any] | None = None
+        self.last_equity_run_id: str | None = None
+        self.last_crypto_run_id: str | None = None
 
         self.poll_seconds = _env_int("VELUM_POLL_SECONDS", 60, minimum=30)
         self.crypto_interval_minutes = _env_int(
@@ -195,6 +202,8 @@ class VelumRuntime:
             "last_crypto_window_end": self.last_crypto_window_end,
             "last_equity_summary": self.last_equity_summary,
             "last_crypto_summary": self.last_crypto_summary,
+            "last_equity_run_id": self.last_equity_run_id,
+            "last_crypto_run_id": self.last_crypto_run_id,
             "crypto_interval_minutes": self.crypto_interval_minutes,
             "crypto_window_hours": self.crypto_window_hours,
         }
@@ -313,11 +322,13 @@ class VelumRuntime:
             spread_bps=self.equity_spread_bps * Decimal("2"),
             slippage_bps=self.equity_slippage_bps * Decimal("2"),
         )
+        seed = int(session.strftime("%Y%m%d"))
         bootstrap = bootstrap_trade_distribution(
             baseline["trades"],
             paths=self.bootstrap_paths,
-            seed=int(session.strftime("%Y%m%d")),
+            seed=seed,
         )
+        coverage = {symbol: len(bars.get(symbol, [])) for symbol in symbols}
         payload = self._payload(
             asset_class="equity",
             start=start,
@@ -325,19 +336,37 @@ class VelumRuntime:
             baseline=baseline,
             stress=stress,
             bootstrap=bootstrap,
-            coverage={symbol: len(bars.get(symbol, [])) for symbol in symbols},
+            coverage=coverage,
+            strategy_version_id=self.settings.strategy_version_id or None,
             notes={
                 "market_session": session.isoformat(),
                 "universe_replay": "configured scan snapshot",
                 "dynamic_universe_reconstruction": False,
             },
         )
+        manifest = build_run_manifest(
+            asset_class="equity",
+            mode="REPLAY",
+            methodology_version=payload["methodology_version"],
+            start=start,
+            end=end,
+            dataset_hash=dataset_fingerprint(bars),
+            coverage=coverage,
+            strategy_version_id=self.settings.strategy_version_id or None,
+            strategy=baseline["strategy"],
+            execution_assumptions=baseline["assumptions"],
+            random_seed=seed,
+            runtime_git_commit=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            evidence_hash=evidence_fingerprint(payload),
+        )
+        payload["run_manifest"] = manifest
         await self._emit(
             "velum_replay_result",
             payload,
-            key_suffix="equity:" + session.isoformat(),
+            key_suffix="equity:" + session.isoformat() + ":" + manifest["velum_run_id"],
         )
         self.last_equity_session = session.isoformat()
+        self.last_equity_run_id = manifest["velum_run_id"]
         self.last_equity_summary = payload["baseline"]["summary"]
         print(
             "VELUM_EQUITY_COMPLETE",
@@ -382,10 +411,11 @@ class VelumRuntime:
             spread_bps=self.crypto_spread_bps * Decimal("2"),
             slippage_bps=self.crypto_slippage_bps * Decimal("2"),
         )
+        seed = int(end.strftime("%Y%m%d%H"))
         bootstrap = bootstrap_trade_distribution(
             baseline["trades"],
             paths=self.bootstrap_paths,
-            seed=int(end.strftime("%Y%m%d%H")),
+            seed=seed,
         )
         challenger_experiment = run_crypto_challengers(
             settings=crypto_settings,
@@ -395,6 +425,7 @@ class VelumRuntime:
             slippage_bps=self.crypto_slippage_bps,
             equity_settings=self.settings,
         )
+        coverage = {symbol: len(bars.get(symbol, [])) for symbol in symbols}
         payload = self._payload(
             asset_class="crypto",
             start=start,
@@ -402,7 +433,8 @@ class VelumRuntime:
             baseline=baseline,
             stress=stress,
             bootstrap=bootstrap,
-            coverage={symbol: len(bars.get(symbol, [])) for symbol in symbols},
+            coverage=coverage,
+            strategy_version_id=crypto_settings.crypto_strategy_version_id or None,
             notes={
                 "market_session": "24x7",
                 "crypto_location": crypto_settings.crypto_location,
@@ -416,12 +448,36 @@ class VelumRuntime:
             },
         )
         payload["challenger_experiment"] = challenger_experiment
+        manifest = build_run_manifest(
+            asset_class="crypto",
+            mode="REPLAY",
+            methodology_version=payload["methodology_version"],
+            start=start,
+            end=end,
+            dataset_hash=dataset_fingerprint(bars),
+            coverage=coverage,
+            strategy_version_id=crypto_settings.crypto_strategy_version_id or None,
+            strategy=baseline["strategy"],
+            execution_assumptions=baseline["assumptions"],
+            random_seed=seed,
+            runtime_git_commit=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            evidence_hash=evidence_fingerprint(payload),
+        )
+        payload["run_manifest"] = manifest
         await self._emit(
             "velum_replay_result",
             payload,
-            key_suffix="crypto:" + end.isoformat() + ":" + str(self.crypto_window_hours) + "h",
+            key_suffix=(
+                "crypto:"
+                + end.isoformat()
+                + ":"
+                + str(self.crypto_window_hours)
+                + "h:"
+                + manifest["velum_run_id"]
+            ),
         )
         self.last_crypto_window_end = end.isoformat()
+        self.last_crypto_run_id = manifest["velum_run_id"]
         self.last_crypto_summary = payload["baseline"]["summary"]
         print(
             "VELUM_CRYPTO_COMPLETE",
@@ -451,6 +507,7 @@ class VelumRuntime:
         stress: dict[str, Any],
         bootstrap: dict[str, Any],
         coverage: dict[str, int],
+        strategy_version_id: str | None,
         notes: dict[str, Any],
     ) -> dict[str, Any]:
         return {
@@ -476,7 +533,7 @@ class VelumRuntime:
             "risk_or_sizing_authority": False,
             "live_configuration_changed": False,
             "promotion_authorized": False,
-            "strategy_version_id": self.settings.strategy_version_id or None,
+            "strategy_version_id": strategy_version_id,
             "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         }
 
@@ -510,7 +567,12 @@ class VelumRuntime:
         if not url or not token:
             return False
 
-        strategy = self.settings.strategy_version_id or "unversioned"
+        event_strategy_version = (
+            payload.get("strategy_version_id")
+            or self.settings.strategy_version_id
+            or None
+        )
+        strategy = str(event_strategy_version or "unversioned")
         methodology = str(payload.get("methodology_version") or "unversioned")
         event = {
             "event_key": self._event_key(
@@ -520,7 +582,7 @@ class VelumRuntime:
                 key_suffix,
             ),
             "run_id": None,
-            "strategy_version_id": self.settings.strategy_version_id or None,
+            "strategy_version_id": event_strategy_version,
             "event_type": event_type,
             "occurred_at": datetime.now(timezone.utc).isoformat(),
             "source": "velum-replay",
