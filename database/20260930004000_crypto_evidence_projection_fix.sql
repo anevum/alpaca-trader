@@ -267,6 +267,50 @@ for each row
 when (new.event_type='candidate_forward_outcome')
 execute function private.project_crypto_forward_status_event();
 
+-- Register the prototype as a shadow strategy identity so candidate-level
+-- attribution can use CRYPTO-2026-09-29-001 without implying validation.
+insert into private.trading_strategy_versions (
+  version_id,
+  strategy_name,
+  status,
+  repository,
+  git_commit,
+  deployment_id,
+  environment,
+  hypothesis,
+  parameters,
+  symbol_universe,
+  risk_limits,
+  activated_at
+) values (
+  'CRYPTO-2026-09-29-001',
+  'rolling_momentum_vwap',
+  'shadow',
+  'anevum/alpaca-trader',
+  '95c3c7baa5b057fcfaecc8fac3ff0674c2bdff17',
+  '7d492e9e-d54a-4535-919a-464fa69445a3',
+  'shadow',
+  'Evaluate shared mathematical primitives with crypto-specific normalization, calibration, continuous NOSTRA regimes, execution costs, and independent promotion gates before any live crypto activation.',
+  jsonb_build_object(
+    'market_lane','crypto',
+    'model_version','crypto-rmvwap-model-v1',
+    'calibration_version','crypto-calibration-unvalidated-v1',
+    'regime_version','nostra-crypto-regime-v1',
+    'execution_adapter_version','alpaca-crypto-execution-v1',
+    'validation_state','unvalidated',
+    'live_entry_execution_gated',true
+  ),
+  array['dynamic-crypto'],
+  jsonb_build_object(
+    'shared_account_breakers',true,
+    'market_specific_execution',true,
+    'graen_promotion_required',true,
+    'explicit_user_activation_required',true
+  ),
+  null
+)
+on conflict (version_id) do nothing;
+
 -- Correct derived projections from immutable raw decision-cycle events.
 update private.trading_candidate_evaluations
 set strategy_version_id = coalesce(
