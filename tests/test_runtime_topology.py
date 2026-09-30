@@ -144,6 +144,9 @@ def test_independent_startup_and_shutdown(monkeypatch):
         controller = service.IrenController()
         controller.tick = AsyncMock()
         monkeypatch.setattr(service, "controller", controller)
+        work_engine = service.IrenWorkEngine(AsyncMock(), lambda: {})
+        work_engine.tick = AsyncMock()
+        monkeypatch.setattr(service, "work_engine", work_engine)
         monkeypatch.setattr(scheduler.runtime, "start", AsyncMock())
         monkeypatch.setattr(scheduler.runtime, "stop", AsyncMock())
         async with service.lifespan(service.app):
@@ -157,7 +160,10 @@ def test_readiness_requires_fresh_durable_state(monkeypatch):
     async def scenario():
         controller = service.IrenController()
         controller.task = asyncio.create_task(asyncio.Event().wait())
+        work_engine = service.IrenWorkEngine(AsyncMock(), lambda: {})
+        work_engine.task = asyncio.create_task(asyncio.Event().wait())
         monkeypatch.setattr(service, "controller", controller)
+        monkeypatch.setattr(service, "work_engine", work_engine)
         monkeypatch.setattr(scheduler.SchedulerRuntime, "configured", property(lambda self: True))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=service.app), base_url="http://test") as client:
             assert (await client.get("/health")).status_code == 200
@@ -165,7 +171,8 @@ def test_readiness_requires_fresh_durable_state(monkeypatch):
             controller.last_persisted_at = datetime.now(timezone.utc).isoformat()
             assert (await client.get("/ready")).status_code == 200
         controller.task.cancel()
-        await asyncio.gather(controller.task, return_exceptions=True)
+        work_engine.task.cancel()
+        await asyncio.gather(controller.task, work_engine.task, return_exceptions=True)
     asyncio.run(scenario())
 
 @pytest.mark.parametrize("module,forbidden", [
