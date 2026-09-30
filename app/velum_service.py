@@ -163,6 +163,8 @@ class VelumRuntime:
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.started_at = datetime.now(timezone.utc)
+        self.last_heartbeat_at: str = self.started_at.isoformat()
+        self.heartbeat_task: asyncio.Task | None = None
         self.last_tick_at: str | None = None
         self.last_success_at: str | None = None
         self.last_error: str | None = None
@@ -174,6 +176,7 @@ class VelumRuntime:
         self.last_crypto_run_id: str | None = None
 
         self.poll_seconds = _env_int("VELUM_POLL_SECONDS", 60, minimum=30)
+        self.heartbeat_seconds = _env_int("VELUM_HEARTBEAT_SECONDS", 30, minimum=10)
         self.crypto_interval_minutes = _env_int(
             "VELUM_CRYPTO_INTERVAL_MINUTES", 60, minimum=15
         )
@@ -195,6 +198,16 @@ class VelumRuntime:
         from zoneinfo import ZoneInfo
         return ZoneInfo("America/New_York")
 
+    def runtime_provenance(self) -> dict[str, str | None]:
+        return {
+            "system_version": "velum-replay-v2",
+            "git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA") or None,
+            "deployment_id": os.getenv("RAILWAY_DEPLOYMENT_ID") or None,
+            "runtime_started_at": self.started_at.isoformat(),
+            "service_id": os.getenv("RAILWAY_SERVICE_ID") or None,
+            "service_name": os.getenv("RAILWAY_SERVICE_NAME") or "rhen-velum",
+        }
+
     def status(self) -> dict[str, Any]:
         return {
             "ok": self.last_error is None,
@@ -204,8 +217,19 @@ class VelumRuntime:
             "autorun": self.autorun,
             "scheduler_managed": not self.autorun,
             "running": self.task is not None and not self.task.done(),
+            "worker_alive": self.heartbeat_task is not None and not self.heartbeat_task.done(),
             "broker_orders_possible": False,
+            "execution_authority": False,
             "started_at": self.started_at.isoformat(),
+            "last_heartbeat_at": self.last_heartbeat_at,
+            "runtime_provenance": self.runtime_provenance(),
+            "credential_scope": {
+                "broker_client_present": False,
+                "provider_scope_verified": False,
+                "alpaca_credentials_present": bool(
+                    os.getenv("ALPACA_API_KEY") and os.getenv("ALPACA_API_SECRET")
+                ),
+            },
             "last_tick_at": self.last_tick_at,
             "last_success_at": self.last_success_at,
             "last_error": self.last_error,
@@ -219,19 +243,44 @@ class VelumRuntime:
             "crypto_window_hours": self.crypto_window_hours,
         }
 
+    async def start_heartbeat(self) -> None:
+        if self.heartbeat_task is None:
+            self.heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(),
+                name="velum-native-heartbeat",
+            )
+
     async def start(self) -> None:
+        await self.start_heartbeat()
         if self.task is None:
             self.task = asyncio.create_task(self._run(), name="velum-replay-worker")
 
     async def stop(self) -> None:
         self.stop_event.set()
-        if self.task is not None:
+        tasks = [
+            task
+            for task in (self.task, self.heartbeat_task)
+            if task is not None
+        ]
+        if tasks:
+            done, pending = await asyncio.wait(tasks, timeout=15)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        self.task = None
+        self.heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        while not self.stop_event.is_set():
+            self.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
             try:
-                await asyncio.wait_for(self.task, timeout=15)
-            except TimeoutError:
-                self.task.cancel()
-                await asyncio.gather(self.task, return_exceptions=True)
-            self.task = None
+                await asyncio.wait_for(
+                    self.stop_event.wait(),
+                    timeout=self.heartbeat_seconds,
+                )
+            except asyncio.TimeoutError:
+                pass
 
     async def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -656,11 +705,12 @@ velum = VelumRuntime(settings)
 async def lifespan(_: FastAPI):
     if velum.autorun:
         await velum.start()
+    else:
+        await velum.start_heartbeat()
     try:
         yield
     finally:
-        if velum.autorun:
-            await velum.stop()
+        await velum.stop()
 
 
 app = FastAPI(title="ANEVUM VELUM", lifespan=lifespan)
@@ -674,7 +724,12 @@ async def health():
         "system": "VELUM",
         "mode": current["mode"],
         "running": current["running"],
+        "worker_alive": current["worker_alive"],
         "broker_orders_possible": False,
+        "execution_authority": False,
+        "last_heartbeat_at": current["last_heartbeat_at"],
+        "last_success_at": current["last_success_at"],
+        "runtime_provenance": current["runtime_provenance"],
         "last_error": current["last_error"],
     }
 
