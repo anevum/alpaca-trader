@@ -1,0 +1,17 @@
+{
+  "version": "iren-control-v1.0.0",
+  "tick_seconds": 60,
+  "stale_after_seconds": 180,
+  "failure_observations": 2,
+  "recovery_observations": 3,
+  "expected_strategy": "LIVE-2026-09-25-003",
+  "crypto_execution_expected": false,
+  "capabilities": ["observe", "classify", "persist", "notify", "schedule_existing_workflows"],
+  "protected_actions": ["broker_orders", "strategy_promotion", "risk_changes", "infrastructure_changes", "spending", "publication"],
+  "services": [
+    {"id": "RHEN", "url_env": "IREN_RHEN_HEALTH_URL", "default_url": "http://alpaca-trader.railway.internal:8080/health"},
+    {"id": "VELUM", "url_env": "IREN_VELUM_HEALTH_URL", "default_url": "http://rhen-velum.railway.internal:8080/health"},
+    {"id": "PREOPEN", "url_env": "IREN_PREOPEN_HEALTH_URL", "default_url": "http://rhen-preopen-state.railway.internal:8080/health"},
+    {"id": "GRAEN", "url_env": "IREN_GRAEN_HEALTH_URL", "default_url": "http://rhen-crypto-edge-discovery.railway.internal:8080/health"}
+  ]
+}

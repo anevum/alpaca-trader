@@ -93,6 +93,42 @@ async function listRuns(url: URL) {
   return rows.map((row) => row.run);
 }
 
+async function irenAction(action: string, body: Record<string, unknown>) {
+  if (action === "iren_read") {
+    const rows = await sql`select revision, state, updated_at from private.iren_control_state where singleton`;
+    const events = await sql`select event, created_at, delivery_status, attempts from private.iren_control_events order by created_at desc limit 50`;
+    return { ...rows[0], events };
+  }
+  if (action === "iren_commit") {
+    const rows = await sql`select private.iren_control_commit(${sql.json(body)}::jsonb) as result`;
+    return rows[0].result;
+  }
+  if (action === "iren_notifications_claim") {
+    const owner = String(body.owner || "");
+    if (!/^[a-f0-9-]{36}$/.test(owner)) throw new Error("invalid_iren_owner");
+    const rows = await sql`
+      with candidates as (
+        select event_key from private.iren_control_events
+        where delivery_status not like 'delivered:%' and attempts < 3
+          and (lease_until is null or lease_until < now())
+        order by created_at limit 10 for update skip locked
+      ) update private.iren_control_events e set owner=${owner},
+          lease_until=now()+interval '120 seconds', attempts=attempts+1
+        from candidates c where e.event_key=c.event_key returning e.event
+    `;
+    return { events: rows.map((row) => row.event) };
+  }
+  if (action === "iren_notification_complete") {
+    const result = String(body.delivery_status || "").slice(0, 200);
+    const rows = await sql`update private.iren_control_events
+      set delivery_status=${result}, lease_until=null, owner=null
+      where event_key=${String(body.event_key)} and owner=${String(body.owner)}
+        and lease_until > now() returning event_key`;
+    return { updated: rows.length === 1 };
+  }
+  throw new Error("invalid_iren_action");
+}
+
 Deno.serve(async (req: Request) => {
   if (!(await authorized(req))) {
     return json(401, { ok: false, error: "unauthorized" });
@@ -112,6 +148,9 @@ Deno.serve(async (req: Request) => {
 
     const body = objectValue(await req.json());
     const action = String(body.action || "");
+    if (["iren_read", "iren_commit", "iren_notifications_claim", "iren_notification_complete"].includes(action)) {
+      return json(200, { ok: true, ...(await irenAction(action, body)) });
+    }
     if (action === "claim") {
       return json(200, {
         ok: true,
