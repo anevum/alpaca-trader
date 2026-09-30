@@ -81,6 +81,39 @@ def test_velum_runtime_declares_no_broker_order_authority():
     assert status["system"] == "VELUM"
     assert status["mode"] == "research_replay_only"
     assert status["broker_orders_possible"] is False
+    assert status["execution_authority"] is False
+    assert status["credential_scope"]["broker_client_present"] is False
+    assert status["credential_scope"]["provider_scope_verified"] is False
+
+
+def test_velum_runtime_exposes_native_provenance(monkeypatch):
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abc123")
+    monkeypatch.setenv("RAILWAY_DEPLOYMENT_ID", "deployment-1")
+    monkeypatch.setenv("RAILWAY_SERVICE_ID", "service-1")
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "rhen-velum")
+    runtime = VelumRuntime(settings())
+    status = runtime.status()
+    provenance = status["runtime_provenance"]
+    assert provenance["system_version"] == "velum-replay-v2"
+    assert provenance["git_commit"] == "abc123"
+    assert provenance["deployment_id"] == "deployment-1"
+    assert provenance["service_id"] == "service-1"
+    assert provenance["service_name"] == "rhen-velum"
+    assert provenance["runtime_started_at"] == status["started_at"]
+    assert status["last_heartbeat_at"] == status["started_at"]
+
+
+def test_velum_native_heartbeat_runs_when_replay_is_scheduler_managed():
+    async def scenario():
+        runtime = VelumRuntime(settings())
+        await runtime.start_heartbeat()
+        await asyncio.sleep(0)
+        assert runtime.status()["worker_alive"] is True
+        assert runtime.status()["running"] is False
+        await runtime.stop()
+        assert runtime.heartbeat_task is None
+
+    asyncio.run(scenario())
 
 
 def test_crypto_bucket_is_hourly_by_default(monkeypatch):
