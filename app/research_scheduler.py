@@ -141,12 +141,12 @@ class ResearchReportScheduler:
     async def _run(self) -> None:
         catch_up_done = False
         while not self.stop_event.is_set():
+            await self._crypto_forward_tick()
             try:
                 if not catch_up_done:
                     await self._catch_up_latest_completed()
                     catch_up_done = True
                 await self._tick()
-                await self._crypto_forward_tick()
             except Exception as exc:
                 message = f"research reporting {type(exc).__name__}: {exc}"
                 self.last_error = message
@@ -1137,19 +1137,27 @@ class ResearchReportScheduler:
                 "Some live-vs-offline decisions are unreconstructable because required decision-time evidence was not historically retained."
             )
 
-        fingerprint_material = {
-            "version": DAILY_REPORT_VERSION,
-            "session": session.isoformat(),
-            "strategy_version_id": getattr(self.settings, "strategy_version_id", "") or None,
-            "metrics": serialize(evidence["metrics"]),
-            "forward_outcomes": post_event.get("forward_outcomes_by_horizon") or [],
-            "live_offline": live_offline,
-            "ads002": ads002,
-            "ads002_v2": ads002_v2,
-            "counterfactual_lab": counterfactual_lab,
-            "nostra": nostra,
-            "adaptive_strategy_control": adaptive_control,
-        }
+        fingerprint_material = serialize(
+            {
+                "version": DAILY_REPORT_VERSION,
+                "session": session.isoformat(),
+                "strategy_version_id": getattr(
+                    self.settings, "strategy_version_id", ""
+                )
+                or None,
+                "metrics": evidence["metrics"],
+                "forward_outcomes": post_event.get(
+                    "forward_outcomes_by_horizon"
+                )
+                or [],
+                "live_offline": live_offline,
+                "ads002": ads002,
+                "ads002_v2": ads002_v2,
+                "counterfactual_lab": counterfactual_lab,
+                "nostra": nostra,
+                "adaptive_strategy_control": adaptive_control,
+            }
+        )
         source_fingerprint = hashlib.sha256(
             json.dumps(
                 fingerprint_material,
