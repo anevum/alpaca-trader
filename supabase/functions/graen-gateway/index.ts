@@ -184,6 +184,173 @@ Deno.serve(async (req: Request) => {
       return json(200, { ok: true });
     }
 
+    if (action === "claim_research_problem") {
+      const workerId = String((body as any).worker_id || "").trim().slice(0, 160);
+      const runtimeVersion = String((body as any).runtime_version || "").trim().slice(0, 160);
+      const methodologyVersion = String((body as any).methodology_version || "").trim().slice(0, 160);
+      const domain = String((body as any).domain || "").trim().slice(0, 80);
+      const sourceCommit = String((body as any).source_commit || "").trim().slice(0, 160) || null;
+      const deploymentId = String((body as any).deployment_id || "").trim().slice(0, 160) || null;
+      if (!workerId || !runtimeVersion || !methodologyVersion || !domain) throw new Error("invalid_research_worker");
+      const rows = await sql`
+        with candidate as (
+          select p.problem_id
+          from private.graen_problems p
+          where p.status='WAITING'
+            and p.domain=${domain}
+            and (
+              select r.result_summary->>'state'
+              from private.graen_runs r
+              where r.problem_id=p.problem_id
+              order by r.started_at desc
+              limit 1
+            )='READY_FOR_RESEARCH_EXECUTOR'
+          order by p.priority desc, p.created_at asc
+          limit 1
+          for update skip locked
+        )
+        update private.graen_problems p
+        set status='RUNNING', updated_at=now()
+        from candidate c
+        where p.problem_id=c.problem_id
+        returning p.*
+      `;
+      const problem = rows[0] || null;
+      if (!problem) {
+        await sql`
+          update private.graen_runtime_state
+          set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
+                'research_executor',
+                jsonb_build_object(
+                  'worker_id',${workerId},
+                  'runtime_version',${runtimeVersion},
+                  'methodology_version',${methodologyVersion},
+                  'source_commit',${sourceCommit},
+                  'deployment_id',${deploymentId},
+                  'heartbeat_at',now(),
+                  'active_problem_id',null,
+                  'last_error',null
+                )
+              ),
+              updated_at=now()
+          where singleton
+        `;
+        return json(200, { ok: true, problem: null });
+      }
+      const runRows = await sql`
+        insert into private.graen_runs (
+          problem_id,worker_id,runtime_version,source_commit,deployment_id,
+          methodology_version,status,input_snapshot,model_usage
+        ) values (
+          ${problem.problem_id},${workerId},${runtimeVersion},${sourceCommit},${deploymentId},
+          ${methodologyVersion},'RUNNING',
+          ${sql.json({
+            problem_key: problem.problem_key,
+            domain: problem.domain,
+            constraints: problem.constraints,
+            success_criteria: problem.success_criteria
+          } as any)}::jsonb,
+          '{"invoked":false}'::jsonb
+        )
+        returning *
+      `;
+      await sql`
+        update private.graen_runtime_state
+        set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
+              'research_executor',
+              jsonb_build_object(
+                'worker_id',${workerId},
+                'runtime_version',${runtimeVersion},
+                'methodology_version',${methodologyVersion},
+                'source_commit',${sourceCommit},
+                'deployment_id',${deploymentId},
+                'heartbeat_at',now(),
+                'active_problem_id',${problem.problem_id},
+                'last_error',null
+              )
+            ),
+            updated_at=now()
+        where singleton
+      `;
+      return json(200, { ok: true, problem, run: runRows[0] });
+    }
+
+    if (action === "executor_heartbeat") {
+      const workerId = String((body as any).worker_id || "").trim().slice(0, 160);
+      const runtimeVersion = String((body as any).runtime_version || "").trim().slice(0, 160);
+      const methodologyVersion = String((body as any).methodology_version || "").trim().slice(0, 160);
+      const sourceCommit = String((body as any).source_commit || "").trim().slice(0, 160) || null;
+      const deploymentId = String((body as any).deployment_id || "").trim().slice(0, 160) || null;
+      const activeProblem = String((body as any).active_problem_id || "").trim() || null;
+      const lastError = String((body as any).last_error || "").trim().slice(0, 1000) || null;
+      if (!workerId || !runtimeVersion || !methodologyVersion) throw new Error("invalid_executor_heartbeat");
+      await sql`
+        update private.graen_runtime_state
+        set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
+              'research_executor',
+              jsonb_build_object(
+                'worker_id',${workerId},
+                'runtime_version',${runtimeVersion},
+                'methodology_version',${methodologyVersion},
+                'source_commit',${sourceCommit},
+                'deployment_id',${deploymentId},
+                'heartbeat_at',now(),
+                'active_problem_id',${activeProblem},
+                'last_error',${lastError}
+              )
+            ),
+            updated_at=now()
+        where singleton
+      `;
+      return json(200, { ok: true });
+    }
+
+    if (action === "complete_research_problem") {
+      const problemId = String((body as any).problem_id || "").trim();
+      const runId = String((body as any).run_id || "").trim();
+      const workerId = String((body as any).worker_id || "").trim().slice(0, 160);
+      const status = safeStatus((body as any).status);
+      const resultSummary = objectValue((body as any).result_summary);
+      const modelUsage = objectValue((body as any).model_usage);
+      if (!problemId || !runId || !workerId || !["WAITING","BLOCKED","SUCCEEDED","FAILED","CANCELLED"].includes(status))
+        throw new Error("invalid_research_completion");
+      await sql.begin(async (tx) => {
+        await tx`
+          update private.graen_runs
+          set status=${status},
+              result_summary=${sql.json(resultSummary as any)}::jsonb,
+              model_usage=${sql.json(modelUsage as any)}::jsonb,
+              completed_at=now()
+          where run_id=${runId}::uuid and problem_id=${problemId}::uuid
+        `;
+        await tx`
+          update private.graen_problems
+          set status=${status},updated_at=now(),
+              completed_at=case when ${["SUCCEEDED","FAILED","CANCELLED"].includes(status)} then now() else null end
+          where problem_id=${problemId}::uuid
+        `;
+        await tx`
+          update private.graen_runtime_state
+          set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
+                'research_executor',
+                jsonb_build_object(
+                  'worker_id',${workerId},
+                  'heartbeat_at',now(),
+                  'active_problem_id',null,
+                  'last_completion_at',now(),
+                  'last_status',${status},
+                  'last_error',case when ${status}='FAILED'
+                    then ${String((resultSummary as any).error || "research_failed").slice(0,1000)}
+                    else null end
+                )
+              ),
+              updated_at=now()
+          where singleton
+        `;
+      });
+      return json(200, { ok: true });
+    }
+
     if (action === "complete_problem") {
       const problemId = String((body as any).problem_id || "").trim();
       const runId = String((body as any).run_id || "").trim();
