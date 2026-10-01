@@ -32,6 +32,7 @@ async def verify_cloudflare_access(
     assertion = str(token or "").strip()
     if not assertion:
         raise CommandAuthError(401, "Cloudflare Access authorization required")
+
     issuer = normalized_team_domain(team_domain)
     aud = str(audience or "").strip()
     if not aud:
@@ -41,6 +42,7 @@ async def verify_cloudflare_access(
         header = jwt.get_unverified_header(assertion)
     except InvalidTokenError as exc:
         raise CommandAuthError(401, "Cloudflare Access token is invalid") from exc
+
     kid = str(header.get("kid") or "")
     if not kid:
         raise CommandAuthError(401, "Cloudflare Access token is invalid")
@@ -57,6 +59,7 @@ async def verify_cloudflare_access(
     keys = body.get("keys") if isinstance(body, dict) else None
     if not isinstance(keys, list):
         raise CommandAuthError(503, "Cloudflare Access signing keys are invalid")
+
     jwk = next(
         (
             item
@@ -101,51 +104,12 @@ async def verify_cloudflare_access(
     }
 
 
-async def verify_supabase_command_admin(
-    token: str,
-    *,
-    supabase_url: str,
-    publishable_key: str,
-    founder_email: str,
-) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=8.0) as http:
-        response = await http.get(
-            f"{supabase_url}/auth/v1/user",
-            headers={
-                "apikey": publishable_key,
-                "Authorization": f"Bearer {token}",
-                "Cache-Control": "no-store",
-            },
-        )
-    payload = response.json() if response.content else {}
-    if not response.is_success:
-        raise CommandAuthError(401, "RHENLINK session is not valid")
-
-    metadata = payload.get("app_metadata") or {}
-    role = str(metadata.get("role") or "").strip().lower()
-    email = str(payload.get("email") or "").strip().lower()
-    confirmed = bool(payload.get("email_confirmed_at") or payload.get("confirmed_at"))
-    authorized = (
-        (email == str(founder_email).strip().lower() and confirmed)
-        or metadata.get("command_admin") is True
-        or metadata.get("wiki_admin") is True
-        or role in {"owner", "founder", "admin", "command_admin", "wiki_admin"}
-    )
-    if not authorized:
-        raise CommandAuthError(403, "COMMAND administrator authorization required")
-    return payload
-
-
 async def authenticate_command_admin(
     authorization: str | None,
     *,
-    mode: str,
     team_domain: str,
     audience: str,
     allowed_emails: str,
-    supabase_url: str,
-    publishable_key: str,
-    founder_email: str,
 ) -> dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise CommandAuthError(401, "Private authorization required")
@@ -154,25 +118,9 @@ async def authenticate_command_admin(
     if not token:
         raise CommandAuthError(401, "Private authorization required")
 
-    normalized_mode = str(mode or "supabase").strip().lower()
-    if normalized_mode not in {"supabase", "cloudflare_access", "dual"}:
-        raise CommandAuthError(503, "COMMAND_AUTH_MODE is invalid")
-
-    if normalized_mode in {"cloudflare_access", "dual"}:
-        try:
-            return await verify_cloudflare_access(
-                token,
-                team_domain=team_domain,
-                audience=audience,
-                allowed_emails=allowed_emails,
-            )
-        except CommandAuthError:
-            if normalized_mode == "cloudflare_access":
-                raise
-
-    return await verify_supabase_command_admin(
+    return await verify_cloudflare_access(
         token,
-        supabase_url=supabase_url,
-        publishable_key=publishable_key,
-        founder_email=founder_email,
+        team_domain=team_domain,
+        audience=audience,
+        allowed_emails=allowed_emails,
     )
