@@ -238,11 +238,6 @@ async def scheduler_session_detail(session: date) -> dict:
     return row
 
 
-SUPABASE_URL = "https://mfntzxheldzdvlokyntk.supabase.co"
-SUPABASE_PUBLISHABLE_KEY = "sb_publishable_XfkgeXau2-6XOPzoXF-Nnw_FSnx0Sae"
-COMMAND_FOUNDER_EMAIL = "devon@anevum.com"
-
-
 class SchedulerSessionRequest(BaseModel):
     session: date
     scheduled_at: datetime | None = None
@@ -267,13 +262,9 @@ async def require_command_admin(authorization: str | None) -> dict:
     try:
         return await authenticate_command_admin(
             authorization,
-            mode=settings.command_auth_mode,
             team_domain=settings.command_access_team_domain,
             audience=settings.command_access_aud,
             allowed_emails=settings.command_access_emails_raw,
-            supabase_url=SUPABASE_URL,
-            publishable_key=SUPABASE_PUBLISHABLE_KEY,
-            founder_email=COMMAND_FOUNDER_EMAIL,
         )
     except CommandAuthError as exc:
         raise HTTPException(
@@ -1550,7 +1541,7 @@ async def command_session(authorization: str | None = Header(default=None)):
     return {
         "authenticated": True,
         "email": identity.get("email"),
-        "auth_source": identity.get("auth_source") or "supabase",
+        "auth_source": identity.get("auth_source") or "cloudflare_access",
         "command_admin": True,
     }
 
