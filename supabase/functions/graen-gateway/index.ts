@@ -200,7 +200,7 @@ Deno.serve(async (req: Request) => {
         set status='WAITING',
             completed_at=null,
             metadata=coalesce(metadata,'{}'::jsonb)
-              || jsonb_build_object('research_stage',${stage})
+              || ${sql.json({ research_stage: stage } as any)}::jsonb
               || ${sql.json(metadata as any)}::jsonb,
             updated_at=now()
         where problem_id=${problemId}::uuid
