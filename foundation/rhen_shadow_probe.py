@@ -22,6 +22,7 @@ def settings() -> SimpleNamespace:
             "/data/rhen-foundation-evidence.sqlite3",
         ),
         foundation_ingest_url=os.environ["FOUNDATION_INGEST_URL"],
+        foundation_ingest_token=os.environ.get("FOUNDATION_INGEST_TOKEN", ""),
         foundation_flush_seconds=0.1,
         foundation_batch_size=25,
     )
@@ -58,8 +59,11 @@ async def main() -> None:
             raise RuntimeError(f"RHEN shadow outbox did not drain: {sink.status()}")
 
         base = settings().foundation_ingest_url.rsplit("/v1/events", 1)[0]
+        headers = {}
+        if settings().foundation_ingest_token:
+            headers["x-anevum-foundation-token"] = settings().foundation_ingest_token
         async with httpx.AsyncClient(timeout=8.0) as http:
-            response = await http.get(base + "/status")
+            response = await http.get(base + "/status", headers=headers)
             response.raise_for_status()
             remote = response.json()
 
