@@ -54,3 +54,17 @@ jobs:
       - run: pip install pytest==8.3.5
       - run: python -m py_compile graen/crypto/autonomous_campaign.py graen/crypto/activity_shock_v9.py graen/crypto/trend_pullback_v10.py app/graen/research_executor_service.py
       - run: python -m pytest -q tests/test_graen_research_executor.py tests/test_graen_autonomous_campaign.py tests/test_graen_leadlag_r2.py tests/test_graen_activity_shock_v9.py tests/test_graen_v9_executor.py tests/test_graen_trend_pullback_v10.py tests/test_graen_v10_executor.py
+
+  scheduler-transport-retry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: pip install pytest==8.3.5
+      - run: python -m py_compile app/orchestration_scheduler.py
+      - run: python -m pytest -q tests/test_orchestration_scheduler.py tests/test_scheduler_ledger_schema.py
