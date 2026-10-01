@@ -340,6 +340,12 @@ class GraenRuntime:
                 pass
 
     async def process_once(self) -> dict[str, Any]:
+        # Durable engineering is part of GRAEN's existing worker, not a session.
+        from .research_promotion import ResearchPromotion, engineering_problem_ids
+        snapshot = await self.gateway.snapshot()
+        for problem_id in engineering_problem_ids(snapshot):
+            await ResearchPromotion(self.gateway).tick(problem_id)
+            break  # One bounded external engineering step per runtime tick.
         claimed = await self.gateway.claim_problem(self.worker_id)
         self.last_heartbeat_at = datetime.now(UTC)
         problem = claimed.get("problem")

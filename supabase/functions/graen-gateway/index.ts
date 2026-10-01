@@ -93,6 +93,165 @@ Deno.serve(async (req: Request) => {
     const body = await req.json();
     const action = String((body as Record<string, unknown>).action || "");
 
+
+    // Research-code handoff uses the existing authenticated GRAEN boundary.
+    // Lease + compare-and-swap prevent concurrent workers losing provenance.
+    if (action === "research_promotion_claim") {
+      const problemId = String(body.problem_id || "");
+      const owner = String(body.owner || "");
+      if (!/^[0-9a-f-]{36}$/.test(problemId) || !/^[0-9a-f-]{36}$/.test(owner)) {
+        throw new Error("invalid_promotion_identity");
+      }
+      const result = await sql.begin(async tx => {
+        const rows = await tx`
+          select status,metadata from private.graen_problems
+          where problem_id=${problemId}::uuid for update
+        `;
+        if (!rows[0] || !["WAITING","BLOCKED"].includes(rows[0].status)) return { claimed: false };
+        const metadata = objectValue(rows[0].metadata);
+        const state = objectValue(metadata.code_promotion);
+        const lease = objectValue(metadata.code_promotion_lease);
+        if (state.phase === "COMPLETE") return { claimed: false };
+        if (lease.until && new Date(String(lease.until)).getTime() > Date.now()) return { claimed: false };
+        const revision = Number(metadata.code_promotion_revision || 0);
+        const prespec = objectValue(state.prespec || metadata.research_implementation_spec);
+        const exposureId = String(prespec.exposure_artifact_id || "");
+        let exposure: Record<string, unknown> = {};
+        if (/^[0-9a-f-]{36}$/.test(exposureId)) {
+          const artifacts = await tx`
+            select artifact_id,content from private.graen_artifacts
+            where artifact_id=${exposureId}::uuid and problem_id=${problemId}::uuid
+              and artifact_type='RESEARCH_CORPUS_EXPOSURE_LEDGER'
+          `;
+          if (artifacts[0]) exposure = { ...objectValue(artifacts[0].content), artifact_id: artifacts[0].artifact_id };
+        }
+        const heartbeats = await tx`
+          select metadata->'research_executor' as executor from private.graen_runtime_state where singleton
+        `;
+        const nextMetadata = {
+          ...metadata,
+          code_promotion_lease: { owner, until: new Date(Date.now() + 300000).toISOString() },
+        };
+        await tx`update private.graen_problems set metadata=${tx.json(nextMetadata as any)}::jsonb,
+          updated_at=now() where problem_id=${problemId}::uuid`;
+        return {
+          claimed: true, revision, state, prespec, exposure,
+          prespec_artifact_id: metadata.code_prespec_artifact_id || null,
+          executor_heartbeat: heartbeats[0]?.executor || {},
+        };
+      });
+      return json(200, { ok: true, ...result });
+    }
+
+    if (action === "research_promotion_save") {
+      const problemId = String(body.problem_id || "");
+      const owner = String(body.owner || "");
+      const expectedRevision = Number(body.expected_revision);
+      const state = objectValue(body.state);
+      if (!/^[0-9a-f-]{36}$/.test(problemId) || !/^[0-9a-f-]{36}$/.test(owner)
+          || !Number.isSafeInteger(expectedRevision) || JSON.stringify(state).length > 100000) {
+        throw new Error("invalid_promotion_state");
+      }
+      const result = await sql.begin(async tx => {
+        const rows = await tx`
+          select status,metadata from private.graen_problems
+          where problem_id=${problemId}::uuid for update
+        `;
+        if (!rows[0] || !["WAITING","BLOCKED"].includes(rows[0].status)) throw new Error("promotion_problem_not_idle");
+        const metadata = objectValue(rows[0].metadata);
+        const previous = objectValue(metadata.code_promotion);
+        const lease = objectValue(metadata.code_promotion_lease);
+        if (lease.owner !== owner || Number(metadata.code_promotion_revision || 0) !== expectedRevision
+          || new Date(String(lease.until || "")).getTime() <= Date.now()) throw new Error("promotion_lease_or_revision_conflict");
+        if (previous.spec_hash && (
+          previous.spec_hash !== state.spec_hash ||
+          JSON.stringify(previous.prespec) !== JSON.stringify(state.prespec)
+        )) throw new Error("immutable_prespec_changed");
+        let prespecArtifactId = metadata.code_prespec_artifact_id || null;
+        if (state.prespec && !prespecArtifactId) {
+          if (state.phase !== "BRANCH" || !/^[a-f0-9]{64}$/.test(String(state.spec_hash))) {
+            throw new Error("prespec_must_be_frozen_before_branch");
+          }
+          const content = { specification: state.prespec, specification_hash: state.spec_hash };
+          const hash = await sha256Hex(JSON.stringify(content));
+          const key = [problemId, "research-code-prespec", state.spec_hash].join(":");
+          const artifacts = await tx`
+            insert into private.graen_artifacts (
+              problem_id,artifact_key,artifact_type,methodology_version,content_hash,content
+            ) values (
+              ${problemId}::uuid,${key},'RESEARCH_CODE_FROZEN_PRESPEC',
+              'graen.research-code-promotion.v1',${hash},${tx.json(content as any)}::jsonb
+            ) on conflict (artifact_key) do update set artifact_key=excluded.artifact_key
+            returning artifact_id
+          `;
+          prespecArtifactId = artifacts[0].artifact_id;
+        }
+        if (state.phase === "COMPLETE") {
+          if (previous.phase !== "RESUME" || state.resume_stage !== "CRYPTO_COMPILED_DEVELOPMENT"
+            || !state.merge_sha || !state.deployment_id || !state.executor_heartbeat_at
+            || !Array.isArray(state.ci) || state.ci.length === 0 || !prespecArtifactId) {
+            throw new Error("verified_deployment_required_before_resume");
+          }
+          const active = await tx`
+            select run_id from private.graen_runs
+            where problem_id=${problemId}::uuid and status='RUNNING' limit 1
+          `;
+          if (active.length) throw new Error("active_research_run_prevents_resume");
+        }
+        const revision = expectedRevision + 1;
+        const nextMetadata = {
+          ...metadata, code_promotion: state, code_promotion_revision: revision,
+          code_prespec_artifact_id: prespecArtifactId, code_promotion_lease: {},
+          ...(state.phase === "COMPLETE" ? {
+            research_stage: "CRYPTO_COMPILED_DEVELOPMENT",
+            compiled_specification_hash: state.spec_hash,
+          } : {}),
+        };
+        const event = { revision, ...state, prespec_artifact_id: prespecArtifactId };
+        const hash = await sha256Hex(JSON.stringify(event));
+        await tx`
+          insert into private.graen_artifacts (
+            problem_id,artifact_key,artifact_type,methodology_version,content_hash,content
+          ) values (
+            ${problemId}::uuid,${problemId + ":research-code-event:" + revision},
+            'RESEARCH_CODE_PROMOTION_EVENT','graen.research-code-promotion.v1',
+            ${hash},${tx.json(event as any)}::jsonb
+          )
+        `;
+        await tx`
+          update private.graen_problems
+          set metadata=${tx.json(nextMetadata as any)}::jsonb, updated_at=now()
+          where problem_id=${problemId}::uuid
+        `;
+        return { revision, prespec_artifact_id: prespecArtifactId };
+      });
+      return json(200, { ok: true, ...result });
+    }
+
+
+    if (action === "compiled_stage_evidence") {
+      const problemId = String(body.problem_id || "");
+      const specHash = String(body.spec_hash || "");
+      const stage = String(body.stage || "");
+      const epoch = String(body.epoch || "");
+      const predecessor = ({ validation: "development", holdout: "validation" } as Record<string,string>)[stage] || "";
+      if (!/^[0-9a-f-]{36}$/.test(problemId) || !/^[0-9a-f]{64}$/.test(specHash)
+        || !["development","validation","holdout"].includes(stage)) throw new Error("invalid_compiled_stage");
+      const artifacts = await sql`
+        select artifact_id,content from private.graen_artifacts
+        where problem_id=${problemId}::uuid and artifact_type='COMPILED_STAGE_RESULT'
+          and content->>'spec_hash'=${specHash} and content->>'epoch'=${epoch}
+          and content->>'stage' in (${stage},${predecessor})
+        order by created_at asc
+      `;
+      const current = artifacts.find(row => row.content.stage === stage);
+      const prior = artifacts.find(row => row.content.stage === predecessor);
+      return json(200, { ok: true,
+        current: current ? { ...current.content, artifact_id: current.artifact_id } : null,
+        predecessor: prior ? { ...prior.content, artifact_id: prior.artifact_id } : null,
+      });
+    }
+
     if (action === "create_problem") {
       const title = String((body as any).title || "").trim().slice(0, 240);
       const statement = String((body as any).statement || "").trim().slice(0, 12000);
@@ -232,7 +391,7 @@ Deno.serve(async (req: Request) => {
                 order by r.started_at desc
                 limit 1
               )='READY_FOR_RESEARCH_EXECUTOR'
-              or p.metadata->>'research_stage' in ('CRYPTO_LEADLAG_R2_READY','CRYPTO_V7_BATCH_READY','CRYPTO_AUTONOMOUS_DEVELOPMENT','CRYPTO_AUTONOMOUS_VALIDATION','CRYPTO_AUTONOMOUS_HOLDOUT','CRYPTO_AUTONOMOUS_VELUM_REPLAY','CRYPTO_ACTIVITY_SHOCK_V9_DEVELOPMENT','CRYPTO_ACTIVITY_SHOCK_V9_VALIDATION','CRYPTO_ACTIVITY_SHOCK_V9_HOLDOUT','CRYPTO_ACTIVITY_SHOCK_V9_VELUM_REPLAY','CRYPTO_TREND_PULLBACK_V10_DEVELOPMENT','CRYPTO_TREND_PULLBACK_V10_VALIDATION','CRYPTO_TREND_PULLBACK_V10_HOLDOUT','CRYPTO_TREND_PULLBACK_V10_VELUM_REPLAY')
+              or p.metadata->>'research_stage' in ('CRYPTO_LEADLAG_R2_READY','CRYPTO_V7_BATCH_READY','CRYPTO_AUTONOMOUS_DEVELOPMENT','CRYPTO_AUTONOMOUS_VALIDATION','CRYPTO_AUTONOMOUS_HOLDOUT','CRYPTO_AUTONOMOUS_VELUM_REPLAY','CRYPTO_ACTIVITY_SHOCK_V9_DEVELOPMENT','CRYPTO_ACTIVITY_SHOCK_V9_VALIDATION','CRYPTO_ACTIVITY_SHOCK_V9_HOLDOUT','CRYPTO_ACTIVITY_SHOCK_V9_VELUM_REPLAY','CRYPTO_TREND_PULLBACK_V10_DEVELOPMENT','CRYPTO_TREND_PULLBACK_V10_VALIDATION','CRYPTO_TREND_PULLBACK_V10_HOLDOUT','CRYPTO_TREND_PULLBACK_V10_VELUM_REPLAY','CRYPTO_COMPILED_DEVELOPMENT','CRYPTO_COMPILED_VALIDATION','CRYPTO_COMPILED_HOLDOUT')
             )
           order by p.priority desc, p.created_at asc
           limit 1
