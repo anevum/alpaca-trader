@@ -5,7 +5,9 @@ from decimal import Decimal
 from app.config import Settings
 from app.replay import ReplayPosition
 from app.velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
-from app.velum_service import VelumRuntime, _crypto_settings, _run_blocking
+from app.velum_service import VelumRuntime, _crypto_settings, _run_blocking, require_graen_token
+from app.velum_graen import engineering_gate
+from graen.crypto.autonomous_campaign import adaptive_candidate_specs
 
 
 class HoldStrategy:
@@ -127,3 +129,42 @@ def test_velum_blocking_work_is_thread_offloaded(monkeypatch):
     assert result == 5
     assert len(calls) == 1
     assert calls[0][0] is add
+
+
+def test_graen_candidate_replay_gate_is_research_only_contract():
+    spec = adaptive_candidate_specs(1)[0]
+    summary = {
+        "trade_count": 25,
+        "independent_day_blocks": 12,
+        "trades_per_day": 0.5,
+        "expectancy_per_trade": 0.001,
+        "profit_factor": 1.2,
+        "symbol_concentration": {"max_share": 0.5},
+    }
+    scenarios = {
+        "low": {
+            "primary": {**summary, "expectancy_per_trade": 0.0015},
+            "one_bar_delay": {**summary, "expectancy_per_trade": 0.0010},
+        },
+        "base": {
+            "primary": {**summary, "expectancy_per_trade": 0.0012},
+            "one_bar_delay": {**summary, "expectancy_per_trade": 0.0008},
+        },
+        "high": {
+            "primary": summary,
+            "one_bar_delay": {**summary, "expectancy_per_trade": 0.0005},
+        },
+    }
+    passed, reasons = engineering_gate(spec, scenarios)
+    assert passed is True
+    assert reasons == []
+
+
+def test_graen_candidate_replay_token_fails_closed(monkeypatch):
+    monkeypatch.delenv("VELUM_GRAEN_TOKEN", raising=False)
+    try:
+        require_graen_token("not-a-real-token")
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 503
+    else:
+        raise AssertionError("missing VELUM_GRAEN_TOKEN must fail closed")

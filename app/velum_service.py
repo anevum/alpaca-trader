@@ -27,6 +27,7 @@ from .velum_manifest import (
     dataset_fingerprint,
     evidence_fingerprint,
 )
+from .velum_graen import GRAEN_CONTEXT_UNIVERSE, replay_candidate
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -639,6 +640,29 @@ class VelumCryptoRequest(BaseModel):
     scheduled_at: datetime | None = None
 
 
+class VelumGraenCandidateRequest(BaseModel):
+    problem_id: str
+    graen_run_id: str
+    campaign_id: str
+    epoch_index: int
+    generation: int
+    candidate_spec: dict[str, Any]
+    replay_start: datetime
+    replay_end: datetime
+    seed: int = 91000
+
+
+def require_graen_token(x_graen_velum_token: str | None) -> None:
+    expected = os.getenv("VELUM_GRAEN_TOKEN", "").strip()
+    if len(expected) < 32:
+        raise HTTPException(status_code=503, detail="GRAEN replay token is not configured")
+    if x_graen_velum_token is None or not hmac.compare_digest(
+        x_graen_velum_token,
+        expected,
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 def require_scheduler_token(x_anevum_scheduler_token: str | None) -> None:
     expected = str(getattr(settings, "trading_ingest_token", "") or "").strip()
     if not expected:
@@ -684,6 +708,80 @@ async def health():
 @app.get("/status")
 async def status():
     return velum.status()
+
+
+@app.post("/v1/graen/candidate-replay")
+async def graen_candidate_replay(
+    request: VelumGraenCandidateRequest,
+    x_graen_velum_token: str | None = Header(default=None),
+):
+    require_graen_token(x_graen_velum_token)
+    if request.replay_start.tzinfo is None or request.replay_end.tzinfo is None:
+        raise HTTPException(status_code=422, detail="replay range must be timezone-aware")
+    start = request.replay_start.astimezone(timezone.utc)
+    end = request.replay_end.astimezone(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if not start < end:
+        raise HTTPException(status_code=422, detail="invalid replay range")
+    if end > now:
+        raise HTTPException(status_code=409, detail="replay range is not complete")
+    if end - start > timedelta(days=180):
+        raise HTTPException(status_code=422, detail="replay range exceeds 180 days")
+
+    fetch_start = start - timedelta(hours=8)
+    fetch_end = end + timedelta(hours=3)
+    async with velum.run_lock:
+        bars = await velum.market_data.historical_crypto_bars_many(
+            list(GRAEN_CONTEXT_UNIVERSE),
+            start=fetch_start,
+            end=fetch_end,
+        )
+        result = await _run_blocking(
+            replay_candidate,
+            bars,
+            candidate_spec=request.candidate_spec,
+            start=start,
+            end=end,
+            seed=request.seed,
+        )
+        result.update({
+            "system": "VELUM",
+            "problem_id": request.problem_id,
+            "graen_run_id": request.graen_run_id,
+            "campaign_id": request.campaign_id,
+            "epoch_index": request.epoch_index,
+            "generation": request.generation,
+            "bar_coverage": {
+                symbol: len(bars.get(symbol, []))
+                for symbol in GRAEN_CONTEXT_UNIVERSE
+            },
+            "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+        })
+        emitted = await velum._emit(
+            "velum_graen_candidate_replay",
+            result,
+            key_suffix=(
+                request.problem_id
+                + ":"
+                + str(result.get("candidate_id") or "unknown")
+                + ":"
+                + end.isoformat()
+            ),
+        )
+        result["evidence_emitted"] = emitted
+        if result["engineering_gate"]["passed"]:
+            await velum._slack(
+                "*VELUM // GRAEN CANDIDATE REPLAY PASS*\n"
+                + str(result.get("candidate_id") or "unknown")
+                + " | research-only | forward shadow required"
+            )
+        return {
+            "ok": True,
+            "result": result,
+            "broker_orders_possible": False,
+            "execution_authority": False,
+            "promotion_authorized": False,
+        }
 
 
 @app.post("/v1/scheduler/equity")
