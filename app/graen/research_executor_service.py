@@ -55,10 +55,20 @@ from graen.crypto.activity_shock_v9 import (
     evaluate_validation as evaluate_v9_validation,
     verify_stage_corpus as verify_v9_stage_corpus,
 )
+from graen.crypto.trend_pullback_v10 import (
+    FAMILY as V10_FAMILY,
+    METHODOLOGY_VERSION as V10_METHODOLOGY_VERSION,
+    UNIVERSE as V10_UNIVERSE,
+    candidate_specs as v10_candidate_specs,
+    evaluate_development as evaluate_v10_development,
+    evaluate_holdout as evaluate_v10_holdout,
+    evaluate_validation as evaluate_v10_validation,
+    verify_stage_corpus as verify_v10_stage_corpus,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.5.0"
+RUNTIME_VERSION = "graen-research-executor-v1.6.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -129,6 +139,30 @@ def _v9_epoch_contract(epoch_index: int) -> dict[str, Any]:
 def _v9_next_epoch(epoch_index: int) -> int | None:
     candidate = epoch_index + 1
     return candidate if candidate < len(V9_EPOCHS) else None
+
+V10_CAMPAIGN_ID = "crypto-trend-pullback-v10"
+V10_DEVELOPMENT_STAGE = "CRYPTO_TREND_PULLBACK_V10_DEVELOPMENT"
+V10_VALIDATION_STAGE = "CRYPTO_TREND_PULLBACK_V10_VALIDATION"
+V10_HOLDOUT_STAGE = "CRYPTO_TREND_PULLBACK_V10_HOLDOUT"
+V10_VELUM_STAGE = "CRYPTO_TREND_PULLBACK_V10_VELUM_REPLAY"
+V10_STAGE_KEYS = {
+    V10_DEVELOPMENT_STAGE,
+    V10_VALIDATION_STAGE,
+    V10_HOLDOUT_STAGE,
+    V10_VELUM_STAGE,
+}
+V10_EPOCHS = V9_EPOCHS
+
+
+def _v10_epoch_contract(epoch_index: int) -> dict[str, Any]:
+    if epoch_index < 0 or epoch_index >= len(V10_EPOCHS):
+        raise ValueError("v10_epoch_out_of_range")
+    return dict(V10_EPOCHS[epoch_index])
+
+
+def _v10_next_epoch(epoch_index: int) -> int | None:
+    candidate = epoch_index + 1
+    return candidate if candidate < len(V10_EPOCHS) else None
 
 PREVIOUSLY_INSPECTED_RANGES = (
     {
@@ -281,7 +315,7 @@ class GraenResearchExecutor:
             "service": "graen-research-executor",
             "runtime_version": RUNTIME_VERSION,
             "methodology_version": self.active_methodology_version,
-            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION, AUTONOMOUS_METHODOLOGY_PREFIX, V9_METHODOLOGY_VERSION],
+            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION, AUTONOMOUS_METHODOLOGY_PREFIX, V9_METHODOLOGY_VERSION, V10_METHODOLOGY_VERSION],
             "running": running,
             "autorun": self.autorun,
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
@@ -324,6 +358,19 @@ class GraenResearchExecutor:
                         "holdout_end": row["holdout_end"].isoformat(),
                     }
                     for row in V9_EPOCHS
+                ],
+                "trend_pullback_v10": [
+                    {
+                        "epoch": row["name"],
+                        "development_start": row["development_start"].isoformat(),
+                        "validation_start": row["validation_start"].isoformat(),
+                        "holdout_start": row["holdout_start"].isoformat(),
+                        "holdout_end": row["holdout_end"].isoformat(),
+                        "development_previously_inspected": True,
+                        "validation_previously_inspected": False,
+                        "holdout_previously_inspected": False,
+                    }
+                    for row in V10_EPOCHS
                 ],
             },
             "runtime_provenance": {
@@ -2132,6 +2179,518 @@ class GraenResearchExecutor:
 
         raise RuntimeError(f"unsupported_v9_stage:{stage}")
 
+    async def _execute_trend_pullback_v10(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        stage = str(metadata.get("research_stage") or V10_DEVELOPMENT_STAGE)
+        epoch_index = int(metadata.get("v10_epoch_index") or 0)
+        generation = 1
+        contract = _v10_epoch_contract(epoch_index)
+        self.active_methodology_version = V10_METHODOLOGY_VERSION
+
+        def artifact_id(response: Mapping[str, Any]) -> str | None:
+            artifact = response.get("artifact")
+            return (
+                str(artifact.get("artifact_id"))
+                if isinstance(artifact, Mapping) and artifact.get("artifact_id")
+                else None
+            )
+
+        async def record_stage(
+            artifact_type: str,
+            content: dict[str, Any],
+        ) -> str | None:
+            response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type=artifact_type,
+                methodology_version=V10_METHODOLOGY_VERSION,
+                content={
+                    **content,
+                    "campaign_id": V10_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                    "research_only": True,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                },
+            )
+            return artifact_id(response)
+
+        def next_epoch_transition() -> tuple[str | None, dict[str, Any] | None]:
+            next_epoch = _v10_next_epoch(epoch_index)
+            if next_epoch is None:
+                return None, None
+            return (
+                V10_DEVELOPMENT_STAGE,
+                {
+                    "v10_campaign_id": V10_CAMPAIGN_ID,
+                    "v10_epoch_index": next_epoch,
+                    "v10_generation": 1,
+                },
+            )
+
+        if stage == V10_DEVELOPMENT_STAGE:
+            prespec = {
+                "schema_version": "graen.crypto_trend_pullback.prespec.v1",
+                "campaign_id": V10_CAMPAIGN_ID,
+                "methodology_version": V10_METHODOLOGY_VERSION,
+                "family": V10_FAMILY,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "candidate_registry": [row.to_dict() for row in v10_candidate_specs()],
+                "candidate_count": len(v10_candidate_specs()),
+                "selection_rule": (
+                    "select one development survivor by expectancy_per_trade * sqrt(trade_count); "
+                    "validation and holdout remain unopened until prior gate passes"
+                ),
+                "stage_order": ["DEVELOPMENT", "VALIDATION", "HOLDOUT", "VELUM_REPLAY"],
+                "development": [
+                    contract["development_start"].isoformat(),
+                    contract["validation_start"].isoformat(),
+                ],
+                "validation": [
+                    contract["validation_start"].isoformat(),
+                    contract["holdout_start"].isoformat(),
+                ],
+                "holdout": [
+                    contract["holdout_start"].isoformat(),
+                    contract["holdout_end"].isoformat(),
+                ],
+                "development_availability_probe_disclosed": list(
+                    contract["development_availability_probe_disclosed"]
+                ),
+                "development_previously_inspected": True,
+                "development_prior_use": [
+                    "graen-crypto-activity-shock-v9",
+                ],
+                "validation_previously_inspected": False,
+                "holdout_previously_inspected": False,
+                "frozen_before_stage_corpus_access": True,
+                "authority": {
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "risk_or_sizing_authority": False,
+                    "production_promotion_authority": False,
+                    "model_execution_enabled": False,
+                },
+            }
+            prespec_artifact = await record_stage(
+                "CRYPTO_TREND_PULLBACK_V10_PRESPEC",
+                prespec,
+            )
+            bars = await self._fetch_stage(
+                V10_UNIVERSE,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+                warmup_hours=26,
+            )
+            development_corpus = verify_v10_stage_corpus(
+                bars,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+            )
+            development = evaluate_v10_development(
+                bars,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+            )
+            development_artifact = await record_stage(
+                "CRYPTO_TREND_PULLBACK_V10_DEVELOPMENT_RESULT",
+                {
+                    **development,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": development_corpus,
+                },
+            )
+            selected_spec = development.get("selected_candidate_spec")
+            if isinstance(selected_spec, Mapping):
+                summary = {
+                    "state": "V10_CANDIDATE_FROZEN_FOR_VALIDATION",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "DEVELOPMENT_PASS",
+                    "campaign_id": V10_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": selected_spec.get("candidate_id"),
+                    "candidate_family": V10_FAMILY,
+                    "prespec_artifact_id": prespec_artifact,
+                    "development_artifact_id": development_artifact,
+                    "validation_opened": False,
+                    "holdout_opened": False,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "next_action": "RUN_FRESH_VALIDATION",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=V10_VALIDATION_STAGE,
+                    next_metadata={
+                        "v10_campaign_id": V10_CAMPAIGN_ID,
+                        "v10_epoch_index": epoch_index,
+                        "v10_generation": 1,
+                        "v10_candidate_spec": dict(selected_spec),
+                        "v10_development_artifact_id": development_artifact,
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "V10_EPOCH_REJECTED_DEVELOPMENT"
+                    if next_stage
+                    else "V10_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "NO_DEVELOPMENT_SURVIVOR",
+                "campaign_id": V10_CAMPAIGN_ID,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "prespec_artifact_id": prespec_artifact,
+                "development_artifact_id": development_artifact,
+                "validation_opened": False,
+                "holdout_opened": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        candidate_spec = metadata.get("v10_candidate_spec")
+        if not isinstance(candidate_spec, Mapping):
+            raise RuntimeError("v10_missing_frozen_candidate")
+
+        if stage == V10_VALIDATION_STAGE:
+            bars = await self._fetch_stage(
+                V10_UNIVERSE,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+                warmup_hours=26,
+            )
+            validation_corpus = verify_v10_stage_corpus(
+                bars,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+            )
+            validation = evaluate_v10_validation(
+                bars,
+                candidate_spec=candidate_spec,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+                seed=103000 + epoch_index * 100,
+            )
+            validation_artifact = await record_stage(
+                "CRYPTO_TREND_PULLBACK_V10_VALIDATION_RESULT",
+                {
+                    **validation,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": validation_corpus,
+                },
+            )
+            if validation.get("passed") is True:
+                summary = {
+                    "state": "V10_CANDIDATE_FROZEN_FOR_HOLDOUT",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "VALIDATION_PASS",
+                    "campaign_id": V10_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V10_FAMILY,
+                    "validation_artifact_id": validation_artifact,
+                    "holdout_opened": False,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "next_action": "OPEN_FRESH_HOLDOUT",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=V10_HOLDOUT_STAGE,
+                    next_metadata={
+                        "v10_campaign_id": V10_CAMPAIGN_ID,
+                        "v10_epoch_index": epoch_index,
+                        "v10_generation": 1,
+                        "v10_candidate_spec": dict(candidate_spec),
+                        "v10_validation_artifact_id": validation_artifact,
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "V10_CANDIDATE_REJECTED_VALIDATION"
+                    if next_stage
+                    else "V10_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "VALIDATION_FAIL",
+                "campaign_id": V10_CAMPAIGN_ID,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "candidate_id": candidate_spec.get("candidate_id"),
+                "candidate_family": V10_FAMILY,
+                "validation_artifact_id": validation_artifact,
+                "holdout_opened": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        if stage == V10_HOLDOUT_STAGE:
+            bars = await self._fetch_stage(
+                V10_UNIVERSE,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
+                warmup_hours=26,
+            )
+            holdout_corpus = verify_v10_stage_corpus(
+                bars,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
+            )
+            holdout = evaluate_v10_holdout(
+                bars,
+                candidate_spec=candidate_spec,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
+                seed=104000 + epoch_index * 100,
+            )
+            holdout_artifact = await record_stage(
+                "CRYPTO_TREND_PULLBACK_V10_HOLDOUT_RESULT",
+                {
+                    **holdout,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": holdout_corpus,
+                },
+            )
+            if holdout.get("passed") is True:
+                summary = {
+                    "state": "V10_CANDIDATE_READY_FOR_VELUM",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "HOLDOUT_PASS",
+                    "campaign_id": V10_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V10_FAMILY,
+                    "holdout_artifact_id": holdout_artifact,
+                    "holdout_opened": True,
+                    "holdout_passed": True,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "next_action": "VELUM_CANDIDATE_REPLAY",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=V10_VELUM_STAGE,
+                    next_metadata={
+                        "v10_campaign_id": V10_CAMPAIGN_ID,
+                        "v10_epoch_index": epoch_index,
+                        "v10_generation": 1,
+                        "v10_candidate_spec": dict(candidate_spec),
+                        "v10_holdout_result": holdout,
+                        "v10_holdout_artifact_id": holdout_artifact,
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "V10_CANDIDATE_REJECTED_HOLDOUT"
+                    if next_stage
+                    else "V10_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "HOLDOUT_FAIL",
+                "campaign_id": V10_CAMPAIGN_ID,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "candidate_id": candidate_spec.get("candidate_id"),
+                "candidate_family": V10_FAMILY,
+                "holdout_artifact_id": holdout_artifact,
+                "holdout_opened": True,
+                "holdout_passed": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        if stage == V10_VELUM_STAGE:
+            holdout_artifact_id = metadata.get("v10_holdout_artifact_id")
+            replay_start = contract["holdout_end"]
+            replay_end = min(
+                replay_start + timedelta(days=30),
+                datetime.now(UTC) - timedelta(minutes=10),
+            )
+            if replay_end <= replay_start:
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary={
+                        "state": "V10_VELUM_REPLAY_WAITING_FOR_DATA",
+                        "decision": "CONTINUE_RESEARCH",
+                        "status": "WAITING_FOR_REPLAY_WINDOW",
+                        "campaign_id": V10_CAMPAIGN_ID,
+                        "epoch": contract["name"],
+                        "epoch_index": epoch_index,
+                        "candidate_id": candidate_spec.get("candidate_id"),
+                        "execution_authority": False,
+                        "next_action": "RETRY_VELUM_REPLAY",
+                    },
+                    next_stage=V10_VELUM_STAGE,
+                    next_metadata=dict(metadata),
+                )
+
+            velum_result = await self._replay_in_velum(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id=V10_CAMPAIGN_ID,
+                epoch_index=epoch_index,
+                generation=generation,
+                candidate_methodology=V10_METHODOLOGY_VERSION,
+                candidate_spec=candidate_spec,
+                replay_start=replay_start,
+                replay_end=replay_end,
+                seed=105000 + epoch_index * 100,
+            )
+            velum_artifact = await record_stage(
+                "CRYPTO_TREND_PULLBACK_V10_VELUM_RESULT",
+                {
+                    "velum_result": velum_result,
+                    "holdout_artifact_id": holdout_artifact_id,
+                    "replay_start": replay_start.isoformat(),
+                    "replay_end": replay_end.isoformat(),
+                },
+            )
+            gate = velum_result.get("engineering_gate")
+            passed = bool(isinstance(gate, Mapping) and gate.get("passed") is True)
+            if passed:
+                shadow = await self._activate_forward_shadow(
+                    problem_id=problem_id,
+                    graen_run_id=run_id,
+                    campaign_id=V10_CAMPAIGN_ID,
+                    epoch_index=epoch_index,
+                    generation=generation,
+                    candidate_methodology=V10_METHODOLOGY_VERSION,
+                    candidate_spec=candidate_spec,
+                    velum_artifact_id=velum_artifact,
+                )
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary={
+                        "state": "FORWARD_SHADOW_RUNNING",
+                        "decision": "COLLECT_FORWARD_EVIDENCE",
+                        "status": "SHADOW_ACTIVE",
+                        "campaign_id": V10_CAMPAIGN_ID,
+                        "epoch": contract["name"],
+                        "epoch_index": epoch_index,
+                        "candidate_id": candidate_spec.get("candidate_id"),
+                        "candidate_family": V10_FAMILY,
+                        "holdout_artifact_id": holdout_artifact_id,
+                        "velum_artifact_id": velum_artifact,
+                        "velum_engineering_gate": dict(gate),
+                        "shadow_activation": shadow,
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                        "promotion_authorized": False,
+                        "production_state_changed": False,
+                        "next_action": "AWAIT_NATIVE_SHADOW_CHECKPOINT",
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": (
+                        "V10_CANDIDATE_REJECTED_VELUM"
+                        if next_stage
+                        else "V10_CAMPAIGN_EXHAUSTED"
+                    ),
+                    "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                    "status": "VELUM_FAIL",
+                    "campaign_id": V10_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V10_FAMILY,
+                    "holdout_artifact_id": holdout_artifact_id,
+                    "velum_artifact_id": velum_artifact,
+                    "velum_engineering_gate": dict(gate) if isinstance(gate, Mapping) else {},
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                    "next_action": (
+                        "START_NEXT_UNTOUCHED_EPOCH"
+                        if next_stage
+                        else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                    ),
+                },
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        raise RuntimeError(f"unsupported_v10_stage:{stage}")
+
     async def _activate_forward_shadow(
         self,
         *,
@@ -2242,6 +2801,14 @@ class GraenResearchExecutor:
 
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+        staged_v10 = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") in V10_STAGE_KEYS
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v9 = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -2267,7 +2834,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V9_METHODOLOGY_VERSION
+            V10_METHODOLOGY_VERSION
+            if staged_v10
+            else V9_METHODOLOGY_VERSION
             if staged_v9
             else AUTONOMOUS_METHODOLOGY_PREFIX
             if staged_autonomous
@@ -2301,6 +2870,8 @@ class GraenResearchExecutor:
         await self._heartbeat()
 
         metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        if metadata.get("research_stage") in V10_STAGE_KEYS:
+            return await self._execute_trend_pullback_v10(problem, run)
         if metadata.get("research_stage") in V9_STAGE_KEYS:
             return await self._execute_activity_shock_v9(problem, run)
         if metadata.get("research_stage") in AUTONOMOUS_STAGE_KEYS:
