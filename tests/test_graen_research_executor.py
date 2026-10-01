@@ -10,6 +10,7 @@ class FakeGateway:
         self.artifacts = []
         self.completions = []
         self.heartbeats = []
+        self.queued_stages = []
 
     async def snapshot(self):
         return {"problems": []}
@@ -42,6 +43,20 @@ class FakeGateway:
     async def complete_research_problem(self, **kwargs):
         self.completions.append(kwargs)
         return {"ok": True}
+
+    async def queue_research_stage(self, **kwargs):
+        self.queued_stages.append(kwargs)
+        return {
+            "ok": True,
+            "problem": {
+                "problem_id": kwargs["problem_id"],
+                "status": "WAITING",
+                "metadata": {
+                    "research_stage": kwargs["stage"],
+                    **(kwargs.get("metadata") or {}),
+                },
+            },
+        }
 
 
 def test_v7_development_rejection_never_fetches_validation_or_holdout(monkeypatch):
@@ -81,6 +96,9 @@ def test_v7_development_rejection_never_fetches_validation_or_holdout(monkeypatc
         assert fetches[0][0] == service.DEVELOPMENT_START
         assert fetches[0][1] == service.VALIDATION_START
         assert runtime.gateway.completions[-1]["status"] == "WAITING"
+        assert runtime.gateway.queued_stages[-1]["stage"] == service.AUTONOMOUS_DEVELOPMENT_STAGE
+        assert runtime.gateway.queued_stages[-1]["metadata"]["campaign_epoch"] == 0
+        assert runtime.gateway.queued_stages[-1]["metadata"]["campaign_generation"] == 1
         artifact_types = [row["artifact_type"] for row in runtime.gateway.artifacts]
         assert "CRYPTO_V7_BATCH_SPECIFICATION" in artifact_types
         assert "CRYPTO_V7_DEVELOPMENT_RESULT" in artifact_types
@@ -150,6 +168,9 @@ def test_leadlag_rejection_never_fetches_validation_or_holdout(monkeypatch):
         assert fetches[0][0] == service.LEADLAG_DEVELOPMENT_START
         assert fetches[0][1] == service.LEADLAG_VALIDATION_START
         assert runtime.gateway.completions[-1]["status"] == "WAITING"
+        assert runtime.gateway.queued_stages[-1]["stage"] == service.AUTONOMOUS_DEVELOPMENT_STAGE
+        assert runtime.gateway.queued_stages[-1]["metadata"]["campaign_epoch"] == 0
+        assert runtime.gateway.queued_stages[-1]["metadata"]["campaign_generation"] == 1
         artifact_types = [row["artifact_type"] for row in runtime.gateway.artifacts]
         assert "RESEARCH_HYPOTHESIS_SPECIFICATION_REVISION" in artifact_types
         assert "CRYPTO_LEADLAG_DEVELOPMENT_RESULT" in artifact_types

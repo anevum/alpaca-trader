@@ -31,10 +31,24 @@ from graen.crypto.leadlag_r2 import (
     validation_gate as leadlag_validation_gate,
     holdout_gate as leadlag_holdout_gate,
 )
+from graen.crypto.autonomous_campaign import (
+    CAMPAIGN_ID as AUTONOMOUS_CAMPAIGN_ID,
+    CONTEXT_UNIVERSE as AUTONOMOUS_UNIVERSE,
+    MAX_GENERATIONS_PER_EPOCH,
+    METHODOLOGY_PREFIX as AUTONOMOUS_METHODOLOGY_PREFIX,
+    epoch_contract as autonomous_epoch_contract,
+    evaluate_development as evaluate_autonomous_development,
+    evaluate_holdout as evaluate_autonomous_holdout,
+    evaluate_validation as evaluate_autonomous_validation,
+    methodology_version as autonomous_methodology_version,
+    next_epoch_index as autonomous_next_epoch_index,
+    prespecification as autonomous_prespecification,
+    stage_metadata as autonomous_stage_metadata,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.1.0"
+RUNTIME_VERSION = "graen-research-executor-v1.2.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -47,6 +61,15 @@ LEADLAG_VALIDATION_START = datetime(2025, 12, 21, tzinfo=UTC)
 LEADLAG_HOLDOUT_START = datetime(2026, 1, 11, tzinfo=UTC)
 LEADLAG_HOLDOUT_END = datetime(2026, 1, 31, 16, 0, tzinfo=UTC)
 LEADLAG_STAGE_KEY = "CRYPTO_LEADLAG_R2_READY"
+
+AUTONOMOUS_DEVELOPMENT_STAGE = "CRYPTO_AUTONOMOUS_DEVELOPMENT"
+AUTONOMOUS_VALIDATION_STAGE = "CRYPTO_AUTONOMOUS_VALIDATION"
+AUTONOMOUS_HOLDOUT_STAGE = "CRYPTO_AUTONOMOUS_HOLDOUT"
+AUTONOMOUS_STAGE_KEYS = {
+    AUTONOMOUS_DEVELOPMENT_STAGE,
+    AUTONOMOUS_VALIDATION_STAGE,
+    AUTONOMOUS_HOLDOUT_STAGE,
+}
 
 PREVIOUSLY_INSPECTED_RANGES = (
     {
@@ -175,7 +198,7 @@ class GraenResearchExecutor:
             "service": "graen-research-executor",
             "runtime_version": RUNTIME_VERSION,
             "methodology_version": self.active_methodology_version,
-            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION],
+            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION, AUTONOMOUS_METHODOLOGY_PREFIX],
             "running": running,
             "autorun": self.autorun,
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
@@ -348,6 +371,8 @@ class GraenResearchExecutor:
         run: Mapping[str, Any],
         status: str,
         summary: dict[str, Any],
+        next_stage: str | None = None,
+        next_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         problem_id = str(problem.get("problem_id"))
         run_id = str(run.get("run_id"))
@@ -364,6 +389,32 @@ class GraenResearchExecutor:
             result_summary=summary,
             model_usage={"invoked": False},
         )
+
+        if (
+            status == "WAITING"
+            and next_stage is None
+            and summary.get("decision") == "CONTINUE_RESEARCH"
+            and summary.get("next_action") == "DESIGN_NEXT_FROZEN_RESEARCH_BATCH"
+        ):
+            next_stage = AUTONOMOUS_DEVELOPMENT_STAGE
+            next_metadata = {
+                "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                "campaign_epoch": 0,
+                "campaign_generation": 1,
+                "campaign_origin_methodology": summary.get("methodology_version"),
+            }
+
+        if next_stage is not None:
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=next_stage,
+                metadata=next_metadata or {},
+            )
+            summary["continuation_queued"] = bool(queued.get("problem"))
+            summary["next_research_stage"] = next_stage
+            if next_metadata:
+                summary["next_research_metadata"] = next_metadata
+
         callback_status = "SUCCEEDED" if status == "SUCCEEDED" else "WAITING"
         callback_delivered = await self._callback_iren(
             linked_job_id,
@@ -995,6 +1046,357 @@ class GraenResearchExecutor:
             summary=summary,
         )
 
+    async def _execute_autonomous_campaign(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        stage = str(metadata.get("research_stage") or AUTONOMOUS_DEVELOPMENT_STAGE)
+        epoch_index = int(metadata.get("campaign_epoch") or 0)
+        generation = int(metadata.get("campaign_generation") or 1)
+        contract = autonomous_epoch_contract(epoch_index)
+        self.active_methodology_version = autonomous_methodology_version(
+            epoch_index,
+            generation,
+            stage,
+        )
+
+        def artifact_id(response: Mapping[str, Any]) -> str | None:
+            artifact = response.get("artifact")
+            return (
+                str(artifact.get("artifact_id"))
+                if isinstance(artifact, Mapping) and artifact.get("artifact_id")
+                else None
+            )
+
+        async def record_stage(
+            artifact_type: str,
+            content: dict[str, Any],
+        ) -> str | None:
+            response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type=artifact_type,
+                methodology_version=self.active_methodology_version,
+                content={
+                    **content,
+                    "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                    "epoch": contract["epoch"],
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                    "research_only": True,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "production_state_changed": False,
+                },
+            )
+            return artifact_id(response)
+
+        def next_epoch_transition() -> tuple[str | None, dict[str, Any] | None]:
+            next_epoch = autonomous_next_epoch_index(epoch_index)
+            if next_epoch is None:
+                return None, None
+            return (
+                AUTONOMOUS_DEVELOPMENT_STAGE,
+                autonomous_stage_metadata(
+                    epoch_index=next_epoch,
+                    generation=1,
+                ),
+            )
+
+        if stage == AUTONOMOUS_DEVELOPMENT_STAGE:
+            prespec = autonomous_prespecification(epoch_index, generation)
+            prespec_artifact = await record_stage(
+                "CRYPTO_AUTONOMOUS_PRESPEC",
+                prespec,
+            )
+            bars = await self._fetch_stage(
+                AUTONOMOUS_UNIVERSE,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+                warmup_hours=8,
+            )
+            development = evaluate_autonomous_development(
+                bars,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+                generation=generation,
+            )
+            development_artifact = await record_stage(
+                "CRYPTO_AUTONOMOUS_DEVELOPMENT_RESULT",
+                {
+                    **development,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                },
+            )
+            selected_spec = development.get("selected_candidate_spec")
+            selected_result = development.get("selected_development_result")
+            if isinstance(selected_spec, Mapping) and isinstance(selected_result, Mapping):
+                next_metadata = autonomous_stage_metadata(
+                    epoch_index=epoch_index,
+                    generation=generation,
+                    candidate_spec=selected_spec,
+                    development_result=selected_result,
+                )
+                summary = {
+                    "state": "AUTONOMOUS_CANDIDATE_FROZEN_FOR_VALIDATION",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "DEVELOPMENT_PASS",
+                    "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                    "epoch": contract["epoch"],
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "candidate_id": selected_spec.get("candidate_id"),
+                    "candidate_family": selected_spec.get("family"),
+                    "prespec_artifact_id": prespec_artifact,
+                    "development_artifact_id": development_artifact,
+                    "validation_opened": False,
+                    "holdout_opened": False,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "production_state_changed": False,
+                    "next_action": "RUN_FRESH_VALIDATION",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=AUTONOMOUS_VALIDATION_STAGE,
+                    next_metadata=next_metadata,
+                )
+
+            if generation < MAX_GENERATIONS_PER_EPOCH:
+                next_stage = AUTONOMOUS_DEVELOPMENT_STAGE
+                next_metadata = autonomous_stage_metadata(
+                    epoch_index=epoch_index,
+                    generation=generation + 1,
+                )
+                state = "AUTONOMOUS_GENERATION_REJECTED"
+                next_action = "GENERATE_NEXT_DEVELOPMENT_BATCH"
+            else:
+                next_stage, next_metadata = next_epoch_transition()
+                state = (
+                    "AUTONOMOUS_EPOCH_REJECTED_DEVELOPMENT"
+                    if next_stage
+                    else "AUTONOMOUS_CAMPAIGN_EXHAUSTED"
+                )
+                next_action = (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                )
+
+            summary = {
+                "state": state,
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "NO_DEVELOPMENT_SURVIVOR",
+                "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                "epoch": contract["epoch"],
+                "epoch_index": epoch_index,
+                "generation": generation,
+                "prespec_artifact_id": prespec_artifact,
+                "development_artifact_id": development_artifact,
+                "validation_opened": False,
+                "holdout_opened": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "production_state_changed": False,
+                "next_action": next_action,
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        candidate_spec = metadata.get("candidate_spec")
+        development_result = metadata.get("development_result")
+        if not isinstance(candidate_spec, Mapping) or not isinstance(development_result, Mapping):
+            raise RuntimeError("autonomous_campaign_missing_frozen_candidate")
+
+        if stage == AUTONOMOUS_VALIDATION_STAGE:
+            bars = await self._fetch_stage(
+                AUTONOMOUS_UNIVERSE,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+                warmup_hours=8,
+            )
+            validation = evaluate_autonomous_validation(
+                bars,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+                candidate_spec=candidate_spec,
+                development_result=development_result,
+                seed=89000 + epoch_index * 100 + generation,
+            )
+            validation_artifact = await record_stage(
+                "CRYPTO_AUTONOMOUS_VALIDATION_RESULT",
+                {
+                    **validation,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                },
+            )
+            if validation.get("passed") is True:
+                summary = {
+                    "state": "AUTONOMOUS_CANDIDATE_FROZEN_FOR_HOLDOUT",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "VALIDATION_PASS",
+                    "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                    "epoch": contract["epoch"],
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": candidate_spec.get("family"),
+                    "validation_artifact_id": validation_artifact,
+                    "holdout_opened": False,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "production_state_changed": False,
+                    "next_action": "OPEN_FRESH_HOLDOUT",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=AUTONOMOUS_HOLDOUT_STAGE,
+                    next_metadata=autonomous_stage_metadata(
+                        epoch_index=epoch_index,
+                        generation=generation,
+                        candidate_spec=candidate_spec,
+                        development_result=development_result,
+                    ),
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "AUTONOMOUS_CANDIDATE_REJECTED_VALIDATION"
+                    if next_stage
+                    else "AUTONOMOUS_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "VALIDATION_FAIL",
+                "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                "epoch": contract["epoch"],
+                "epoch_index": epoch_index,
+                "generation": generation,
+                "candidate_id": candidate_spec.get("candidate_id"),
+                "candidate_family": candidate_spec.get("family"),
+                "validation_artifact_id": validation_artifact,
+                "holdout_opened": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "production_state_changed": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        if stage == AUTONOMOUS_HOLDOUT_STAGE:
+            bars = await self._fetch_stage(
+                AUTONOMOUS_UNIVERSE,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
+                warmup_hours=8,
+            )
+            holdout = evaluate_autonomous_holdout(
+                bars,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
+                candidate_spec=candidate_spec,
+                seed=90000 + epoch_index * 100 + generation,
+            )
+            holdout_artifact = await record_stage(
+                "CRYPTO_AUTONOMOUS_HOLDOUT_RESULT",
+                {
+                    **holdout,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                },
+            )
+            if holdout.get("passed") is True:
+                summary = {
+                    "state": "CANDIDATE_READY_FOR_VELUM",
+                    "decision": "PROMOTE_TO_VELUM",
+                    "status": "HOLDOUT_PASS",
+                    "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                    "epoch": contract["epoch"],
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": candidate_spec.get("family"),
+                    "holdout_artifact_id": holdout_artifact,
+                    "holdout_opened": True,
+                    "holdout_passed": True,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "production_state_changed": False,
+                    "next_action": "VELUM_REPLAY",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="SUCCEEDED",
+                    summary=summary,
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "AUTONOMOUS_CANDIDATE_REJECTED_HOLDOUT"
+                    if next_stage
+                    else "AUTONOMOUS_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "HOLDOUT_FAIL",
+                "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                "epoch": contract["epoch"],
+                "epoch_index": epoch_index,
+                "generation": generation,
+                "candidate_id": candidate_spec.get("candidate_id"),
+                "candidate_family": candidate_spec.get("family"),
+                "holdout_artifact_id": holdout_artifact,
+                "holdout_opened": True,
+                "holdout_passed": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "production_state_changed": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        raise RuntimeError(f"unsupported_autonomous_campaign_stage:{stage}")
+
     async def _callback_iren(
         self,
         linked_job_id: str | None,
@@ -1023,6 +1425,14 @@ class GraenResearchExecutor:
 
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+        staged_autonomous = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") in AUTONOMOUS_STAGE_KEYS
+            for row in (snapshot.get("problems") or [])
+        )
         staged_leadlag = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -1032,7 +1442,11 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            LEADLAG_METHODOLOGY_VERSION if staged_leadlag else V7_METHODOLOGY_VERSION
+            AUTONOMOUS_METHODOLOGY_PREFIX
+            if staged_autonomous
+            else LEADLAG_METHODOLOGY_VERSION
+            if staged_leadlag
+            else V7_METHODOLOGY_VERSION
         )
         claimed = await self.gateway.claim_research_problem(
             worker_id=self.worker_id,
@@ -1060,6 +1474,8 @@ class GraenResearchExecutor:
         await self._heartbeat()
 
         metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        if metadata.get("research_stage") in AUTONOMOUS_STAGE_KEYS:
+            return await self._execute_autonomous_campaign(problem, run)
         if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
             return await self._execute_leadlag_r2(problem, run)
 
