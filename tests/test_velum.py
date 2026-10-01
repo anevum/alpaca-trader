@@ -13,6 +13,11 @@ from graen.crypto.activity_shock_v9 import (
     METHODOLOGY_VERSION as V9_METHODOLOGY_VERSION,
     candidate_specs as v9_candidate_specs,
 )
+from graen.crypto.trend_pullback_v10 import (
+    FAMILY as V10_FAMILY,
+    METHODOLOGY_VERSION as V10_METHODOLOGY_VERSION,
+    candidate_specs as v10_candidate_specs,
+)
 
 
 class HoldStrategy:
@@ -204,6 +209,42 @@ def test_velum_dispatches_v9_candidate_without_execution_authority(monkeypatch):
 
     assert result["candidate_methodology"] == V9_METHODOLOGY_VERSION
     assert result["candidate_family"] == "activity_confirmed_momentum_continuation"
+    assert result["engineering_gate"]["passed"] is True
+    assert result["research_only"] is True
+    assert result["execution_authority"] is False
+    assert result["broker_orders_possible"] is False
+    assert result["promotion_authorized"] is False
+
+
+def test_velum_dispatches_v10_candidate_without_execution_authority(monkeypatch):
+    summary = {
+        "trade_count": 30,
+        "independent_day_blocks": 15,
+        "trades_per_day": 0.5,
+        "expectancy_per_trade": 0.001,
+        "profit_factor": 1.3,
+        "symbol_concentration": {"max_share": 0.5},
+        "dependence_adjusted_null": {"p_value": 0.01},
+    }
+
+    def fake_v10(*args, **kwargs):
+        return {
+            "primary": dict(summary),
+            "one_bar_delay": {**summary, "expectancy_per_trade": 0.0005},
+            "candidate": kwargs["spec"].to_dict(),
+        }
+
+    monkeypatch.setattr(velum_graen, "evaluate_v10_candidate", fake_v10)
+    result = velum_graen.replay_candidate(
+        {},
+        candidate_spec=v10_candidate_specs()[0].to_dict(),
+        candidate_methodology=V10_METHODOLOGY_VERSION,
+        start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+    )
+
+    assert result["candidate_methodology"] == V10_METHODOLOGY_VERSION
+    assert result["candidate_family"] == V10_FAMILY
     assert result["engineering_gate"]["passed"] is True
     assert result["research_only"] is True
     assert result["execution_authority"] is False
