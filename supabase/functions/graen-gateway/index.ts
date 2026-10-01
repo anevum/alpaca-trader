@@ -374,8 +374,8 @@ Deno.serve(async (req: Request) => {
                 end,
                 result=coalesce(result,'{}'::jsonb)
                   || jsonb_build_object(
-                    'graen_problem_id',${problemId},
-                    'graen_run_id',${runId},
+                    'graen_problem_id',${problemId}::text,
+                    'graen_run_id',${runId}::text,
                     'graen_result',${sql.json(resultSummary as any)}::jsonb,
                     'graen_synced_at',now(),
                     'graen_protected_completion_blocked',(${terminalSuccess} and protected_action)
@@ -384,8 +384,8 @@ Deno.serve(async (req: Request) => {
                   when ${terminalFailure}
                     then jsonb_build_object(
                       'source','GRAEN',
-                      'graen_problem_id',${problemId},
-                      'graen_run_id',${runId},
+                      'graen_problem_id',${problemId}::text,
+                      'graen_run_id',${runId}::text,
                       'result',${sql.json(resultSummary as any)}::jsonb
                     )
                   else '{}'::jsonb
