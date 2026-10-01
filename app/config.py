@@ -61,6 +61,7 @@ class Settings(BaseSettings):
         default=False, alias="FOUNDATION_SHADOW_ENABLED"
     )
     foundation_ingest_url: str = Field(default="", alias="FOUNDATION_INGEST_URL")
+    foundation_ingest_token: str = Field(default="", alias="FOUNDATION_INGEST_TOKEN")
     foundation_outbox_path: str = Field(
         default="/data/rhen-foundation-evidence.sqlite3",
         alias="FOUNDATION_OUTBOX_PATH",
