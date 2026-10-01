@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 from datetime import datetime
 from typing import Any
 
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
@@ -67,6 +68,16 @@ def database_url() -> str:
     if not value:
         raise RuntimeError("DATABASE_URL is not configured")
     return value
+
+
+def require_foundation_token(token: str | None) -> None:
+    expected = os.environ.get("FOUNDATION_INGEST_TOKEN", "").strip()
+    if not expected:
+        # Staging is private-network-only. A token becomes mandatory before a
+        # public domain is attached.
+        return
+    if token is None or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
 
 
 def ensure_run(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None:
@@ -131,7 +142,13 @@ def ready() -> dict[str, Any]:
 
 
 @app.get("/status")
-def status() -> dict[str, Any]:
+def status(
+    x_anevum_foundation_token: str | None = Header(
+        default=None,
+        alias="x-anevum-foundation-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(x_anevum_foundation_token)
     try:
         with psycopg.connect(database_url(), connect_timeout=5) as conn:
             with conn.cursor() as cur:
@@ -157,7 +174,14 @@ def status() -> dict[str, Any]:
 
 
 @app.post("/v1/events")
-def ingest(batch: EvidenceBatch) -> dict[str, Any]:
+def ingest(
+    batch: EvidenceBatch,
+    x_anevum_foundation_token: str | None = Header(
+        default=None,
+        alias="x-anevum-foundation-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(x_anevum_foundation_token)
     inserted = 0
     duplicates = 0
     try:
