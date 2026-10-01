@@ -158,6 +158,25 @@ class GraenGateway:
             },
         )
 
+    async def block_research_claim(
+        self,
+        *,
+        problem_id: str,
+        run_id: str,
+        worker_id: str,
+        error: str,
+    ) -> Mapping[str, Any]:
+        return await self._request(
+            "POST",
+            {
+                "action": "block_research_claim",
+                "problem_id": problem_id,
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "error": error,
+            },
+        )
+
     async def complete_research_problem(
         self,
         *,
