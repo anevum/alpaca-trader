@@ -227,3 +227,94 @@ def test_process_once_runs_bounded_research_promotion_without_claiming_old_stage
         }]
 
     asyncio.run(scenario())
+
+
+def test_stale_orphaned_validation_is_invalidated_before_research_continues():
+    problem_id = "55555555-5555-5555-5555-555555555555"
+    run_id = "66666666-6666-6666-6666-666666666666"
+
+    class RecoveryGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.blocked = []
+
+        async def block_research_claim(self, **kwargs):
+            self.blocked.append(kwargs)
+            return {"ok": True, "status": "BLOCKED"}
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        gateway = RecoveryGateway()
+        runtime.gateway = gateway
+        result = await runtime._reconcile_orphaned_confirmatory_claim({
+            "problems": [{
+                "problem_id": problem_id,
+                "status": "RUNNING",
+                "metadata": {
+                    "research_stage": service.V10_VALIDATION_STAGE,
+                },
+            }],
+            "runs": [{
+                "run_id": run_id,
+                "problem_id": problem_id,
+                "status": "RUNNING",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }],
+            "runtime_state": {
+                "metadata": {
+                    "research_executor": {
+                        "active_problem_id": None,
+                    },
+                },
+            },
+        })
+        assert result == {
+            "problem_id": problem_id,
+            "run_id": run_id,
+            "invalidated_stage": service.V10_VALIDATION_STAGE,
+            "next_stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
+        }
+        assert gateway.blocked == [{
+            "problem_id": problem_id,
+            "run_id": run_id,
+            "worker_id": runtime.worker_id,
+            "error": "sealed_confirmatory_stage_orphaned:" + service.V10_VALIDATION_STAGE,
+        }]
+        assert gateway.queued_stages[-1]["stage"] == "RESEARCH_IMPLEMENTATION_REQUIRED"
+        assert gateway.queued_stages[-1]["metadata"]["sealed_stage_invalidated"] is True
+        assert gateway.queued_stages[-1]["metadata"]["next_action"] == "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+
+    asyncio.run(scenario())
+
+
+def test_active_confirmatory_claim_is_not_reconciled():
+    problem_id = "77777777-7777-7777-7777-777777777777"
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        gateway = FakeGateway()
+        runtime.gateway = gateway
+        result = await runtime._reconcile_orphaned_confirmatory_claim({
+            "problems": [{
+                "problem_id": problem_id,
+                "status": "RUNNING",
+                "metadata": {"research_stage": service.V10_VALIDATION_STAGE},
+            }],
+            "runs": [{
+                "run_id": "88888888-8888-8888-8888-888888888888",
+                "problem_id": problem_id,
+                "status": "RUNNING",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }],
+            "runtime_state": {
+                "metadata": {
+                    "research_executor": {
+                        "active_problem_id": problem_id,
+                    },
+                },
+            },
+        })
+        assert result is None
+        assert gateway.queued_stages == []
+
+    asyncio.run(scenario())
