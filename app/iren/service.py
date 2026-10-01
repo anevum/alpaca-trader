@@ -13,8 +13,9 @@ from fastapi import FastAPI, Header, HTTPException
 
 from app import orchestration_scheduler as scheduler
 from .core import fresh, identity, reduce_state
-
+from .work import IrenWorkEngine, status_summary
 from app.slack_brand import decorate_slack_message
+from .topology import bounded_health, topology, project_status
 
 UTC = timezone.utc
 POLICY = json.loads(Path(__file__).with_name("policy.json").read_text())
@@ -30,6 +31,14 @@ class IrenController:
         self.task = None
         self.lock = asyncio.Lock()
         self.api_verified = False
+        self.started_at = datetime.now(UTC).isoformat()
+        self.runtime_identity = {
+            "version": POLICY["version"],
+            "deployment": os.getenv("RAILWAY_DEPLOYMENT_ID"),
+            "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            "started_at": self.started_at,
+            "configuration_identity": identity({"policy": POLICY, "registry": scheduler.runtime.registry}),
+        }
 
     async def gateway(self, action: str, **payload):
         async with httpx.AsyncClient(timeout=20) as client:
@@ -55,16 +64,7 @@ class IrenController:
                     response = await client.get(url)
                     response.raise_for_status()
                     body = response.json()
-                    fields = ("ok", "startup_reconciled", "reconciliation_safe", "broker_orders_possible", "execution_authority", "running", "worker_alive", "shadow_only")
-                    bounded = {key: body[key] for key in fields if key in body}
-                    if name == "RHEN":
-                        persistence = body.get("persistence", {})
-                        bounded["persistence"] = {key: persistence.get(key) for key in ("enabled", "dropped_count", "last_sent_at", "last_error")}
-                        # Error bodies are not copied; they may contain provider request details.
-                        bounded["persistence"]["last_error"] = bool(persistence.get("last_error"))
-                        bounded["strategy_version_id"] = persistence.get("strategy_version_id")
-                        bounded["crypto_execution_enabled"] = body.get("crypto", {}).get("execution_enabled")
-                        bounded["source_commit"] = body.get("runtime_provenance", {}).get("git_commit")
+                    bounded = bounded_health(name, body)
                     services[name] = bounded
                 except Exception as exc:
                     services[name] = {"ok": False, "error_type": type(exc).__name__}
@@ -100,6 +100,7 @@ class IrenController:
                 return
             observation = await self.observe()
             state, events = reduce_state(previous, observation, POLICY)
+            state["topology"] = topology(observation, state, self.runtime_identity)
             written = await self.gateway("iren_commit", expected_revision=saved.get("revision", 0),
                 observation_key=identity(observation), state=state, events=events)
             if written.get("committed") is not True:
@@ -181,13 +182,41 @@ class IrenController:
 controller = IrenController()
 
 
+async def _work_notify(message: str, context: dict[str, object]) -> None:
+    response_url = str(context.get("response_url") or "").strip()
+    if response_url.startswith("https://hooks.slack.com/commands/"):
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.post(
+                response_url,
+                json={"response_type": "ephemeral", "text": message},
+            )
+            response.raise_for_status()
+        return
+    body = decorate_slack_message(
+        "*IREN // WORK*\n" + message,
+        system="IREN",
+        iren_state="HEALTHY",
+    )
+    await scheduler.runtime.slack.send("iren-control", body)
+
+
+work_engine = IrenWorkEngine(
+    controller.gateway,
+    lambda: controller.state,
+    notify=_work_notify,
+    interval_seconds=float(os.getenv("IREN_WORK_TICK_SECONDS", "5")),
+)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await scheduler.runtime.start()
     await controller.start()
+    await work_engine.start()
     try:
         yield
     finally:
+        await work_engine.stop()
         await controller.stop()
         await scheduler.runtime.stop()
 
@@ -199,13 +228,27 @@ app = FastAPI(title="IREN Deterministic Control Plane", version=POLICY["version"
 async def health():
     # Process readiness differs from the health of the systems being supervised.
     alive = controller.task is not None and not controller.task.done()
-    body = {"ok": alive and scheduler.runtime.configured, "system": "IREN", "version": POLICY["version"],
+    work_alive = work_engine.task is not None and not work_engine.task.done()
+    body = {"ok": alive and work_alive and scheduler.runtime.configured, "system": "IREN", "version": POLICY["version"],
         "durable_state_current": fresh(controller.last_persisted_at, datetime.now(UTC), POLICY["stale_after_seconds"]),
         "control_state": controller.state.get("state", "STARTING"), "last_error": controller.last_error,
-        "scheduler_version": scheduler.runtime.scheduler_version, "model_invoked": False}
+        "scheduler_version": scheduler.runtime.scheduler_version, "model_invoked": False,
+        "runtime_identity": controller.runtime_identity,
+        "last_heartbeat_at": controller.last_persisted_at,
+        "work_engine": {"running": work_alive, "last_error": work_engine.last_error,
+            "last_command_at": work_engine.last_command_at, "last_job_at": work_engine.last_job_at,
+            "execution_router_configured": bool(work_engine.executor_url and len(work_engine.executor_token) >= 32)}}
     if not body["ok"]:
         raise HTTPException(status_code=503, detail=body)
     return body
+
+
+@app.get("/ready")
+async def ready():
+    current = await health()
+    if not current["durable_state_current"]:
+        raise HTTPException(status_code=503, detail="durable_observation_stale")
+    return current
 
 
 @app.get("/v1/iren/status")
@@ -213,7 +256,7 @@ async def status(x_anevum_scheduler_token: str | None = Header(default=None)):
     scheduler._require_scheduler_token(x_anevum_scheduler_token)
     saved = await controller.gateway("iren_read")
     state = saved.get("state") or {}
-    return {**saved, "stale": not fresh(state.get("observed_at"), datetime.now(UTC), POLICY["stale_after_seconds"]),
+    return {**project_status(saved, datetime.now(UTC), POLICY["stale_after_seconds"]),
         "local_last_error": controller.last_error}
 
 
@@ -221,6 +264,64 @@ async def status(x_anevum_scheduler_token: str | None = Header(default=None)):
 async def policy(x_anevum_scheduler_token: str | None = Header(default=None)):
     scheduler._require_scheduler_token(x_anevum_scheduler_token)
     return POLICY
+
+
+@app.get("/v1/iren/work")
+async def work_status(x_anevum_scheduler_token: str | None = Header(default=None)):
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    snapshot = await work_engine.snapshot()
+    return {
+        "schema_version": "iren_work.v1",
+        "summary": status_summary(snapshot, controller.state),
+        **snapshot,
+    }
+
+
+@app.post("/v1/iren/commands")
+async def create_command(
+    body: dict,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    command = str(body.get("command") or "").strip()
+    source = str(body.get("source") or "api").strip()
+    requested_by = str(body.get("requested_by") or "operator").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="command_required")
+    created = await work_engine.enqueue_command(
+        command,
+        source=source,
+        requested_by=requested_by,
+    )
+    return {"ok": True, **created}
+
+
+@app.post("/v1/iren/jobs/{job_id}/callback")
+async def job_callback(
+    job_id: str,
+    body: dict,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    status = str(body.get("status") or "").strip().upper()
+    if status not in {"WAITING", "BLOCKED", "NEEDS_APPROVAL", "SUCCEEDED", "FAILED"}:
+        raise HTTPException(status_code=400, detail="invalid_job_status")
+    snapshot = await work_engine.snapshot()
+    job = next((row for row in snapshot.get("jobs") or [] if str(row.get("job_id")) == job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    if bool(job.get("protected_action")) and status in {"SUCCEEDED"}:
+        raise HTTPException(status_code=409, detail="protected_job_requires_human_authority")
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    updated = await controller.gateway(
+        "iren_job_update",
+        job_id=job_id,
+        status=status,
+        result=result,
+        error=error,
+    )
+    return {"ok": True, **updated}
 
 
 # Preserve all existing scheduler URLs and its single durable scheduling authority.
