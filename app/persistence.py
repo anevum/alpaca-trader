@@ -49,6 +49,7 @@ class TradingEventSink:
             self.foundation_sink = FoundationShadowSink(
                 outbox=DurableEventOutbox(settings.foundation_outbox_path),
                 ingest_url=settings.foundation_ingest_url,
+                ingest_token=getattr(settings, "foundation_ingest_token", ""),
             )
 
     @property
