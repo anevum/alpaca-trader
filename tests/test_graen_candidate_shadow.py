@@ -6,6 +6,10 @@ from graen.crypto.activity_shock_v9 import (
     METHODOLOGY_VERSION as V9_METHODOLOGY_VERSION,
     candidate_specs,
 )
+from graen.crypto.trend_pullback_v10 import (
+    METHODOLOGY_VERSION as V10_METHODOLOGY_VERSION,
+    candidate_specs as v10_candidate_specs,
+)
 from graen.crypto.candidate_shadow import CandidateForwardShadow
 
 
@@ -114,3 +118,23 @@ def test_candidate_shadow_positive_forward_sample_requires_fixed_gate(monkeypatc
     assert checkpoint["status"] == "READY_FOR_HUMAN_REVIEW"
     assert checkpoint["independent_day_blocks"] == 30
     assert checkpoint["promotion_authorized"] is False
+
+
+def test_candidate_shadow_accepts_v10_without_execution_authority():
+    spec = v10_candidate_specs()[0].to_dict()
+    payload = {
+        **activation(),
+        "activation_id": "activation-v10-001",
+        "campaign_id": "crypto-trend-pullback-v10",
+        "candidate_methodology": V10_METHODOLOGY_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+    }
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(payload)
+
+    assert runtime.active is True
+    assert runtime.status()["candidate_methodology"] == V10_METHODOLOGY_VERSION
+    assert runtime.status()["candidate_id"] == spec["candidate_id"]
+    assert runtime.execution_authority is False
+    assert runtime.broker_orders_possible is False

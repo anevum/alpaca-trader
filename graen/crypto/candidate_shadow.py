@@ -20,11 +20,19 @@ from graen.crypto.activity_shock_v9 import (
     opportunity_at as v9_opportunity_at,
     spec_from_dict as v9_spec_from_dict,
 )
+from graen.crypto.trend_pullback_v10 import (
+    METHODOLOGY_VERSION as V10_METHODOLOGY_VERSION,
+    opportunity_at as v10_opportunity_at,
+    spec_from_dict as v10_spec_from_dict,
+)
 
 
 UTC = timezone.utc
 SHADOW_METHODOLOGY_VERSION = "graen-forward-shadow-v1"
-SUPPORTED_CANDIDATE_METHODOLOGIES = {V9_METHODOLOGY_VERSION}
+SUPPORTED_CANDIDATE_METHODOLOGIES = {
+    V9_METHODOLOGY_VERSION,
+    V10_METHODOLOGY_VERSION,
+}
 MIN_READY_TRADES = 30
 MIN_READY_DAYS = 20
 MAX_REVIEW_TRADES = 60
@@ -188,7 +196,7 @@ class CandidateForwardShadow:
 
     def _symbols(self) -> tuple[str, ...]:
         methodology = self._candidate_methodology()
-        if methodology == V9_METHODOLOGY_VERSION:
+        if methodology in SUPPORTED_CANDIDATE_METHODOLOGIES:
             return tuple(V9_UNIVERSE)
         return ()
 
@@ -234,6 +242,8 @@ class CandidateForwardShadow:
             raise ValueError("shadow_candidate_spec_missing")
         if methodology == V9_METHODOLOGY_VERSION:
             v9_spec_from_dict(candidate_spec)
+        elif methodology == V10_METHODOLOGY_VERSION:
+            v10_spec_from_dict(candidate_spec)
 
         activation_id = str(activation.get("activation_id") or "")
         if not activation_id:
@@ -424,13 +434,23 @@ class CandidateForwardShadow:
             "broker_orders_possible": False,
         }
 
-    def _build_v9_series(
+    def _active_spec(self):
+        methodology = self._candidate_methodology()
+        if methodology == V9_METHODOLOGY_VERSION:
+            return v9_spec_from_dict(self._candidate_spec())
+        if methodology == V10_METHODOLOGY_VERSION:
+            return v10_spec_from_dict(self._candidate_spec())
+        raise RuntimeError(
+            f"unsupported_shadow_candidate_methodology:{methodology}"
+        )
+
+    def _build_active_series(
         self,
         bars: Mapping[str, Sequence[Mapping[str, Any]]],
         *,
         latest_end: datetime,
     ):
-        spec = v9_spec_from_dict(self._candidate_spec())
+        spec = self._active_spec()
         warmup_hours = max(spec.activity_lookback_hours + 2, 26)
         return (
             spec,
@@ -442,6 +462,22 @@ class CandidateForwardShadow:
             ),
         )
 
+    def _active_opportunity(
+        self,
+        series: Mapping[str, Mapping[datetime, Mapping[str, Any]]],
+        spec: Any,
+        symbol: str,
+        stamp: datetime,
+    ):
+        methodology = self._candidate_methodology()
+        if methodology == V9_METHODOLOGY_VERSION:
+            return v9_opportunity_at(series, spec, symbol, stamp)
+        if methodology == V10_METHODOLOGY_VERSION:
+            return v10_opportunity_at(series, spec, symbol, stamp)
+        raise RuntimeError(
+            f"unsupported_shadow_candidate_methodology:{methodology}"
+        )
+
     async def cycle(
         self,
         *,
@@ -451,12 +487,12 @@ class CandidateForwardShadow:
             return []
         current = (now or datetime.now(UTC)).astimezone(UTC)
         methodology = self._candidate_methodology()
-        if methodology != V9_METHODOLOGY_VERSION:
+        if methodology not in SUPPORTED_CANDIDATE_METHODOLOGIES:
             raise RuntimeError(
                 f"unsupported_shadow_candidate_methodology:{methodology}"
             )
 
-        spec = v9_spec_from_dict(self._candidate_spec())
+        spec = self._active_spec()
         lookback_minutes = max(
             spec.activity_lookback_hours * 60 + 180,
             spec.hold_minutes + 180,
@@ -474,7 +510,7 @@ class CandidateForwardShadow:
         if latest_end is None or latest_end == self.last_processed_bar_end:
             return []
 
-        spec, series = self._build_v9_series(bars, latest_end=latest_end)
+        spec, series = self._build_active_series(bars, latest_end=latest_end)
         events: list[dict[str, Any]] = []
 
         for symbol, position in list(self.positions.items()):
@@ -570,7 +606,7 @@ class CandidateForwardShadow:
                 datetime.min.replace(tzinfo=UTC),
             ) > latest_end:
                 continue
-            opportunity = v9_opportunity_at(
+            opportunity = self._active_opportunity(
                 series,
                 spec,
                 symbol,
