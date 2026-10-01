@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
+
+from foundation.report_read import read_report
 
 
 class EvidenceEvent(BaseModel):
@@ -387,6 +389,37 @@ def ingest(
         "inserted": inserted,
         "duplicates": duplicates,
     }
+
+
+@app.get("/v1/trading-report-read")
+def trading_report_read(
+    request: Request,
+    x_anevum_foundation_token: str | None = Header(
+        default=None,
+        alias="x-anevum-foundation-token",
+    ),
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(
+        x_anevum_foundation_token,
+        x_anevum_ingest_token,
+    )
+    params = {key: value for key, value in request.query_params.items()}
+    try:
+        payload = read_report(database_url(), params)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"report_read_failed:{type(exc).__name__}",
+        ) from exc
+    if payload.get("ok") is False:
+        error = str(payload.get("error") or "invalid_request")
+        status_code = 422 if error.startswith("invalid_") else 400
+        raise HTTPException(status_code=status_code, detail=error)
+    return payload
 
 
 @app.post("/v1/trading-reconcile")
