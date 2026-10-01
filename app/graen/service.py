@@ -158,6 +158,25 @@ class GraenGateway:
             },
         )
 
+    async def block_research_claim(
+        self,
+        *,
+        problem_id: str,
+        run_id: str,
+        worker_id: str,
+        error: str,
+    ) -> Mapping[str, Any]:
+        return await self._request(
+            "POST",
+            {
+                "action": "block_research_claim",
+                "problem_id": problem_id,
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "error": error,
+            },
+        )
+
     async def complete_research_problem(
         self,
         *,
@@ -340,6 +359,12 @@ class GraenRuntime:
                 pass
 
     async def process_once(self) -> dict[str, Any]:
+        # Durable engineering is part of GRAEN's existing worker, not a session.
+        from .research_promotion import ResearchPromotion, engineering_problem_ids
+        snapshot = await self.gateway.snapshot()
+        for problem_id in engineering_problem_ids(snapshot):
+            await ResearchPromotion(self.gateway).tick(problem_id)
+            break  # One bounded external engineering step per runtime tick.
         claimed = await self.gateway.claim_problem(self.worker_id)
         self.last_heartbeat_at = datetime.now(UTC)
         problem = claimed.get("problem")

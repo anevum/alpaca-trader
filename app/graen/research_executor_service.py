@@ -471,7 +471,9 @@ class GraenResearchExecutor:
         warmup_hours: int = 169,
     ) -> dict[str, list[dict[str, Any]]]:
         fetch_start = start - timedelta(hours=warmup_hours)
-        fetch_end = end + timedelta(minutes=40)
+        # Stage boundaries are strict. Never fetch any bar at or beyond the
+        # next sealed stage; provider end timestamps may be inclusive.
+        fetch_end = end
         raw: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
         chunk_start = fetch_start
         while chunk_start < fetch_end:
@@ -479,7 +481,7 @@ class GraenResearchExecutor:
             chunk = await self.market_data.historical_crypto_bars_many(
                 list(symbols),
                 start=chunk_start,
-                end=chunk_end,
+                end=chunk_end - timedelta(microseconds=1),
             )
             for symbol in symbols:
                 raw[symbol].extend(chunk.get(symbol, []))
@@ -2799,6 +2801,85 @@ class GraenResearchExecutor:
             )
             return False
 
+
+    async def _execute_compiled_hypothesis(self, problem, run):
+        from importlib import import_module
+        from graen.engineering import IntegrityError, digest, stage_window, validate_spec
+        metadata = problem.get("metadata") or {}
+        promotion = metadata.get("code_promotion") or {}
+        spec = promotion.get("prespec") or {}
+        spec_hash = validate_spec(spec)
+        if (
+            promotion.get("phase") != "COMPLETE"
+            or promotion.get("spec_hash") != spec_hash
+            or metadata.get("compiled_specification_hash") != spec_hash
+        ):
+            raise IntegrityError("verified_engineering_handoff_required")
+        module_name = spec["hypothesis_id"].lower().replace("-", "_")
+        implementation = import_module("graen.crypto.generated." + module_name)
+        if implementation.SPEC_HASH != spec_hash or digest(implementation.SPEC) != spec_hash:
+            raise IntegrityError("deployed_candidate_does_not_match_frozen_prespec")
+        stage = str(metadata.get("research_stage", "")).removeprefix("CRYPTO_COMPILED_").lower()
+        if stage not in {"development", "validation", "holdout"}:
+            raise IntegrityError("compiled_stage_not_supported")
+        prior = await self.gateway._request("POST", {
+            "action": "compiled_stage_evidence",
+            "problem_id": str(problem["problem_id"]), "spec_hash": spec_hash,
+            "stage": stage, "epoch": spec["epoch"],
+        })
+        if prior.get("current"):
+            # A completed stage is never re-evaluated after a failed continuation.
+            result = prior["current"]
+        else:
+            predecessor = prior.get("predecessor")
+            start, end = stage_window(spec, stage, predecessor)
+            await self.gateway.record_artifact(
+                problem_id=str(problem["problem_id"]), run_id=str(run["run_id"]),
+                artifact_type="COMPILED_STAGE_OPENED", methodology_version="graen-crypto-flow-pressure-v1",
+                content={"spec_hash": spec_hash, "stage": stage, "epoch": spec["epoch"],
+                         "fetch_start": start.isoformat(), "fetch_end_exclusive": end.isoformat()},
+            )
+            # No future padding. Warmup is restricted to this stage: early
+            # signals abstain until the entire lookback has accumulated.
+            bars = {symbol: [] for symbol in spec["universe"]}
+            current = start
+            while current < end:
+                limit = min(current + timedelta(days=20), end)
+                chunk = await self.market_data.historical_crypto_bars_many(
+                    spec["universe"], start=current, end=limit - timedelta(microseconds=1),
+                )
+                for symbol in spec["universe"]:
+                    for row in chunk.get(symbol, []):
+                        stamp = datetime.fromisoformat(str(row["t"]).replace("Z", "+00:00"))
+                        if current <= stamp < limit:
+                            bars[symbol].append(row)
+                current = limit
+            result = implementation.evaluate(bars, stage=stage, predecessor=predecessor)
+            await self.gateway.record_artifact(
+                problem_id=str(problem["problem_id"]), run_id=str(run["run_id"]),
+                artifact_type="COMPILED_STAGE_RESULT", methodology_version="graen-crypto-flow-pressure-v1",
+                content=result,
+            )
+        # Terminal stages must leave the claimable research stage. Otherwise
+        # WAITING would repeatedly claim the same exhausted candidate.
+        next_stage = (
+            "CANDIDATE_READY_FOR_VELUM" if result.get("passed") is True and stage == "holdout"
+            else "RESEARCH_IMPLEMENTATION_REQUIRED"
+        )
+        if result.get("passed") is True and stage != "holdout":
+            next_stage = "CRYPTO_COMPILED_" + {"development": "VALIDATION", "validation": "HOLDOUT"}[stage]
+        summary = {
+            "state": "CANDIDATE_READY_FOR_VELUM" if result.get("passed") is True and stage == "holdout"
+                else "COMPILED_STAGE_PASSED" if result.get("passed") is True else "COMPILED_CANDIDATE_REJECTED",
+            "decision": "CONTINUE_RESEARCH" if result.get("passed") is True else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+            "next_action": "VELUM_CANDIDATE_REPLAY" if stage == "holdout" and result.get("passed") is True
+                else "RUN_NEXT_FROZEN_STAGE" if result.get("passed") is True else "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+            "candidate_id": spec["hypothesis_id"], "epoch": spec["epoch"], "spec_hash": spec_hash,
+            "research_only": True, "execution_authority": False, "broker_orders_possible": False,
+        }
+        return await self._finalize(problem=problem, run=run, status="WAITING", summary=summary,
+            next_stage=next_stage, next_metadata={"compiled_specification_hash": spec_hash} if next_stage else None)
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
         staged_v10 = any(
@@ -2870,16 +2951,34 @@ class GraenResearchExecutor:
         await self._heartbeat()
 
         metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
-        if metadata.get("research_stage") in V10_STAGE_KEYS:
-            return await self._execute_trend_pullback_v10(problem, run)
-        if metadata.get("research_stage") in V9_STAGE_KEYS:
-            return await self._execute_activity_shock_v9(problem, run)
-        if metadata.get("research_stage") in AUTONOMOUS_STAGE_KEYS:
-            return await self._execute_autonomous_campaign(problem, run)
-        if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
-            return await self._execute_leadlag_r2(problem, run)
-
-        return await self._execute_v7_staged(problem, run)
+        try:
+            if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
+                return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") in V10_STAGE_KEYS:
+                return await self._execute_trend_pullback_v10(problem, run)
+            if metadata.get("research_stage") in V9_STAGE_KEYS:
+                return await self._execute_activity_shock_v9(problem, run)
+            if metadata.get("research_stage") in AUTONOMOUS_STAGE_KEYS:
+                return await self._execute_autonomous_campaign(problem, run)
+            if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
+                return await self._execute_leadlag_r2(problem, run)
+            return await self._execute_v7_staged(problem, run)
+        except Exception as exc:
+            # A claimed run must never be left RUNNING after the worker has
+            # abandoned it. Preserve the frozen stage and block it for an
+            # explicit repair/reconciliation decision.
+            failure = f"{type(exc).__name__}: {exc}"[:1000]
+            try:
+                await self.gateway.block_research_claim(
+                    problem_id=problem_id,
+                    run_id=run_id,
+                    worker_id=self.worker_id,
+                    error=failure,
+                )
+            finally:
+                self.active_problem_id = None
+                self.last_error = failure
+            raise
 
 
 runtime = GraenResearchExecutor()

@@ -11,6 +11,9 @@ class FakeGateway:
         self.artifacts = []
         self.completions = []
 
+    async def snapshot(self):
+        return {"problems": [], "runs": []}
+
     async def claim_problem(self, worker_id):
         return {
             "problem": {
