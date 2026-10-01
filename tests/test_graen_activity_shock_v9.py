@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from graen.crypto.activity_shock_v9 import (
     FAMILY,
     METHODOLOGY_VERSION,
@@ -5,6 +7,7 @@ from graen.crypto.activity_shock_v9 import (
     development_gate,
     holdout_gate,
     validation_gate,
+    verify_stage_corpus,
 )
 
 
@@ -80,3 +83,36 @@ def test_v9_validation_and_holdout_fail_closed():
     passed, reasons = holdout_gate(spec, scenarios)
     assert passed is True
     assert reasons == []
+
+
+def test_v9_corpus_gate_requires_complete_symbol_coverage():
+    start = datetime(2022, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(hours=2)
+    bars = {}
+    for symbol in ("BTC/USD", "ETH/USD", "SOL/USD"):
+        rows = []
+        stamp = start
+        while stamp < end:
+            rows.append({
+                "t": stamp.isoformat(),
+                "o": 1,
+                "h": 1,
+                "l": 1,
+                "c": 1,
+                "v": 1,
+                "n": 1,
+            })
+            stamp += timedelta(minutes=5)
+        bars[symbol] = rows
+
+    report = verify_stage_corpus(bars, start=start, end=end)
+    assert report["passed"] is True
+    assert report["expected_bars_per_symbol"] == 24
+
+    bars["SOL/USD"] = bars["SOL/USD"][:5]
+    try:
+        verify_stage_corpus(bars, start=start, end=end)
+    except ValueError as exc:
+        assert "SOL/USD" in str(exc)
+    else:
+        raise AssertionError("incomplete v9 corpus must fail closed")
