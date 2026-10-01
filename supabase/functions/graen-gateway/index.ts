@@ -366,33 +366,38 @@ Deno.serve(async (req: Request) => {
         if (linkedJobId) {
           const terminalSuccess = status === "SUCCEEDED";
           const terminalFailure = status === "FAILED" || status === "CANCELLED";
+          const syncPayload = {
+            graen_problem_id: problemId,
+            graen_run_id: runId,
+            graen_result: resultSummary,
+            graen_synced_at: new Date().toISOString(),
+          };
+          const failurePayload = {
+            source: "GRAEN",
+            graen_problem_id: problemId,
+            graen_run_id: runId,
+            result: resultSummary,
+          };
           await tx`
             update private.iren_jobs
             set status=case
-                  when ${terminalSuccess} and protected_action then 'WAITING'
-                  else ${status}
+                  when ${terminalSuccess}::boolean and protected_action then 'WAITING'
+                  else ${status}::text
                 end,
                 result=coalesce(result,'{}'::jsonb)
+                  || ${sql.json(syncPayload as any)}::jsonb
                   || jsonb_build_object(
-                    'graen_problem_id',${problemId},
-                    'graen_run_id',${runId},
-                    'graen_result',${sql.json(resultSummary as any)}::jsonb,
-                    'graen_synced_at',now(),
-                    'graen_protected_completion_blocked',(${terminalSuccess} and protected_action)
+                    'graen_protected_completion_blocked',
+                    (${terminalSuccess}::boolean and protected_action)
                   ),
                 error=case
-                  when ${terminalFailure}
-                    then jsonb_build_object(
-                      'source','GRAEN',
-                      'graen_problem_id',${problemId},
-                      'graen_run_id',${runId},
-                      'result',${sql.json(resultSummary as any)}::jsonb
-                    )
+                  when ${terminalFailure}::boolean
+                    then ${sql.json(failurePayload as any)}::jsonb
                   else '{}'::jsonb
                 end,
                 completed_at=case
-                  when ${terminalSuccess} and not protected_action then now()
-                  when ${terminalFailure} then now()
+                  when ${terminalSuccess}::boolean and not protected_action then now()
+                  when ${terminalFailure}::boolean then now()
                   else completed_at
                 end,
                 updated_at=now()
