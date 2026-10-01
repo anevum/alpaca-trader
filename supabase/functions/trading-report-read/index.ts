@@ -62,8 +62,81 @@ Deno.serve(async (req) => {
   const cryptoEvidenceSession = url.searchParams.get("crypto_evidence_session");
   const cryptoPromotion = url.searchParams.get("crypto_promotion");
   const session = url.searchParams.get("session");
+  const shadowCandidateId = url.searchParams.get("shadow_candidate_id");
 
   try {
+    if (latest === "graen_shadow") {
+      const activationRows = shadowCandidateId
+        ? await sql<{ event_id: string; occurred_at: string; payload: Record<string, unknown> }[]>`
+            select event_id::text,occurred_at::text,payload
+            from private.trading_events
+            where event_type='graen_candidate_shadow_activation'
+              and payload->>'candidate_id'=${shadowCandidateId}
+            order by occurred_at desc,received_at desc
+            limit 1
+          `
+        : await sql<{ event_id: string; occurred_at: string; payload: Record<string, unknown> }[]>`
+            select event_id::text,occurred_at::text,payload
+            from private.trading_events
+            where event_type='graen_candidate_shadow_activation'
+            order by occurred_at desc,received_at desc
+            limit 1
+          `;
+      const activation = activationRows[0] ?? null;
+      const activationId = String(activation?.payload?.activation_id || "");
+      if (!activation || !activationId) {
+        return json(200, {
+          ok: true,
+          shadow_methodology_version: "graen-forward-shadow-v1",
+          activation: null,
+          state: null,
+          checkpoint: null,
+          recent_events: [],
+        });
+      }
+
+      const [stateRows, checkpointRows, eventRows] = await Promise.all([
+        sql<{ event_id: string; occurred_at: string; payload: Record<string, unknown> }[]>`
+          select event_id::text,occurred_at::text,payload
+          from private.trading_events
+          where event_type='graen_candidate_shadow_state'
+            and payload->>'activation_id'=${activationId}
+          order by occurred_at desc,received_at desc
+          limit 1
+        `,
+        sql<{ event_id: string; occurred_at: string; payload: Record<string, unknown> }[]>`
+          select event_id::text,occurred_at::text,payload
+          from private.trading_events
+          where event_type='graen_candidate_shadow_checkpoint'
+            and payload->>'activation_id'=${activationId}
+          order by occurred_at desc,received_at desc
+          limit 1
+        `,
+        sql<{ event_id: string; event_type: string; occurred_at: string; symbol: string | null; payload: Record<string, unknown> }[]>`
+          select event_id::text,event_type,occurred_at::text,symbol,payload
+          from private.trading_events
+          where event_type in (
+              'graen_candidate_shadow_opportunity',
+              'graen_candidate_shadow_entry',
+              'graen_candidate_shadow_exit',
+              'graen_candidate_shadow_checkpoint'
+            )
+            and payload->>'activation_id'=${activationId}
+          order by occurred_at desc,received_at desc
+          limit 200
+        `,
+      ]);
+
+      return json(200, {
+        ok: true,
+        shadow_methodology_version: "graen-forward-shadow-v1",
+        activation,
+        state: stateRows[0] ?? null,
+        checkpoint: checkpointRows[0] ?? null,
+        recent_events: eventRows,
+      });
+    }
+
     if (validDate(start) && validDate(end)) {
       if (start > end) return json(422, { ok: false, error: "invalid_period" });
       const rows = await sql<{
