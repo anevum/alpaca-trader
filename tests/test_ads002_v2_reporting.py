@@ -1,11 +1,12 @@
 from pathlib import Path
 
 
-def test_ads002_v2_is_exposed_by_canonical_report_read():
-    source = Path("supabase/functions/trading-report-read/index.ts").read_text()
-    assert "rhen_ads002_v2_daily_inputs" in source
-    assert "ads002_v2_scores" in source
-    assert "ads002_v2: adsV2Rows[0]?.inputs ?? {}" in source
+def test_ads002_v2_uses_persisted_daily_report_without_legacy_projection():
+    source = Path("foundation/report_read.py").read_text()
+    assert '"ads002_v2": {}' in source
+    assert "latest_daily_report" in source
+    assert "research_daily_report" in source
+    assert "rhen_ads002_v2_daily_inputs" not in source
 
 
 def test_ads002_v2_is_persisted_in_daily_report():
