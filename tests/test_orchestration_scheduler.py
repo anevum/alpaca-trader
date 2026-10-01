@@ -249,6 +249,23 @@ def test_failure_classification_bounds_retry_eligibility():
     assert SchedulerRuntime._classify_failure(auth) == "authentication"
     assert SchedulerRuntime._classify_failure(unavailable) == "dependency_unavailable"
 
+    remote_disconnect = httpx.RemoteProtocolError(
+        "Server disconnected without sending a response.",
+        request=request,
+    )
+    connect_failure = httpx.ConnectError(
+        "connection reset",
+        request=request,
+    )
+    assert (
+        SchedulerRuntime._classify_failure(remote_disconnect)
+        == "dependency_unavailable"
+    )
+    assert (
+        SchedulerRuntime._classify_failure(connect_failure)
+        == "dependency_unavailable"
+    )
+
 
 def test_historical_missed_job_is_durable_but_does_not_alert(monkeypatch):
     runtime = runtime_for_process_test()
