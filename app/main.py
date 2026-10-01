@@ -27,7 +27,6 @@ from .crypto_layer import (
     CryptoUniverse,
 )
 from .market_data import MarketDataClient
-from .mobile_live_activity import MobileLiveActivityService
 from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
 from .research_scheduler import ResearchReportScheduler
@@ -166,8 +165,6 @@ def emit_runtime_event(event: dict) -> None:
         },
     )
     slack_notifier.record_event(event)
-    if mobile_live_activity is not None:
-        mobile_live_activity.wake()
 
 
 runtime_state.set_event_emitter(emit_runtime_event)
@@ -238,42 +235,18 @@ async def scheduler_session_detail(session: date) -> dict:
     return row
 
 
-SUPABASE_URL = "https://mfntzxheldzdvlokyntk.supabase.co"
-SUPABASE_PUBLISHABLE_KEY = "sb_publishable_XfkgeXau2-6XOPzoXF-Nnw_FSnx0Sae"
-COMMAND_FOUNDER_EMAIL = "devon@anevum.com"
-
-
 class SchedulerSessionRequest(BaseModel):
     session: date
     scheduled_at: datetime | None = None
-
-
-class MobileLiveActivityRegistration(BaseModel):
-    push_token: str
-    activity_id: str
-    platform: str = "ios"
-    surface: str = "rhen_live_activity"
-    apns_environment: str = "production"
-
-
-class MobileLiveActivityEnd(BaseModel):
-    activity_id: str
-
-
-mobile_live_activity: MobileLiveActivityService | None = None
 
 
 async def require_command_admin(authorization: str | None) -> dict:
     try:
         return await authenticate_command_admin(
             authorization,
-            mode=settings.command_auth_mode,
             team_domain=settings.command_access_team_domain,
             audience=settings.command_access_aud,
             allowed_emails=settings.command_access_emails_raw,
-            supabase_url=SUPABASE_URL,
-            publishable_key=SUPABASE_PUBLISHABLE_KEY,
-            founder_email=COMMAND_FOUNDER_EMAIL,
         )
     except CommandAuthError as exc:
         raise HTTPException(
@@ -467,13 +440,7 @@ async def command_snapshot() -> dict:
             "latest_daily": research_reports.last_daily_report,
             "latest_weekly": research_reports.last_weekly_report,
         },
-        "mobile_live_activity": (
-            mobile_live_activity.status() if mobile_live_activity is not None else None
-        ),
     }
-
-
-mobile_live_activity = MobileLiveActivityService(settings, command_snapshot)
 
 
 def _ready_symbols() -> list[str]:
@@ -890,7 +857,6 @@ async def lifespan(app: FastAPI):
     )
     await event_sink.start()
     await slack_notifier.start()
-    await mobile_live_activity.start()
 
     runtime_provenance = capture_runtime_provenance()
     runtime_start_payload = {
@@ -1002,7 +968,6 @@ async def lifespan(app: FastAPI):
             "git_commit": runtime_provenance.git_commit,
         },
     )
-    await mobile_live_activity.stop()
     await event_sink.stop()
     await slack_notifier.stop()
 
@@ -1048,7 +1013,6 @@ async def health():
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
         "slack_notifications": slack_notifier.status(),
-        "mobile_live_activity": mobile_live_activity.status(),
         "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
         "crypto": {
             "enabled": settings.crypto_lane_enabled,
@@ -1496,61 +1460,13 @@ async def resume_paper(authorization: str | None = Header(default=None)):
     return {"paused": False}
 
 
-@app.post("/v1/command/mobile/live-activity-token")
-async def command_mobile_live_activity_token(
-    registration: MobileLiveActivityRegistration,
-    authorization: str | None = Header(default=None),
-):
-    await require_command_admin(authorization)
-    token = registration.push_token.strip().lower()
-    activity_id = registration.activity_id.strip()
-    environment = registration.apns_environment.strip().lower()
-    if registration.platform.lower() != "ios":
-        raise HTTPException(status_code=422, detail="only iOS ActivityKit tokens are supported")
-    if registration.surface != "rhen_live_activity":
-        raise HTTPException(status_code=422, detail="unsupported mobile activity surface")
-    if environment not in {"sandbox", "production"}:
-        raise HTTPException(status_code=422, detail="invalid APNs environment")
-    if not activity_id or len(activity_id) > 160:
-        raise HTTPException(status_code=422, detail="invalid ActivityKit activity id")
-    if len(token) < 32 or len(token) > 256 or any(ch not in "0123456789abcdef" for ch in token):
-        raise HTTPException(status_code=422, detail="invalid ActivityKit push token")
-
-    try:
-        return await mobile_live_activity.register(
-            push_token=token,
-            activity_id=activity_id,
-            apns_environment=environment,
-        )
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"IREN mobile registry rejected registration ({exc.response.status_code})",
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"IREN mobile registration failed: {type(exc).__name__}")
-
-
-@app.post("/v1/command/mobile/live-activity-end")
-async def command_mobile_live_activity_end(
-    payload: MobileLiveActivityEnd,
-    authorization: str | None = Header(default=None),
-):
-    await require_command_admin(authorization)
-    activity_id = payload.activity_id.strip()
-    if not activity_id or len(activity_id) > 160:
-        raise HTTPException(status_code=422, detail="invalid ActivityKit activity id")
-    await mobile_live_activity.deactivate(activity_id)
-    return {"ok": True, "deactivated": True, "activity_id": activity_id}
-
-
 @app.get("/v1/command/session")
 async def command_session(authorization: str | None = Header(default=None)):
     identity = await require_command_admin(authorization)
     return {
         "authenticated": True,
         "email": identity.get("email"),
-        "auth_source": identity.get("auth_source") or "supabase",
+        "auth_source": identity.get("auth_source") or "cloudflare_access",
         "command_admin": True,
     }
 

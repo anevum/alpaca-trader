@@ -45,7 +45,6 @@ class Settings(BaseSettings):
 
     admin_token: str = Field(default="", alias="ADMIN_TOKEN")
 
-    command_auth_mode: str = Field(default="supabase", alias="COMMAND_AUTH_MODE")
     command_access_team_domain: str = Field(
         default="",
         alias="CF_ACCESS_TEAM_DOMAIN",
@@ -84,25 +83,6 @@ class Settings(BaseSettings):
         default=50, alias="FOUNDATION_BATCH_SIZE"
     )
 
-    # IREN native / ActivityKit delivery. All APNs signing values remain server-side.
-    iren_mobile_registry_url: str = Field(
-        default="https://mfntzxheldzdvlokyntk.supabase.co/functions/v1/iren-mobile-registry",
-        alias="IREN_MOBILE_REGISTRY_URL",
-    )
-    iren_public_feed_url: str = Field(
-        default="https://mfntzxheldzdvlokyntk.supabase.co/functions/v1/trading-public-feed",
-        alias="IREN_PUBLIC_FEED_URL",
-    )
-    iren_apns_team_id: str = Field(default="", alias="IREN_APNS_TEAM_ID")
-    iren_apns_key_id: str = Field(default="", alias="IREN_APNS_KEY_ID")
-    iren_apns_private_key: str = Field(default="", alias="IREN_APNS_PRIVATE_KEY")
-    iren_bundle_id: str = Field(default="com.anevum.iren", alias="IREN_BUNDLE_ID")
-    iren_mobile_push_interval_seconds: int = Field(
-        default=30, alias="IREN_MOBILE_PUSH_INTERVAL_SECONDS"
-    )
-    iren_mobile_push_heartbeat_seconds: int = Field(
-        default=300, alias="IREN_MOBILE_PUSH_HEARTBEAT_SECONDS"
-    )
     trading_run_id: str = Field(default="", alias="TRADING_RUN_ID")
     strategy_version_id: str = Field(default="", alias="STRATEGY_VERSION_ID")
     trading_run_started_at_raw: str = Field(default="", alias="TRADING_RUN_STARTED_AT")
@@ -524,19 +504,6 @@ class Settings(BaseSettings):
         adjustment = self.session_cash_flow_adjustment
         if adjustment is not None and adjustment.run_id != self.trading_run_id:
             raise ValueError("cash-flow adjustment must match TRADING_RUN_ID")
-        if self.command_auth_mode not in {"supabase", "cloudflare_access", "dual"}:
-            raise ValueError(
-                "COMMAND_AUTH_MODE must be supabase, cloudflare_access, or dual"
-            )
-        if self.command_auth_mode == "cloudflare_access":
-            if not self.command_access_team_domain.strip():
-                raise ValueError(
-                    "CF_ACCESS_TEAM_DOMAIN is required for cloudflare_access COMMAND auth"
-                )
-            if not self.command_access_aud.strip():
-                raise ValueError(
-                    "CF_ACCESS_AUD is required for cloudflare_access COMMAND auth"
-                )
         if self.trading_mode not in {"paper", "live"}:
             raise ValueError("TRADING_MODE must be paper or live")
         if self.strategy_name not in {"opening_range_vwap", "rolling_momentum_vwap"}:
