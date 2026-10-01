@@ -1,9 +1,13 @@
 from datetime import datetime, timezone
 
+import pytest
+from fastapi import HTTPException
+
 from foundation.ingest.service import (
     EvidenceEvent,
     canonical_payload_hash,
     infer_run,
+    require_foundation_token,
 )
 
 
@@ -48,3 +52,19 @@ def test_infer_unknown_run_is_explicit():
     asset_class, mode = infer_run(event(payload={}))
     assert asset_class == "unknown"
     assert mode == "shadow_migration"
+
+
+def test_ingest_token_is_enforced_when_configured(monkeypatch):
+    monkeypatch.setenv("FOUNDATION_INGEST_TOKEN", "foundation-secret")
+    with pytest.raises(HTTPException) as missing:
+        require_foundation_token(None)
+    assert missing.value.status_code == 401
+    with pytest.raises(HTTPException) as wrong:
+        require_foundation_token("wrong")
+    assert wrong.value.status_code == 401
+    require_foundation_token("foundation-secret")
+
+
+def test_ingest_token_is_optional_on_private_staging(monkeypatch):
+    monkeypatch.delenv("FOUNDATION_INGEST_TOKEN", raising=False)
+    require_foundation_token(None)
