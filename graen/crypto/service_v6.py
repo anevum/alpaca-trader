@@ -4,11 +4,13 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import os
-from typing import Any
+from typing import Any, Mapping
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.market_data import MarketDataClient
@@ -20,6 +22,7 @@ from .research_v6 import (
     run_crypto_research_v6,
 )
 from .shadow_v6 import CryptoResidualReclaimShadow
+from .candidate_shadow import CandidateForwardShadow
 
 
 DEVELOPMENT_START = datetime(2025, 9, 1, tzinfo=timezone.utc)
@@ -88,6 +91,13 @@ class GraenCryptoV6Runtime:
             minimum=15,
         )
         self.shadow = CryptoResidualReclaimShadow(self.settings)
+        self.candidate_shadow = CandidateForwardShadow(self.settings)
+        self.candidate_shadow_task: asyncio.Task | None = None
+        self.candidate_shadow_interval_seconds = _env_int(
+            "GRAEN_CANDIDATE_SHADOW_INTERVAL_SECONDS",
+            30,
+            minimum=15,
+        )
         self.last_error: str | None = None
         self.last_result_summary: dict[str, Any] | None = None
 
@@ -111,9 +121,11 @@ class GraenCryptoV6Runtime:
             "last_error": self.last_error,
             "last_result_summary": self.last_result_summary,
             "shadow": self.shadow.status(),
+            "candidate_shadow": self.candidate_shadow.status(),
         }
 
     async def start(self) -> None:
+        await self._restore_candidate_shadow()
         if self.task is None:
             self.task = asyncio.create_task(self._run(), name="graen-crypto-native-v6")
         if self.shadow_task is None:
@@ -121,16 +133,30 @@ class GraenCryptoV6Runtime:
                 self._run_shadow(),
                 name="graen-crypto-native-v6-shadow",
             )
+        if self.candidate_shadow_task is None:
+            self.candidate_shadow_task = asyncio.create_task(
+                self._run_candidate_shadow(),
+                name="graen-candidate-forward-shadow",
+            )
 
     async def stop(self) -> None:
         self.stop_event.set()
-        tasks = [task for task in (self.task, self.shadow_task) if task is not None]
+        tasks = [
+            task
+            for task in (
+                self.task,
+                self.shadow_task,
+                self.candidate_shadow_task,
+            )
+            if task is not None
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.task = None
         self.shadow_task = None
+        self.candidate_shadow_task = None
 
     async def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -216,6 +242,325 @@ class GraenCryptoV6Runtime:
                 await asyncio.wait_for(
                     self.stop_event.wait(),
                     timeout=self.shadow_interval_seconds,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+    @property
+    def _report_read_url(self) -> str:
+        ingest_url = str(self.settings.trading_ingest_url or "").strip()
+        return (
+            ingest_url.rsplit("/", 1)[0] + "/trading-report-read"
+            if ingest_url
+            else ""
+        )
+
+    async def _restore_candidate_shadow(self) -> None:
+        url = self._report_read_url
+        token = str(self.settings.trading_ingest_token or "").strip()
+        if not url or not token:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                response = await http.get(
+                    url,
+                    headers={"x-anevum-ingest-token": token},
+                    params={"latest": "graen_shadow"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            if not isinstance(payload, Mapping) or not payload.get("ok"):
+                return
+            activation_row = payload.get("activation")
+            state_row = payload.get("state")
+            activation = (
+                activation_row.get("payload")
+                if isinstance(activation_row, Mapping)
+                else None
+            )
+            state = (
+                state_row.get("payload")
+                if isinstance(state_row, Mapping)
+                else None
+            )
+            if isinstance(state, Mapping):
+                self.candidate_shadow.restore(state)
+            elif isinstance(activation, Mapping):
+                self.candidate_shadow.activate(activation)
+        except Exception as exc:
+            print(
+                "GRAEN_CANDIDATE_SHADOW_RESTORE_ERROR",
+                {"error": f"{type(exc).__name__}: {exc}"},
+                flush=True,
+            )
+
+    async def _emit_candidate_shadow(
+        self,
+        event_type: str,
+        payload: Mapping[str, Any],
+        *,
+        occurred_at: str,
+        symbol: str = "",
+    ) -> bool:
+        url = str(self.settings.trading_ingest_url or "").strip()
+        token = str(self.settings.trading_ingest_token or "").strip()
+        if not url or not token:
+            return False
+        activation_id = str(payload.get("activation_id") or "")
+        candidate_id = str(payload.get("candidate_id") or "")
+        key_material = (
+            activation_id
+            + ":"
+            + event_type
+            + ":"
+            + symbol
+            + ":"
+            + occurred_at
+        )
+        event = {
+            "event_key": (
+                "graen:forward-shadow:"
+                + hashlib.sha256(key_material.encode()).hexdigest()
+            )[:200],
+            "run_id": None,
+            "strategy_version_id": candidate_id or None,
+            "event_type": event_type,
+            "occurred_at": occurred_at,
+            "symbol": symbol or None,
+            "source": "graen-candidate-forward-shadow",
+            "payload": {
+                **dict(payload),
+                "system": "GRAEN",
+                "program": "Candidate Forward Shadow",
+                "mode": "forward_shadow",
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "crypto_execution_enabled": False,
+            },
+        }
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            response = await http.post(
+                url,
+                headers={"x-anevum-ingest-token": token},
+                json={"events": [event]},
+            )
+            response.raise_for_status()
+        return True
+
+    async def _sync_candidate_shadow_checkpoint(
+        self,
+        checkpoint: Mapping[str, Any],
+    ) -> bool:
+        url = os.getenv("GRAEN_GATEWAY_URL", "").strip()
+        token = os.getenv("GRAEN_GATEWAY_TOKEN", "").strip()
+        if not url or len(token) < 32:
+            return False
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            response = await http.post(
+                url,
+                headers={"x-graen-gateway-token": token},
+                json={
+                    "action": "shadow_checkpoint",
+                    "problem_id": str(
+                        (self.candidate_shadow.activation or {}).get(
+                            "problem_id"
+                        )
+                        or ""
+                    ),
+                    "activation_id": str(
+                        checkpoint.get("activation_id") or ""
+                    ),
+                    "candidate_id": str(
+                        checkpoint.get("candidate_id") or ""
+                    ),
+                    "status": str(checkpoint.get("status") or ""),
+                    "evidence": dict(checkpoint),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        return bool(isinstance(payload, Mapping) and payload.get("ok"))
+
+    async def _persist_candidate_shadow_state(self) -> None:
+        state = self.candidate_shadow.snapshot()
+        activation_id = str(state.get("activation_id") or "")
+        if not activation_id:
+            return
+        stamp = (
+            str(state.get("last_processed_bar_end") or "")
+            or datetime.now(timezone.utc).isoformat()
+        )
+        persisted = await self._emit_candidate_shadow(
+            "graen_candidate_shadow_state",
+            state,
+            occurred_at=stamp,
+        )
+        if not persisted:
+            raise RuntimeError("candidate_shadow_state_not_persisted")
+
+    async def activate_candidate_shadow(
+        self,
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        candidate_spec = request.get("candidate_spec")
+        if not isinstance(candidate_spec, Mapping):
+            raise ValueError("candidate_spec_missing")
+        candidate_id = str(candidate_spec.get("candidate_id") or "")
+        if not candidate_id:
+            raise ValueError("candidate_id_missing")
+        candidate_methodology = str(
+            request.get("candidate_methodology") or ""
+        )
+        problem_id = str(request.get("problem_id") or "")
+        velum_artifact_id = str(
+            request.get("velum_artifact_id") or ""
+        )
+        activation_key = ":".join(
+            [
+                problem_id,
+                candidate_methodology,
+                candidate_id,
+                velum_artifact_id,
+            ]
+        )
+        activation_id = hashlib.sha256(
+            activation_key.encode()
+        ).hexdigest()[:32]
+        activation = {
+            "schema_version": "graen.candidate_shadow.activation.v1",
+            "activation_id": activation_id,
+            "problem_id": problem_id,
+            "graen_run_id": str(request.get("graen_run_id") or ""),
+            "campaign_id": str(request.get("campaign_id") or ""),
+            "epoch_index": int(request.get("epoch_index") or 0),
+            "generation": int(request.get("generation") or 0),
+            "candidate_methodology": candidate_methodology,
+            "candidate_id": candidate_id,
+            "candidate_spec": dict(candidate_spec),
+            "velum_artifact_id": velum_artifact_id,
+            "activated_at": datetime.now(timezone.utc).isoformat(),
+            "research_only": True,
+            "promotion_authorized": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+        }
+        if (
+            self.candidate_shadow.active
+            and str(
+                (self.candidate_shadow.activation or {}).get(
+                    "activation_id"
+                )
+                or ""
+            )
+            == activation_id
+        ):
+            return {
+                "activation": dict(
+                    self.candidate_shadow.activation or {}
+                ),
+                "duplicate": True,
+            }
+
+        persisted = await self._emit_candidate_shadow(
+            "graen_candidate_shadow_activation",
+            activation,
+            occurred_at=activation["activated_at"],
+        )
+        if not persisted:
+            raise RuntimeError("candidate_shadow_activation_not_persisted")
+        self.candidate_shadow.activate(activation)
+        await self._persist_candidate_shadow_state()
+
+        checkpoint = self.candidate_shadow._checkpoint()
+        self.candidate_shadow.last_checkpoint = dict(checkpoint)
+        self.candidate_shadow.last_checkpoint_status = str(
+            checkpoint["status"]
+        )
+        persisted = await self._emit_candidate_shadow(
+            "graen_candidate_shadow_checkpoint",
+            checkpoint,
+            occurred_at=activation["activated_at"],
+        )
+        if not persisted:
+            raise RuntimeError("candidate_shadow_checkpoint_not_persisted")
+        if not await self._sync_candidate_shadow_checkpoint(checkpoint):
+            raise RuntimeError("candidate_shadow_checkpoint_not_synced")
+
+        await self._slack(
+            "*GRAEN // FORWARD SHADOW ACTIVATED*\n"
+            + candidate_id
+            + " | broker orders: disabled"
+        )
+        return {"activation": activation, "duplicate": False}
+
+    async def _run_candidate_shadow(self) -> None:
+        while not self.stop_event.is_set():
+            before = self.candidate_shadow.snapshot()
+            try:
+                events = await self.candidate_shadow.cycle()
+                if events:
+                    for event in events:
+                        event_type = str(
+                            event.get("event_type")
+                            or "graen_candidate_shadow_event"
+                        )
+                        payload = dict(event.get("payload") or {})
+                        occurred_at = str(
+                            event.get("occurred_at")
+                            or datetime.now(timezone.utc).isoformat()
+                        )
+                        symbol = str(event.get("symbol") or "")
+                        if not await self._emit_candidate_shadow(
+                            event_type,
+                            payload,
+                            occurred_at=occurred_at,
+                            symbol=symbol,
+                        ):
+                            raise RuntimeError(
+                                f"candidate_shadow_event_not_persisted:{event_type}"
+                            )
+                        if event_type == "graen_candidate_shadow_checkpoint":
+                            if not await self._sync_candidate_shadow_checkpoint(
+                                payload
+                            ):
+                                raise RuntimeError(
+                                    "candidate_shadow_checkpoint_not_synced"
+                                )
+                            status = str(payload.get("status") or "")
+                            if status in {
+                                "READY_FOR_HUMAN_REVIEW",
+                                "SHADOW_REJECTED",
+                            }:
+                                await self._slack(
+                                    "*GRAEN // FORWARD SHADOW "
+                                    + status.replace("_", " ")
+                                    + "*\n"
+                                    + str(payload.get("candidate_id") or "")
+                                    + " | trades: "
+                                    + str(payload.get("trade_count") or 0)
+                                    + " | broker orders: disabled"
+                                )
+                    await self._persist_candidate_shadow_state()
+                self.candidate_shadow.last_error = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                try:
+                    self.candidate_shadow.restore(before)
+                except Exception:
+                    pass
+                self.candidate_shadow.last_error = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+                print(
+                    "GRAEN_CANDIDATE_SHADOW_ERROR",
+                    {"error": self.candidate_shadow.last_error},
+                    flush=True,
+                )
+            try:
+                await asyncio.wait_for(
+                    self.stop_event.wait(),
+                    timeout=self.candidate_shadow_interval_seconds,
                 )
             except asyncio.TimeoutError:
                 pass
@@ -389,6 +734,33 @@ class GraenCryptoV6Runtime:
             print("GRAEN_CRYPTO_V6_SLACK_ERROR", {"error": type(exc).__name__}, flush=True)
 
 
+class CandidateShadowActivationRequest(BaseModel):
+    problem_id: str
+    graen_run_id: str
+    campaign_id: str
+    epoch_index: int
+    generation: int
+    candidate_methodology: str
+    candidate_spec: dict[str, Any]
+    velum_artifact_id: str
+
+
+def require_shadow_token(
+    x_graen_shadow_token: str | None,
+) -> None:
+    expected = os.getenv("GRAEN_SHADOW_TOKEN", "").strip()
+    if len(expected) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="GRAEN shadow token is not configured",
+        )
+    if x_graen_shadow_token is None or not hmac.compare_digest(
+        x_graen_shadow_token,
+        expected,
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 settings = get_settings()
 runtime = GraenCryptoV6Runtime(settings)
 
@@ -416,6 +788,29 @@ async def health():
         "execution_authority": False,
         "broker_orders_possible": False,
         "last_error": state["last_error"],
+    }
+
+
+@app.post("/v1/candidate-shadow/activate")
+async def activate_candidate_shadow(
+    request: CandidateShadowActivationRequest,
+    x_graen_shadow_token: str | None = Header(default=None),
+):
+    require_shadow_token(x_graen_shadow_token)
+    try:
+        result = await runtime.activate_candidate_shadow(
+            request.model_dump()
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        **result,
+        "execution_authority": False,
+        "broker_orders_possible": False,
+        "promotion_authorized": False,
     }
 
 
