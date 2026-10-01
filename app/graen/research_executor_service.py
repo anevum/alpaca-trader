@@ -3104,6 +3104,19 @@ app = FastAPI(
 )
 
 
+@app.get("/live")
+async def live():
+    running = runtime.task is not None and not runtime.task.done()
+    if not running:
+        raise HTTPException(status_code=503, detail={"ok": False, "running": False})
+    return {
+        "ok": True,
+        "service": "graen-research-executor",
+        "running": True,
+        "runtime_version": RUNTIME_VERSION,
+    }
+
+
 @app.get("/health")
 async def health():
     state = runtime.health()
