@@ -171,7 +171,10 @@ class GraenResearchExecutor:
         self.callback_base_url = os.getenv("IREN_CALLBACK_BASE_URL", "").strip().rstrip("/")
         self.callback_token = os.getenv("IREN_CALLBACK_TOKEN", "").strip()
         self.velum_base_url = os.getenv("VELUM_SERVICE_URL", "").strip().rstrip("/")
-        self.velum_token = os.getenv("VELUM_GRAEN_TOKEN", "").strip()
+        self.velum_token = (
+            os.getenv("VELUM_GRAEN_TOKEN", "")
+            or os.getenv("GRAEN_GATEWAY_TOKEN", "")
+        ).strip()
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.started_at = datetime.now(UTC)
