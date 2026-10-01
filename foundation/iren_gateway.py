@@ -7,6 +7,8 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Jsonb
 
+from foundation.iren_work_gateway import handle_work_action
+
 
 UTC = timezone.utc
 IREN_STATE_KEY = "IREN"
@@ -603,4 +605,7 @@ def handle_action(database_url: str, action: str, body: dict[str, Any]) -> dict[
             return scheduler_claim(conn, job)
         if action == "complete":
             return scheduler_complete(conn, body)
+    work_result = handle_work_action(database_url, action, body)
+    if work_result is not None:
+        return work_result
     raise ValueError("invalid_action")
