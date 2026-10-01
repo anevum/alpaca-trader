@@ -37,6 +37,7 @@ def probe_events() -> list[dict]:
 
 async def main() -> None:
     ingest_url = os.environ.get("FOUNDATION_INGEST_URL", "").strip()
+    ingest_token = os.environ.get("FOUNDATION_INGEST_TOKEN", "").strip()
     if not ingest_url:
         raise SystemExit("FOUNDATION_INGEST_URL is required")
     outbox_path = Path(
@@ -46,7 +47,11 @@ async def main() -> None:
         )
     )
     outbox = DurableEventOutbox(outbox_path)
-    sink = FoundationShadowSink(outbox=outbox, ingest_url=ingest_url)
+    sink = FoundationShadowSink(
+        outbox=outbox,
+        ingest_url=ingest_url,
+        ingest_token=ingest_token,
+    )
 
     events = probe_events()
     first_enqueued = sink.enqueue_many(events)
@@ -59,9 +64,12 @@ async def main() -> None:
     if not second.get("ok"):
         raise RuntimeError(f"duplicate delivery failed: {second}")
 
+    headers = {}
+    if ingest_token:
+        headers["x-anevum-foundation-token"] = ingest_token
     async with httpx.AsyncClient(timeout=8.0) as http:
         status_url = ingest_url.rsplit("/v1/events", 1)[0] + "/status"
-        response = await http.get(status_url)
+        response = await http.get(status_url, headers=headers)
         response.raise_for_status()
         status = response.json()
 
