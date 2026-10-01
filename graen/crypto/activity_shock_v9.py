@@ -96,6 +96,48 @@ def _bar_end(row: Mapping[str, Any]) -> datetime:
     return _stamp(row.get("t")) + timedelta(minutes=BAR_MINUTES)
 
 
+def verify_stage_corpus(
+    bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    start: datetime,
+    end: datetime,
+    min_fraction: float = 0.80,
+) -> dict[str, Any]:
+    start = _aware(start, "start")
+    end = _aware(end, "end")
+    expected = max(int((end - start).total_seconds() // (BAR_MINUTES * 60)), 1)
+    counts: dict[str, int] = {}
+    fractions: dict[str, float] = {}
+    failures: list[str] = []
+    for symbol in UNIVERSE:
+        count = 0
+        for row in bars_by_symbol.get(symbol, ()):
+            try:
+                stamp = _stamp(row.get("t"))
+            except Exception:
+                continue
+            if start <= stamp < end:
+                count += 1
+        counts[symbol] = count
+        fraction = count / expected
+        fractions[symbol] = fraction
+        if fraction < min_fraction:
+            failures.append(symbol)
+    report = {
+        "expected_bars_per_symbol": expected,
+        "counts": counts,
+        "fractions": fractions,
+        "minimum_fraction": min_fraction,
+        "passed": not failures,
+        "failed_symbols": failures,
+    }
+    if failures:
+        raise ValueError(
+            "v9_stage_corpus_incomplete:" + ",".join(sorted(failures))
+        )
+    return report
+
+
 def build_series(
     bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
     *,
