@@ -6,10 +6,8 @@ MIGRATION = ROOT / "database" / "20260928125644_math001_d_dependence.sql"
 SQL = MIGRATION.read_text(encoding="utf-8")
 GATEWAY = (
     ROOT
-    / "supabase"
-    / "functions"
-    / "research-agent-gateway"
-    / "index.ts"
+    / "foundation"
+    / "research_agent_gateway.py"
 ).read_text(encoding="utf-8")
 
 
@@ -44,7 +42,8 @@ def test_math001_d_state_fails_closed_on_empty_authority():
 
 
 def test_gateway_persists_and_exposes_dependence_plans():
-    assert "rhen_research_record_dependence_plan" in GATEWAY
-    assert "rhen_research_dependence_state_v1" in GATEWAY
+    assert "record_search_ledger" in GATEWAY
+    assert "dependence_plan" in GATEWAY
     assert "recent_dependence_plans" in GATEWAY
-    assert "dependence_plan_write_failed" in GATEWAY
+    assert "production_authority" in GATEWAY
+    assert "protected_stage_authority" in GATEWAY

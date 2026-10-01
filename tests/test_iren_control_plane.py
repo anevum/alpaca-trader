@@ -221,9 +221,9 @@ def test_status_is_authenticated_and_legacy_scheduler_routes_preserved(monkeypat
 
 def test_private_sql_revision_fence_and_bounded_notification_retries():
     sql = Path("database/iren_control_plane.sql").read_text()
-    gateway = Path("supabase/functions/scheduler-gateway/index.ts").read_text()
+    gateway = Path("foundation/iren_gateway.py").read_text()
     assert "for update" in sql and "expected_revision" in sql
     assert "security invoker" in sql
     assert sql.count("enable row level security") == 2
     assert "attempts < 3" in gateway and "skip locked" in gateway
-    assert "owner=${String(body.owner)}" in gateway
+    assert "owner_uuid" in gateway and "owner=%s" in gateway

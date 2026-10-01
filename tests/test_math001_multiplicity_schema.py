@@ -6,10 +6,8 @@ MIGRATION = ROOT / "database" / "20260928121527_math001_c_multiplicity.sql"
 SQL = MIGRATION.read_text(encoding="utf-8")
 GATEWAY = (
     ROOT
-    / "supabase"
-    / "functions"
-    / "research-agent-gateway"
-    / "index.ts"
+    / "foundation"
+    / "research_agent_gateway.py"
 ).read_text(encoding="utf-8")
 
 
@@ -45,7 +43,8 @@ def test_math001_c_uses_security_invoker_only():
 
 
 def test_gateway_persists_and_exposes_multiplicity_plans():
-    assert "rhen_research_record_multiplicity_plan" in GATEWAY
-    assert "rhen_research_multiplicity_state_v1" in GATEWAY
+    assert "record_search_ledger" in GATEWAY
+    assert "multiplicity_plan" in GATEWAY
     assert "recent_multiplicity_plans" in GATEWAY
-    assert "multiplicity_plan_write_failed" in GATEWAY
+    assert "production_authority" in GATEWAY
+    assert "protected_stage_authority" in GATEWAY
