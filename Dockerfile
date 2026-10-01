@@ -8,5 +8,6 @@ COPY research/crypto ./research/crypto
 COPY scripts ./scripts
 COPY research/theory_registry.json ./research/theory_registry.json
 COPY foundation ./foundation
+COPY db ./db
 ENV PYTHONUNBUFFERED=1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
