@@ -45,10 +45,19 @@ from graen.crypto.autonomous_campaign import (
     prespecification as autonomous_prespecification,
     stage_metadata as autonomous_stage_metadata,
 )
+from graen.crypto.activity_shock_v9 import (
+    FAMILY as V9_FAMILY,
+    METHODOLOGY_VERSION as V9_METHODOLOGY_VERSION,
+    UNIVERSE as V9_UNIVERSE,
+    candidate_specs as v9_candidate_specs,
+    evaluate_development as evaluate_v9_development,
+    evaluate_holdout as evaluate_v9_holdout,
+    evaluate_validation as evaluate_v9_validation,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.3.0"
+RUNTIME_VERSION = "graen-research-executor-v1.4.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -72,6 +81,53 @@ AUTONOMOUS_STAGE_KEYS = {
     AUTONOMOUS_HOLDOUT_STAGE,
     AUTONOMOUS_VELUM_STAGE,
 }
+
+V9_CAMPAIGN_ID = "crypto-activity-shock-v9"
+V9_DEVELOPMENT_STAGE = "CRYPTO_ACTIVITY_SHOCK_V9_DEVELOPMENT"
+V9_VALIDATION_STAGE = "CRYPTO_ACTIVITY_SHOCK_V9_VALIDATION"
+V9_HOLDOUT_STAGE = "CRYPTO_ACTIVITY_SHOCK_V9_HOLDOUT"
+V9_VELUM_STAGE = "CRYPTO_ACTIVITY_SHOCK_V9_VELUM_REPLAY"
+V9_STAGE_KEYS = {
+    V9_DEVELOPMENT_STAGE,
+    V9_VALIDATION_STAGE,
+    V9_HOLDOUT_STAGE,
+    V9_VELUM_STAGE,
+}
+V9_EPOCHS = (
+    {
+        "name": "PRE2024-A",
+        "development_start": datetime(2022, 1, 1, tzinfo=UTC),
+        "validation_start": datetime(2022, 7, 1, tzinfo=UTC),
+        "holdout_start": datetime(2022, 10, 1, tzinfo=UTC),
+        "holdout_end": datetime(2023, 1, 1, tzinfo=UTC),
+        "development_availability_probe_disclosed": [
+            "2022-01-01T00:00:00+00:00",
+            "2022-01-03T00:00:00+00:00",
+        ],
+    },
+    {
+        "name": "PRE2024-B",
+        "development_start": datetime(2023, 1, 1, tzinfo=UTC),
+        "validation_start": datetime(2023, 7, 1, tzinfo=UTC),
+        "holdout_start": datetime(2023, 10, 1, tzinfo=UTC),
+        "holdout_end": datetime(2024, 1, 1, tzinfo=UTC),
+        "development_availability_probe_disclosed": [
+            "2023-01-01T00:00:00+00:00",
+            "2023-01-05T00:00:00+00:00",
+        ],
+    },
+)
+
+
+def _v9_epoch_contract(epoch_index: int) -> dict[str, Any]:
+    if epoch_index < 0 or epoch_index >= len(V9_EPOCHS):
+        raise ValueError("v9_epoch_out_of_range")
+    return dict(V9_EPOCHS[epoch_index])
+
+
+def _v9_next_epoch(epoch_index: int) -> int | None:
+    candidate = epoch_index + 1
+    return candidate if candidate < len(V9_EPOCHS) else None
 
 PREVIOUSLY_INSPECTED_RANGES = (
     {
@@ -209,7 +265,7 @@ class GraenResearchExecutor:
             "service": "graen-research-executor",
             "runtime_version": RUNTIME_VERSION,
             "methodology_version": self.active_methodology_version,
-            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION, AUTONOMOUS_METHODOLOGY_PREFIX],
+            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION, AUTONOMOUS_METHODOLOGY_PREFIX, V9_METHODOLOGY_VERSION],
             "running": running,
             "autorun": self.autorun,
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
@@ -242,6 +298,16 @@ class GraenResearchExecutor:
                     "holdout_start": LEADLAG_HOLDOUT_START.isoformat(),
                     "holdout_end": LEADLAG_HOLDOUT_END.isoformat(),
                 },
+                "activity_shock_v9": [
+                    {
+                        "epoch": row["name"],
+                        "development_start": row["development_start"].isoformat(),
+                        "validation_start": row["validation_start"].isoformat(),
+                        "holdout_start": row["holdout_start"].isoformat(),
+                        "holdout_end": row["holdout_end"].isoformat(),
+                    }
+                    for row in V9_EPOCHS
+                ],
             },
             "runtime_provenance": {
                 "git_commit": _source_commit(),
@@ -1457,6 +1523,7 @@ class GraenResearchExecutor:
                 campaign_id=AUTONOMOUS_CAMPAIGN_ID,
                 epoch_index=epoch_index,
                 generation=generation,
+                candidate_methodology=AUTONOMOUS_METHODOLOGY_PREFIX,
                 candidate_spec=candidate_spec,
                 replay_start=replay_start,
                 replay_end=replay_end,
@@ -1540,6 +1607,484 @@ class GraenResearchExecutor:
 
         raise RuntimeError(f"unsupported_autonomous_campaign_stage:{stage}")
 
+    async def _execute_activity_shock_v9(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        stage = str(metadata.get("research_stage") or V9_DEVELOPMENT_STAGE)
+        epoch_index = int(metadata.get("v9_epoch_index") or 0)
+        generation = 1
+        contract = _v9_epoch_contract(epoch_index)
+        self.active_methodology_version = V9_METHODOLOGY_VERSION
+
+        def artifact_id(response: Mapping[str, Any]) -> str | None:
+            artifact = response.get("artifact")
+            return (
+                str(artifact.get("artifact_id"))
+                if isinstance(artifact, Mapping) and artifact.get("artifact_id")
+                else None
+            )
+
+        async def record_stage(
+            artifact_type: str,
+            content: dict[str, Any],
+        ) -> str | None:
+            response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type=artifact_type,
+                methodology_version=V9_METHODOLOGY_VERSION,
+                content={
+                    **content,
+                    "campaign_id": V9_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                    "research_only": True,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                },
+            )
+            return artifact_id(response)
+
+        def next_epoch_transition() -> tuple[str | None, dict[str, Any] | None]:
+            next_epoch = _v9_next_epoch(epoch_index)
+            if next_epoch is None:
+                return None, None
+            return (
+                V9_DEVELOPMENT_STAGE,
+                {
+                    "v9_campaign_id": V9_CAMPAIGN_ID,
+                    "v9_epoch_index": next_epoch,
+                    "v9_generation": 1,
+                },
+            )
+
+        if stage == V9_DEVELOPMENT_STAGE:
+            prespec = {
+                "schema_version": "graen.crypto_activity_shock.prespec.v1",
+                "campaign_id": V9_CAMPAIGN_ID,
+                "methodology_version": V9_METHODOLOGY_VERSION,
+                "family": V9_FAMILY,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "candidate_registry": [row.to_dict() for row in v9_candidate_specs()],
+                "candidate_count": len(v9_candidate_specs()),
+                "selection_rule": (
+                    "select one development survivor by expectancy_per_trade * sqrt(trade_count); "
+                    "validation and holdout remain unopened until prior gate passes"
+                ),
+                "stage_order": ["DEVELOPMENT", "VALIDATION", "HOLDOUT", "VELUM_REPLAY"],
+                "development": [
+                    contract["development_start"].isoformat(),
+                    contract["validation_start"].isoformat(),
+                ],
+                "validation": [
+                    contract["validation_start"].isoformat(),
+                    contract["holdout_start"].isoformat(),
+                ],
+                "holdout": [
+                    contract["holdout_start"].isoformat(),
+                    contract["holdout_end"].isoformat(),
+                ],
+                "development_availability_probe_disclosed": list(
+                    contract["development_availability_probe_disclosed"]
+                ),
+                "validation_previously_inspected": False,
+                "holdout_previously_inspected": False,
+                "frozen_before_stage_corpus_access": True,
+                "authority": {
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "risk_or_sizing_authority": False,
+                    "production_promotion_authority": False,
+                    "model_execution_enabled": False,
+                },
+            }
+            prespec_artifact = await record_stage(
+                "CRYPTO_ACTIVITY_SHOCK_V9_PRESPEC",
+                prespec,
+            )
+            bars = await self._fetch_stage(
+                V9_UNIVERSE,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+                warmup_hours=25,
+            )
+            development = evaluate_v9_development(
+                bars,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+            )
+            development_artifact = await record_stage(
+                "CRYPTO_ACTIVITY_SHOCK_V9_DEVELOPMENT_RESULT",
+                {
+                    **development,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                },
+            )
+            selected_spec = development.get("selected_candidate_spec")
+            if isinstance(selected_spec, Mapping):
+                summary = {
+                    "state": "V9_CANDIDATE_FROZEN_FOR_VALIDATION",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "DEVELOPMENT_PASS",
+                    "campaign_id": V9_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": selected_spec.get("candidate_id"),
+                    "candidate_family": V9_FAMILY,
+                    "prespec_artifact_id": prespec_artifact,
+                    "development_artifact_id": development_artifact,
+                    "validation_opened": False,
+                    "holdout_opened": False,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "next_action": "RUN_FRESH_VALIDATION",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=V9_VALIDATION_STAGE,
+                    next_metadata={
+                        "v9_campaign_id": V9_CAMPAIGN_ID,
+                        "v9_epoch_index": epoch_index,
+                        "v9_generation": 1,
+                        "v9_candidate_spec": dict(selected_spec),
+                        "v9_development_artifact_id": development_artifact,
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "V9_EPOCH_REJECTED_DEVELOPMENT"
+                    if next_stage
+                    else "V9_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "NO_DEVELOPMENT_SURVIVOR",
+                "campaign_id": V9_CAMPAIGN_ID,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "prespec_artifact_id": prespec_artifact,
+                "development_artifact_id": development_artifact,
+                "validation_opened": False,
+                "holdout_opened": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        candidate_spec = metadata.get("v9_candidate_spec")
+        if not isinstance(candidate_spec, Mapping):
+            raise RuntimeError("v9_missing_frozen_candidate")
+
+        if stage == V9_VALIDATION_STAGE:
+            bars = await self._fetch_stage(
+                V9_UNIVERSE,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+                warmup_hours=25,
+            )
+            validation = evaluate_v9_validation(
+                bars,
+                candidate_spec=candidate_spec,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+                seed=93000 + epoch_index * 100,
+            )
+            validation_artifact = await record_stage(
+                "CRYPTO_ACTIVITY_SHOCK_V9_VALIDATION_RESULT",
+                {
+                    **validation,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                },
+            )
+            if validation.get("passed") is True:
+                summary = {
+                    "state": "V9_CANDIDATE_FROZEN_FOR_HOLDOUT",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "VALIDATION_PASS",
+                    "campaign_id": V9_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V9_FAMILY,
+                    "validation_artifact_id": validation_artifact,
+                    "holdout_opened": False,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "next_action": "OPEN_FRESH_HOLDOUT",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=V9_HOLDOUT_STAGE,
+                    next_metadata={
+                        "v9_campaign_id": V9_CAMPAIGN_ID,
+                        "v9_epoch_index": epoch_index,
+                        "v9_generation": 1,
+                        "v9_candidate_spec": dict(candidate_spec),
+                        "v9_validation_artifact_id": validation_artifact,
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "V9_CANDIDATE_REJECTED_VALIDATION"
+                    if next_stage
+                    else "V9_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "VALIDATION_FAIL",
+                "campaign_id": V9_CAMPAIGN_ID,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "candidate_id": candidate_spec.get("candidate_id"),
+                "candidate_family": V9_FAMILY,
+                "validation_artifact_id": validation_artifact,
+                "holdout_opened": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        if stage == V9_HOLDOUT_STAGE:
+            bars = await self._fetch_stage(
+                V9_UNIVERSE,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
+                warmup_hours=25,
+            )
+            holdout = evaluate_v9_holdout(
+                bars,
+                candidate_spec=candidate_spec,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
+                seed=94000 + epoch_index * 100,
+            )
+            holdout_artifact = await record_stage(
+                "CRYPTO_ACTIVITY_SHOCK_V9_HOLDOUT_RESULT",
+                {
+                    **holdout,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                },
+            )
+            if holdout.get("passed") is True:
+                summary = {
+                    "state": "V9_CANDIDATE_READY_FOR_VELUM",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "HOLDOUT_PASS",
+                    "campaign_id": V9_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V9_FAMILY,
+                    "holdout_artifact_id": holdout_artifact,
+                    "holdout_opened": True,
+                    "holdout_passed": True,
+                    "model_invoked": False,
+                    "execution_authority": False,
+                    "next_action": "VELUM_CANDIDATE_REPLAY",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=V9_VELUM_STAGE,
+                    next_metadata={
+                        "v9_campaign_id": V9_CAMPAIGN_ID,
+                        "v9_epoch_index": epoch_index,
+                        "v9_generation": 1,
+                        "v9_candidate_spec": dict(candidate_spec),
+                        "v9_holdout_result": holdout,
+                        "v9_holdout_artifact_id": holdout_artifact,
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "V9_CANDIDATE_REJECTED_HOLDOUT"
+                    if next_stage
+                    else "V9_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "HOLDOUT_FAIL",
+                "campaign_id": V9_CAMPAIGN_ID,
+                "epoch": contract["name"],
+                "epoch_index": epoch_index,
+                "candidate_id": candidate_spec.get("candidate_id"),
+                "candidate_family": V9_FAMILY,
+                "holdout_artifact_id": holdout_artifact,
+                "holdout_opened": True,
+                "holdout_passed": False,
+                "model_invoked": False,
+                "execution_authority": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        if stage == V9_VELUM_STAGE:
+            holdout_artifact_id = metadata.get("v9_holdout_artifact_id")
+            replay_start = contract["holdout_end"]
+            replay_end = min(
+                replay_start + timedelta(days=30),
+                datetime.now(UTC) - timedelta(minutes=10),
+            )
+            if replay_end <= replay_start:
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary={
+                        "state": "V9_VELUM_REPLAY_WAITING_FOR_DATA",
+                        "decision": "CONTINUE_RESEARCH",
+                        "status": "WAITING_FOR_REPLAY_WINDOW",
+                        "campaign_id": V9_CAMPAIGN_ID,
+                        "epoch": contract["name"],
+                        "epoch_index": epoch_index,
+                        "candidate_id": candidate_spec.get("candidate_id"),
+                        "execution_authority": False,
+                        "next_action": "RETRY_VELUM_REPLAY",
+                    },
+                    next_stage=V9_VELUM_STAGE,
+                    next_metadata=dict(metadata),
+                )
+
+            velum_result = await self._replay_in_velum(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id=V9_CAMPAIGN_ID,
+                epoch_index=epoch_index,
+                generation=generation,
+                candidate_methodology=V9_METHODOLOGY_VERSION,
+                candidate_spec=candidate_spec,
+                replay_start=replay_start,
+                replay_end=replay_end,
+                seed=95000 + epoch_index * 100,
+            )
+            velum_artifact = await record_stage(
+                "CRYPTO_ACTIVITY_SHOCK_V9_VELUM_RESULT",
+                {
+                    "velum_result": velum_result,
+                    "holdout_artifact_id": holdout_artifact_id,
+                    "replay_start": replay_start.isoformat(),
+                    "replay_end": replay_end.isoformat(),
+                },
+            )
+            gate = velum_result.get("engineering_gate")
+            passed = bool(isinstance(gate, Mapping) and gate.get("passed") is True)
+            if passed:
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="SUCCEEDED",
+                    summary={
+                        "state": "CANDIDATE_READY_FOR_FORWARD_SHADOW",
+                        "decision": "FORWARD_SHADOW_REQUIRED",
+                        "status": "VELUM_PASS",
+                        "campaign_id": V9_CAMPAIGN_ID,
+                        "epoch": contract["name"],
+                        "epoch_index": epoch_index,
+                        "candidate_id": candidate_spec.get("candidate_id"),
+                        "candidate_family": V9_FAMILY,
+                        "holdout_artifact_id": holdout_artifact_id,
+                        "velum_artifact_id": velum_artifact,
+                        "velum_engineering_gate": dict(gate),
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                        "production_state_changed": False,
+                        "next_action": "FORWARD_SHADOW_OBSERVATION",
+                    },
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": (
+                        "V9_CANDIDATE_REJECTED_VELUM"
+                        if next_stage
+                        else "V9_CAMPAIGN_EXHAUSTED"
+                    ),
+                    "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                    "status": "VELUM_FAIL",
+                    "campaign_id": V9_CAMPAIGN_ID,
+                    "epoch": contract["name"],
+                    "epoch_index": epoch_index,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V9_FAMILY,
+                    "holdout_artifact_id": holdout_artifact_id,
+                    "velum_artifact_id": velum_artifact,
+                    "velum_engineering_gate": dict(gate) if isinstance(gate, Mapping) else {},
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                    "next_action": (
+                        "START_NEXT_UNTOUCHED_EPOCH"
+                        if next_stage
+                        else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                    ),
+                },
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
+        raise RuntimeError(f"unsupported_v9_stage:{stage}")
+
     async def _replay_in_velum(
         self,
         *,
@@ -1548,6 +2093,7 @@ class GraenResearchExecutor:
         campaign_id: str,
         epoch_index: int,
         generation: int,
+        candidate_methodology: str,
         candidate_spec: Mapping[str, Any],
         replay_start: datetime,
         replay_end: datetime,
@@ -1565,6 +2111,7 @@ class GraenResearchExecutor:
                     "campaign_id": campaign_id,
                     "epoch_index": epoch_index,
                     "generation": generation,
+                    "candidate_methodology": candidate_methodology,
                     "candidate_spec": dict(candidate_spec),
                     "replay_start": replay_start.isoformat(),
                     "replay_end": replay_end.isoformat(),
@@ -1606,6 +2153,14 @@ class GraenResearchExecutor:
 
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+        staged_v9 = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") in V9_STAGE_KEYS
+            for row in (snapshot.get("problems") or [])
+        )
         staged_autonomous = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -1623,7 +2178,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            AUTONOMOUS_METHODOLOGY_PREFIX
+            V9_METHODOLOGY_VERSION
+            if staged_v9
+            else AUTONOMOUS_METHODOLOGY_PREFIX
             if staged_autonomous
             else LEADLAG_METHODOLOGY_VERSION
             if staged_leadlag
@@ -1655,6 +2212,8 @@ class GraenResearchExecutor:
         await self._heartbeat()
 
         metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        if metadata.get("research_stage") in V9_STAGE_KEYS:
+            return await self._execute_activity_shock_v9(problem, run)
         if metadata.get("research_stage") in AUTONOMOUS_STAGE_KEYS:
             return await self._execute_autonomous_campaign(problem, run)
         if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
