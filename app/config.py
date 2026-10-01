@@ -523,14 +523,6 @@ class Settings(BaseSettings):
         adjustment = self.session_cash_flow_adjustment
         if adjustment is not None and adjustment.run_id != self.trading_run_id:
             raise ValueError("cash-flow adjustment must match TRADING_RUN_ID")
-        if not self.command_access_team_domain.strip():
-            raise ValueError(
-                "CF_ACCESS_TEAM_DOMAIN is required for COMMAND auth"
-            )
-        if not self.command_access_aud.strip():
-            raise ValueError(
-                "CF_ACCESS_AUD is required for COMMAND auth"
-            )
         if self.trading_mode not in {"paper", "live"}:
             raise ValueError("TRADING_MODE must be paper or live")
         if self.strategy_name not in {"opening_range_vwap", "rolling_momentum_vwap"}:
