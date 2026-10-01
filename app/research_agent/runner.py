@@ -362,12 +362,104 @@ class ResearchAgentRunner:
             "persisted": False,
         }
 
+    def _missing_report_review(
+        self,
+        *,
+        cadence: str,
+    ) -> dict[str, Any]:
+        """Return a fail-closed review when canonical report evidence is absent.
+
+        Missing evidence is represented as a blocker, never synthesized into a
+        report. This keeps the service observable and read-only while preventing
+        semantic review, experiment proposals, or protected research actions.
+        """
+        reference = f"CANONICAL_{cadence.upper()}_REPORT_MISSING"
+        queue = build_queue(self.evidence.research_questions)
+        queue_records = [_queue_record(item) for item in queue]
+        queue_blockers = [
+            row for row in queue_records if row["evidence_integrity_blocker"]
+        ]
+        strategy_questions = [
+            row
+            for row in queue_records
+            if row["category"] == ResearchCategory.STRATEGY_HYPOTHESIS.value
+        ]
+        ready_strategy_questions = [
+            row
+            for row in strategy_questions
+            if row["semantic_readiness"] == "READY"
+        ]
+        waiting_strategy_questions = [
+            row
+            for row in strategy_questions
+            if row["semantic_readiness"] == "WAITING"
+        ]
+        classification = classify_structured_evidence(report_evidence(None))
+        evidence_material = {
+            "cadence": cadence,
+            "report_missing": True,
+            "current_strategy": self.evidence.current_strategy,
+            "question_snapshots": [
+                deterministic_dict(row)
+                for row in self.evidence.research_questions
+            ],
+            "experiments": list(self.evidence.experiments),
+            "research_decisions": list(self.evidence.research_decisions),
+            "evidence_cutoff": self.evidence.evidence_cutoff,
+        }
+        fingerprint = input_fingerprint(evidence_material)
+        run_key = deterministic_run_key(
+            cadence=cadence,
+            trigger_reference=reference,
+            fingerprint=fingerprint,
+        )
+        duplicate = run_key in self._seen_run_keys
+        self._seen_run_keys.add(run_key)
+        return {
+            "mode": "DRY_RUN",
+            "cadence": cadence,
+            "run_key": run_key,
+            "input_fingerprint": fingerprint,
+            "duplicate": duplicate,
+            "trigger_reference": reference,
+            "evidence_cutoff": (
+                self.evidence.evidence_cutoff.isoformat()
+                if self.evidence.evidence_cutoff
+                else None
+            ),
+            "classification": deterministic_dict(classification),
+            "queue": queue_records,
+            "blocker_count": len(queue_blockers) + 1,
+            "queue_blocker_count": len(queue_blockers),
+            "report_integrity_blocker": True,
+            "strategy_question_count": len(strategy_questions),
+            "ready_strategy_question_count": len(ready_strategy_questions),
+            "waiting_strategy_question_count": len(waiting_strategy_questions),
+            "semantic_review_warranted": False,
+            "proposed_state_updates": [],
+            "experiment_recommendation": None,
+            "llm_usage": {
+                "invoked": False,
+                "provider": None,
+                "model": None,
+            },
+            "mutations": {
+                "audit_record_persisted": False,
+                "research_questions_written": 0,
+                "experiments_written": 0,
+                "research_stages_opened": 0,
+                "strategy_changes": 0,
+                "broker_calls": 0,
+                "market_bar_reads": 0,
+            },
+        }
+
     def daily_review(self, *, dry_run: bool) -> dict[str, Any]:
         if not dry_run:
             raise ValueError("foundation daily review is dry-run only")
         report = self.evidence.latest_daily_report
         if not report:
-            raise ValueError("no canonical daily report is available")
+            return self._missing_report_review(cadence="daily")
         reference = str(report.get("session") or report.get("report_key") or "unknown")
         return self._review("daily", reference, report)
 
@@ -376,7 +468,7 @@ class ResearchAgentRunner:
             raise ValueError("foundation weekly review is dry-run only")
         report = self.evidence.latest_weekly_report
         if not report:
-            raise ValueError("no canonical weekly report is available")
+            return self._missing_report_review(cadence="weekly")
         reference = str(
             report.get("period_end")
             or report.get("week_end")
