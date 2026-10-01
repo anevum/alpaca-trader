@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from app.config import Settings, get_settings
 from app.market_data import MarketDataClient
 from app.graen.service import GraenGateway
+from app.graen.research_promotion import ResearchPromotion, engineering_problem_ids
 from graen.crypto.research_v7 import (
     CONTEXT_UNIVERSE,
     METHODOLOGY_VERSION as V7_METHODOLOGY_VERSION,
@@ -68,7 +69,7 @@ from graen.crypto.trend_pullback_v10 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.6.0"
+RUNTIME_VERSION = "graen-research-executor-v1.7.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -259,6 +260,7 @@ class GraenResearchExecutor:
             os.getenv("GRAEN_GATEWAY_TOKEN", ""),
             timeout_seconds=30.0,
         )
+        self.research_promotion = ResearchPromotion(self.gateway)
         self.callback_base_url = os.getenv("IREN_CALLBACK_BASE_URL", "").strip().rstrip("/")
         self.callback_token = os.getenv("IREN_CALLBACK_TOKEN", "").strip()
         self.velum_base_url = os.getenv("VELUM_SERVICE_URL", "").strip().rstrip("/")
@@ -320,6 +322,8 @@ class GraenResearchExecutor:
             "autorun": self.autorun,
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
             "gateway_configured": self.gateway.configured,
+            "research_code_promotion_enabled": True,
+            "runtime_github_authorization_configured": self.research_promotion.repository.configured,
             "iren_callback_configured": self.callback_configured,
             "velum_candidate_replay_configured": self.velum_configured,
             "forward_shadow_configured": self.shadow_configured,
@@ -2882,6 +2886,17 @@ class GraenResearchExecutor:
 
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+        # Research-code promotion is an explicit bounded step in the same
+        # deterministic executor loop. Process eligible handoffs without
+        # starving unrelated staged research.
+        promotion_results: list[dict[str, Any]] = []
+        for promotion_problem_id in list(engineering_problem_ids(snapshot))[:4]:
+            promotion_state = await self.research_promotion.tick(promotion_problem_id)
+            promotion_results.append({
+                "problem_id": promotion_problem_id,
+                "phase": promotion_state.get("phase"),
+                "blocked_reason": promotion_state.get("blocked_reason"),
+            })
         staged_v10 = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -2937,7 +2952,11 @@ class GraenResearchExecutor:
         if not isinstance(problem, Mapping) or not isinstance(run, Mapping):
             self.active_problem_id = None
             await self._heartbeat()
-            return {"status": "IDLE", "claimed": False}
+            return {
+                "status": "IDLE",
+                "claimed": False,
+                "research_promotion": promotion_results,
+            }
 
         problem_id = str(problem.get("problem_id"))
         run_id = str(run.get("run_id"))
