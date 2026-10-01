@@ -331,6 +331,80 @@ Deno.serve(async (req: Request) => {
       return json(200, { ok: true });
     }
 
+    if (action === "shadow_checkpoint") {
+      const problemId = String((body as any).problem_id || "").trim();
+      const activationId = String((body as any).activation_id || "").trim().slice(0,160);
+      const candidateId = String((body as any).candidate_id || "").trim().slice(0,160);
+      const shadowStatus = String((body as any).status || "").trim().toUpperCase();
+      const evidence = objectValue((body as any).evidence);
+      const allowedShadowStatuses = new Set([
+        "COLLECTING",
+        "READY_FOR_HUMAN_REVIEW",
+        "SHADOW_REJECTED",
+      ]);
+      if (!problemId || !activationId || !candidateId || !allowedShadowStatuses.has(shadowStatus))
+        throw new Error("invalid_shadow_checkpoint");
+
+      await sql.begin(async (tx) => {
+        const rows = await tx`
+          select linked_iren_job_id
+          from private.graen_problems
+          where problem_id=${problemId}::uuid
+          for update
+        `;
+        if (!rows[0]) throw new Error("graen_problem_not_found");
+        const linkedJobId = rows[0].linked_iren_job_id || null;
+        const shadowPayload = {
+          activation_id: activationId,
+          candidate_id: candidateId,
+          status: shadowStatus,
+          evidence,
+          synced_at: new Date().toISOString(),
+          execution_authority: false,
+          broker_orders_possible: false,
+          promotion_authorized: false,
+        };
+        await tx`
+          update private.graen_problems
+          set status='WAITING',
+              completed_at=null,
+              metadata=(coalesce(metadata,'{}'::jsonb) - 'research_stage')
+                || jsonb_build_object(
+                  'forward_shadow',
+                  ${sql.json(shadowPayload as any)}::jsonb
+                ),
+              updated_at=now()
+          where problem_id=${problemId}::uuid
+        `;
+        if (linkedJobId) {
+          await tx`
+            update private.iren_jobs
+            set status='WAITING',
+                requires_human=${shadowStatus === "READY_FOR_HUMAN_REVIEW"},
+                completed_at=null,
+                result=coalesce(result,'{}'::jsonb)
+                  || jsonb_build_object(
+                    'current_stage',
+                    case
+                      when ${shadowStatus}='READY_FOR_HUMAN_REVIEW' then 'FORWARD_SHADOW_READY_FOR_HUMAN_REVIEW'
+                      when ${shadowStatus}='SHADOW_REJECTED' then 'FORWARD_SHADOW_REJECTED'
+                      else 'FORWARD_SHADOW_RUNNING'
+                    end,
+                    'forward_shadow',
+                    ${sql.json(shadowPayload as any)}::jsonb
+                  ),
+                updated_at=now()
+            where job_id=${linkedJobId}::uuid
+          `;
+        }
+      });
+      return json(200, {
+        ok: true,
+        status: shadowStatus,
+        protected_action_required: shadowStatus === "READY_FOR_HUMAN_REVIEW",
+      });
+    }
+
     if (action === "complete_research_problem") {
       const problemId = String((body as any).problem_id || "").trim();
       const runId = String((body as any).run_id || "").trim();
