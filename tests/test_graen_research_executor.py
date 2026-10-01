@@ -178,3 +178,52 @@ def test_leadlag_rejection_never_fetches_validation_or_holdout(monkeypatch):
         assert "CRYPTO_LEADLAG_HOLDOUT_RESULT" not in artifact_types
 
     asyncio.run(scenario())
+
+
+def test_process_once_runs_bounded_research_promotion_without_claiming_old_stage():
+    problem_id = "44444444-4444-4444-4444-444444444444"
+
+    class PromotionGateway(FakeGateway):
+        async def snapshot(self):
+            return {
+                "problems": [{
+                    "problem_id": problem_id,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {
+                        "research_stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
+                    },
+                }],
+                "runs": [],
+            }
+
+        async def claim_research_problem(self, **kwargs):
+            return {"problem": None, "run": None}
+
+    class Promotion:
+        def __init__(self):
+            self.calls = []
+
+        async def tick(self, candidate_problem_id):
+            self.calls.append(candidate_problem_id)
+            return {
+                "phase": "FREEZE",
+                "blocked_reason": "complete_frozen_prespec_required",
+            }
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = PromotionGateway()
+        promotion = Promotion()
+        runtime.research_promotion = promotion
+        result = await runtime.process_once()
+        assert promotion.calls == [problem_id]
+        assert result["status"] == "IDLE"
+        assert result["claimed"] is False
+        assert result["research_promotion"] == [{
+            "problem_id": problem_id,
+            "phase": "FREEZE",
+            "blocked_reason": "complete_frozen_prespec_required",
+        }]
+
+    asyncio.run(scenario())
