@@ -47,7 +47,9 @@ credential or connector bridge.
 
 The controller therefore fails closed with
 `runtime_github_authorization_not_configured` after a valid specification is
-frozen. It supports an already-authorized `GRAEN_RESEARCH_GITHUB_TOKEN`; this
+frozen.
+
+The deployed research executor invokes bounded promotion ticks in its normal loop. A problem with a non-complete `code_promotion` state is excluded from ordinary research claims, so a blocked engineering handoff cannot silently rerun the exhausted campaign stage. It supports an already-authorized `GRAEN_RESEARCH_GITHUB_TOKEN`; this
 change does not create, copy, rotate or install any credential. Configuring a
 new authorization boundary is not accomplished by pretending the session's
 connector is callable by a deployed service.
