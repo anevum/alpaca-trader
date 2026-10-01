@@ -107,7 +107,7 @@ def test_candidate_shadow_positive_forward_sample_requires_fixed_gate(monkeypatc
         runtime.closed.append({
             "symbol": symbols[index % len(symbols)],
             "exit_at": (start + timedelta(days=index)).isoformat(),
-            "stressed_cost_net_return": 0.001,
+            "stressed_cost_net_return": 0.002 if index % 5 else -0.001,
         })
 
     checkpoint = runtime._checkpoint()
