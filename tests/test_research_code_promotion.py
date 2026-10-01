@@ -348,7 +348,7 @@ def test_infrastructure_retry_is_bounded_and_never_changes_frozen_code():
 def test_compiled_stage_fetch_is_exclusive_and_rejection_cannot_be_reclaimed(monkeypatch):
     from types import SimpleNamespace
     from app.graen import research_executor_service as service
-    from tests.test_graen_research_executor import FakeGateway
+    import importlib
 
     async def run():
         value = spec()
@@ -356,9 +356,29 @@ def test_compiled_stage_fetch_is_exclusive_and_rejection_cannot_be_reclaimed(mon
             "spec_hash": digest(value), "epoch": value["epoch"]}
         module = SimpleNamespace(SPEC=value, SPEC_HASH=digest(value),
             evaluate=lambda *args, **kwargs: result)
-        monkeypatch.setattr("importlib.import_module", lambda *args, **kwargs: module)
+        original_import = importlib.import_module
+        monkeypatch.setattr(importlib, "import_module", lambda name, *args, **kwargs:
+            module if name.startswith("graen.crypto.generated.") else original_import(name, *args, **kwargs))
 
-        class Gateway(FakeGateway):
+        class Gateway:
+            def __init__(self):
+                self.artifacts = []
+                self.queued_stages = []
+
+            async def record_artifact(self, **payload):
+                self.artifacts.append(payload)
+                return {"ok": True, "artifact": {"artifact_id": "artifact"}}
+
+            async def complete_research_problem(self, **payload):
+                return {"ok": True}
+
+            async def queue_research_stage(self, **payload):
+                self.queued_stages.append(payload)
+                return {"ok": True, "problem": {"problem_id": "problem"}}
+
+            async def executor_heartbeat(self, **payload):
+                return {"ok": True}
+
             async def _request(self, method, payload):
                 return {"ok": True, "current": None, "predecessor": None}
 
