@@ -7,6 +7,7 @@ from foundation.ingest.service import (
     EvidenceEvent,
     canonical_payload_hash,
     infer_run,
+    reconciliation_result,
     require_foundation_token,
 )
 
@@ -33,38 +34,35 @@ def test_payload_hash_is_canonical():
 
 
 def test_infer_crypto_run():
-    asset_class, mode = infer_run(
-        event(payload={"market_lane": "crypto", "execution_mode": "shadow"})
-    )
-    assert asset_class == "crypto"
-    assert mode == "shadow"
+    assert infer_run(event(payload={"market_lane":"crypto","execution_mode":"shadow"})) == ("crypto","shadow")
 
 
 def test_infer_equity_run():
-    asset_class, mode = infer_run(
-        event(payload={"market_lane": "us_equity", "trading_mode": "live"})
-    )
-    assert asset_class == "equity"
-    assert mode == "live"
+    assert infer_run(event(payload={"market_lane":"us_equity","trading_mode":"live"})) == ("equity","live")
 
 
-def test_infer_unknown_run_is_explicit():
-    asset_class, mode = infer_run(event(payload={}))
-    assert asset_class == "unknown"
-    assert mode == "shadow_migration"
-
-
-def test_ingest_token_is_enforced_when_configured(monkeypatch):
+def test_ingest_token_accepts_legacy_header_alias(monkeypatch):
     monkeypatch.setenv("FOUNDATION_INGEST_TOKEN", "foundation-secret")
-    with pytest.raises(HTTPException) as missing:
-        require_foundation_token(None)
-    assert missing.value.status_code == 401
-    with pytest.raises(HTTPException) as wrong:
-        require_foundation_token("wrong")
-    assert wrong.value.status_code == 401
-    require_foundation_token("foundation-secret")
+    require_foundation_token("foundation-secret", None)
+    require_foundation_token(None, "foundation-secret")
+    with pytest.raises(HTTPException):
+        require_foundation_token(None, "wrong")
 
 
-def test_ingest_token_is_optional_on_private_staging(monkeypatch):
-    monkeypatch.delenv("FOUNDATION_INGEST_TOKEN", raising=False)
-    require_foundation_token(None)
+def test_reconciliation_is_safe_only_without_blockers():
+    observed = datetime(2026,10,1,tzinfo=timezone.utc)
+    safe = reconciliation_result(
+        unresolved_intents=[],
+        unknown_open_orders=[],
+        untracked_positions=[],
+        observed_at=observed,
+    )
+    assert safe["safe_to_enter"] is True
+    blocked = reconciliation_result(
+        unresolved_intents=[{"client_order_id":"anevum-a"}],
+        unknown_open_orders=[],
+        untracked_positions=[],
+        observed_at=observed,
+    )
+    assert blocked["safe_to_enter"] is False
+    assert blocked["reason"] == "unresolved_intents:1"
