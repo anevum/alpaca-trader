@@ -570,6 +570,56 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    if (action === "block_research_claim") {
+      const problemId = String((body as any).problem_id || "").trim();
+      const runId = String((body as any).run_id || "").trim();
+      const workerId = String((body as any).worker_id || "").trim().slice(0, 160);
+      const error = String((body as any).error || "research_claim_failed").trim().slice(0, 1000);
+      if (!problemId || !runId || !workerId) throw new Error("invalid_research_claim_block");
+      await sql.begin(async (tx) => {
+        const runs = await tx`
+          select status,worker_id from private.graen_runs
+          where run_id=${runId}::uuid and problem_id=${problemId}::uuid
+          for update
+        `;
+        if (!runs[0]) throw new Error("graen_run_not_found");
+        if (runs[0].status === 'RUNNING') {
+          await tx`
+            update private.graen_runs
+            set status='BLOCKED',
+                result_summary=jsonb_build_object(
+                  'state','RESEARCH_EXECUTION_BLOCKED',
+                  'decision','REPAIR_REQUIRED',
+                  'next_action','RESUME_FROZEN_STAGE_AFTER_REPAIR',
+                  'error',${error},
+                  'execution_authority',false
+                ),
+                completed_at=now()
+            where run_id=${runId}::uuid and problem_id=${problemId}::uuid
+          `;
+        }
+        await tx`
+          update private.graen_problems
+          set status='BLOCKED',updated_at=now()
+          where problem_id=${problemId}::uuid and status='RUNNING'
+        `;
+        const executorState = {
+          worker_id: workerId,
+          heartbeat_at: new Date().toISOString(),
+          active_problem_id: null,
+          last_error: error,
+        };
+        await tx`
+          update private.graen_runtime_state
+          set metadata=coalesce(metadata,'{}'::jsonb)
+                || jsonb_build_object('research_executor', ${tx.json(executorState as any)}::jsonb),
+              updated_at=now()
+          where singleton
+        `;
+      });
+      return json(200, { ok: true, status: "BLOCKED" });
+    }
+
     if (action === "complete_research_problem") {
       const problemId = String((body as any).problem_id || "").trim();
       const runId = String((body as any).run_id || "").trim();
