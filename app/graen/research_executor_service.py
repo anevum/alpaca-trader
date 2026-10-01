@@ -48,7 +48,7 @@ from graen.crypto.autonomous_campaign import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.2.0"
+RUNTIME_VERSION = "graen-research-executor-v1.3.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -65,10 +65,12 @@ LEADLAG_STAGE_KEY = "CRYPTO_LEADLAG_R2_READY"
 AUTONOMOUS_DEVELOPMENT_STAGE = "CRYPTO_AUTONOMOUS_DEVELOPMENT"
 AUTONOMOUS_VALIDATION_STAGE = "CRYPTO_AUTONOMOUS_VALIDATION"
 AUTONOMOUS_HOLDOUT_STAGE = "CRYPTO_AUTONOMOUS_HOLDOUT"
+AUTONOMOUS_VELUM_STAGE = "CRYPTO_AUTONOMOUS_VELUM_REPLAY"
 AUTONOMOUS_STAGE_KEYS = {
     AUTONOMOUS_DEVELOPMENT_STAGE,
     AUTONOMOUS_VALIDATION_STAGE,
     AUTONOMOUS_HOLDOUT_STAGE,
+    AUTONOMOUS_VELUM_STAGE,
 }
 
 PREVIOUSLY_INSPECTED_RANGES = (
@@ -168,6 +170,8 @@ class GraenResearchExecutor:
         )
         self.callback_base_url = os.getenv("IREN_CALLBACK_BASE_URL", "").strip().rstrip("/")
         self.callback_token = os.getenv("IREN_CALLBACK_TOKEN", "").strip()
+        self.velum_base_url = os.getenv("VELUM_SERVICE_URL", "").strip().rstrip("/")
+        self.velum_token = os.getenv("VELUM_GRAEN_TOKEN", "").strip()
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.started_at = datetime.now(UTC)
@@ -182,6 +186,10 @@ class GraenResearchExecutor:
     @property
     def callback_configured(self) -> bool:
         return bool(self.callback_base_url.startswith("http") and len(self.callback_token) >= 32)
+
+    @property
+    def velum_configured(self) -> bool:
+        return bool(self.velum_base_url.startswith("http") and len(self.velum_token) >= 32)
 
     def health(self) -> dict[str, Any]:
         running = self.task is not None and not self.task.done()
@@ -204,6 +212,7 @@ class GraenResearchExecutor:
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
             "gateway_configured": self.gateway.configured,
             "iren_callback_configured": self.callback_configured,
+            "velum_candidate_replay_configured": self.velum_configured,
             "execution_authority": False,
             "broker_orders_possible": False,
             "risk_or_sizing_authority": False,
@@ -1334,9 +1343,17 @@ class GraenResearchExecutor:
                 },
             )
             if holdout.get("passed") is True:
+                next_metadata = autonomous_stage_metadata(
+                    epoch_index=epoch_index,
+                    generation=generation,
+                    candidate_spec=candidate_spec,
+                    development_result=development_result,
+                )
+                next_metadata["holdout_result"] = holdout
+                next_metadata["holdout_artifact_id"] = holdout_artifact
                 summary = {
                     "state": "CANDIDATE_READY_FOR_VELUM",
-                    "decision": "PROMOTE_TO_VELUM",
+                    "decision": "CONTINUE_RESEARCH",
                     "status": "HOLDOUT_PASS",
                     "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
                     "epoch": contract["epoch"],
@@ -1350,13 +1367,15 @@ class GraenResearchExecutor:
                     "model_invoked": False,
                     "execution_authority": False,
                     "production_state_changed": False,
-                    "next_action": "VELUM_REPLAY",
+                    "next_action": "VELUM_CANDIDATE_REPLAY",
                 }
                 return await self._finalize(
                     problem=problem,
                     run=run,
-                    status="SUCCEEDED",
+                    status="WAITING",
                     summary=summary,
+                    next_stage=AUTONOMOUS_VELUM_STAGE,
+                    next_metadata=next_metadata,
                 )
 
             next_stage, next_metadata = next_epoch_transition()
@@ -1395,7 +1414,166 @@ class GraenResearchExecutor:
                 next_metadata=next_metadata,
             )
 
+        if stage == AUTONOMOUS_VELUM_STAGE:
+            holdout_result = metadata.get("holdout_result")
+            holdout_artifact_id = metadata.get("holdout_artifact_id")
+            if not isinstance(candidate_spec, Mapping) or not isinstance(holdout_result, Mapping):
+                raise RuntimeError("autonomous_velum_stage_missing_frozen_candidate")
+            replay_start = contract["holdout_end"]
+            replay_end = min(
+                replay_start + timedelta(days=30),
+                datetime.now(UTC) - timedelta(minutes=10),
+            )
+            if replay_end <= replay_start:
+                summary = {
+                    "state": "VELUM_REPLAY_WAITING_FOR_DATA",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "WAITING_FOR_REPLAY_WINDOW",
+                    "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                    "epoch": contract["epoch"],
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "holdout_artifact_id": holdout_artifact_id,
+                    "execution_authority": False,
+                    "production_state_changed": False,
+                    "next_action": "RETRY_VELUM_REPLAY",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=AUTONOMOUS_VELUM_STAGE,
+                    next_metadata=dict(metadata),
+                )
+
+            velum_result = await self._replay_in_velum(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id=AUTONOMOUS_CAMPAIGN_ID,
+                epoch_index=epoch_index,
+                generation=generation,
+                candidate_spec=candidate_spec,
+                replay_start=replay_start,
+                replay_end=replay_end,
+                seed=91000 + epoch_index * 100 + generation,
+            )
+            velum_artifact = await record_stage(
+                "CRYPTO_AUTONOMOUS_VELUM_RESULT",
+                {
+                    "velum_result": velum_result,
+                    "holdout_artifact_id": holdout_artifact_id,
+                    "replay_start": replay_start.isoformat(),
+                    "replay_end": replay_end.isoformat(),
+                },
+            )
+            gate = velum_result.get("engineering_gate")
+            passed = bool(
+                isinstance(gate, Mapping)
+                and gate.get("passed") is True
+            )
+            if passed:
+                summary = {
+                    "state": "CANDIDATE_READY_FOR_FORWARD_SHADOW",
+                    "decision": "FORWARD_SHADOW_REQUIRED",
+                    "status": "VELUM_PASS",
+                    "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                    "epoch": contract["epoch"],
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": candidate_spec.get("family"),
+                    "holdout_artifact_id": holdout_artifact_id,
+                    "velum_artifact_id": velum_artifact,
+                    "velum_engineering_gate": dict(gate),
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                    "next_action": "FORWARD_SHADOW_OBSERVATION",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="SUCCEEDED",
+                    summary=summary,
+                )
+
+            next_stage, next_metadata = next_epoch_transition()
+            summary = {
+                "state": (
+                    "AUTONOMOUS_CANDIDATE_REJECTED_VELUM"
+                    if next_stage
+                    else "AUTONOMOUS_CAMPAIGN_EXHAUSTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if next_stage else "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "status": "VELUM_FAIL",
+                "campaign_id": AUTONOMOUS_CAMPAIGN_ID,
+                "epoch": contract["epoch"],
+                "epoch_index": epoch_index,
+                "generation": generation,
+                "candidate_id": candidate_spec.get("candidate_id"),
+                "candidate_family": candidate_spec.get("family"),
+                "holdout_artifact_id": holdout_artifact_id,
+                "velum_artifact_id": velum_artifact,
+                "velum_engineering_gate": dict(gate) if isinstance(gate, Mapping) else {},
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_state_changed": False,
+                "next_action": (
+                    "START_NEXT_UNTOUCHED_EPOCH"
+                    if next_stage
+                    else "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+                ),
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=next_stage,
+                next_metadata=next_metadata,
+            )
+
         raise RuntimeError(f"unsupported_autonomous_campaign_stage:{stage}")
+
+    async def _replay_in_velum(
+        self,
+        *,
+        problem_id: str,
+        graen_run_id: str,
+        campaign_id: str,
+        epoch_index: int,
+        generation: int,
+        candidate_spec: Mapping[str, Any],
+        replay_start: datetime,
+        replay_end: datetime,
+        seed: int,
+    ) -> dict[str, Any]:
+        if not self.velum_configured:
+            raise RuntimeError("VELUM candidate replay is not configured")
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                f"{self.velum_base_url}/v1/graen/candidate-replay",
+                headers={"x-graen-velum-token": self.velum_token},
+                json={
+                    "problem_id": problem_id,
+                    "graen_run_id": graen_run_id,
+                    "campaign_id": campaign_id,
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "candidate_spec": dict(candidate_spec),
+                    "replay_start": replay_start.isoformat(),
+                    "replay_end": replay_end.isoformat(),
+                    "seed": seed,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        result = payload.get("result")
+        if not isinstance(result, Mapping):
+            raise RuntimeError("VELUM candidate replay returned no result")
+        return dict(result)
 
     async def _callback_iren(
         self,
