@@ -27,7 +27,7 @@ def state(
     baseline: dict | None,
 ) -> dict:
     return {
-        "version": "iren-control-v1.0.0",
+        "version": "iren-control-v2.0.0",
         "observed_at": observed_at.isoformat(),
         "state": health,
         "source_commit": "foundation-iren-gateway-probe",
