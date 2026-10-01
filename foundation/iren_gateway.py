@@ -12,7 +12,7 @@ from foundation.iren_work_gateway import handle_work_action
 
 UTC = timezone.utc
 IREN_STATE_KEY = "IREN"
-IREN_STATE_VERSION = "iren-control-v1.0.0"
+IREN_STATE_VERSION = "iren-control-v2.0.0"
 TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "MISSED", "SKIPPED", "STALE"}
 RETRYABLE_FAILURES = {
     "transient_infrastructure",
