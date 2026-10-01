@@ -1,13 +1,13 @@
 from pathlib import Path
 
 
-def test_report_read_exposes_candidate_checks_and_forward_outcomes():
-    source = Path("supabase/functions/trading-report-read/index.ts").read_text()
-    assert "'checks', c.checks" in source
-    assert "'rejection_reason_codes', c.rejection_reason_codes" in source
-    assert "private.trading_candidate_forward_outcomes fo" in source
-    assert "fo.methodology_version='candidate-forward-v2'" in source
-    assert "coalesce(outcomes.rows,'[]'::jsonb) as outcomes" in source
+def test_report_read_preserves_candidate_fields_and_forward_outcomes():
+    source = Path("foundation/report_read.py").read_text()
+    assert "candidate = dict(raw)" in source
+    assert '"decision_cycle_payload"' in source
+    assert 'event_types=["candidate_forward_outcome"]' in source
+    assert 'row["outcomes"]' in source
+    assert 'row["forward_outcomes"]' in source
 
 
 def test_daily_report_persists_asc005_session_and_rolling_artifacts():
