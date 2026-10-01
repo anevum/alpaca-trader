@@ -519,7 +519,7 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "CF_ACCESS_AUD is required for cloudflare_access COMMAND auth"
                 )
-                if self.trading_mode not in {"paper", "live"}:
+        if self.trading_mode not in {"paper", "live"}:
             raise ValueError("TRADING_MODE must be paper or live")
         if self.strategy_name not in {"opening_range_vwap", "rolling_momentum_vwap"}:
             raise ValueError("STRATEGY_NAME must be opening_range_vwap or rolling_momentum_vwap")
