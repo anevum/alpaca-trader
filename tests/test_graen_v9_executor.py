@@ -67,6 +67,11 @@ def test_v9_development_failure_never_fetches_future_stages(monkeypatch):
 
     monkeypatch.setattr(
         service,
+        "verify_v9_stage_corpus",
+        lambda *args, **kwargs: {"passed": True},
+    )
+    monkeypatch.setattr(
+        service,
         "evaluate_v9_development",
         lambda *args, **kwargs: {
             "stage": "DEVELOPMENT",
@@ -111,6 +116,11 @@ def test_v9_validation_failure_burns_epoch(monkeypatch):
 
     monkeypatch.setattr(
         service,
+        "verify_v9_stage_corpus",
+        lambda *args, **kwargs: {"passed": True},
+    )
+    monkeypatch.setattr(
+        service,
         "evaluate_v9_validation",
         lambda *args, **kwargs: {
             "stage": "VALIDATION",
@@ -151,6 +161,11 @@ def test_v9_holdout_pass_queues_velum(monkeypatch):
     async def fake_fetch(symbols, *, start, end, warmup_hours=169):
         return {symbol: [] for symbol in symbols}
 
+    monkeypatch.setattr(
+        service,
+        "verify_v9_stage_corpus",
+        lambda *args, **kwargs: {"passed": True},
+    )
     monkeypatch.setattr(
         service,
         "evaluate_v9_holdout",
