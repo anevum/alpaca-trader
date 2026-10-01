@@ -45,7 +45,6 @@ class Settings(BaseSettings):
 
     admin_token: str = Field(default="", alias="ADMIN_TOKEN")
 
-    command_auth_mode: str = Field(default="supabase", alias="COMMAND_AUTH_MODE")
     command_access_team_domain: str = Field(
         default="",
         alias="CF_ACCESS_TEAM_DOMAIN",
@@ -524,19 +523,14 @@ class Settings(BaseSettings):
         adjustment = self.session_cash_flow_adjustment
         if adjustment is not None and adjustment.run_id != self.trading_run_id:
             raise ValueError("cash-flow adjustment must match TRADING_RUN_ID")
-        if self.command_auth_mode not in {"supabase", "cloudflare_access", "dual"}:
+        if not self.command_access_team_domain.strip():
             raise ValueError(
-                "COMMAND_AUTH_MODE must be supabase, cloudflare_access, or dual"
+                "CF_ACCESS_TEAM_DOMAIN is required for COMMAND auth"
             )
-        if self.command_auth_mode == "cloudflare_access":
-            if not self.command_access_team_domain.strip():
-                raise ValueError(
-                    "CF_ACCESS_TEAM_DOMAIN is required for cloudflare_access COMMAND auth"
-                )
-            if not self.command_access_aud.strip():
-                raise ValueError(
-                    "CF_ACCESS_AUD is required for cloudflare_access COMMAND auth"
-                )
+        if not self.command_access_aud.strip():
+            raise ValueError(
+                "CF_ACCESS_AUD is required for COMMAND auth"
+            )
         if self.trading_mode not in {"paper", "live"}:
             raise ValueError("TRADING_MODE must be paper or live")
         if self.strategy_name not in {"opening_range_vwap", "rolling_momentum_vwap"}:
