@@ -471,7 +471,9 @@ class GraenResearchExecutor:
         warmup_hours: int = 169,
     ) -> dict[str, list[dict[str, Any]]]:
         fetch_start = start - timedelta(hours=warmup_hours)
-        fetch_end = end + timedelta(minutes=40)
+        # Stage boundaries are strict. Never fetch any bar at or beyond the
+        # next sealed stage; provider end timestamps may be inclusive.
+        fetch_end = end
         raw: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
         chunk_start = fetch_start
         while chunk_start < fetch_end:
@@ -479,7 +481,7 @@ class GraenResearchExecutor:
             chunk = await self.market_data.historical_crypto_bars_many(
                 list(symbols),
                 start=chunk_start,
-                end=chunk_end,
+                end=chunk_end - timedelta(microseconds=1),
             )
             for symbol in symbols:
                 raw[symbol].extend(chunk.get(symbol, []))
@@ -2949,18 +2951,34 @@ class GraenResearchExecutor:
         await self._heartbeat()
 
         metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
-        if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
-            return await self._execute_compiled_hypothesis(problem, run)
-        if metadata.get("research_stage") in V10_STAGE_KEYS:
-            return await self._execute_trend_pullback_v10(problem, run)
-        if metadata.get("research_stage") in V9_STAGE_KEYS:
-            return await self._execute_activity_shock_v9(problem, run)
-        if metadata.get("research_stage") in AUTONOMOUS_STAGE_KEYS:
-            return await self._execute_autonomous_campaign(problem, run)
-        if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
-            return await self._execute_leadlag_r2(problem, run)
-
-        return await self._execute_v7_staged(problem, run)
+        try:
+            if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
+                return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") in V10_STAGE_KEYS:
+                return await self._execute_trend_pullback_v10(problem, run)
+            if metadata.get("research_stage") in V9_STAGE_KEYS:
+                return await self._execute_activity_shock_v9(problem, run)
+            if metadata.get("research_stage") in AUTONOMOUS_STAGE_KEYS:
+                return await self._execute_autonomous_campaign(problem, run)
+            if metadata.get("research_stage") == LEADLAG_STAGE_KEY:
+                return await self._execute_leadlag_r2(problem, run)
+            return await self._execute_v7_staged(problem, run)
+        except Exception as exc:
+            # A claimed run must never be left RUNNING after the worker has
+            # abandoned it. Preserve the frozen stage and block it for an
+            # explicit repair/reconciliation decision.
+            failure = f"{type(exc).__name__}: {exc}"[:1000]
+            try:
+                await self.gateway.block_research_claim(
+                    problem_id=problem_id,
+                    run_id=run_id,
+                    worker_id=self.worker_id,
+                    error=failure,
+                )
+            finally:
+                self.active_problem_id = None
+                self.last_error = failure
+            raise
 
 
 runtime = GraenResearchExecutor()
