@@ -66,6 +66,24 @@ class Settings(BaseSettings):
     trading_ingest_url: str = Field(default="", alias="TRADING_INGEST_URL")
     trading_ingest_token: str = Field(default="", alias="TRADING_INGEST_TOKEN")
 
+    # Foundation v2 shadow evidence path. This remains independent of the
+    # live canonical persistence gate during migration.
+    foundation_shadow_enabled: bool = Field(
+        default=False, alias="FOUNDATION_SHADOW_ENABLED"
+    )
+    foundation_ingest_url: str = Field(default="", alias="FOUNDATION_INGEST_URL")
+    foundation_ingest_token: str = Field(default="", alias="FOUNDATION_INGEST_TOKEN")
+    foundation_outbox_path: str = Field(
+        default="/data/rhen-foundation-evidence.sqlite3",
+        alias="FOUNDATION_OUTBOX_PATH",
+    )
+    foundation_flush_seconds: float = Field(
+        default=1.0, alias="FOUNDATION_FLUSH_SECONDS"
+    )
+    foundation_batch_size: int = Field(
+        default=50, alias="FOUNDATION_BATCH_SIZE"
+    )
+
     # IREN native / ActivityKit delivery. All APNs signing values remain server-side.
     iren_mobile_registry_url: str = Field(
         default="https://mfntzxheldzdvlokyntk.supabase.co/functions/v1/iren-mobile-registry",
@@ -533,6 +551,20 @@ class Settings(BaseSettings):
             )
         if not 30 <= self.ledger_reconcile_seconds <= 300:
             raise ValueError("LEDGER_RECONCILE_SECONDS must be between 30 and 300")
+        if self.foundation_shadow_enabled and not self.foundation_ingest_url.strip():
+            raise ValueError(
+                "FOUNDATION_INGEST_URL is required when FOUNDATION_SHADOW_ENABLED=true"
+            )
+        if self.foundation_shadow_enabled and not self.foundation_outbox_path.strip():
+            raise ValueError(
+                "FOUNDATION_OUTBOX_PATH is required when FOUNDATION_SHADOW_ENABLED=true"
+            )
+        if not 0.1 <= self.foundation_flush_seconds <= 30.0:
+            raise ValueError(
+                "FOUNDATION_FLUSH_SECONDS must be between 0.1 and 30 seconds"
+            )
+        if not 1 <= self.foundation_batch_size <= 100:
+            raise ValueError("FOUNDATION_BATCH_SIZE must be between 1 and 100")
         if self.persistence_configured:
             if not self.trading_run_started_at_raw.strip():
                 raise ValueError(
