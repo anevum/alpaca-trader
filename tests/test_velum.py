@@ -6,8 +6,13 @@ from app.config import Settings
 from app.replay import ReplayPosition
 from app.velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
 from app.velum_service import VelumRuntime, _crypto_settings, _run_blocking, require_graen_token
+import app.velum_graen as velum_graen
 from app.velum_graen import engineering_gate
 from graen.crypto.autonomous_campaign import adaptive_candidate_specs
+from graen.crypto.activity_shock_v9 import (
+    METHODOLOGY_VERSION as V9_METHODOLOGY_VERSION,
+    candidate_specs as v9_candidate_specs,
+)
 
 
 class HoldStrategy:
@@ -168,3 +173,39 @@ def test_graen_candidate_replay_token_fails_closed(monkeypatch):
         assert getattr(exc, "status_code", None) == 503
     else:
         raise AssertionError("missing VELUM_GRAEN_TOKEN must fail closed")
+
+
+def test_velum_dispatches_v9_candidate_without_execution_authority(monkeypatch):
+    summary = {
+        "trade_count": 30,
+        "independent_day_blocks": 15,
+        "trades_per_day": 0.6,
+        "expectancy_per_trade": 0.001,
+        "profit_factor": 1.3,
+        "symbol_concentration": {"max_share": 0.5},
+        "dependence_adjusted_null": {"p_value": 0.01},
+    }
+
+    def fake_v9(*args, **kwargs):
+        return {
+            "primary": dict(summary),
+            "one_bar_delay": {**summary, "expectancy_per_trade": 0.0005},
+            "candidate": kwargs["spec"].to_dict(),
+        }
+
+    monkeypatch.setattr(velum_graen, "evaluate_v9_candidate", fake_v9)
+    result = velum_graen.replay_candidate(
+        {},
+        candidate_spec=v9_candidate_specs()[0].to_dict(),
+        candidate_methodology=V9_METHODOLOGY_VERSION,
+        start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2024, 1, 31, tzinfo=timezone.utc),
+    )
+
+    assert result["candidate_methodology"] == V9_METHODOLOGY_VERSION
+    assert result["candidate_family"] == "activity_confirmed_momentum_continuation"
+    assert result["engineering_gate"]["passed"] is True
+    assert result["research_only"] is True
+    assert result["execution_authority"] is False
+    assert result["broker_orders_possible"] is False
+    assert result["promotion_authorized"] is False

@@ -646,6 +646,7 @@ class VelumGraenCandidateRequest(BaseModel):
     campaign_id: str
     epoch_index: int
     generation: int
+    candidate_methodology: str = "graen-crypto-autonomous-v8"
     candidate_spec: dict[str, Any]
     replay_start: datetime
     replay_end: datetime
@@ -740,6 +741,7 @@ async def graen_candidate_replay(
             replay_candidate,
             bars,
             candidate_spec=request.candidate_spec,
+            candidate_methodology=request.candidate_methodology,
             start=start,
             end=end,
             seed=request.seed,
@@ -749,6 +751,7 @@ async def graen_candidate_replay(
             "problem_id": request.problem_id,
             "graen_run_id": request.graen_run_id,
             "campaign_id": request.campaign_id,
+            "candidate_methodology": request.candidate_methodology,
             "epoch_index": request.epoch_index,
             "generation": request.generation,
             "bar_coverage": {

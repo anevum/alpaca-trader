@@ -41,5 +41,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: pip install pytest==8.3.5
-      - run: python -m py_compile graen/crypto/research_v7.py graen/crypto/autonomous_campaign.py app/velum_graen.py app/velum_service.py
+      - run: python -m py_compile graen/crypto/research_v7.py graen/crypto/autonomous_campaign.py graen/crypto/activity_shock_v9.py app/velum_graen.py app/velum_service.py
       - run: python -m pytest -q tests/test_velum.py tests/test_velum_manifest.py
