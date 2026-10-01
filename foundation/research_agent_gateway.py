@@ -83,6 +83,8 @@ def _latest_strategy(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
         select run_id,strategy_version_id,asset_class,mode,started_at,ended_at,
                source_commit,configuration,status
         from rhen.strategy_runs
+        where strategy_version_id not like 'FOUNDATION-%'
+          and run_id not like 'foundation-%'
         order by started_at desc,created_at desc
         limit 1
         """
