@@ -390,6 +390,10 @@ Deno.serve(async (req: Request) => {
           where p.status='WAITING'
             and p.domain=${domain}
             and (
+              p.metadata->'code_promotion' is null
+              or p.metadata->'code_promotion'->>'phase'='COMPLETE'
+            )
+            and (
               (
                 select r.result_summary->>'state'
                 from private.graen_runs r
