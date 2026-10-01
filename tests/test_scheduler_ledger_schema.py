@@ -53,8 +53,9 @@ def test_scheduler_registry_is_packaged_by_production_image():
     assert "COPY app ./app" in dockerfile
 
 
-def test_scheduler_gateway_binds_native_json_rpc_payloads():
-    gateway = Path("supabase/functions/scheduler-gateway/index.ts").read_text()
-    assert "anevum_scheduler_claim(${sql.json(payload)}::jsonb)" in gateway
-    assert "anevum_scheduler_complete(${sql.json(payload)}::jsonb)" in gateway
+def test_scheduler_gateway_validates_and_persists_native_payloads():
+    gateway = Path("foundation/iren_gateway.py").read_text()
+    assert "def scheduler_claim" in gateway
+    assert "def scheduler_complete" in gateway
     assert "invalid_claim_shape:" in gateway
+    assert "for update" in gateway.lower()
