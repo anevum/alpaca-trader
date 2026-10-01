@@ -10,14 +10,19 @@ from graen.crypto.research_v7 import (
     build_series,
     evaluate_candidate,
 )
+from graen.crypto.activity_shock_v9 import (
+    METHODOLOGY_VERSION as V9_METHODOLOGY_VERSION,
+    evaluate_candidate as evaluate_v9_candidate,
+    spec_from_dict as v9_spec_from_dict,
+)
 
 
-METHODOLOGY_VERSION = "velum-graen-candidate-replay-v1"
+METHODOLOGY_VERSION = "velum-graen-candidate-replay-v2"
 GRAEN_CONTEXT_UNIVERSE = CONTEXT_UNIVERSE
 
 
 def engineering_gate(
-    spec: CandidateSpec,
+    spec: Any,
     scenarios: Mapping[str, Mapping[str, Any]],
 ) -> tuple[bool, list[str]]:
     high = scenarios["high"]["primary"]
@@ -56,34 +61,52 @@ def replay_candidate(
     bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
     *,
     candidate_spec: Mapping[str, Any],
+    candidate_methodology: str = "graen-crypto-autonomous-v8",
     start: datetime,
     end: datetime,
     seed: int = 91000,
 ) -> dict[str, Any]:
-    spec = candidate_from_dict(candidate_spec)
-    series = build_series(
-        bars_by_symbol,
-        start=start,
-        end=end,
-    )
-
-    scenarios = {
-        scenario: evaluate_candidate(
-            series,
-            spec,
+    if candidate_methodology == V9_METHODOLOGY_VERSION:
+        spec = v9_spec_from_dict(candidate_spec)
+        scenarios = {
+            scenario: evaluate_v9_candidate(
+                bars_by_symbol,
+                spec=spec,
+                start=start,
+                end=end,
+                scenario=scenario,
+                seed=seed + index * 20,
+            )
+            for index, scenario in enumerate(("low", "base", "high"))
+        }
+        candidate_family = "activity_confirmed_momentum_continuation"
+    else:
+        spec = candidate_from_dict(candidate_spec)
+        series = build_series(
+            bars_by_symbol,
             start=start,
             end=end,
-            scenario=scenario,
-            seed=seed + index * 20,
         )
-        for index, scenario in enumerate(("low", "base", "high"))
-    }
+        scenarios = {
+            scenario: evaluate_candidate(
+                series,
+                spec,
+                start=start,
+                end=end,
+                scenario=scenario,
+                seed=seed + index * 20,
+            )
+            for index, scenario in enumerate(("low", "base", "high"))
+        }
+        candidate_family = spec.family
+
     passed, reasons = engineering_gate(spec, scenarios)
 
     return {
         "methodology_version": METHODOLOGY_VERSION,
+        "candidate_methodology": candidate_methodology,
         "candidate_id": spec.candidate_id,
-        "candidate_family": spec.family,
+        "candidate_family": candidate_family,
         "candidate_spec": spec.to_dict(),
         "start": start.isoformat(),
         "end": end.isoformat(),
