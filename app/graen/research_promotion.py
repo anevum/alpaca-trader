@@ -128,6 +128,18 @@ class ResearchPromotion:
                             if result.get("merged") is not True or not result.get("sha"):
                                 raise IntegrityError("merge_not_verified")
                             state.update(phase="DEPLOY", merge_sha=result["sha"])
+                        elif any(row.get("conclusion") in {"timed_out", "startup_failure"} for row in runs):
+                            attempts = int(state.get("ci_infrastructure_retries", 0))
+                            eligible = [row for row in runs if row.get("head_sha") == state["head_sha"]
+                                and row.get("conclusion") in {"timed_out", "startup_failure"}]
+                            if attempts < 2 and eligible:
+                                failed = max(eligible, key=lambda row: row["id"])
+                                marker = [failed["id"], failed.get("run_attempt", 1)]
+                                if state.get("last_ci_retry") != marker:
+                                    await self.repository.retry_ci_infrastructure(failed["id"])
+                                    state.update(ci_infrastructure_retries=attempts + 1, last_ci_retry=marker)
+                            else:
+                                state["blocked_reason"] = "bounded_ci_infrastructure_retries_exhausted"
                         elif any(row.get("conclusion") == "failure" for row in runs):
                             # Exact compiler output cannot safely repair arbitrary
                             # compiler/CI defects or modify methodology parameters.

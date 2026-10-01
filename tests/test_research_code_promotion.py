@@ -284,3 +284,102 @@ def test_exhaustion_routes_inside_existing_control_flow():
     assert list(engineering_problem_ids(snapshot)) == ["p"]
     snapshot["problems"][0]["status"] = "RUNNING"
     assert list(engineering_problem_ids(snapshot)) == []
+
+
+def test_actual_http_primary_unavailable_uses_git_data_api():
+    import httpx
+    calls = []
+
+    def respond(request):
+        calls.append((request.method, request.url.path))
+        path = request.url.path
+        if path == "/graphql":
+            return httpx.Response(503, json={"message": "temporary outage"})
+        if "/git/ref/heads/" in path:
+            return httpx.Response(200, json={"object": {"sha": "base"}})
+        if path.endswith("/git/commits/base"):
+            return httpx.Response(200, json={"tree": {"sha": "tree"}})
+        if path.endswith("/git/trees"):
+            return httpx.Response(201, json={"sha": "newtree"})
+        if path.endswith("/git/commits"):
+            return httpx.Response(201, json={"sha": "newhead"})
+        if "/git/refs/heads/" in path:
+            import json
+            assert json.loads(request.content)["force"] is False
+            return httpx.Response(200, json={"object": {"sha": "newhead"}})
+        raise AssertionError(path)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            repository = GitHubRepository(token="test-only", client=client)
+            head, transport = await repository.write("isolated", "base", compile_bundle(spec()), "test")
+            assert head == "newhead"
+            assert transport == "github_git_data_api"
+        assert ("POST", "/graphql") in calls
+        assert any(method == "PATCH" and "/git/refs/" in path for method, path in calls)
+    asyncio.run(run())
+
+
+def test_infrastructure_retry_is_bounded_and_never_changes_frozen_code():
+    async def run():
+        worker, repo = controller()
+        retries = []
+        async def retry(run_id):
+            retries.append(run_id)
+        repo.retry_ci_infrastructure = retry
+        repo.checks = ci()
+        repo.checks[0]["conclusion"] = "timed_out"
+        for _ in range(5):
+            await worker.tick("problem")
+        assert retries == [1]
+        await worker.tick("problem")
+        assert retries == [1]  # Same attempt cannot trigger repeated retries.
+        repo.checks[0]["run_attempt"] = 2
+        await worker.tick("problem")
+        repo.checks[0]["run_attempt"] = 3
+        await worker.tick("problem")
+        assert retries == [1, 1]
+        assert worker.store.state["blocked_reason"] == "bounded_ci_infrastructure_retries_exhausted"
+        assert repo.merge_count == 0
+        assert repo.files == compile_bundle(spec())
+    asyncio.run(run())
+
+
+def test_compiled_stage_fetch_is_exclusive_and_rejection_cannot_be_reclaimed(monkeypatch):
+    from types import SimpleNamespace
+    from app.graen import research_executor_service as service
+    from tests.test_graen_research_executor import FakeGateway
+
+    async def run():
+        value = spec()
+        result = {"stage": "development", "passed": False, "reasons": ["synthetic_failure"],
+            "spec_hash": digest(value), "epoch": value["epoch"]}
+        module = SimpleNamespace(SPEC=value, SPEC_HASH=digest(value),
+            evaluate=lambda *args, **kwargs: result)
+        monkeypatch.setattr("importlib.import_module", lambda *args, **kwargs: module)
+
+        class Gateway(FakeGateway):
+            async def _request(self, method, payload):
+                return {"ok": True, "current": None, "predecessor": None}
+
+        requests = []
+        async def fetch(symbols, *, start, end):
+            requests.append((start, end))
+            return {symbol: [] for symbol in symbols}
+
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = Gateway()
+        runtime.market_data = SimpleNamespace(historical_crypto_bars_many=fetch)
+        runtime.callback_base_url = ""
+        runtime.callback_token = ""
+        problem = {"problem_id": "11111111-1111-1111-1111-111111111111",
+            "metadata": {"research_stage": "CRYPTO_COMPILED_DEVELOPMENT",
+                "compiled_specification_hash": digest(value),
+                "code_promotion": {"phase": "COMPLETE", "spec_hash": digest(value), "prespec": value}}}
+        await runtime._execute_compiled_hypothesis(problem, {"run_id": "22222222-2222-2222-2222-222222222222"})
+        _, boundary = stage_window(value, "development")
+        assert requests and all(end < boundary for _, end in requests)
+        assert runtime.gateway.queued_stages[-1]["stage"] == "RESEARCH_IMPLEMENTATION_REQUIRED"
+        opened = [a for a in runtime.gateway.artifacts if a["artifact_type"] == "COMPILED_STAGE_OPENED"]
+        assert opened[0]["content"]["fetch_end_exclusive"] == boundary.isoformat()
+    asyncio.run(run())

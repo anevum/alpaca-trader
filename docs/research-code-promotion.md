@@ -64,3 +64,17 @@ Ordinary transport interruptions retry idempotently. A failed trusted compiler
 or methodology test remains blocked with the frozen specification intact; the
 controller cannot safely rewrite its own policy, compiler or CI to turn a
 failure into a pass.
+
+## Remaining integration boundary
+
+This bootstrap draft does not add flow-pressure dispatch to the separately
+deployed VELUM and RHEN shadow services. A compiled holdout survivor is parked at
+CANDIDATE_READY_FOR_VELUM and cannot be claimed again or promoted. A rejected
+candidate leaves the claimable stage at RESEARCH_IMPLEMENTATION_REQUIRED.
+Those downstream adapters and a complete next-hypothesis generator still need
+implementation before this is an end-to-end autonomous research system.
+
+CI infrastructure timeouts/startup failures may retry twice without modifying
+the frozen code or data. Test/assertion failures remain blocked for a trusted
+compiler repair. An unchanged blocked checkpoint does not append duplicate
+provenance events on every tick.

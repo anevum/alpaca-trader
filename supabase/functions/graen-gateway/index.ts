@@ -162,7 +162,7 @@ Deno.serve(async (req: Request) => {
         const previous = objectValue(metadata.code_promotion);
         const lease = objectValue(metadata.code_promotion_lease);
         if (lease.owner !== owner || Number(metadata.code_promotion_revision || 0) !== expectedRevision
-          || new Date(String(lease.until || "")).getTime() <= Date.now()) throw new Error("promotion_lease_or_revision_conflict");
+          || !(new Date(String(lease.until || "")).getTime() > Date.now())) throw new Error("promotion_lease_or_revision_conflict");
         if (previous.spec_hash && (
           previous.spec_hash !== state.spec_hash ||
           JSON.stringify(previous.prespec) !== JSON.stringify(state.prespec)
@@ -197,6 +197,12 @@ Deno.serve(async (req: Request) => {
             where problem_id=${problemId}::uuid and status='RUNNING' limit 1
           `;
           if (active.length) throw new Error("active_research_run_prevents_resume");
+        }
+        if (JSON.stringify(previous) === JSON.stringify(state)) {
+          await tx`update private.graen_problems
+            set metadata=jsonb_set(metadata,'{code_promotion_lease}','{}'::jsonb)
+            where problem_id=${problemId}::uuid`;
+          return { revision: expectedRevision, prespec_artifact_id: prespecArtifactId };
         }
         const revision = expectedRevision + 1;
         const nextMetadata = {

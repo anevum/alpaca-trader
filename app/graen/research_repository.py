@@ -49,10 +49,12 @@ class GitHubRepository:
             raise TransportUnavailable(type(exc).__name__) from exc
         if response.status_code in (401, 403):
             raise AuthorizationDenied("github_authorization_denied")
+        if path == "/graphql" and response.status_code in (404, 405, 410):
+            raise TransportUnavailable("primary_endpoint_unavailable")
         if response.status_code >= 500:
             raise TransportUnavailable("github_unavailable")
         response.raise_for_status()
-        return response.json()
+        return response.json() if response.content else {}
 
     @property
     def root(self):
@@ -180,3 +182,6 @@ class GitHubRepository:
         return await self.request("PUT", self.root + "/pulls/" + str(number) + "/merge", {
             "sha": head, "merge_method": "merge",
         })
+
+    async def retry_ci_infrastructure(self, run_id):
+        return await self.request("POST", self.root + "/actions/runs/" + str(run_id) + "/rerun-failed-jobs")

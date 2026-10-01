@@ -2858,7 +2858,12 @@ class GraenResearchExecutor:
                 artifact_type="COMPILED_STAGE_RESULT", methodology_version="graen-crypto-flow-pressure-v1",
                 content=result,
             )
-        next_stage = None
+        # Terminal stages must leave the claimable research stage. Otherwise
+        # WAITING would repeatedly claim the same exhausted candidate.
+        next_stage = (
+            "CANDIDATE_READY_FOR_VELUM" if result.get("passed") is True and stage == "holdout"
+            else "RESEARCH_IMPLEMENTATION_REQUIRED"
+        )
         if result.get("passed") is True and stage != "holdout":
             next_stage = "CRYPTO_COMPILED_" + {"development": "VALIDATION", "validation": "HOLDOUT"}[stage]
         summary = {
@@ -2866,7 +2871,7 @@ class GraenResearchExecutor:
                 else "COMPILED_STAGE_PASSED" if result.get("passed") is True else "COMPILED_CANDIDATE_REJECTED",
             "decision": "CONTINUE_RESEARCH" if result.get("passed") is True else "NEEDS_NEW_HYPOTHESIS_ENGINE",
             "next_action": "VELUM_CANDIDATE_REPLAY" if stage == "holdout" and result.get("passed") is True
-                else "RUN_NEXT_FROZEN_STAGE" if next_stage else "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+                else "RUN_NEXT_FROZEN_STAGE" if result.get("passed") is True else "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
             "candidate_id": spec["hypothesis_id"], "epoch": spec["epoch"], "spec_hash": spec_hash,
             "research_only": True, "execution_authority": False, "broker_orders_possible": False,
         }
