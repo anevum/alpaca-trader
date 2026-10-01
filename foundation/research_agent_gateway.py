@@ -221,6 +221,7 @@ def _agent_runs(cur: psycopg.Cursor[Any]) -> list[dict[str, Any]]:
                approval_required,authorization_reference,status,error_summary,
                rationale_summary,llm_usage,operator_identity,created_at
         from rhen.research_agent_runs
+        where trigger <> 'foundation_contract_probe'
         order by started_at desc
         limit 50
         """
@@ -234,6 +235,7 @@ def _search_ledger(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
         """
         select payload,recorded_at
         from rhen.research_search_ledgers
+        where coalesce(source_commit,'') <> 'foundation-contract-probe'
         order by recorded_at desc,ledger_id desc
         limit 75
         """
