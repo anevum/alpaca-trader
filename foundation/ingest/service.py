@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 
 from foundation.report_read import read_report
 from foundation.iren_gateway import handle_action as handle_iren_action, recent_runs
+from foundation.graen_gateway import handle_graen_action
 
 
 class EvidenceEvent(BaseModel):
@@ -454,6 +455,54 @@ def scheduler_gateway_post(
         "service": "anevum-iren-scheduler-gateway",
         **result,
     }
+
+
+@app.get("/v1/graen-gateway")
+def graen_gateway_get(
+    x_graen_gateway_token: str | None = Header(
+        default=None,
+        alias="x-graen-gateway-token",
+    ),
+) -> dict[str, Any]:
+    expected = os.environ.get("GRAEN_GATEWAY_TOKEN", "").strip()
+    if not expected:
+        expected = os.environ.get("FOUNDATION_INGEST_TOKEN", "").strip()
+    if not expected or x_graen_gateway_token != expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        payload = handle_graen_action(database_url(), None, method="GET")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"graen_gateway_failed:{type(exc).__name__}",
+        ) from exc
+    return {"ok": True, **payload}
+
+
+@app.post("/v1/graen-gateway")
+def graen_gateway_post(
+    body: dict[str, Any],
+    x_graen_gateway_token: str | None = Header(
+        default=None,
+        alias="x-graen-gateway-token",
+    ),
+) -> dict[str, Any]:
+    expected = os.environ.get("GRAEN_GATEWAY_TOKEN", "").strip()
+    if not expected:
+        expected = os.environ.get("FOUNDATION_INGEST_TOKEN", "").strip()
+    if not expected or x_graen_gateway_token != expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    action = str(body.get("action") or "")
+    try:
+        payload = handle_graen_action(database_url(), action, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"graen_gateway_failed:{type(exc).__name__}",
+        ) from exc
+    return {"ok": True, **payload}
 
 
 @app.get("/v1/trading-report-read")
