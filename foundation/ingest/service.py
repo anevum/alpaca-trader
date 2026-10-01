@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
 from foundation.report_read import read_report
+from foundation.iren_gateway import handle_action as handle_iren_action, recent_runs
 
 
 class EvidenceEvent(BaseModel):
@@ -388,6 +389,70 @@ def ingest(
         "received": len(batch.events),
         "inserted": inserted,
         "duplicates": duplicates,
+    }
+
+
+@app.get("/v1/scheduler-gateway")
+def scheduler_gateway_get(
+    limit: int = 100,
+    x_anevum_foundation_token: str | None = Header(
+        default=None,
+        alias="x-anevum-foundation-token",
+    ),
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(
+        x_anevum_foundation_token,
+        x_anevum_ingest_token,
+    )
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            runs = recent_runs(conn, limit=limit)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"scheduler_gateway_read_failed:{type(exc).__name__}",
+        ) from exc
+    return {
+        "ok": True,
+        "service": "anevum-iren-scheduler-gateway",
+        "runs": runs,
+    }
+
+
+@app.post("/v1/scheduler-gateway")
+def scheduler_gateway_post(
+    body: dict[str, Any],
+    x_anevum_foundation_token: str | None = Header(
+        default=None,
+        alias="x-anevum-foundation-token",
+    ),
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(
+        x_anevum_foundation_token,
+        x_anevum_ingest_token,
+    )
+    action = str(body.get("action") or "")
+    try:
+        result = handle_iren_action(database_url(), action, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"scheduler_gateway_failed:{type(exc).__name__}",
+        ) from exc
+    return {
+        "ok": True,
+        "service": "anevum-iren-scheduler-gateway",
+        **result,
     }
 
 
