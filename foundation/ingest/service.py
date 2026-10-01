@@ -17,6 +17,16 @@ from foundation.iren_gateway import handle_action as handle_iren_action, recent_
 from foundation.graen_gateway import handle_graen_action
 from foundation.research_agent_gateway import read_evidence, record_run, record_search_ledger
 from foundation.public_feed import read_public_feed
+from foundation.cloudflare_access import (
+    AccessAuthorizationError,
+    AccessConfigurationError,
+    verify_access_assertion,
+)
+from foundation.command_iren import (
+    enqueue_command as enqueue_iren_command,
+    project_command,
+    read_command_snapshot,
+)
 
 
 class EvidenceEvent(BaseModel):
@@ -505,6 +515,75 @@ def graen_gateway_post(
             detail=f"graen_gateway_failed:{type(exc).__name__}",
         ) from exc
     return {"ok": True, **payload}
+
+
+async def require_command_access(
+    cf_access_jwt_assertion: str | None,
+) -> dict[str, Any]:
+    try:
+        return await verify_access_assertion(
+            cf_access_jwt_assertion,
+            team_domain=os.environ.get("CF_ACCESS_TEAM_DOMAIN", ""),
+            audience=os.environ.get("CF_ACCESS_AUD", ""),
+            allowed_emails=os.environ.get("COMMAND_ACCESS_EMAILS", ""),
+        )
+    except AccessConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AccessAuthorizationError as exc:
+        status = 403 if "not_allowed" in str(exc) else 401
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/v1/command/iren")
+async def command_iren_get(
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    await require_command_access(cf_access_jwt_assertion)
+    try:
+        return project_command(read_command_snapshot(database_url()))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"iren_command_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.post("/v1/command/iren", status_code=202)
+async def command_iren_post(
+    request: Request,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_access(cf_access_jwt_assertion)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid_json")
+    command = str(body.get("command") or "").strip()[:4000]
+    if not command:
+        raise HTTPException(status_code=400, detail="command_required")
+    try:
+        created = enqueue_iren_command(
+            database_url(),
+            command=command,
+            requested_by=str(identity.get("email") or "command-admin"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"iren_command_failed:{type(exc).__name__}",
+        ) from exc
+    return {
+        "schema_version": "iren_command.v2",
+        "accepted": True,
+        "command": created.get("command"),
+    }
 
 
 @app.get("/v1/trading-public-feed")
