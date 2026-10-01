@@ -199,3 +199,64 @@ def test_v9_holdout_pass_queues_velum(monkeypatch):
         assert runtime.gateway.completions[-1]["status"] == "WAITING"
 
     asyncio.run(scenario())
+
+
+def test_v9_velum_pass_activates_forward_shadow_without_completing_job(monkeypatch):
+    candidate = candidate_specs()[0].to_dict()
+    activations = []
+
+    async def fake_replay(**kwargs):
+        return {
+            "candidate_id": candidate["candidate_id"],
+            "engineering_gate": {
+                "passed": True,
+                "reasons": [],
+            },
+            "research_only": True,
+            "execution_authority": False,
+        }
+
+    async def fake_activate(**kwargs):
+        activations.append(kwargs)
+        return {
+            "activation": {
+                "activation_id": "shadow-activation-001",
+                "candidate_id": candidate["candidate_id"],
+            },
+            "duplicate": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "promotion_authorized": False,
+        }
+
+    async def scenario():
+        runtime = _runtime()
+        monkeypatch.setattr(runtime, "_replay_in_velum", fake_replay)
+        monkeypatch.setattr(runtime, "_activate_forward_shadow", fake_activate)
+
+        result = await runtime._execute_activity_shock_v9(
+            {
+                **PROBLEM,
+                "metadata": {
+                    "research_stage": service.V9_VELUM_STAGE,
+                    "v9_epoch_index": 0,
+                    "v9_candidate_spec": candidate,
+                    "v9_holdout_result": {"passed": True},
+                    "v9_holdout_artifact_id": "holdout-artifact",
+                },
+            },
+            RUN,
+        )
+
+        assert result["state"] == "FORWARD_SHADOW_RUNNING"
+        assert result["status"] == "SHADOW_ACTIVE"
+        assert result["decision"] == "COLLECT_FORWARD_EVIDENCE"
+        assert runtime.gateway.completions[-1]["status"] == "WAITING"
+        assert len(activations) == 1
+        assert activations[0]["candidate_methodology"] == service.V9_METHODOLOGY_VERSION
+        assert activations[0]["candidate_spec"]["candidate_id"] == candidate["candidate_id"]
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["promotion_authorized"] is False
+
+    asyncio.run(scenario())
