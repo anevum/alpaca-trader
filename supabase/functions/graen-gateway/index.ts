@@ -349,6 +349,13 @@ Deno.serve(async (req: Request) => {
               completed_at=now()
           where run_id=${runId}::uuid and problem_id=${problemId}::uuid
         `;
+        const linked = await tx`
+          select linked_iren_job_id
+          from private.graen_problems
+          where problem_id=${problemId}::uuid
+          for update
+        `;
+        const linkedJobId = linked[0]?.linked_iren_job_id || null;
         await tx`
           update private.graen_problems
           set status=${status},updated_at=now(),
@@ -356,6 +363,42 @@ Deno.serve(async (req: Request) => {
               metadata=coalesce(metadata,'{}'::jsonb) - 'research_stage'
           where problem_id=${problemId}::uuid
         `;
+        if (linkedJobId) {
+          const terminalSuccess = status === "SUCCEEDED";
+          const terminalFailure = status === "FAILED" || status === "CANCELLED";
+          await tx`
+            update private.iren_jobs
+            set status=case
+                  when ${terminalSuccess} and protected_action then 'WAITING'
+                  else ${status}
+                end,
+                result=coalesce(result,'{}'::jsonb)
+                  || jsonb_build_object(
+                    'graen_problem_id',${problemId},
+                    'graen_run_id',${runId},
+                    'graen_result',${sql.json(resultSummary as any)}::jsonb,
+                    'graen_synced_at',now(),
+                    'graen_protected_completion_blocked',(${terminalSuccess} and protected_action)
+                  ),
+                error=case
+                  when ${terminalFailure}
+                    then jsonb_build_object(
+                      'source','GRAEN',
+                      'graen_problem_id',${problemId},
+                      'graen_run_id',${runId},
+                      'result',${sql.json(resultSummary as any)}::jsonb
+                    )
+                  else '{}'::jsonb
+                end,
+                completed_at=case
+                  when ${terminalSuccess} and not protected_action then now()
+                  when ${terminalFailure} then now()
+                  else completed_at
+                end,
+                updated_at=now()
+            where job_id=${linkedJobId}::uuid
+          `;
+        }
         const completionState = {
           worker_id: workerId,
           heartbeat_at: new Date().toISOString(),
