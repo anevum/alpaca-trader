@@ -259,3 +259,91 @@ def test_v10_velum_pass_activates_forward_shadow_and_stays_waiting(monkeypatch):
         assert result["promotion_authorized"] is False
 
     asyncio.run(scenario())
+
+
+def test_fetch_stage_never_requests_beyond_stage_end():
+    calls = []
+
+    class MarketData:
+        async def historical_crypto_bars_many(self, symbols, *, start, end):
+            calls.append((start, end))
+            return {symbol: [] for symbol in symbols}
+
+    async def scenario():
+        runtime = _runtime()
+        runtime.market_data = MarketData()
+        stage_start = service.datetime(2023, 7, 1, tzinfo=service.UTC)
+        stage_end = service.datetime(2023, 10, 1, tzinfo=service.UTC)
+        await runtime._fetch_stage(
+            service.V10_UNIVERSE,
+            start=stage_start,
+            end=stage_end,
+            warmup_hours=169,
+        )
+        assert calls
+        assert all(request_end < stage_end for _, request_end in calls)
+        assert max(request_end for _, request_end in calls) == stage_end - service.timedelta(microseconds=1)
+
+    asyncio.run(scenario())
+
+
+def test_process_once_blocks_claim_when_research_execution_raises(monkeypatch):
+    problem_id = "11111111-1111-1111-1111-111111111111"
+    run_id = "22222222-2222-2222-2222-222222222222"
+
+    class ClaimGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.blocked = []
+
+        async def snapshot(self):
+            return {
+                "problems": [{
+                    "problem_id": problem_id,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {"research_stage": service.V10_VALIDATION_STAGE},
+                }],
+                "runs": [],
+            }
+
+        async def claim_research_problem(self, **kwargs):
+            return {
+                "problem": {
+                    "problem_id": problem_id,
+                    "linked_iren_job_id": None,
+                    "metadata": {
+                        "research_stage": service.V10_VALIDATION_STAGE,
+                        "v10_epoch_index": 1,
+                        "v10_candidate_spec": candidate_specs()[0].to_dict(),
+                    },
+                },
+                "run": {"run_id": run_id},
+            }
+
+        async def block_research_claim(self, **kwargs):
+            self.blocked.append(kwargs)
+            return {"ok": True, "status": "BLOCKED"}
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("synthetic-stage-failure")
+
+    async def scenario():
+        runtime = _runtime()
+        runtime.gateway = ClaimGateway()
+        monkeypatch.setattr(runtime, "_execute_trend_pullback_v10", fail)
+        try:
+            await runtime.process_once()
+            assert False, "expected research execution failure"
+        except RuntimeError as exc:
+            assert str(exc) == "synthetic-stage-failure"
+        assert runtime.gateway.blocked == [{
+            "problem_id": problem_id,
+            "run_id": run_id,
+            "worker_id": runtime.worker_id,
+            "error": "RuntimeError: synthetic-stage-failure",
+        }]
+        assert runtime.active_problem_id is None
+        assert runtime.last_error == "RuntimeError: synthetic-stage-failure"
+
+    asyncio.run(scenario())
