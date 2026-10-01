@@ -33,7 +33,16 @@ async def main() -> None:
 
         evidence = CanonicalEvidenceReader(body["evidence"]).read()
         version, name = current_strategy_identity(evidence)
-        review = ResearchAgentRunner(evidence).daily_review(dry_run=True)
+        try:
+            review = ResearchAgentRunner(evidence).daily_review(dry_run=True)
+        except ValueError as exc:
+            if str(exc) != "no canonical daily report is available":
+                raise
+            review = {
+                "trigger_reference": "CANONICAL_DAILY_REPORT_MISSING",
+                "blocker_count": 1,
+                "semantic_review_warranted": False,
+            }
 
         run_record = {
             "run_id": run_id,
