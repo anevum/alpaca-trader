@@ -69,7 +69,7 @@ from graen.crypto.trend_pullback_v10 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.7.0"
+RUNTIME_VERSION = "graen-research-executor-v1.8.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -2884,8 +2884,85 @@ class GraenResearchExecutor:
         return await self._finalize(problem=problem, run=run, status="WAITING", summary=summary,
             next_stage=next_stage, next_metadata={"compiled_specification_hash": spec_hash} if next_stage else None)
 
+    async def _reconcile_orphaned_confirmatory_claim(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Burn stale sealed-stage claims instead of reusing opened evidence."""
+        problems = {
+            str(row.get("problem_id")): row
+            for row in (snapshot.get("problems") or [])
+            if isinstance(row, Mapping) and row.get("problem_id")
+        }
+        runtime_state = snapshot.get("runtime_state")
+        runtime_metadata = (
+            runtime_state.get("metadata")
+            if isinstance(runtime_state, Mapping)
+            and isinstance(runtime_state.get("metadata"), Mapping)
+            else {}
+        )
+        executor_state = (
+            runtime_metadata.get("research_executor")
+            if isinstance(runtime_metadata.get("research_executor"), Mapping)
+            else {}
+        )
+        active_problem_id = str(executor_state.get("active_problem_id") or "")
+        minimum_age = timedelta(seconds=max(300, self.interval_seconds * 4))
+        now = datetime.now(UTC)
+
+        for run in (snapshot.get("runs") or []):
+            if not isinstance(run, Mapping) or run.get("status") != "RUNNING":
+                continue
+            problem_id = str(run.get("problem_id") or "")
+            run_id = str(run.get("run_id") or "")
+            problem = problems.get(problem_id)
+            if not problem or problem.get("status") != "RUNNING" or active_problem_id == problem_id:
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            stage = str(metadata.get("research_stage") or "")
+            if "VALIDATION" not in stage and "HOLDOUT" not in stage:
+                continue
+            try:
+                started_at = datetime.fromisoformat(str(run.get("started_at")).replace("Z", "+00:00"))
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=UTC)
+                started_at = started_at.astimezone(UTC)
+            except (TypeError, ValueError):
+                continue
+            if now - started_at < minimum_age:
+                continue
+
+            error = "sealed_confirmatory_stage_orphaned:" + stage
+            await self.gateway.block_research_claim(
+                problem_id=problem_id,
+                run_id=run_id,
+                worker_id=self.worker_id,
+                error=error,
+            )
+            await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage="RESEARCH_IMPLEMENTATION_REQUIRED",
+                metadata={
+                    "invalidated_run_id": run_id,
+                    "invalidated_research_stage": stage,
+                    "research_integrity_incident": "SEALED_STAGE_EXECUTION_ORPHANED",
+                    "sealed_stage_invalidated": True,
+                    "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+                },
+            )
+            return {
+                "problem_id": problem_id,
+                "run_id": run_id,
+                "invalidated_stage": stage,
+                "next_stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
+            }
+        return None
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+        reconciliation = await self._reconcile_orphaned_confirmatory_claim(snapshot)
+        if reconciliation is not None:
+            snapshot = await self.gateway.snapshot()
         # Research-code promotion is an explicit bounded step in the same
         # deterministic executor loop. Process eligible handoffs without
         # starving unrelated staged research.
@@ -2956,6 +3033,7 @@ class GraenResearchExecutor:
                 "status": "IDLE",
                 "claimed": False,
                 "research_promotion": promotion_results,
+                "reconciliation": reconciliation,
             }
 
         problem_id = str(problem.get("problem_id"))
