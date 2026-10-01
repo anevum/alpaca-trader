@@ -229,10 +229,12 @@ class FoundationShadowSink:
         *,
         outbox: DurableEventOutbox,
         ingest_url: str,
+        ingest_token: str = "",
         timeout_seconds: float = 8.0,
     ):
         self.outbox = outbox
         self.ingest_url = ingest_url.rstrip("/")
+        self.ingest_token = ingest_token.strip()
         self.timeout_seconds = timeout_seconds
 
     def enqueue(self, event: dict[str, Any]) -> bool:
@@ -248,8 +250,12 @@ class FoundationShadowSink:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as http:
+                headers = {}
+                if self.ingest_token:
+                    headers["x-anevum-foundation-token"] = self.ingest_token
                 response = await http.post(
                     self.ingest_url,
+                    headers=headers,
                     json={"events": batch.events},
                 )
                 response.raise_for_status()
