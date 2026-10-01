@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 from foundation.report_read import read_report
 from foundation.iren_gateway import handle_action as handle_iren_action, recent_runs
 from foundation.graen_gateway import handle_graen_action
+from foundation.research_agent_gateway import read_evidence, record_run, record_search_ledger
 
 
 class EvidenceEvent(BaseModel):
@@ -503,6 +504,72 @@ def graen_gateway_post(
             detail=f"graen_gateway_failed:{type(exc).__name__}",
         ) from exc
     return {"ok": True, **payload}
+
+
+@app.get("/v1/research-agent-gateway")
+def research_agent_gateway_get(
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(ingest_token=x_anevum_ingest_token)
+    try:
+        evidence = read_evidence(database_url())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"research_agent_gateway_failed:{type(exc).__name__}",
+        ) from exc
+    return {"ok": True, "evidence": evidence}
+
+
+@app.post("/v1/research-agent-gateway")
+async def research_agent_gateway_post(
+    request: Request,
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(ingest_token=x_anevum_ingest_token)
+    content_length = int(request.headers.get("content-length") or "0")
+    if content_length > 512_000:
+        raise HTTPException(status_code=413, detail="payload_too_large")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid_json")
+    action = str(body.get("action") or "")
+    if action not in {"record_run", "record_run_and_search_ledger"}:
+        raise HTTPException(status_code=400, detail="invalid_action")
+    run = body.get("run")
+    if not isinstance(run, dict):
+        raise HTTPException(status_code=400, detail="invalid_run_record")
+    try:
+        result = record_run(database_url(), run)
+        if action == "record_run":
+            if result.get("duplicate"):
+                raise HTTPException(status_code=409, detail="duplicate_run_key")
+            return {"ok": True, **result}
+        ledger = body.get("search_ledger")
+        if not isinstance(ledger, dict):
+            raise HTTPException(status_code=400, detail="invalid_search_ledger")
+        ledger_result = record_search_ledger(database_url(), ledger)
+        return {
+            "ok": True,
+            **result,
+            "search_ledger_recorded": True,
+            "search_ledger": ledger_result,
+        }
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"research_agent_gateway_failed:{type(exc).__name__}",
+        ) from exc
 
 
 @app.get("/v1/trading-report-read")
