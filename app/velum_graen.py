@@ -15,9 +15,15 @@ from graen.crypto.activity_shock_v9 import (
     evaluate_candidate as evaluate_v9_candidate,
     spec_from_dict as v9_spec_from_dict,
 )
+from graen.crypto.trend_pullback_v10 import (
+    FAMILY as V10_FAMILY,
+    METHODOLOGY_VERSION as V10_METHODOLOGY_VERSION,
+    evaluate_candidate as evaluate_v10_candidate,
+    spec_from_dict as v10_spec_from_dict,
+)
 
 
-METHODOLOGY_VERSION = "velum-graen-candidate-replay-v2"
+METHODOLOGY_VERSION = "velum-graen-candidate-replay-v3"
 GRAEN_CONTEXT_UNIVERSE = CONTEXT_UNIVERSE
 
 
@@ -66,7 +72,21 @@ def replay_candidate(
     end: datetime,
     seed: int = 91000,
 ) -> dict[str, Any]:
-    if candidate_methodology == V9_METHODOLOGY_VERSION:
+    if candidate_methodology == V10_METHODOLOGY_VERSION:
+        spec = v10_spec_from_dict(candidate_spec)
+        scenarios = {
+            scenario: evaluate_v10_candidate(
+                bars_by_symbol,
+                spec=spec,
+                start=start,
+                end=end,
+                scenario=scenario,
+                seed=seed + index * 20,
+            )
+            for index, scenario in enumerate(("low", "base", "high"))
+        }
+        candidate_family = V10_FAMILY
+    elif candidate_methodology == V9_METHODOLOGY_VERSION:
         spec = v9_spec_from_dict(candidate_spec)
         scenarios = {
             scenario: evaluate_v9_candidate(
