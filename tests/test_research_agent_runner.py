@@ -279,3 +279,39 @@ def test_status_exposes_bounded_proposal_only_when_control_state_escalates():
     assert proposal["automatic_application_authorized"] is False
     assert proposal["execution_authority"] is False
     assert proposal["source_strategy_version"] == "LIVE-2026-09-25-003"
+
+
+def test_missing_daily_report_is_a_fail_closed_blocker_not_a_crash():
+    fixture = canonical_fixture()
+    fixture["latest_daily_report"] = None
+    value = ResearchAgentRunner(CanonicalEvidenceReader(fixture).read())
+
+    review = value.daily_review(dry_run=True)
+    assert review["trigger_reference"] == "CANONICAL_DAILY_REPORT_MISSING"
+    assert review["report_integrity_blocker"] is True
+    assert review["blocker_count"] >= 1
+    assert review["semantic_review_warranted"] is False
+    assert review["llm_usage"]["invoked"] is False
+    assert review["mutations"]["research_stages_opened"] == 0
+    assert review["mutations"]["strategy_changes"] == 0
+    assert review["mutations"]["broker_calls"] == 0
+    assert "INCOMPLETE_CANONICAL_EVIDENCE" in review["classification"]["reason_codes"]
+
+    readiness = value.readiness(cadence="daily")
+    assert readiness["state"] == "BLOCKED"
+    assert readiness["gpt_would_run_now"] is False
+    assert readiness["blocker_count"] >= 1
+    assert readiness["model_invoked"] is False
+    assert readiness["persisted"] is False
+
+
+def test_missing_weekly_report_is_also_fail_closed():
+    fixture = canonical_fixture()
+    fixture["latest_weekly_report"] = None
+    value = ResearchAgentRunner(CanonicalEvidenceReader(fixture).read())
+
+    review = value.weekly_review(dry_run=True)
+    assert review["trigger_reference"] == "CANONICAL_WEEKLY_REPORT_MISSING"
+    assert review["report_integrity_blocker"] is True
+    assert review["semantic_review_warranted"] is False
+    assert review["llm_usage"]["invoked"] is False
