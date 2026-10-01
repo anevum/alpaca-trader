@@ -238,3 +238,123 @@ def test_validation_failure_burns_epoch_instead_of_reusing_it(monkeypatch):
         assert queued["metadata"]["campaign_generation"] == 1
 
     asyncio.run(scenario())
+
+
+def test_holdout_pass_queues_velum_replay(monkeypatch):
+    candidate = adaptive_candidate_specs(1)[0].to_dict()
+    development_result = {
+        "primary": {
+            "trade_count": 25,
+            "independent_day_blocks": 20,
+            "trades_per_day": 0.5,
+            "expectancy_per_trade": 0.001,
+            "profit_factor": 1.2,
+        },
+        "one_bar_delay": {"expectancy_per_trade": 0.0005},
+    }
+    fetches = []
+
+    async def fake_fetch(symbols, *, start, end, warmup_hours=169):
+        fetches.append((start, end))
+        return {symbol: [] for symbol in symbols}
+
+    def fake_holdout(*args, **kwargs):
+        return {
+            "stage": "HOLDOUT",
+            "opened": True,
+            "candidate_id": candidate["candidate_id"],
+            "passed": True,
+            "reasons": [],
+            "scenarios": {},
+        }
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = CampaignGateway()
+        runtime._fetch_stage = fake_fetch
+        runtime.callback_base_url = ""
+        runtime.callback_token = ""
+        monkeypatch.setattr(service, "evaluate_autonomous_holdout", fake_holdout)
+
+        result = await runtime._execute_autonomous_campaign(
+            {
+                "problem_id": "11111111-1111-1111-1111-111111111111",
+                "linked_iren_job_id": None,
+                "metadata": {
+                    "research_stage": service.AUTONOMOUS_HOLDOUT_STAGE,
+                    "campaign_epoch": 0,
+                    "campaign_generation": 1,
+                    "candidate_spec": candidate,
+                    "development_result": development_result,
+                },
+            },
+            {"run_id": "22222222-2222-2222-2222-222222222222"},
+        )
+
+        assert result["state"] == "CANDIDATE_READY_FOR_VELUM"
+        assert runtime.gateway.completions[-1]["status"] == "WAITING"
+        queued = runtime.gateway.queued_stages[-1]
+        assert queued["stage"] == service.AUTONOMOUS_VELUM_STAGE
+        assert queued["metadata"]["candidate_spec"]["candidate_id"] == candidate["candidate_id"]
+        assert "holdout_result" in queued["metadata"]
+
+    asyncio.run(scenario())
+
+
+def test_velum_failure_advances_to_next_untouched_epoch(monkeypatch):
+    candidate = adaptive_candidate_specs(1)[0].to_dict()
+    development_result = {
+        "primary": {
+            "trade_count": 25,
+            "independent_day_blocks": 20,
+            "trades_per_day": 0.5,
+            "expectancy_per_trade": 0.001,
+            "profit_factor": 1.2,
+        },
+        "one_bar_delay": {"expectancy_per_trade": 0.0005},
+    }
+
+    async def fake_replay(**kwargs):
+        return {
+            "candidate_id": candidate["candidate_id"],
+            "engineering_gate": {
+                "passed": False,
+                "reasons": ["replay_high_cost_expectancy_nonpositive"],
+            },
+            "research_only": True,
+            "execution_authority": False,
+        }
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = CampaignGateway()
+        runtime.callback_base_url = ""
+        runtime.callback_token = ""
+        runtime.velum_base_url = "https://velum.invalid"
+        runtime.velum_token = "x" * 32
+        monkeypatch.setattr(runtime, "_replay_in_velum", fake_replay)
+
+        result = await runtime._execute_autonomous_campaign(
+            {
+                "problem_id": "11111111-1111-1111-1111-111111111111",
+                "linked_iren_job_id": None,
+                "metadata": {
+                    "research_stage": service.AUTONOMOUS_VELUM_STAGE,
+                    "campaign_epoch": 0,
+                    "campaign_generation": 1,
+                    "candidate_spec": candidate,
+                    "development_result": development_result,
+                    "holdout_result": {"passed": True},
+                    "holdout_artifact_id": "artifact-holdout",
+                },
+            },
+            {"run_id": "22222222-2222-2222-2222-222222222222"},
+        )
+
+        assert result["state"] == "AUTONOMOUS_CANDIDATE_REJECTED_VELUM"
+        queued = runtime.gateway.queued_stages[-1]
+        assert queued["stage"] == service.AUTONOMOUS_DEVELOPMENT_STAGE
+        assert queued["metadata"]["campaign_epoch"] == 1
+        assert queued["metadata"]["campaign_generation"] == 1
+
+    asyncio.run(scenario())
