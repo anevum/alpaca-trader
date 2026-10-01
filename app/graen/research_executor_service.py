@@ -1211,7 +1211,6 @@ class GraenResearchExecutor:
                 {
                     **development,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
-                    "corpus_gate": development_corpus,
                 },
             )
             selected_spec = development.get("selected_candidate_spec")
@@ -1323,7 +1322,6 @@ class GraenResearchExecutor:
                 {
                     **validation,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
-                    "corpus_gate": validation_corpus,
                 },
             )
             if validation.get("passed") is True:
@@ -1412,7 +1410,6 @@ class GraenResearchExecutor:
                 {
                     **holdout,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
-                    "corpus_gate": holdout_corpus,
                 },
             )
             if holdout.get("passed") is True:
@@ -1738,6 +1735,7 @@ class GraenResearchExecutor:
                 {
                     **development,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": development_corpus,
                 },
             )
             selected_spec = development.get("selected_candidate_spec")
@@ -1835,6 +1833,7 @@ class GraenResearchExecutor:
                 {
                     **validation,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": validation_corpus,
                 },
             )
             if validation.get("passed") is True:
@@ -1925,6 +1924,7 @@ class GraenResearchExecutor:
                 {
                     **holdout,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": holdout_corpus,
                 },
             )
             if holdout.get("passed") is True:
