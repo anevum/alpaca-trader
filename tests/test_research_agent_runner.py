@@ -315,3 +315,29 @@ def test_missing_weekly_report_is_also_fail_closed():
     assert review["report_integrity_blocker"] is True
     assert review["semantic_review_warranted"] is False
     assert review["llm_usage"]["invoked"] is False
+
+
+def test_foundation_verification_strategy_blocks_semantic_review():
+    fixture = canonical_fixture()
+    fixture["current_strategy"] = {
+        "version_id": "FOUNDATION-RECONCILE-PROBE-001",
+        "strategy_name": "FOUNDATION-RECONCILE-PROBE-001",
+        "run_id": "foundation-order-test",
+    }
+    fixture["research_questions"][2]["status"] = "READY_FOR_RESEARCH"
+    fixture["research_questions"][2]["evidence_summary"]["sessions_observed"] = 3
+    value = ResearchAgentRunner(CanonicalEvidenceReader(fixture).read())
+
+    review = value.daily_review(dry_run=True)
+    assert review["strategy_identity_blocker"] is True
+    assert review["semantic_review_warranted"] is False
+    assert review["blocker_count"] >= 1
+    assert review["llm_usage"]["invoked"] is False
+
+    readiness = value.readiness(cadence="daily")
+    assert readiness["state"] == "BLOCKED"
+    assert readiness["gpt_would_run_now"] is False
+    assert any(
+        row["code"] == "NON_PRODUCTION_STRATEGY_IDENTITY"
+        for row in readiness["blockers"]
+    )
