@@ -892,8 +892,8 @@ class SchedulerRuntime:
 
     @staticmethod
     def _classify_failure(exc: Exception) -> str:
-        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
-            return "transient_infrastructure"
+        if isinstance(exc, httpx.TransportError):
+            return "dependency_unavailable"
         if isinstance(exc, httpx.HTTPStatusError):
             code = exc.response.status_code
             if code in {401, 403}:
