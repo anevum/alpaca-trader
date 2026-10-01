@@ -209,7 +209,7 @@ async def scenario():
     main.monitor_loop = loop
     main.crypto_monitor_loop = loop
     main.slack_market_observer_loop = loop
-    for target in (main.event_sink, main.slack_notifier, main.mobile_live_activity, main.research_reports):
+    for target in (main.event_sink, main.slack_notifier, main.research_reports):
         target.start = AsyncMock()
         target.stop = AsyncMock()
     main.event_sink.emit_critical = AsyncMock(return_value=True)
