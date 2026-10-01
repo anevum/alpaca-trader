@@ -16,6 +16,7 @@ from foundation.report_read import read_report
 from foundation.iren_gateway import handle_action as handle_iren_action, recent_runs
 from foundation.graen_gateway import handle_graen_action
 from foundation.research_agent_gateway import read_evidence, record_run, record_search_ledger
+from foundation.public_feed import read_public_feed
 
 
 class EvidenceEvent(BaseModel):
@@ -504,6 +505,17 @@ def graen_gateway_post(
             detail=f"graen_gateway_failed:{type(exc).__name__}",
         ) from exc
     return {"ok": True, **payload}
+
+
+@app.get("/v1/trading-public-feed")
+def trading_public_feed() -> dict[str, Any]:
+    try:
+        return read_public_feed(database_url())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"public_feed_failed:{type(exc).__name__}",
+        ) from exc
 
 
 @app.get("/v1/research-agent-gateway")
