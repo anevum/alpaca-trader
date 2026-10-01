@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from .alpaca_client import AlpacaClient
 from .config import get_settings
 from .cash_flow import day_pnl, risk_reference_equity
+from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .crypto_execution import CryptoExecutionEngine
 from .crypto_layer import (
@@ -263,39 +264,22 @@ mobile_live_activity: MobileLiveActivityService | None = None
 
 
 async def require_command_admin(authorization: str | None) -> dict:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="RHENLINK authorization required")
-
-    token = authorization[7:].strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="RHENLINK authorization required")
-
-    async with httpx.AsyncClient(timeout=8.0) as http:
-        response = await http.get(
-            f"{SUPABASE_URL}/auth/v1/user",
-            headers={
-                "apikey": SUPABASE_PUBLISHABLE_KEY,
-                "Authorization": f"Bearer {token}",
-                "Cache-Control": "no-store",
-            },
+    try:
+        return await authenticate_command_admin(
+            authorization,
+            mode=settings.command_auth_mode,
+            team_domain=settings.command_access_team_domain,
+            audience=settings.command_access_aud,
+            allowed_emails=settings.command_access_emails_raw,
+            supabase_url=SUPABASE_URL,
+            publishable_key=SUPABASE_PUBLISHABLE_KEY,
+            founder_email=COMMAND_FOUNDER_EMAIL,
         )
-    payload = response.json() if response.content else {}
-    if not response.is_success:
-        raise HTTPException(status_code=401, detail="RHENLINK session is not valid")
-
-    metadata = payload.get("app_metadata") or {}
-    role = str(metadata.get("role") or "").strip().lower()
-    email = str(payload.get("email") or "").strip().lower()
-    confirmed = bool(payload.get("email_confirmed_at") or payload.get("confirmed_at"))
-    authorized = (
-        (email == COMMAND_FOUNDER_EMAIL and confirmed)
-        or metadata.get("command_admin") is True
-        or metadata.get("wiki_admin") is True
-        or role in {"owner", "founder", "admin", "command_admin", "wiki_admin"}
-    )
-    if not authorized:
-        raise HTTPException(status_code=403, detail="COMMAND administrator authorization required")
-    return payload
+    except CommandAuthError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ) from exc
 
 
 def public_position(position: dict) -> dict:
@@ -1558,6 +1542,17 @@ async def command_mobile_live_activity_end(
         raise HTTPException(status_code=422, detail="invalid ActivityKit activity id")
     await mobile_live_activity.deactivate(activity_id)
     return {"ok": True, "deactivated": True, "activity_id": activity_id}
+
+
+@app.get("/v1/command/session")
+async def command_session(authorization: str | None = Header(default=None)):
+    identity = await require_command_admin(authorization)
+    return {
+        "authenticated": True,
+        "email": identity.get("email"),
+        "auth_source": identity.get("auth_source") or "supabase",
+        "command_admin": True,
+    }
 
 
 @app.get("/v1/command/status")
