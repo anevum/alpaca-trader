@@ -58,7 +58,7 @@ from graen.crypto.activity_shock_v9 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.4.0"
+RUNTIME_VERSION = "graen-research-executor-v1.5.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -232,6 +232,14 @@ class GraenResearchExecutor:
             os.getenv("VELUM_GRAEN_TOKEN", "")
             or os.getenv("GRAEN_GATEWAY_TOKEN", "")
         ).strip()
+        self.shadow_base_url = os.getenv(
+            "RHEN_SHADOW_SERVICE_URL",
+            "",
+        ).strip().rstrip("/")
+        self.shadow_token = (
+            os.getenv("GRAEN_SHADOW_TOKEN", "")
+            or os.getenv("GRAEN_GATEWAY_TOKEN", "")
+        ).strip()
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.started_at = datetime.now(UTC)
@@ -250,6 +258,13 @@ class GraenResearchExecutor:
     @property
     def velum_configured(self) -> bool:
         return bool(self.velum_base_url.startswith("http") and len(self.velum_token) >= 32)
+
+    @property
+    def shadow_configured(self) -> bool:
+        return bool(
+            self.shadow_base_url.startswith("http")
+            and len(self.shadow_token) >= 32
+        )
 
     def health(self) -> dict[str, Any]:
         running = self.task is not None and not self.task.done()
@@ -273,6 +288,7 @@ class GraenResearchExecutor:
             "gateway_configured": self.gateway.configured,
             "iren_callback_configured": self.callback_configured,
             "velum_candidate_replay_configured": self.velum_configured,
+            "forward_shadow_configured": self.shadow_configured,
             "execution_authority": False,
             "broker_orders_possible": False,
             "risk_or_sizing_authority": False,
@@ -2045,14 +2061,24 @@ class GraenResearchExecutor:
             gate = velum_result.get("engineering_gate")
             passed = bool(isinstance(gate, Mapping) and gate.get("passed") is True)
             if passed:
+                shadow = await self._activate_forward_shadow(
+                    problem_id=problem_id,
+                    graen_run_id=run_id,
+                    campaign_id=V9_CAMPAIGN_ID,
+                    epoch_index=epoch_index,
+                    generation=generation,
+                    candidate_methodology=V9_METHODOLOGY_VERSION,
+                    candidate_spec=candidate_spec,
+                    velum_artifact_id=velum_artifact,
+                )
                 return await self._finalize(
                     problem=problem,
                     run=run,
-                    status="SUCCEEDED",
+                    status="WAITING",
                     summary={
-                        "state": "CANDIDATE_READY_FOR_FORWARD_SHADOW",
-                        "decision": "FORWARD_SHADOW_REQUIRED",
-                        "status": "VELUM_PASS",
+                        "state": "FORWARD_SHADOW_RUNNING",
+                        "decision": "COLLECT_FORWARD_EVIDENCE",
+                        "status": "SHADOW_ACTIVE",
                         "campaign_id": V9_CAMPAIGN_ID,
                         "epoch": contract["name"],
                         "epoch_index": epoch_index,
@@ -2061,10 +2087,12 @@ class GraenResearchExecutor:
                         "holdout_artifact_id": holdout_artifact_id,
                         "velum_artifact_id": velum_artifact,
                         "velum_engineering_gate": dict(gate),
+                        "shadow_activation": shadow,
                         "execution_authority": False,
                         "broker_orders_possible": False,
+                        "promotion_authorized": False,
                         "production_state_changed": False,
-                        "next_action": "FORWARD_SHADOW_OBSERVATION",
+                        "next_action": "AWAIT_NATIVE_SHADOW_CHECKPOINT",
                     },
                 )
 
@@ -2103,6 +2131,48 @@ class GraenResearchExecutor:
             )
 
         raise RuntimeError(f"unsupported_v9_stage:{stage}")
+
+    async def _activate_forward_shadow(
+        self,
+        *,
+        problem_id: str,
+        graen_run_id: str,
+        campaign_id: str,
+        epoch_index: int,
+        generation: int,
+        candidate_methodology: str,
+        candidate_spec: Mapping[str, Any],
+        velum_artifact_id: str | None,
+    ) -> dict[str, Any]:
+        if not self.shadow_configured:
+            raise RuntimeError("forward shadow service is not configured")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self.shadow_base_url}/v1/candidate-shadow/activate",
+                headers={"x-graen-shadow-token": self.shadow_token},
+                json={
+                    "problem_id": problem_id,
+                    "graen_run_id": graen_run_id,
+                    "campaign_id": campaign_id,
+                    "epoch_index": epoch_index,
+                    "generation": generation,
+                    "candidate_methodology": candidate_methodology,
+                    "candidate_spec": dict(candidate_spec),
+                    "velum_artifact_id": str(velum_artifact_id or ""),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        activation = payload.get("activation")
+        if not isinstance(activation, Mapping):
+            raise RuntimeError("forward shadow activation returned no activation")
+        return {
+            "activation": dict(activation),
+            "duplicate": bool(payload.get("duplicate")),
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "promotion_authorized": False,
+        }
 
     async def _replay_in_velum(
         self,
