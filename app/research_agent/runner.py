@@ -262,7 +262,15 @@ class ResearchAgentRunner:
                     "reason_codes": report_reason_codes,
                 }
             )
-        elif report_reason_codes:
+        if review.get("strategy_identity_blocker"):
+            blockers.append(
+                {
+                    "scope": "current_strategy",
+                    "code": "NON_PRODUCTION_STRATEGY_IDENTITY",
+                    "reason_codes": ["FOUNDATION_VERIFICATION_STRATEGY_EXCLUDED"],
+                }
+            )
+        if not review.get("report_integrity_blocker") and report_reason_codes:
             limitations.append(
                 {
                     "scope": "report",
@@ -395,6 +403,16 @@ class ResearchAgentRunner:
             if row["semantic_readiness"] == "WAITING"
         ]
         classification = classify_structured_evidence(report_evidence(None))
+        strategy_version = str(
+            self.evidence.current_strategy.get("version_id")
+            or self.evidence.current_strategy.get("strategy_version_id")
+            or ""
+        )
+        strategy_run_id = str(self.evidence.current_strategy.get("run_id") or "")
+        strategy_identity_blocker = (
+            strategy_version.startswith("FOUNDATION-")
+            or strategy_run_id.startswith("foundation-")
+        )
         evidence_material = {
             "cadence": cadence,
             "report_missing": True,
@@ -429,9 +447,10 @@ class ResearchAgentRunner:
             ),
             "classification": deterministic_dict(classification),
             "queue": queue_records,
-            "blocker_count": len(queue_blockers) + 1,
+            "blocker_count": len(queue_blockers) + 1 + int(strategy_identity_blocker),
             "queue_blocker_count": len(queue_blockers),
             "report_integrity_blocker": True,
+            "strategy_identity_blocker": strategy_identity_blocker,
             "strategy_question_count": len(strategy_questions),
             "ready_strategy_question_count": len(ready_strategy_questions),
             "waiting_strategy_question_count": len(waiting_strategy_questions),
@@ -533,10 +552,21 @@ class ResearchAgentRunner:
             for row in queue_records
         ]
         report_integrity_blocker = bool(classification.evidence_integrity_blocker)
+        strategy_version = str(
+            self.evidence.current_strategy.get("version_id")
+            or self.evidence.current_strategy.get("strategy_version_id")
+            or ""
+        )
+        strategy_run_id = str(self.evidence.current_strategy.get("run_id") or "")
+        strategy_identity_blocker = (
+            strategy_version.startswith("FOUNDATION-")
+            or strategy_run_id.startswith("foundation-")
+        )
         semantic_review_warranted = (
             bool(ready_strategy_questions)
             and not bool(blockers)
             and not report_integrity_blocker
+            and not strategy_identity_blocker
         )
 
         return {
@@ -553,9 +583,14 @@ class ResearchAgentRunner:
             ),
             "classification": deterministic_dict(classification),
             "queue": queue_records,
-            "blocker_count": len(blockers) + int(report_integrity_blocker),
+            "blocker_count": (
+                len(blockers)
+                + int(report_integrity_blocker)
+                + int(strategy_identity_blocker)
+            ),
             "queue_blocker_count": len(blockers),
             "report_integrity_blocker": report_integrity_blocker,
+            "strategy_identity_blocker": strategy_identity_blocker,
             "strategy_question_count": len(strategy_questions),
             "ready_strategy_question_count": len(ready_strategy_questions),
             "waiting_strategy_question_count": len(waiting_strategy_questions),
