@@ -53,6 +53,7 @@ from graen.crypto.activity_shock_v9 import (
     evaluate_development as evaluate_v9_development,
     evaluate_holdout as evaluate_v9_holdout,
     evaluate_validation as evaluate_v9_validation,
+    verify_stage_corpus as verify_v9_stage_corpus,
 )
 
 
@@ -1210,6 +1211,7 @@ class GraenResearchExecutor:
                 {
                     **development,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": development_corpus,
                 },
             )
             selected_spec = development.get("selected_candidate_spec")
@@ -1321,6 +1323,7 @@ class GraenResearchExecutor:
                 {
                     **validation,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": validation_corpus,
                 },
             )
             if validation.get("passed") is True:
@@ -1409,6 +1412,7 @@ class GraenResearchExecutor:
                 {
                     **holdout,
                     "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                    "corpus_gate": holdout_corpus,
                 },
             )
             if holdout.get("passed") is True:
@@ -1719,6 +1723,11 @@ class GraenResearchExecutor:
                 end=contract["validation_start"],
                 warmup_hours=25,
             )
+            development_corpus = verify_v9_stage_corpus(
+                bars,
+                start=contract["development_start"],
+                end=contract["validation_start"],
+            )
             development = evaluate_v9_development(
                 bars,
                 start=contract["development_start"],
@@ -1809,6 +1818,11 @@ class GraenResearchExecutor:
                 end=contract["holdout_start"],
                 warmup_hours=25,
             )
+            validation_corpus = verify_v9_stage_corpus(
+                bars,
+                start=contract["validation_start"],
+                end=contract["holdout_start"],
+            )
             validation = evaluate_v9_validation(
                 bars,
                 candidate_spec=candidate_spec,
@@ -1893,6 +1907,11 @@ class GraenResearchExecutor:
                 start=contract["holdout_start"],
                 end=contract["holdout_end"],
                 warmup_hours=25,
+            )
+            holdout_corpus = verify_v9_stage_corpus(
+                bars,
+                start=contract["holdout_start"],
+                end=contract["holdout_end"],
             )
             holdout = evaluate_v9_holdout(
                 bars,
