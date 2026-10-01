@@ -366,9 +366,15 @@ def ingest(
                     )
                     if cur.fetchone():
                         inserted += 1
-                        project_event(cur, event)
                     else:
                         duplicates += 1
+
+                    # Projection is independently idempotent and must run for
+                    # duplicate event rows too. During migration the durable
+                    # outbox and canonical sender can race on the same key;
+                    # whichever arrives second still has to materialize the
+                    # intent/order/fill projection required by reconciliation.
+                    project_event(cur, event)
             conn.commit()
     except Exception as exc:
         raise HTTPException(
