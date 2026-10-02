@@ -19,7 +19,7 @@ PROTECTED = (
     "broker behavior, live execution permissions, crypto execution, credentials, API spending "
     "limits, destructive infrastructure actions, legal/publication actions and external capital behavior"
 )
-REQUIRED_CHECKS = {"test", "velum-graen", "graen-forward-shadow", "inventory"}
+REQUIRED_CHECKS = {"test", "velum-graen", "graen-forward-shadow", "inventory", "codex-postgres"}
 
 
 def digest(value: Any) -> str:
@@ -189,6 +189,7 @@ def verification(package: dict, github: dict, control: dict, observations: dict,
     def require(condition, reason):
         if not condition:
             blockers.append(reason)
+    require(fresh(github.get("observed_at"), now), "github_evidence_stale")
     require(github.get("association_valid") is True, "github_association_missing_or_ambiguous")
     require(github.get("merged") is True and github.get("landed") is True, "expected_commit_not_on_main")
     require(github.get("ci_passed") is True, "required_ci_evidence_missing")
@@ -201,6 +202,7 @@ def verification(package: dict, github: dict, control: dict, observations: dict,
     require(bool(package.get("configuration_identity")) and
             package["configuration_identity"] == (control.get("configuration_baseline") or {}).get("fingerprint"),
             "protected_configuration_unverified")
+    require(bool((package.get("runtime_baseline") or {}).get("RHEN", {}).get("deployment")), "protected_runtime_baseline_missing")
     current = {r.get("service_id"): r for r in (control.get("topology") or {}).get("services", [])}
     for key, before in package.get("runtime_baseline", {}).items():
         after = current.get(key, {})

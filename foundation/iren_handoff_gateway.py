@@ -146,5 +146,10 @@ def evidence_snapshot(conn):
     with conn.cursor() as cur:
         cur.execute("select migration_name from anevum.schema_migrations order by migration_name")
         migrations = [row[0] for row in cur.fetchall()]
-    return {"migrations": migrations, "health": {"ok": True, "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+    from foundation.command_iren import project_command, read_command_snapshot
+    projected = project_command(read_command_snapshot(str(conn.info.dsn)))
+    handoffs = projected["work"].get("handoffs") or []
+    return {"command_contract": {"schema_version": projected["schema_version"], "state": projected["state"],
+                "handoff_count": len(handoffs), "copyable_prompts": all(bool((r.get("package") or {}).get("prompt")) for r in handoffs)},
+            "migrations": migrations, "health": {"ok": True, "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
             "deployment": os.getenv("RAILWAY_DEPLOYMENT_ID"), "codex_handoff": "v1"}}

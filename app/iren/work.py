@@ -628,6 +628,11 @@ class IrenWorkEngine:
                     action = (result.response or {}).get("next_action") or {}
                     if active and result.intent in {"CODEX_HANDOFF", "NEXT"}:
                         job_row = active[0]
+                        if result.intent == "CODEX_HANDOFF":
+                            github = await self._github_evidence()
+                            created = await self.gateway("iren_handoff_prepare", objective_key=job_row["objective_key"],
+                                main_sha=github["main_sha"], command_id=str(command_id), requested_by=requested_by)
+                            job_row = created["job"]
                         result = CommandResult(result.intent, {**result.response, "message": "Continue the prepared Codex handoff. Copy the canonical prompt below.",
                             "execution_mode": "codex/manual software"})
                     elif codex.mode(action) == "protected/requires Devon":
@@ -711,7 +716,12 @@ class IrenWorkEngine:
                 _emit_work_event("iren_codex_verified" if outcome.get("objective_completed") else "iren_codex_observed",
                     handoff_id=job["job_id"], objective_key=job["objective_key"],
                     handoff_status=updated.get("handoff_status"),
-                    blockers=(updated.get("verification") or {}).get("blockers"))
+                    blockers=(updated.get("verification") or {}).get("blockers"),
+                    command_contract=foundation.get("command_contract"),
+                    daily_budget_usd=(worker.get("software_worker") or {}).get("daily_budget_usd"),
+                    job_budget_usd=(worker.get("software_worker") or {}).get("job_budget_usd"),
+                    spending_authority=worker.get("spending_authority"),
+                    control_state=self.control_state().get("state"))
             except (httpx.HTTPError, ValueError, KeyError):
                 _emit_work_event("iren_codex_evidence_unavailable", handoff_id=job["job_id"])
 

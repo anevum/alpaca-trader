@@ -39,7 +39,7 @@ def package(o=None, **kw):
 
 
 def github():
-    return {"association_valid": True, "merged": True, "landed": True, "ci_passed": True,
+    return {"observed_at": NOW.isoformat(), "association_valid": True, "merged": True, "landed": True, "ci_passed": True,
             "main_sha": SHA, "pr_number": 222, "files": ["app/iren/example.py"]}
 
 

@@ -45,8 +45,8 @@ def setup(conn):
     with conn.cursor() as cur:
         cur.execute("""insert into iren.objectives(objective_key,title,description,status,priority,metadata,success_criteria)
             values(%s,'Test handoff','Implement read-only evidence','READY',999,%s,'{"ready":true}')""",(key,Jsonb(meta)))
-        cur.execute("""insert into iren.system_state(system_key,revision,state,observation_key,observed_at)
-            values('IREN',1,%s,'test',now()) on conflict(system_key) do update set state=excluded.state""",(Jsonb(state),))
+        cur.execute("""insert into iren.system_state(system_key,health,revision,state,observation_key,observed_at)
+            values('IREN','HEALTHY',1,%s,'test',now()) on conflict(system_key) do update set state=excluded.state""",(Jsonb(state),))
     return key
 
 
@@ -73,7 +73,7 @@ def test_verification_completion_and_next_objective(conn):
     missing=verify(conn,{"handoff_id":job["job_id"],"package_digest":package["package_digest"]})
     assert missing["objective_completed"] is False
     evidence={"handoff_id":job["job_id"],"package_digest":package["package_digest"],
-        "github":{"association_valid":True,"pr_number":10,"merged":True,"landed":True,
+        "github":{"observed_at":datetime.now(timezone.utc).isoformat(),"association_valid":True,"pr_number":10,"merged":True,"landed":True,
                   "ci_passed":True,"main_sha":SHA,"files":["app/iren/test.py"]},
         "observations":{"IREN":{"ready":True},"IREN_EXECUTOR":{"spending_authority":False,
                        "software_worker":{"daily_budget_usd":0,"job_budget_usd":0}}}}

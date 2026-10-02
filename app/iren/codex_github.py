@@ -3,12 +3,13 @@ import re
 from urllib.parse import quote
 
 from .codex_handoff import REQUIRED_CHECKS, REPOSITORY
+from datetime import datetime, timezone
 
 
 async def inspect_github(get, *, handoff_id=None, objective_key=None, pr_number=None):
     branch = await get("branches/main")
     main_sha = branch["commit"]["sha"]
-    result = {"main_sha": main_sha, "association_valid": False, "merged": False,
+    result = {"observed_at": datetime.now(timezone.utc).isoformat(), "main_sha": main_sha, "association_valid": False, "merged": False,
               "landed": False, "ci_passed": False, "files": [], "model_invoked": False}
     if not handoff_id:
         return result
