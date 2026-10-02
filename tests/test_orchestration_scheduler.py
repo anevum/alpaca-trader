@@ -246,8 +246,10 @@ def test_failure_classification_bounds_retry_eligibility():
         request=request,
         response=httpx.Response(503, request=request),
     )
+    protocol = httpx.RemoteProtocolError("peer closed connection")
     assert SchedulerRuntime._classify_failure(auth) == "authentication"
     assert SchedulerRuntime._classify_failure(unavailable) == "dependency_unavailable"
+    assert SchedulerRuntime._classify_failure(protocol) == "transient_infrastructure"
 
 
 def test_historical_missed_job_is_durable_but_does_not_alert(monkeypatch):
@@ -336,3 +338,34 @@ def test_session_close_can_recover_next_morning():
     assert runtime._execute.await_count == 1
     assert runtime.ledger.completions[0][1]["status"] == "SUCCEEDED"
     assert runtime.ledger.completions[0][1]["catchup_state"] == "catchup"
+
+
+
+def test_recovery_workflows_use_new_job_keys_and_bounded_retry_delays():
+    import json
+    from pathlib import Path
+
+    registry = json.loads(Path("app/schedule_registry.json").read_text())
+    workflows = {row["workflow_id"]: row for row in registry["workflows"]}
+
+    close = workflows["rhen.session_close"]
+    daily = workflows["rhen.research.daily"]
+    assert close["version"] == "1.0.6"
+    assert daily["version"] == "1.0.1"
+    assert close["retry_policy"]["delay_seconds"] == 120
+    assert daily["retry_policy"]["delay_seconds"] == 180
+
+    scheduled = datetime(2026, 10, 2, 20, 15, tzinfo=UTC)
+    old = ScheduledItem(
+        {**close, "version": "1.0.5"},
+        scheduled,
+        "2026-10-02",
+        {"session": "2026-10-02"},
+    )
+    recovery = ScheduledItem(
+        close,
+        scheduled,
+        "2026-10-02",
+        {"session": "2026-10-02"},
+    )
+    assert old.job_key != recovery.job_key
