@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from foundation.report_read import (
     _attach_outcomes,
     _candidate_is_crypto,
+    _decision_candidates,
     _forward_outcomes,
     _valid_date,
 )
@@ -94,3 +95,70 @@ def test_forward_outcomes_skips_database_for_empty_identity_set():
     assert grouped == {}
     assert complete == []
     assert cur.execute_calls == 0
+
+
+class _DecisionCandidateCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.query = ""
+        self.args = ()
+
+    def execute(self, query, args) -> None:
+        self.query = query
+        self.args = args
+
+    def fetchall(self):
+        return self.rows
+
+
+def test_decision_candidates_extracts_candidates_in_postgres_and_preserves_shape():
+    occurred_at = datetime(2026, 10, 1, 14, 30, tzinfo=timezone.utc)
+    cur = _DecisionCandidateCursor(
+        [
+            (
+                1,
+                "event-key",
+                "run-1",
+                "CRYPTO-TEST",
+                occurred_at,
+                "cycle-1",
+                "runtime-1",
+                "deployment-1",
+                "healthy",
+                "alpaca",
+                "1Min",
+                {"rank": "test"},
+                {"symbol": "BTC/USD", "market_lane": "crypto"},
+                1,
+            )
+        ]
+    )
+
+    rows = _decision_candidates(
+        cur,
+        start=occurred_at,
+        end=occurred_at.replace(hour=15),
+        crypto=True,
+    )
+
+    assert "jsonb_array_elements" in cur.query
+    assert "candidate_row.candidate" in cur.query
+    assert rows[0]["candidate_key"] == "cycle-1:BTC/USD"
+    assert rows[0]["strategy_version_id"] == "CRYPTO-TEST"
+    assert rows[0]["session"] == "2026-10-01"
+    assert rows[0]["scan_cycle"]["runtime_instance_id"] == "runtime-1"
+    assert rows[0]["decision_cycle_payload"]["comparison_context"] == {"rank": "test"}
+
+
+def test_promotion_filter_does_not_inherit_event_strategy_version():
+    cur = _DecisionCandidateCursor([])
+    _decision_candidates(
+        cur,
+        start=None,
+        end=None,
+        crypto=True,
+        inherit_event_strategy_for_crypto=False,
+    )
+
+    assert "candidate_row.candidate->>'strategy_version_id'" in cur.query
+    assert "else decision_events.strategy_version_id end" not in cur.query
