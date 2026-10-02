@@ -446,6 +446,7 @@ class ResearchReportScheduler:
             if not requested:
                 raise RuntimeError("post-event evidence session is required")
             return await self._report_api_get(
+                timeout=90.0,
                 post_event_evidence_session=requested,
             )
 
@@ -1361,11 +1362,16 @@ class ResearchReportScheduler:
             raise RuntimeError("canonical trading persistence is not configured")
         return f"{ingest_url.rsplit('/', 1)[0]}/trading-report-read"
 
-    async def _report_api_get(self, **params: str) -> dict[str, Any]:
+    async def _report_api_get(
+        self,
+        *,
+        timeout: float = 30.0,
+        **params: str,
+    ) -> dict[str, Any]:
         token = str(getattr(self.settings, "trading_ingest_token", "") or "")
         if not token:
             raise RuntimeError("canonical trading persistence token is not configured")
-        async with httpx.AsyncClient(timeout=30.0) as http:
+        async with httpx.AsyncClient(timeout=timeout) as http:
             response = await http.get(
                 self._report_read_url,
                 headers={"x-anevum-ingest-token": token},
