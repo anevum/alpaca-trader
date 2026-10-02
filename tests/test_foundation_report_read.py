@@ -185,11 +185,14 @@ def test_promotion_candidate_query_prefilters_to_complete_outcomes():
     assert "and exists (" not in query
 
 
-def test_promotion_evidence_uses_complete_outcome_prefilter():
+def test_promotion_evidence_reads_canonical_outcomes_without_decision_expansion():
     source = __import__("inspect").getsource(
         __import__("foundation.report_read", fromlist=["_promotion_evidence"])._promotion_evidence
     )
-    assert "require_complete_outcome=True" in source
+    assert 'event_types=["candidate_forward_outcome"]' in source
+    assert "_decision_candidates(" not in source
+    assert "_forward_outcomes(" not in source
+    assert "require_complete_outcome=True" not in source
 
 
 def test_decision_candidate_query_escapes_psycopg_like_wildcard():

@@ -484,32 +484,41 @@ def _latest_report(
 
 
 def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
-    candidates = {
-        _candidate_identity(candidate): candidate
-        for candidate in _decision_candidates(
-            cur,
-            start=None,
-            end=None,
-            crypto=True,
-            inherit_event_strategy_for_crypto=False,
-            require_complete_outcome=True,
-        )
-    }
-
-    outcomes, complete = _forward_outcomes(
+    # Promotion evidence is already projected into append-only forward-outcome
+    # events. Re-expanding up to 20,000 decision-cycle JSON arrays and joining
+    # them back to those outcomes made this hot read intermittently exceed the
+    # caller's 30-second timeout. Derive the bounded promotion summary directly
+    # from the canonical outcome events instead.
+    events = _fetch_events(
         cur,
-        candidate_identities=set(candidates),
+        event_types=["candidate_forward_outcome"],
+        limit=50000,
+        ascending=False,
     )
+    complete = []
+    for event in events:
+        payload = event.get("payload") or {}
+        if payload.get("status") != "complete":
+            continue
+        market_lane = str(payload.get("market_lane") or "").lower()
+        strategy_version = str(
+            payload.get("strategy_version_id")
+            or event.get("strategy_version_id")
+            or ""
+        ).upper()
+        if market_lane != "crypto" and not strategy_version.startswith("CRYPTO-"):
+            continue
+        complete.append(event)
+
     resolved_ids = {
-        str((event["payload"] or {}).get("candidate_id") or (event["payload"] or {}).get("candidate_key") or "")
+        str(
+            (event.get("payload") or {}).get("candidate_id")
+            or (event.get("payload") or {}).get("candidate_key")
+            or ""
+        )
         for event in complete
     }
     resolved_ids.discard("")
-    resolved_candidates = [
-        candidates[identity]
-        for identity in resolved_ids
-        if identity in candidates
-    ]
 
     hours: set[int] = set()
     weekdays: set[int] = set()
@@ -517,24 +526,33 @@ def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
     volatility_regimes: set[str] = set()
     liquidity_regimes: set[str] = set()
     observed: list[datetime] = []
+    mfes: list[float] = []
+    maes: list[float] = []
 
-    for candidate in resolved_candidates:
-        stamp = _as_dt(candidate.get("observed_at"))
+    for event in complete:
+        payload = event.get("payload") or {}
+        details = payload.get("details") or {}
+        stamp = _as_dt(
+            details.get("reference_effective_at")
+            or payload.get("candidate_observed_at")
+            or event.get("occurred_at")
+        )
         if stamp:
             observed.append(stamp)
             hours.add(stamp.hour)
             weekdays.add(stamp.weekday())
-        symbol = str(candidate.get("symbol") or "").upper()
+
+        symbol = str(event.get("symbol") or payload.get("symbol") or "").upper()
         if symbol:
             pairs.add(symbol)
-        features = candidate.get("features") or {}
-        raw = (features.get("feature_state") or {}).get("raw") or {}
+
+        context = payload.get("promotion_context") or {}
         try:
-            volatility = float(raw.get("realized_volatility"))
+            volatility = float(context.get("realized_volatility"))
         except (TypeError, ValueError):
             volatility = None
         try:
-            spread_bps = float(raw.get("spread_bps"))
+            spread_bps = float(context.get("spread_bps"))
         except (TypeError, ValueError):
             spread_bps = None
         if volatility is not None:
@@ -546,13 +564,6 @@ def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
                 "tight" if spread_bps <= 10 else "normal" if spread_bps <= 30 else "wide"
             )
 
-    mfes: list[float] = []
-    maes: list[float] = []
-    for event in complete:
-        payload = event["payload"] or {}
-        identity = str(payload.get("candidate_id") or payload.get("candidate_key") or "")
-        if identity not in candidates:
-            continue
         try:
             mfes.append(float(payload["max_favorable_return"]))
         except (KeyError, TypeError, ValueError):
@@ -579,7 +590,7 @@ def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
         "time_of_week_stability": None,
     }
     return {
-        "methodology_version": "foundation-event-derived-crypto-promotion-v1",
+        "methodology_version": "foundation-event-derived-crypto-promotion-v2",
         "market_lane": "crypto",
         "resolved_candidate_predictions": len(resolved_ids),
         "paper_round_trips": 0,
@@ -598,10 +609,9 @@ def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
         "dependence_adjusted": False,
         "multiplicity_adjusted": False,
         "no_lookahead_verified": False,
-        "source": "rhen.events",
+        "source": "rhen.events:candidate_forward_outcome",
         "execution_authority": False,
     }
-
 
 def _weekly_inputs(
     cur: psycopg.Cursor[Any],

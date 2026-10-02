@@ -147,6 +147,17 @@ def calculate_continuous_forward_outcome(
         "bar_interval": candidate.get("bar_interval") or "1Min",
         "methodology_version": METHODOLOGY_VERSION,
         "market_lane": "crypto",
+        "candidate_observed_at": candidate.get("observed_at"),
+        "promotion_context": {
+            "realized_volatility": (
+                ((candidate.get("features") or {}).get("feature_state") or {})
+                .get("raw", {}).get("realized_volatility")
+            ),
+            "spread_bps": (
+                ((candidate.get("features") or {}).get("feature_state") or {})
+                .get("raw", {}).get("spread_bps")
+            ),
+        },
         "strategy_family": candidate.get("strategy_family"),
         "strategy_version_id": candidate.get("strategy_version_id"),
         "model_version": candidate.get("model_version"),
