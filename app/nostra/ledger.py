@@ -35,7 +35,7 @@ class NostraLedger:
         self.token = (
             token
             if token is not None
-            else os.getenv("FOUNDATION_INGEST_TOKEN", "")
+            else os.getenv("NOSTRA_GATEWAY_TOKEN", "")
         ).strip()
         self.timeout_seconds = timeout_seconds
 
@@ -87,7 +87,7 @@ class NostraLedger:
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
-            "x-anevum-foundation-token": self.token,
+            "x-nostra-gateway-token": self.token,
         }
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
