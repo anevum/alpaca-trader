@@ -1357,7 +1357,7 @@ class ResearchReportScheduler:
         token = str(getattr(self.settings, "trading_ingest_token", "") or "")
         if not token:
             raise RuntimeError("canonical trading persistence token is not configured")
-        async with httpx.AsyncClient(timeout=15.0) as http:
+        async with httpx.AsyncClient(timeout=30.0) as http:
             response = await http.get(
                 self._report_read_url,
                 headers={"x-anevum-ingest-token": token},
