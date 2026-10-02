@@ -569,7 +569,11 @@ def recent_runs(conn: psycopg.Connection[Any], *, limit: int) -> list[dict[str, 
                 output_identity,error_classification,error_summary,retry_state,
                 catchup_state,slack_notification_status,details,lease_until
             from iren.scheduler_runs
-            order by scheduled_at desc
+            order by
+                scheduled_at desc,
+                completed_at desc nulls last,
+                started_at desc nulls last,
+                run_id desc
             limit %s
             """,
             (bounded,),
