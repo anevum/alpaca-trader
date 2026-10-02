@@ -103,3 +103,13 @@ def test_objective_change_invalidates_evidence(conn):
     value=verify(conn,{"handoff_id":job["job_id"],"package_digest":job["result"]["package"]["package_digest"]})
     assert not value["objective_completed"]
     assert "objective_changed_requires_supersession" in value["job"]["result"]["verification"]["blockers"]
+
+
+def test_rolling_deploy_old_worker_cannot_claim_handoff_commands(conn):
+    from foundation.iren_work_gateway import command_create, commands_claim
+    created=command_create(conn,{"command_text":"prepare for Codex","requested_by":"owner"})
+    command_id=created["command"]["command_id"]
+    old=commands_claim(conn,owner="iren-work-engine",limit=20)["commands"]
+    assert not any(r["command_id"]==command_id for r in old)
+    new=commands_claim(conn,owner="iren-work-engine-codex-v1",limit=20)["commands"]
+    assert any(r["command_id"]==command_id for r in new)

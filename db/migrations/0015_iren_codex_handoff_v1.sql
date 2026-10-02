@@ -24,6 +24,6 @@ values(
 insert into iren.commands(command_id,requested_by,target_system,command,arguments,status,
     command_text,source,context,created_at,updated_at)
 values('c0de0001-2026-4002-8000-000000000015','owner','IREN','prepare for Codex','{}','QUEUED',
-    'prepare for Codex','command','{"source":"owner-request-codex-handoff-v1"}',now(),now())
+    'prepare for Codex','command','{"source":"owner-request-codex-handoff-v1","required_capability":"CODEX_HANDOFF"}',now(),now())
 on conflict(command_id) do nothing;
 commit;

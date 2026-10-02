@@ -117,6 +117,9 @@ def command_create(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[
         context = {}
     if not text:
         raise ValueError("invalid_iren_command")
+    from app.iren.work import normalize_command
+    if normalize_command(text).startswith("CODEX_"):
+        context = {**context, "required_capability": "CODEX_HANDOFF"}
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
@@ -160,8 +163,10 @@ def commands_claim(
                 with candidates as (
                     select command_id
                     from iren.commands
-                    where status='QUEUED'
-                       or (status='PROCESSING' and lease_until < now())
+                    where (status='QUEUED'
+                       or (status='PROCESSING' and lease_until < now()))
+                      and (context->>'required_capability' is distinct from 'CODEX_HANDOFF'
+                           or %s='iren-work-engine-codex-v1')
                     order by created_at asc
                     limit %s
                     for update skip locked
@@ -177,7 +182,7 @@ def commands_claim(
                     c.command_id,c.command_text,c.source,c.requested_by,
                     c.status,c.context,c.created_at
                 """,
-                (bounded, owner),
+                (owner, bounded, owner),
             )
             rows = _rows(cur)
     return {"commands": rows}

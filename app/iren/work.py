@@ -605,7 +605,7 @@ class IrenWorkEngine:
             await self.notify(text, context or {})
 
     async def _process_commands(self) -> None:
-        claimed = await self.gateway("iren_commands_claim", owner="iren-work-engine", limit=5)
+        claimed = await self.gateway("iren_commands_claim", owner="iren-work-engine-codex-v1", limit=5)
         for command in claimed.get("commands") or []:
             command_id = command.get("command_id")
             text = _text(command.get("command_text"))
