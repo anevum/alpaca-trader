@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 import os
 import re
 
@@ -13,6 +15,7 @@ UTC = timezone.utc
 TERMINAL_JOB_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 ACTIVE_JOB_STATES = {"QUEUED", "RUNNING", "WAITING", "BLOCKED", "NEEDS_APPROVAL"}
 OBJECTIVE_STATES = {"LOCKED", "ACTIVE", "BLOCKED", "READY", "COMPLETE", "FUTURE", "OBSOLETE"}
+AUTOPILOT_SAFE_JOB_TYPES = {"CONTROL_RECONCILE"}
 
 
 def _text(value: Any) -> str:
@@ -234,6 +237,7 @@ def status_summary(snapshot: dict[str, Any], control_state: dict[str, Any]) -> d
     complete = sum(1 for row in objectives if row.get("status") == "COMPLETE")
     incidents = _open_incidents(control_state)
     current = choose_next_action(snapshot, control_state)
+    autopilot = autopilot_decision(snapshot, control_state)
     summary = {
         "control_state": control_state.get("state") or "UNKNOWN",
         "objective_count": len(objectives),
@@ -244,9 +248,114 @@ def status_summary(snapshot: dict[str, Any], control_state: dict[str, Any]) -> d
         "requires_human": len(decisions),
         "open_incidents": incidents,
         "next_action": current,
+        "autopilot": autopilot,
     }
     summary["message"] = _status_message(summary)
     return summary
+
+
+def action_signature(action: dict[str, Any], control_state: dict[str, Any]) -> str:
+    payload = {
+        "objective_key": action.get("objective_key"),
+        "title": action.get("title"),
+        "owner_system": action.get("owner_system"),
+        "job_type": action.get("job_type"),
+        "reason": action.get("reason"),
+        "success_criteria": action.get("success_criteria") or {},
+        "incident": action.get("incident") or {},
+        "blocked_job_id": action.get("blocked_job_id"),
+        "control_state": control_state.get("state"),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
+def autopilot_decision(
+    snapshot: dict[str, Any],
+    control_state: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    settings = snapshot.get("settings") or {}
+    if not bool(settings.get("autopilot_enabled")):
+        return {"should_create": False, "reason": "autopilot_disabled"}
+
+    jobs = list(snapshot.get("jobs") or [])
+    if any(
+        str(row.get("status") or "").upper() in {"QUEUED", "RUNNING"}
+        and str(row.get("requested_via") or "").lower() == "autopilot"
+        for row in jobs
+    ):
+        return {"should_create": False, "reason": "autopilot_job_active"}
+
+    if any(
+        str(row.get("status") or "").upper() == "NEEDS_APPROVAL"
+        or row.get("requires_human") is True
+        for row in jobs
+    ):
+        return {"should_create": False, "reason": "human_decision_pending"}
+
+    current = now or datetime.now(UTC)
+    day = current.date().isoformat()
+    created_today = 0
+    for row in jobs:
+        if str(row.get("requested_via") or "").lower() != "autopilot":
+            continue
+        created_at = str(row.get("created_at") or "")
+        if created_at.startswith(day):
+            created_today += 1
+    cap = max(1, min(12, int(settings.get("autopilot_max_jobs_per_day") or 3)))
+    if created_today >= cap:
+        return {
+            "should_create": False,
+            "reason": "autopilot_daily_cap_reached",
+            "jobs_today": created_today,
+            "daily_cap": cap,
+        }
+
+    action = choose_next_action(snapshot, control_state)
+    if not action:
+        return {"should_create": False, "reason": "no_action"}
+
+    if bool(action.get("protected_action")):
+        return {
+            "should_create": False,
+            "reason": "protected_action_requires_human",
+            "action": action,
+        }
+
+    job_type = str(action.get("job_type") or "").upper()
+    if job_type not in AUTOPILOT_SAFE_JOB_TYPES:
+        return {
+            "should_create": False,
+            "reason": "executor_capability_required",
+            "action": action,
+        }
+
+    signature = action_signature(action, control_state)
+    for row in jobs:
+        if str(row.get("requested_via") or "").lower() != "autopilot":
+            continue
+        metadata = row.get("metadata") or {}
+        if str(metadata.get("action_signature") or "") != signature:
+            continue
+        if str(row.get("status") or "").upper() in TERMINAL_JOB_STATES | {"WAITING", "BLOCKED"}:
+            return {
+                "should_create": False,
+                "reason": "same_action_already_attempted",
+                "action": action,
+                "action_signature": signature,
+            }
+
+    return {
+        "should_create": True,
+        "reason": "safe_action_ready",
+        "action": action,
+        "action_signature": signature,
+        "jobs_today": created_today,
+        "daily_cap": cap,
+    }
 
 
 def build_job(next_action: dict[str, Any], requested_by: str, source: str) -> dict[str, Any]:
@@ -333,6 +442,8 @@ class IrenWorkEngine:
         self.last_error: str | None = None
         self.last_command_at: str | None = None
         self.last_job_at: str | None = None
+        self.last_autopilot_at: str | None = None
+        self.last_autopilot_reason: str | None = None
         self.executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip()
         self.executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
 
@@ -476,6 +587,31 @@ class IrenWorkEngine:
                 },
             )
 
+    async def _reconcile_autopilot(self) -> None:
+        snapshot = await self.snapshot()
+        decision = autopilot_decision(snapshot, self.control_state())
+        self.last_autopilot_reason = str(decision.get("reason") or "")
+        if not decision.get("should_create"):
+            return
+        action = decision.get("action") or {}
+        job = build_job(action, requested_by="IREN", source="autopilot")
+        metadata = dict(job.get("metadata") or {})
+        metadata.update({
+            "autopilot": True,
+            "planner": "iren_autopilot_v1",
+            "action_signature": decision.get("action_signature"),
+        })
+        job["metadata"] = metadata
+        created = await self.gateway("iren_job_create", job=job)
+        row = created.get("job") or {}
+        self.last_autopilot_at = datetime.now(UTC).isoformat()
+        self.last_autopilot_reason = "job_created"
+        if self.notify is not None:
+            await self._notify(
+                f"IREN autopilot queued {row.get('title') or action.get('title')}.",
+                {"source": "autopilot", "job_id": row.get("job_id")},
+            )
+
     async def _execute_jobs(self) -> None:
         claimed = await self.gateway("iren_jobs_claim", owner="iren-work-engine", limit=3)
         for job in claimed.get("jobs") or []:
@@ -511,6 +647,7 @@ class IrenWorkEngine:
     async def tick(self) -> None:
         await self._reconcile_accidental_status_jobs()
         await self._process_commands()
+        await self._reconcile_autopilot()
         await self._execute_jobs()
         self.last_error = None
 
