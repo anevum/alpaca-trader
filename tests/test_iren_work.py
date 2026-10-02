@@ -6,6 +6,7 @@ from app.iren.work import (
     choose_next_action,
     normalize_command,
     process_command,
+    runtime_evidence_criteria,
     status_summary,
 )
 
@@ -434,3 +435,13 @@ def test_autopilot_daily_cap_uses_new_york_business_day():
         ),
     )
     assert decision["reason"] != "autopilot_daily_cap_reached"
+
+
+def test_runtime_evidence_criteria_requires_complete_inventory():
+    assert runtime_evidence_criteria({
+        "topology": {"inventory_complete": True, "inventory_gaps": {}}
+    }) == {"complete_deployment_inventory": True}
+    assert runtime_evidence_criteria({
+        "topology": {"inventory_complete": False, "inventory_gaps": {"VELUM": ["deployment"]}}
+    }) == {"complete_deployment_inventory": False}
+    assert runtime_evidence_criteria({}) == {"complete_deployment_inventory": False}
