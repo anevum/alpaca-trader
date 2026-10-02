@@ -25,6 +25,12 @@ from .contracts import (
     stable_id,
 )
 from .ledger import NostraLedger
+from .models import (
+    MIN_INDEPENDENT_CYCLES,
+    MODEL_ID as SHRUNKEN_DRIFT_MODEL_ID,
+    MODEL_VERSION as SHRUNKEN_DRIFT_MODEL_VERSION,
+    shrunken_drift_forecast,
+)
 from .scoring import (
     SCORING_VERSION,
     multiclass_brier,
@@ -39,6 +45,9 @@ __all__ = [
     "EVALUATION_SCHEMA_VERSION",
     "FORECAST_METHODOLOGY_VERSION",
     "NostraLedger",
+    "MIN_INDEPENDENT_CYCLES",
+    "SHRUNKEN_DRIFT_MODEL_ID",
+    "SHRUNKEN_DRIFT_MODEL_VERSION",
     "PROVENANCE_SCHEMA_VERSION",
     "SCORING_VERSION",
     "SNAPSHOT_SCHEMA_VERSION",
@@ -53,6 +62,7 @@ __all__ = [
     "multiclass_log_loss",
     "score_direction_forecast",
     "score_return_forecast",
+    "shrunken_drift_forecast",
     "skill_score",
     "stable_id",
     "uniform_direction_baseline",
