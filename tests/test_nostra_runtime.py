@@ -11,7 +11,7 @@ from app.nostra import (
     score_direction_forecast,
     uniform_direction_baseline,
 )
-from app.nostra.service import NostraRuntime, require_nostra_api_token
+from app.nostra.service import NostraGateway, NostraRuntime, require_nostra_api_token
 
 
 NOW = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
@@ -99,3 +99,152 @@ def test_nostra_api_token_required(monkeypatch):
         assert exc.status_code == 401
     else:
         raise AssertionError("invalid token must be rejected")
+
+
+
+class _FakeLedger:
+    configured = True
+
+    def __init__(self):
+        self.snapshots = []
+        self.forecasts = []
+        self.outcomes = []
+        self.scores = []
+
+    async def append_snapshot(self, record, *, correlation_id=None):
+        self.snapshots.append((record, correlation_id))
+        return True
+
+    async def append_forecast(self, record, *, correlation_id=None):
+        self.forecasts.append((record, correlation_id))
+        return True
+
+    async def append_outcome(self, record, *, correlation_id=None):
+        self.outcomes.append((record, correlation_id))
+        return True
+
+    async def append_score(self, record, *, correlation_id=None):
+        self.scores.append((record, correlation_id))
+        return True
+
+
+class _FakeGateway:
+    configured = True
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def work(self):
+        return self.payload
+
+
+def _candidate():
+    return {
+        "candidate_identity": "cycle-1:BTC/USD",
+        "symbol": "BTC/USD",
+        "market_lane": "crypto",
+        "observed_at": NOW.isoformat(),
+        "run_id": "run-1",
+        "strategy_version_id": "CRYPTO-TEST",
+        "features": {
+            "feature_state": {
+                "methodology_version": "crypto-features-v1",
+                "raw": {
+                    "momentum_return": 0.001,
+                    "realized_volatility": 0.002,
+                    "spread_bps": 5.0,
+                },
+                "normalized": {
+                    "volatility_normalized_momentum": 0.5,
+                },
+                "time_state": {"hour_utc": 18.0},
+            }
+        },
+        "scan_cycle": {
+            "scan_cycle_id": "cycle-1",
+            "data_status": "healthy",
+            "data_feed": "alpaca",
+            "bar_interval": "1Min",
+        },
+        "research_attribution": {"market": "crypto"},
+    }
+
+
+def test_live_baseline_issues_truthful_research_only_return_forecast():
+    ledger = _FakeLedger()
+    gateway = _FakeGateway(
+        {
+            "ok": True,
+            "research_only": True,
+            "execution_authority": False,
+            "forecast_candidates": [_candidate()],
+            "score_outcomes": [],
+            "counts": {},
+        }
+    )
+    runtime = NostraRuntime(ledger=ledger, gateway=gateway)
+
+    result = asyncio.run(runtime.process_once())
+
+    assert result["forecasts_persisted"] == 1
+    snapshot = ledger.snapshots[0][0]
+    forecast = ledger.forecasts[0][0]
+    assert snapshot["provenance"]["candidate_identity"] == "cycle-1:BTC/USD"
+    assert forecast["target_kind"] == "return"
+    assert forecast["horizon_minutes"] == 10
+    assert forecast["model_id"] == "zero_return"
+    assert forecast["forecast_payload"]["expected_return"] == 0.0
+    assert forecast["research_only"] is True
+    assert forecast["execution_authority"] is False
+    issued = datetime.fromisoformat(forecast["generated_at"])
+    assert issued >= NOW
+    assert forecast["generated_at"] != forecast["as_of_timestamp"]
+
+
+def test_live_baseline_scores_only_gateway_matched_prior_forecast():
+    ledger = _FakeLedger()
+    gateway = _FakeGateway(
+        {
+            "ok": True,
+            "research_only": True,
+            "execution_authority": False,
+            "forecast_candidates": [],
+            "score_outcomes": [
+                {
+                    "forecast_id": "nsf_prior",
+                    "candidate_identity": "cycle-1:BTC/USD",
+                    "symbol": "BTC/USD",
+                    "observed_at": "2026-10-02T18:10:00+00:00",
+                    "realized_return": 0.01,
+                    "max_favorable_return": "0.015",
+                    "max_adverse_return": "-0.004",
+                    "outcome_methodology_version": "candidate-forward-crypto-v1",
+                }
+            ],
+            "counts": {},
+        }
+    )
+    runtime = NostraRuntime(ledger=ledger, gateway=gateway)
+
+    result = asyncio.run(runtime.process_once())
+
+    assert result["scores_persisted"] == 1
+    outcome = ledger.outcomes[0][0]
+    score = ledger.scores[0][0]
+    assert outcome["forecast_id"] == "nsf_prior"
+    assert outcome["realized_payload"]["candidate_identity"] == "cycle-1:BTC/USD"
+    assert score["forecast_id"] == "nsf_prior"
+    assert score["metrics"]["absolute_error"] == 0.01
+    assert score["skill"]["absolute_error"] == 0.0
+    assert score["execution_authority"] is False
+
+
+def test_nostra_gateway_derives_scoped_read_url(monkeypatch):
+    monkeypatch.setenv(
+        "FOUNDATION_EVENTS_URL",
+        "http://foundation.railway.internal:8080/v1/events",
+    )
+    monkeypatch.setenv("NOSTRA_GATEWAY_TOKEN", "g" * 32)
+    gateway = NostraGateway()
+    assert gateway.configured is True
+    assert gateway.url.endswith("/v1/nostra-gateway")
