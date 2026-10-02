@@ -483,6 +483,8 @@ class ResearchReportScheduler:
             "complete_outcomes": summary.complete_outcomes,
             "incomplete_outcomes": summary.incomplete_outcomes,
             "error_outcomes": summary.error_outcomes,
+            "skipped_complete_outcomes": summary.skipped_complete_outcomes,
+            "reused_existing_evidence": summary.reused_existing_evidence,
             "analytics_only": True,
         }
         self.last_post_event_summary = payload
