@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from app.iren.codex_github import inspect_runtime_inventory
 from app.iren.core import reduce_state
-from app.iren.service import POLICY, _runtime_evidence
+from app.iren.service import POLICY, _executor_root_url, _runtime_evidence
 from app.iren.topology import INVENTORY, bounded_health, topology
 
 
@@ -291,3 +291,15 @@ def test_provider_evidence_never_overrides_self_reported_runtime_identity():
     assert row["deployment"] == "dep-velum"
     assert row["revision"] == SHA
     assert row["observation_source"] == "iren_http_probe"
+
+
+def test_executor_root_url_accepts_configured_job_accept_endpoint():
+    assert _executor_root_url(
+        "http://iren-executor.railway.internal:8080/v1/jobs/accept"
+    ) == "http://iren-executor.railway.internal:8080"
+    assert _executor_root_url(
+        "http://iren-executor.railway.internal:8080/v1/jobs/accept/"
+    ) == "http://iren-executor.railway.internal:8080"
+    assert _executor_root_url(
+        "http://iren-executor.railway.internal:8080"
+    ) == "http://iren-executor.railway.internal:8080"
