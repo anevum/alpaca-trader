@@ -209,6 +209,12 @@ class VelumRuntime:
             "running": self.task is not None and not self.task.done(),
             "broker_orders_possible": False,
             "started_at": self.started_at.isoformat(),
+            "runtime_provenance": {
+                "system_version": "velum-runtime-v1",
+                "git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA") or None,
+                "deployment_id": os.getenv("RAILWAY_DEPLOYMENT_ID") or None,
+                "runtime_started_at": self.started_at.isoformat(),
+            },
             "last_tick_at": self.last_tick_at,
             "last_success_at": self.last_success_at,
             "last_error": self.last_error,
@@ -703,6 +709,7 @@ async def health():
         "running": current["running"],
         "broker_orders_possible": False,
         "last_error": current["last_error"],
+        "runtime_provenance": current["runtime_provenance"],
     }
 
 
