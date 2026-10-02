@@ -15,7 +15,7 @@ UTC = timezone.utc
 TERMINAL_JOB_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 ACTIVE_JOB_STATES = {"QUEUED", "RUNNING", "WAITING", "BLOCKED", "NEEDS_APPROVAL"}
 OBJECTIVE_STATES = {"LOCKED", "ACTIVE", "BLOCKED", "READY", "COMPLETE", "FUTURE", "OBSOLETE"}
-AUTOPILOT_SAFE_JOB_TYPES = {"CONTROL_RECONCILE"}
+AUTOPILOT_SAFE_JOB_TYPES = {"CONTROL_RECONCILE", "CONTROL_VERIFY"}
 
 
 def _text(value: Any) -> str:
@@ -123,7 +123,7 @@ def choose_next_action(
             "objective_key": None,
             "title": f"Resolve {incident['key']}",
             "owner_system": "IREN",
-            "job_type": "CONTROL_RECONCILE",
+            "job_type": "CONTROL_VERIFY",
             "protected_action": False,
             "reason": f"open_{incident['severity']}_incident",
             "success_criteria": {"incident_closed": incident["key"]},
@@ -372,7 +372,12 @@ def build_job(next_action: dict[str, Any], requested_by: str, source: str) -> di
         "requires_human": protected,
         "requested_by": requested_by,
         "requested_via": source,
-        "metadata": {"success_criteria": next_action.get("success_criteria") or {}},
+        "metadata": {
+            "success_criteria": next_action.get("success_criteria") or {},
+            "reason": next_action.get("reason"),
+            "incident": next_action.get("incident") or {},
+            "blocked_job_id": next_action.get("blocked_job_id"),
+        },
     }
 
 
@@ -646,7 +651,8 @@ class IrenWorkEngine:
         for job in claimed.get("jobs") or []:
             job_id = _text(job.get("job_id"))
             try:
-                if _text(job.get("job_type")).upper() == "CONTROL_RECONCILE":
+                job_type = _text(job.get("job_type")).upper()
+                if job_type == "CONTROL_RECONCILE":
                     snapshot = await self.snapshot()
                     summary = status_summary(snapshot, self.control_state())
                     await self.gateway(
@@ -667,6 +673,55 @@ class IrenWorkEngine:
                         objective_key=job.get("objective_key"),
                         next_action=(summary.get("next_action") or {}).get("title"),
                         control_state=summary.get("control_state"),
+                    )
+                elif job_type == "CONTROL_VERIFY":
+                    state = self.control_state()
+                    metadata = job.get("metadata") or {}
+                    incident_spec = metadata.get("incident") or {}
+                    incident_key = _text(incident_spec.get("key"))
+                    incidents = state.get("incidents") or {}
+                    incident = incidents.get(incident_key) if isinstance(incidents, dict) else None
+                    incident = incident if isinstance(incident, dict) else {}
+                    still_open = str(incident.get("status") or "").upper() == "OPEN"
+                    evidence: dict[str, Any] = {
+                        "incident_key": incident_key,
+                        "incident_open": still_open,
+                        "incident": incident,
+                        "control_state": state.get("state"),
+                        "observed_at": state.get("observed_at"),
+                    }
+                    if incident_key.startswith("scheduler."):
+                        evidence["scheduler"] = state.get("scheduler") or {}
+                    elif incident_key.startswith("service."):
+                        service_name = incident_key.split(".", 1)[1]
+                        evidence["service"] = (state.get("services") or {}).get(service_name) or {}
+                    elif incident_key.startswith("evidence."):
+                        rhen = (state.get("services") or {}).get("RHEN") or {}
+                        evidence["persistence"] = rhen.get("persistence") or {}
+                        evidence["metrics"] = state.get("metrics") or {}
+                    elif incident_key.startswith("configuration."):
+                        evidence["configuration_baseline"] = state.get("configuration_baseline") or {}
+
+                    await self.gateway(
+                        "iren_job_update",
+                        job_id=job_id,
+                        status="SUCCEEDED",
+                        result={
+                            "message": (
+                                f"Verified {incident_key}: still open."
+                                if still_open
+                                else f"Verified {incident_key}: no longer open."
+                            ),
+                            "verification": evidence,
+                            "verifier": "iren_deterministic_control_verify_v1",
+                        },
+                    )
+                    _emit_work_event(
+                        "iren_control_verify_succeeded",
+                        job_id=job_id,
+                        incident_key=incident_key,
+                        incident_open=still_open,
+                        control_state=state.get("state"),
                     )
                 else:
                     await self._route_job(job)

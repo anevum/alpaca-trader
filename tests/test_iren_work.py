@@ -301,3 +301,42 @@ def test_autopilot_honors_daily_cap():
     )
     assert decision["should_create"] is False
     assert decision["reason"] == "autopilot_daily_cap_reached"
+
+
+def test_open_incident_maps_to_control_verify():
+    data = snapshot()
+    action = choose_next_action(
+        data,
+        {
+            "state": "DEGRADED",
+            "incidents": {
+                "scheduler.health": {
+                    "status": "OPEN",
+                    "severity": "warning",
+                    "reason": "canonical_scheduler_degraded",
+                }
+            },
+        },
+    )
+    assert action["job_type"] == "CONTROL_VERIFY"
+    assert action["incident"]["key"] == "scheduler.health"
+
+
+def test_control_verify_is_autopilot_safe():
+    data = snapshot()
+    data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 3}
+    decision = autopilot_decision(
+        data,
+        {
+            "state": "DEGRADED",
+            "incidents": {
+                "evidence.stale": {
+                    "status": "OPEN",
+                    "severity": "warning",
+                    "reason": "evidence_delivery_timestamp_stale",
+                }
+            },
+        },
+    )
+    assert decision["should_create"] is True
+    assert decision["action"]["job_type"] == "CONTROL_VERIFY"
