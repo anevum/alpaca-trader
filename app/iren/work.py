@@ -425,6 +425,21 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
     })
 
 
+def _emit_work_event(event: str, **fields: Any) -> None:
+    print(
+        json.dumps(
+            {
+                "event": event,
+                "at": datetime.now(UTC).isoformat(),
+                **fields,
+            },
+            sort_keys=True,
+            default=str,
+        ),
+        flush=True,
+    )
+
+
 class IrenWorkEngine:
     def __init__(
         self,
@@ -590,8 +605,15 @@ class IrenWorkEngine:
     async def _reconcile_autopilot(self) -> None:
         snapshot = await self.snapshot()
         decision = autopilot_decision(snapshot, self.control_state())
+        previous_reason = self.last_autopilot_reason
         self.last_autopilot_reason = str(decision.get("reason") or "")
         if not decision.get("should_create"):
+            if self.last_autopilot_reason != previous_reason:
+                _emit_work_event(
+                    "iren_autopilot_state",
+                    reason=self.last_autopilot_reason,
+                    action=(decision.get("action") or {}).get("title"),
+                )
             return
         action = decision.get("action") or {}
         job = build_job(action, requested_by="IREN", source="autopilot")
@@ -606,6 +628,13 @@ class IrenWorkEngine:
         row = created.get("job") or {}
         self.last_autopilot_at = datetime.now(UTC).isoformat()
         self.last_autopilot_reason = "job_created"
+        _emit_work_event(
+            "iren_autopilot_job_created",
+            job_id=row.get("job_id"),
+            title=row.get("title") or action.get("title"),
+            objective_key=row.get("objective_key") or action.get("objective_key"),
+            action_signature=decision.get("action_signature"),
+        )
         if self.notify is not None:
             await self._notify(
                 f"IREN autopilot queued {row.get('title') or action.get('title')}.",
@@ -632,6 +661,13 @@ class IrenWorkEngine:
                             "planner": "iren_continuous_planner_v1",
                         },
                     )
+                    _emit_work_event(
+                        "iren_control_reconcile_succeeded",
+                        job_id=job_id,
+                        objective_key=job.get("objective_key"),
+                        next_action=(summary.get("next_action") or {}).get("title"),
+                        control_state=summary.get("control_state"),
+                    )
                 else:
                     await self._route_job(job)
                 self.last_job_at = datetime.now(UTC).isoformat()
@@ -642,6 +678,11 @@ class IrenWorkEngine:
                     job_id=job_id,
                     status="FAILED",
                     error={"type": type(exc).__name__, "message": str(exc)[:500]},
+                )
+                _emit_work_event(
+                    "iren_job_failed",
+                    job_id=job_id,
+                    error_type=type(exc).__name__,
                 )
 
     async def tick(self) -> None:
