@@ -7,6 +7,7 @@ from foundation.ingest.service import (
     EvidenceEvent,
     canonical_payload_hash,
     infer_run,
+    nostra_gateway_authorized,
     reconciliation_result,
     require_foundation_token,
 )
@@ -66,3 +67,22 @@ def test_reconciliation_is_safe_only_without_blockers():
     )
     assert blocked["safe_to_enter"] is False
     assert blocked["reason"] == "unresolved_intents:1"
+
+
+
+def test_nostra_gateway_token_is_scoped_to_nostra_events(monkeypatch):
+    monkeypatch.setenv("NOSTRA_GATEWAY_TOKEN", "n" * 32)
+
+    nostra_batch = __import__("foundation.ingest.service", fromlist=["EvidenceBatch"]).EvidenceBatch(
+        events=[event(source="NOSTRA", event_type="nostra_snapshot")]
+    )
+    assert nostra_gateway_authorized(nostra_batch, "n" * 32) is True
+    assert nostra_gateway_authorized(nostra_batch, "wrong") is False
+
+    mixed_batch = __import__("foundation.ingest.service", fromlist=["EvidenceBatch"]).EvidenceBatch(
+        events=[
+            event(source="NOSTRA", event_type="nostra_snapshot"),
+            event(source="RHEN", event_type="test"),
+        ]
+    )
+    assert nostra_gateway_authorized(mixed_batch, "n" * 32) is False
