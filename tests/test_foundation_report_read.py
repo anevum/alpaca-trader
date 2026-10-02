@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from foundation.report_read import (
     _attach_outcomes,
     _candidate_is_crypto,
+    _complete_forward_horizons,
     _decision_candidates,
+    _event_key_exists,
     _forward_outcomes,
     _valid_date,
 )
@@ -215,3 +217,54 @@ def test_post_event_evidence_read_avoids_outcome_and_daily_report_work():
     assert "_forward_outcomes" not in block
     assert "_latest_report" not in block
     assert '"forward_outcomes_loaded": False' in block
+
+
+class _CompleteHorizonCursor:
+    def __init__(self, rows=None, one=None):
+        self.rows = rows or []
+        self.one = one
+        self.query = ""
+        self.args = ()
+        self.execute_calls = 0
+
+    def execute(self, query, args) -> None:
+        self.execute_calls += 1
+        self.query = query
+        self.args = args
+
+    def fetchall(self):
+        return self.rows
+
+    def fetchone(self):
+        return self.one
+
+
+def test_complete_forward_horizons_returns_compact_identity_horizon_state():
+    cur = _CompleteHorizonCursor(
+        rows=[
+            ("candidate-a", 1),
+            ("candidate-a", 3),
+            ("candidate-b", 60),
+        ]
+    )
+    result = _complete_forward_horizons(
+        cur,
+        candidate_identities={"candidate-b", "candidate-a"},
+    )
+
+    assert result == {
+        "candidate-a": {1, 3},
+        "candidate-b": {60},
+    }
+    assert "payload->>'status' = 'complete'" in cur.query
+    assert cur.args[0] == "candidate_forward_outcome"
+    assert cur.args[1] == ["candidate-a", "candidate-b"]
+
+
+def test_event_key_exists_uses_unique_event_key_lookup():
+    present = _CompleteHorizonCursor(one=(1,))
+    missing = _CompleteHorizonCursor(one=None)
+
+    assert _event_key_exists(present, "marker") is True
+    assert _event_key_exists(missing, "marker") is False
+    assert "event_key = %s" in present.query
