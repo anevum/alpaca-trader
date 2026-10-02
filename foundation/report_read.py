@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import closing
 from datetime import date, datetime, time, timedelta, timezone
 from statistics import mean
 from typing import Any
@@ -58,7 +60,7 @@ def _event_dict(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
-def _fetch_events(
+def _iter_events(
     cur: psycopg.Cursor[Any],
     *,
     event_types: list[str] | None = None,
@@ -66,7 +68,8 @@ def _fetch_events(
     end: datetime | None = None,
     limit: int = 10000,
     ascending: bool = True,
-) -> list[dict[str, Any]]:
+    include_payload: bool = True,
+) -> Iterator[dict[str, Any]]:
     clauses: list[str] = []
     args: list[Any] = []
     if event_types:
@@ -81,19 +84,37 @@ def _fetch_events(
     where = " where " + " and ".join(clauses) if clauses else ""
     direction = "asc" if ascending else "desc"
     args.append(limit)
-    cur.execute(
-        f"""
+    payload_column = "payload" if include_payload else "'{}'::jsonb"
+    query = f"""
         select
             event_id, event_key, run_id, strategy_version_id, event_type,
-            occurred_at, symbol, correlation_id, source, payload, ingested_at
+            occurred_at, symbol, correlation_id, source, {payload_column}, ingested_at
         from rhen.events
         {where}
         order by occurred_at {direction}, event_id {direction}
         limit %s
-        """,
-        tuple(args),
+        """
+    # Single-row mode avoids buffering every large decision payload in libpq.
+    with closing(cur.stream(query, tuple(args))) as rows:
+        for row in rows:
+            yield _event_dict(row)
+
+
+def _fetch_events(cur: psycopg.Cursor[Any], **kwargs: Any) -> list[dict[str, Any]]:
+    return list(_iter_events(cur, **kwargs))
+
+
+def _event_by_id(cur: psycopg.Cursor[Any], event_id: str) -> dict[str, Any]:
+    cur.execute(
+        """select event_id, event_key, run_id, strategy_version_id, event_type,
+                  occurred_at, symbol, correlation_id, source, payload, ingested_at
+           from rhen.events where event_id = %s""",
+        (event_id,),
     )
-    return [_event_dict(row) for row in cur.fetchall()]
+    row = cur.fetchone()
+    if row is None:
+        raise RuntimeError("canonical_event_missing")
+    return _event_dict(row)
 
 
 def _candidate_identity(candidate: dict[str, Any]) -> str:
@@ -116,55 +137,54 @@ def _decision_candidates(
     start: datetime,
     end: datetime,
     crypto: bool | None,
-) -> list[dict[str, Any]]:
-    decision_events = _fetch_events(
+) -> Iterator[dict[str, Any]]:
+    decision_events = _iter_events(
         cur,
         event_types=["decision_cycle"],
         start=start,
         end=end,
         limit=20000,
     )
-    candidates: list[dict[str, Any]] = []
-    for event in decision_events:
-        payload = event["payload"]
-        cycle_key = str(payload.get("cycle_key") or event["event_key"])
-        scan_cycle = {
-            "scan_cycle_id": cycle_key,
-            "cycle_key": cycle_key,
-            "run_id": event["run_id"],
-            "strategy_version_id": event["strategy_version_id"],
-            "observed_at": event["occurred_at"],
-            "runtime_instance_id": (payload.get("runtime") or {}).get(
-                "runtime_instance_id"
-            ),
-            "deployment_id": (payload.get("runtime") or {}).get("deployment_id"),
-            "data_status": payload.get("data_status"),
-            "data_feed": payload.get("data_feed"),
-            "bar_interval": payload.get("bar_interval"),
-        }
-        decision_cycle_payload = {
-            "cycle_key": cycle_key,
-            "comparison_context": payload.get("comparison_context") or {},
-        }
-        for index, raw in enumerate(payload.get("candidates") or []):
-            if not isinstance(raw, dict):
-                continue
-            candidate = dict(raw)
-            candidate.setdefault("candidate_key", f"{cycle_key}:{candidate.get('symbol') or index}")
-            candidate.setdefault("candidate_id", None)
-            candidate.setdefault("scan_cycle_id", cycle_key)
-            candidate.setdefault("run_id", event["run_id"])
-            candidate.setdefault("strategy_version_id", event["strategy_version_id"])
-            candidate.setdefault("observed_at", event["occurred_at"])
-            candidate.setdefault("session", _as_dt(candidate.get("observed_at")).astimezone(NY).date().isoformat() if _as_dt(candidate.get("observed_at")) else None)
-            candidate["scan_cycle"] = scan_cycle
-            candidate["decision_cycle_payload"] = decision_cycle_payload
-            is_crypto = _candidate_is_crypto(candidate)
-            if crypto is not None and is_crypto != crypto:
-                continue
-            candidates.append(candidate)
-    return candidates
-
+    with closing(decision_events):
+        for event in decision_events:
+            payload = event["payload"]
+            cycle_key = str(payload.get("cycle_key") or event["event_key"])
+            scan_cycle = {
+                "scan_cycle_id": cycle_key,
+                "cycle_key": cycle_key,
+                "run_id": event["run_id"],
+                "strategy_version_id": event["strategy_version_id"],
+                "observed_at": event["occurred_at"],
+                "runtime_instance_id": (payload.get("runtime") or {}).get(
+                    "runtime_instance_id"
+                ),
+                "deployment_id": (payload.get("runtime") or {}).get("deployment_id"),
+                "data_status": payload.get("data_status"),
+                "data_feed": payload.get("data_feed"),
+                "bar_interval": payload.get("bar_interval"),
+            }
+            decision_cycle_payload = {
+                "cycle_key": cycle_key,
+                "comparison_context": payload.get("comparison_context") or {},
+            }
+            for index, raw in enumerate(payload.get("candidates") or []):
+                if not isinstance(raw, dict):
+                    continue
+                candidate = dict(raw)
+                candidate.setdefault("candidate_key", f"{cycle_key}:{candidate.get('symbol') or index}")
+                candidate.setdefault("candidate_id", None)
+                candidate.setdefault("scan_cycle_id", cycle_key)
+                candidate.setdefault("run_id", event["run_id"])
+                candidate.setdefault("strategy_version_id", event["strategy_version_id"])
+                candidate.setdefault("observed_at", event["occurred_at"])
+                candidate.setdefault("session", _as_dt(candidate.get("observed_at")).astimezone(NY).date().isoformat() if _as_dt(candidate.get("observed_at")) else None)
+                candidate["scan_cycle"] = scan_cycle
+                candidate["decision_cycle_payload"] = decision_cycle_payload
+                is_crypto = _candidate_is_crypto(candidate)
+                if crypto is not None and is_crypto != crypto:
+                    continue
+                yield candidate
+    
 
 def _forward_outcomes(
     cur: psycopg.Cursor[Any],
@@ -172,7 +192,7 @@ def _forward_outcomes(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], list[dict[str, Any]]]:
-    events = _fetch_events(
+    events = _iter_events(
         cur,
         event_types=["candidate_forward_outcome"],
         start=start,
@@ -230,6 +250,27 @@ def _attach_outcomes(
     return output
 
 
+def _evidence_candidates(
+    cur: psycopg.Cursor[Any], *, start: datetime, end: datetime, crypto: bool
+) -> list[dict[str, Any]]:
+    # Keep the existing event order, 50,000-outcome window, seven-complete
+    # exclusion and first-5,000 candidate limit. Only materialization changes.
+    outcomes, _ = _forward_outcomes(cur)
+    output: list[dict[str, Any]] = []
+    with closing(_decision_candidates(cur, start=start, end=end, crypto=crypto)) as candidates:
+        for candidate in candidates:
+            row = _attach_outcomes([candidate], outcomes, equity_shape=not crypto)[0]
+            if crypto and sum(
+                1 for value in row["forward_outcomes"].values()
+                if value.get("status") == "complete"
+            ) >= 7:
+                continue
+            output.append(row)
+            if len(output) == 5000:
+                break
+    return output
+
+
 def _latest_report(
     cur: psycopg.Cursor[Any],
     *,
@@ -264,7 +305,7 @@ def _latest_report(
 
 
 def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
-    decision_events = _fetch_events(
+    decision_events = _iter_events(
         cur,
         event_types=["decision_cycle"],
         limit=20000,
@@ -653,21 +694,9 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
 
             if _valid_date(crypto_evidence_session):
                 start, end = _session_bounds(str(crypto_evidence_session))
-                candidates = _decision_candidates(
+                candidates = _evidence_candidates(
                     cur, start=start, end=end, crypto=True
                 )
-                outcomes, _ = _forward_outcomes(cur)
-                candidates = _attach_outcomes(candidates, outcomes)
-                candidates = [
-                    row
-                    for row in candidates
-                    if sum(
-                        1
-                        for outcome in (row.get("forward_outcomes") or {}).values()
-                        if outcome.get("status") == "complete"
-                    )
-                    < 7
-                ][:5000]
                 return {
                     "ok": True,
                     "evidence_version": "rhen-crypto-forward-evidence-v2",
@@ -677,12 +706,8 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
 
             if _valid_date(evidence_session):
                 start, end = _session_bounds(str(evidence_session))
-                candidates = _decision_candidates(
+                candidates = _evidence_candidates(
                     cur, start=start, end=end, crypto=False
-                )
-                outcomes, _ = _forward_outcomes(cur)
-                candidates = _attach_outcomes(
-                    candidates, outcomes, equity_shape=True
                 )
                 latest_daily = _latest_report(
                     cur,
@@ -745,7 +770,7 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                     event_type="research_weekly_report",
                     session_key="week_end",
                 )
-                recent = _fetch_events(cur, limit=2000, ascending=False)
+                recent = _fetch_events(cur, limit=2000, ascending=False, include_payload=False)
                 latest_runtime = next(
                     (
                         event
@@ -762,6 +787,10 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                     ),
                     None,
                 )
+                if latest_runtime:
+                    latest_runtime = _event_by_id(cur, latest_runtime["event_id"])
+                if latest_scan:
+                    latest_scan = _event_by_id(cur, latest_scan["event_id"])
                 return {
                     "ok": True,
                     "evidence_version": "rhen-command-evidence-v2",
