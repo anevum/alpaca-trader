@@ -4,14 +4,6 @@
 begin;
 
 update iren.objectives
-set status='COMPLETE',
-    completed_at=coalesce(completed_at, now()),
-    updated_at=now(),
-    metadata = metadata || '{"verification":"merged_deployed_runtime_verified"}'::jsonb
-where objective_key='iren.stable-build.2026-10-05'
-  and false;
-
-update iren.objectives
 set status='READY',
     dependencies='[]'::jsonb,
     protected_action=false,
