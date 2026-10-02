@@ -18,6 +18,7 @@ class NostraLedger:
         "forecast": ("nostra_forecast", "forecast_id", "generated_at"),
         "outcome": ("nostra_outcome", "outcome_id", "observed_at"),
         "score": ("nostra_score", "score_id", None),
+        "evaluation": ("nostra_evaluation", "evaluation_id", "evaluated_at"),
     }
 
     def __init__(
@@ -109,3 +110,6 @@ class NostraLedger:
 
     async def append_score(self, record: dict[str, Any], *, correlation_id: str | None = None) -> bool:
         return await self._append("score", record, correlation_id=correlation_id)
+
+    async def append_evaluation(self, record: dict[str, Any], *, correlation_id: str | None = None) -> bool:
+        return await self._append("evaluation", record, correlation_id=correlation_id)
