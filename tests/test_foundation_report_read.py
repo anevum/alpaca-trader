@@ -174,3 +174,20 @@ def test_decision_candidate_query_escapes_psycopg_like_wildcard():
     )
 
     assert "like 'CRYPTO-%%'" in cur.query
+
+
+def test_crypto_candidate_query_filters_complete_horizons_before_limit():
+    cur = _DecisionCandidateCursor([])
+    _decision_candidates(
+        cur,
+        start=None,
+        end=None,
+        crypto=True,
+        max_complete_outcomes=7,
+        result_limit=5000,
+    )
+
+    assert "count(distinct outcome.payload->>'horizon_minutes')" in cur.query
+    assert "outcome.payload->>'status' = 'complete'" in cur.query
+    assert "limit %s" in cur.query.lower()
+    assert cur.args[-2:] == (7, 5000)
