@@ -136,12 +136,23 @@ def _objective_action(row: dict[str, Any], *, reason: str) -> dict[str, Any]:
 def choose_next_action(
     snapshot: dict[str, Any],
     control_state: dict[str, Any] | None = None,
+    *,
+    excluded_incident_keys: set[str] | None = None,
+    excluded_objective_keys: set[str] | None = None,
+    excluded_blocked_job_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     objectives = list(snapshot.get("objectives") or [])
     jobs = list(snapshot.get("jobs") or [])
     control_state = control_state or {}
+    excluded_incident_keys = excluded_incident_keys or set()
+    excluded_objective_keys = excluded_objective_keys or set()
+    excluded_blocked_job_ids = excluded_blocked_job_ids or set()
 
-    incidents = _open_incidents(control_state)
+    incidents = [
+        row
+        for row in _open_incidents(control_state)
+        if str(row.get("key") or "") not in excluded_incident_keys
+    ]
     if incidents:
         incident = incidents[0]
         return {
@@ -161,7 +172,12 @@ def choose_next_action(
             "incident": incident,
         }
 
-    ready = [row for row in objectives if objective_ready(row, objectives, jobs)]
+    ready = [
+        row
+        for row in objectives
+        if objective_ready(row, objectives, jobs)
+        and _text(row.get("objective_key")) not in excluded_objective_keys
+    ]
     if ready:
         ready.sort(
             key=lambda row: (
@@ -175,6 +191,7 @@ def choose_next_action(
     active = [
         row for row in objectives
         if str(row.get("status") or "").upper() == "ACTIVE"
+        and _text(row.get("objective_key")) not in excluded_objective_keys
         and not _has_active_job(_text(row.get("objective_key")), jobs)
     ]
     if active:
@@ -190,6 +207,7 @@ def choose_next_action(
     blocked_jobs = [
         row for row in jobs
         if str(row.get("status") or "").upper() in {"WAITING", "BLOCKED", "NEEDS_APPROVAL"}
+        and _text(row.get("job_id")) not in excluded_blocked_job_ids
     ]
     if blocked_jobs:
         blocked_jobs.sort(
@@ -339,39 +357,83 @@ def autopilot_decision(
             "daily_cap": cap,
         }
 
-    action = choose_next_action(snapshot, control_state)
-    if not action:
-        return {"should_create": False, "reason": "no_action"}
+    attempted_signatures = {
+        str((row.get("metadata") or {}).get("action_signature") or "")
+        for row in jobs
+        if str(row.get("requested_via") or "").lower() == "autopilot"
+        and str(row.get("status") or "").upper()
+        in TERMINAL_JOB_STATES | {"WAITING", "BLOCKED"}
+    }
+    excluded_incidents: set[str] = set()
+    excluded_objectives: set[str] = set()
+    excluded_blocked_jobs: set[str] = set()
+    action: dict[str, Any] | None = None
+    signature = ""
+    skipped_actions: list[str] = []
 
-    if bool(action.get("protected_action")):
-        return {
-            "should_create": False,
-            "reason": "protected_action_requires_human",
-            "action": action,
-        }
-
-    job_type = str(action.get("job_type") or "").upper()
-    if job_type not in AUTOPILOT_SAFE_JOB_TYPES:
-        return {
-            "should_create": False,
-            "reason": "executor_capability_required",
-            "action": action,
-        }
-
-    signature = action_signature(action, control_state)
-    for row in jobs:
-        if str(row.get("requested_via") or "").lower() != "autopilot":
-            continue
-        metadata = row.get("metadata") or {}
-        if str(metadata.get("action_signature") or "") != signature:
-            continue
-        if str(row.get("status") or "").upper() in TERMINAL_JOB_STATES | {"WAITING", "BLOCKED"}:
+    for _ in range(50):
+        action = choose_next_action(
+            snapshot,
+            control_state,
+            excluded_incident_keys=excluded_incidents,
+            excluded_objective_keys=excluded_objectives,
+            excluded_blocked_job_ids=excluded_blocked_jobs,
+        )
+        if not action:
             return {
                 "should_create": False,
-                "reason": "same_action_already_attempted",
-                "action": action,
-                "action_signature": signature,
+                "reason": "no_action",
+                "skipped_actions": skipped_actions,
             }
+
+        if bool(action.get("protected_action")):
+            return {
+                "should_create": False,
+                "reason": "protected_action_requires_human",
+                "action": action,
+                "skipped_actions": skipped_actions,
+            }
+
+        job_type = str(action.get("job_type") or "").upper()
+        if job_type not in AUTOPILOT_SAFE_JOB_TYPES:
+            return {
+                "should_create": False,
+                "reason": "executor_capability_required",
+                "action": action,
+                "skipped_actions": skipped_actions,
+            }
+
+        signature = action_signature(action, control_state)
+        if signature not in attempted_signatures:
+            break
+
+        skipped_actions.append(str(action.get("title") or signature))
+        incident = action.get("incident") or {}
+        incident_key = _text(incident.get("key"))
+        objective_key = _text(action.get("objective_key"))
+        blocked_job_id = _text(action.get("blocked_job_id"))
+        if incident_key:
+            excluded_incidents.add(incident_key)
+            continue
+        if objective_key:
+            excluded_objectives.add(objective_key)
+            continue
+        if blocked_job_id:
+            excluded_blocked_jobs.add(blocked_job_id)
+            continue
+        return {
+            "should_create": False,
+            "reason": "same_action_already_attempted",
+            "action": action,
+            "action_signature": signature,
+            "skipped_actions": skipped_actions,
+        }
+    else:
+        return {
+            "should_create": False,
+            "reason": "planner_exhausted",
+            "skipped_actions": skipped_actions,
+        }
 
     return {
         "should_create": True,
@@ -380,6 +442,7 @@ def autopilot_decision(
         "action_signature": signature,
         "jobs_today": created_today,
         "daily_cap": cap,
+        "skipped_actions": skipped_actions,
     }
 
 
