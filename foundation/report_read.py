@@ -825,7 +825,11 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
             if _valid_date(evidence_session):
                 start, end = _session_bounds(str(evidence_session))
                 candidates = _decision_candidates(
-                    cur, start=start, end=end, crypto=False
+                    cur,
+                    start=start,
+                    end=end,
+                    crypto=False,
+                    result_limit=5000,
                 )
                 outcomes, _ = _forward_outcomes(
                     cur,
