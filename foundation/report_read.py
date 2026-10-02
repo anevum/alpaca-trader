@@ -113,56 +113,127 @@ def _candidate_is_crypto(candidate: dict[str, Any]) -> bool:
 def _decision_candidates(
     cur: psycopg.Cursor[Any],
     *,
-    start: datetime,
-    end: datetime,
+    start: datetime | None,
+    end: datetime | None,
     crypto: bool | None,
+    inherit_event_strategy_for_crypto: bool = True,
 ) -> list[dict[str, Any]]:
-    decision_events = _fetch_events(
-        cur,
-        event_types=["decision_cycle"],
-        start=start,
-        end=end,
-        limit=20000,
+    clauses = ["event_type = %s"]
+    args: list[Any] = ["decision_cycle"]
+    if start is not None:
+        clauses.append("occurred_at >= %s")
+        args.append(start)
+    if end is not None:
+        clauses.append("occurred_at < %s")
+        args.append(end)
+    args.append(20000)
+
+    raw_strategy = (
+        "case when candidate_row.candidate ? 'strategy_version_id' "
+        "then candidate_row.candidate->>'strategy_version_id' "
+        "else decision_events.strategy_version_id end"
+        if inherit_event_strategy_for_crypto
+        else "candidate_row.candidate->>'strategy_version_id'"
     )
+    crypto_expression = f"""(
+        lower(coalesce(candidate_row.candidate->>'market_lane', '')) = 'crypto'
+        or upper(coalesce({raw_strategy}, '')) like 'CRYPTO-%'
+        or lower(coalesce(candidate_row.candidate->'features'->>'market', '')) = 'crypto'
+        or lower(coalesce(candidate_row.candidate->'research_attribution'->>'market', '')) = 'crypto'
+    )"""
+    candidate_filter = ""
+    if crypto is True:
+        candidate_filter = f" and {crypto_expression}"
+    elif crypto is False:
+        candidate_filter = f" and not {crypto_expression}"
+
+    cur.execute(
+        f"""
+        with decision_events as (
+            select
+                event_id, event_key, run_id, strategy_version_id,
+                occurred_at, payload
+            from rhen.events
+            where {" and ".join(clauses)}
+            order by occurred_at asc, event_id asc
+            limit %s
+        )
+        select
+            decision_events.event_id,
+            decision_events.event_key,
+            decision_events.run_id,
+            decision_events.strategy_version_id,
+            decision_events.occurred_at,
+            decision_events.payload->>'cycle_key',
+            decision_events.payload->'runtime'->>'runtime_instance_id',
+            decision_events.payload->'runtime'->>'deployment_id',
+            decision_events.payload->>'data_status',
+            decision_events.payload->>'data_feed',
+            decision_events.payload->>'bar_interval',
+            coalesce(decision_events.payload->'comparison_context', '{{}}'::jsonb),
+            candidate_row.candidate,
+            candidate_row.candidate_ordinal
+        from decision_events
+        cross join lateral jsonb_array_elements(
+            case
+                when jsonb_typeof(decision_events.payload->'candidates') = 'array'
+                then decision_events.payload->'candidates'
+                else '[]'::jsonb
+            end
+        ) with ordinality as candidate_row(candidate, candidate_ordinal)
+        where jsonb_typeof(candidate_row.candidate) = 'object'
+        {candidate_filter}
+        order by
+            decision_events.occurred_at asc,
+            decision_events.event_id asc,
+            candidate_row.candidate_ordinal asc
+        """,
+        tuple(args),
+    )
+
     candidates: list[dict[str, Any]] = []
-    for event in decision_events:
-        payload = event["payload"]
-        cycle_key = str(payload.get("cycle_key") or event["event_key"])
-        scan_cycle = {
+    for row in cur.fetchall():
+        raw = row[12]
+        if not isinstance(raw, dict):
+            continue
+        event_key = row[1]
+        run_id = row[2]
+        strategy_version_id = row[3]
+        occurred_at = row[4].isoformat() if row[4] else None
+        cycle_key = str(row[5] or event_key)
+        index = max(int(row[13] or 1) - 1, 0)
+        candidate = dict(raw)
+        candidate.setdefault(
+            "candidate_key",
+            f"{cycle_key}:{candidate.get('symbol') or index}",
+        )
+        candidate.setdefault("candidate_id", None)
+        candidate.setdefault("scan_cycle_id", cycle_key)
+        candidate.setdefault("run_id", run_id)
+        candidate.setdefault("strategy_version_id", strategy_version_id)
+        candidate.setdefault("observed_at", occurred_at)
+        observed = _as_dt(candidate.get("observed_at"))
+        candidate.setdefault(
+            "session",
+            observed.astimezone(NY).date().isoformat() if observed else None,
+        )
+        candidate["scan_cycle"] = {
             "scan_cycle_id": cycle_key,
             "cycle_key": cycle_key,
-            "run_id": event["run_id"],
-            "strategy_version_id": event["strategy_version_id"],
-            "observed_at": event["occurred_at"],
-            "runtime_instance_id": (payload.get("runtime") or {}).get(
-                "runtime_instance_id"
-            ),
-            "deployment_id": (payload.get("runtime") or {}).get("deployment_id"),
-            "data_status": payload.get("data_status"),
-            "data_feed": payload.get("data_feed"),
-            "bar_interval": payload.get("bar_interval"),
+            "run_id": run_id,
+            "strategy_version_id": strategy_version_id,
+            "observed_at": occurred_at,
+            "runtime_instance_id": row[6],
+            "deployment_id": row[7],
+            "data_status": row[8],
+            "data_feed": row[9],
+            "bar_interval": row[10],
         }
-        decision_cycle_payload = {
+        candidate["decision_cycle_payload"] = {
             "cycle_key": cycle_key,
-            "comparison_context": payload.get("comparison_context") or {},
+            "comparison_context": row[11] or {},
         }
-        for index, raw in enumerate(payload.get("candidates") or []):
-            if not isinstance(raw, dict):
-                continue
-            candidate = dict(raw)
-            candidate.setdefault("candidate_key", f"{cycle_key}:{candidate.get('symbol') or index}")
-            candidate.setdefault("candidate_id", None)
-            candidate.setdefault("scan_cycle_id", cycle_key)
-            candidate.setdefault("run_id", event["run_id"])
-            candidate.setdefault("strategy_version_id", event["strategy_version_id"])
-            candidate.setdefault("observed_at", event["occurred_at"])
-            candidate.setdefault("session", _as_dt(candidate.get("observed_at")).astimezone(NY).date().isoformat() if _as_dt(candidate.get("observed_at")) else None)
-            candidate["scan_cycle"] = scan_cycle
-            candidate["decision_cycle_payload"] = decision_cycle_payload
-            is_crypto = _candidate_is_crypto(candidate)
-            if crypto is not None and is_crypto != crypto:
-                continue
-            candidates.append(candidate)
+        candidates.append(candidate)
     return candidates
 
 
@@ -295,23 +366,16 @@ def _latest_report(
 
 
 def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
-    decision_events = _fetch_events(
-        cur,
-        event_types=["decision_cycle"],
-        limit=20000,
-    )
-    candidates: dict[str, dict[str, Any]] = {}
-    for event in decision_events:
-        payload = event["payload"]
-        cycle_key = str(payload.get("cycle_key") or event["event_key"])
-        for index, raw in enumerate(payload.get("candidates") or []):
-            if not isinstance(raw, dict):
-                continue
-            candidate = dict(raw)
-            candidate.setdefault("candidate_key", f"{cycle_key}:{candidate.get('symbol') or index}")
-            candidate.setdefault("observed_at", event["occurred_at"])
-            if _candidate_is_crypto(candidate):
-                candidates[_candidate_identity(candidate)] = candidate
+    candidates = {
+        _candidate_identity(candidate): candidate
+        for candidate in _decision_candidates(
+            cur,
+            start=None,
+            end=None,
+            crypto=True,
+            inherit_event_strategy_for_crypto=False,
+        )
+    }
 
     outcomes, complete = _forward_outcomes(
         cur,
