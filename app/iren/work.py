@@ -23,7 +23,17 @@ def normalize_command(command: str) -> str:
     value = re.sub(r"\s+", " ", command.strip().lower()).rstrip(" ?!.")
     if not value:
         return "STATUS"
-    if value in {"status", "status?", "where are we", "where are we at", "update", "progress"}:
+    if value in {
+        "status",
+        "status?",
+        "current status",
+        "iren status",
+        "current iren status",
+        "where are we",
+        "where are we at",
+        "update",
+        "progress",
+    }:
         return "STATUS"
     if value in {"what next", "what's next", "whats next", "next", "what do we do next", "what should we do next"}:
         return "NEXT"

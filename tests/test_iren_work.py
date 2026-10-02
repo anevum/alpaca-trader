@@ -54,6 +54,9 @@ def test_command_normalization():
     assert normalize_command("what's next?") == "NEXT"
     assert normalize_command("do that") == "EXECUTE_NEXT"
     assert normalize_command("status") == "STATUS"
+    assert normalize_command("Current IREN status") == "STATUS"
+    assert normalize_command("IREN status") == "STATUS"
+    assert normalize_command("current status") == "STATUS"
     assert normalize_command("build the next thing") == "DIRECTIVE"
 
 
@@ -110,3 +113,17 @@ def test_freeform_directive_becomes_iren_triage_job():
     assert result.intent == "DIRECTIVE"
     assert result.job["owner_system"] == "IREN"
     assert result.job["status"] == "QUEUED"
+
+
+def test_current_iren_status_is_read_only_and_creates_no_job():
+    result = process_command(
+        "Current IREN status",
+        snapshot(),
+        {"state": "DEGRADED"},
+        requested_by="devon",
+        source="command",
+    )
+
+    assert result.intent == "STATUS"
+    assert result.job is None
+    assert result.response["message"] == "Current IREN status."
