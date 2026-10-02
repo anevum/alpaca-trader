@@ -166,10 +166,12 @@ def calculate_continuous_forward_outcome(
 @dataclass(slots=True)
 class CryptoForwardEvidenceSummary:
     candidates: int = 0
+    evaluated_candidates: int = 0
     emitted: int = 0
     complete: int = 0
     incomplete: int = 0
     deferred: int = 0
+    evaluation_limited: bool = False
     errors: int = 0
 
 
@@ -220,10 +222,20 @@ class CryptoForwardEvidenceRunner:
             end=current + timedelta(minutes=1),
         )
 
-        for candidate in rows.values():
+        ordered_rows = list(rows.values())
+        for index, candidate in enumerate(ordered_rows):
+            if summary.emitted >= MAX_EMITTED_OUTCOMES_PER_RUN:
+                summary.evaluation_limited = True
+                summary.deferred = len(ordered_rows) - index
+                break
+            summary.evaluated_candidates += 1
             completed = candidate.get("forward_outcomes") or {}
             symbol = str(candidate.get("symbol") or "").upper()
             for horizon in HORIZONS_MINUTES:
+                if summary.emitted >= MAX_EMITTED_OUTCOMES_PER_RUN:
+                    summary.evaluation_limited = True
+                    summary.deferred = len(ordered_rows) - index
+                    break
                 prior = completed.get(str(horizon)) if isinstance(completed, dict) else None
                 if isinstance(prior, dict) and prior.get("status") == "complete":
                     continue
@@ -237,10 +249,8 @@ class CryptoForwardEvidenceRunner:
                     continue
 
                 # Incomplete/error states are diagnostic observations, not
-                # finalized forward evidence. Re-emitting them every minute
-                # previously flooded the shared telemetry queue with tens of
-                # thousands of idempotent duplicates. Recompute them on the
-                # next pass instead and persist only complete outcomes.
+                # finalized forward evidence. Recompute them on the next pass
+                # and persist only complete outcomes.
                 if outcome["status"] == "insufficient_future_data":
                     summary.incomplete += 1
                     continue
@@ -249,10 +259,6 @@ class CryptoForwardEvidenceRunner:
                     continue
 
                 summary.complete += 1
-                if summary.emitted >= MAX_EMITTED_OUTCOMES_PER_RUN:
-                    summary.deferred += 1
-                    continue
-
                 outcome["computed_at"] = current.isoformat()
                 identity = candidate.get("candidate_id") or candidate.get("candidate_key")
                 self.event_sink.emit(
@@ -270,10 +276,13 @@ class CryptoForwardEvidenceRunner:
         self.state.crypto_forward_evidence_state = {
             "status": "healthy" if summary.errors == 0 else "degraded",
             "candidate_count": summary.candidates,
+            "evaluated_candidates": summary.evaluated_candidates,
             "emitted": summary.emitted,
             "complete": summary.complete,
             "incomplete": summary.incomplete,
             "deferred": summary.deferred,
+            "deferred_unit": "candidate_rows",
+            "evaluation_limited": summary.evaluation_limited,
             "errors": summary.errors,
             "last_run_at": current.isoformat(),
         }
