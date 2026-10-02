@@ -191,3 +191,12 @@ def test_crypto_candidate_query_filters_complete_horizons_before_limit():
     assert "outcome.payload->>'status' = 'complete'" in cur.query
     assert "limit %s" in cur.query.lower()
     assert cur.args[-2:] == (7, 5000)
+
+
+def test_equity_evidence_read_bounds_candidates_before_outcome_lookup():
+    source = __import__("inspect").getsource(__import__("foundation.report_read", fromlist=["read_report"]).read_report)
+    equity_block = source.split("if _valid_date(evidence_session):", 1)[1].split(
+        'if latest == "daily":', 1
+    )[0]
+    assert "crypto=False" in equity_block
+    assert "result_limit=5000" in equity_block
