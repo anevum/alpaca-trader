@@ -117,6 +117,8 @@ def _decision_candidates(
     end: datetime | None,
     crypto: bool | None,
     inherit_event_strategy_for_crypto: bool = True,
+    max_complete_outcomes: int | None = None,
+    result_limit: int | None = None,
 ) -> list[dict[str, Any]]:
     clauses = ["event_type = %s"]
     args: list[Any] = ["decision_cycle"]
@@ -146,6 +148,40 @@ def _decision_candidates(
         candidate_filter = f" and {crypto_expression}"
     elif crypto is False:
         candidate_filter = f" and not {crypto_expression}"
+
+    candidate_identity = """coalesce(
+        nullif(candidate_row.candidate->>'candidate_id', ''),
+        nullif(candidate_row.candidate->>'candidate_key', ''),
+        concat(
+            coalesce(
+                nullif(decision_events.payload->>'cycle_key', ''),
+                decision_events.event_key
+            ),
+            ':',
+            coalesce(
+                nullif(candidate_row.candidate->>'symbol', ''),
+                (candidate_row.candidate_ordinal - 1)::text
+            )
+        )
+    )"""
+    outer_args: list[Any] = []
+    if max_complete_outcomes is not None:
+        candidate_filter += f""" and (
+            select count(distinct outcome.payload->>'horizon_minutes')
+            from rhen.events outcome
+            where outcome.event_type = 'candidate_forward_outcome'
+              and outcome.payload->>'status' = 'complete'
+              and coalesce(
+                    nullif(outcome.payload->>'candidate_id', ''),
+                    nullif(outcome.payload->>'candidate_key', '')
+                  ) = {candidate_identity}
+        ) < %s"""
+        outer_args.append(max_complete_outcomes)
+
+    result_limit_sql = ""
+    if result_limit is not None:
+        result_limit_sql = " limit %s"
+        outer_args.append(result_limit)
 
     cur.execute(
         f"""
@@ -187,8 +223,9 @@ def _decision_candidates(
             decision_events.occurred_at asc,
             decision_events.event_id asc,
             candidate_row.candidate_ordinal asc
+        {result_limit_sql}
         """,
-        tuple(args),
+        tuple(args + outer_args),
     )
 
     candidates: list[dict[str, Any]] = []
@@ -752,7 +789,12 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
             if _valid_date(crypto_evidence_session):
                 start, end = _session_bounds(str(crypto_evidence_session))
                 candidates = _decision_candidates(
-                    cur, start=start, end=end, crypto=True
+                    cur,
+                    start=start,
+                    end=end,
+                    crypto=True,
+                    max_complete_outcomes=7,
+                    result_limit=5000,
                 )
                 outcomes, _ = _forward_outcomes(
                     cur,
