@@ -24,6 +24,21 @@ def fresh(stamp: str | None, now: datetime, seconds: int) -> bool:
         return False
 
 
+def _workflow_version_key(value: object) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(value or "0").split("."))
+    except ValueError:
+        return (0,)
+
+
+def _workflow_run_key(row: dict) -> tuple[str, tuple[int, ...], str, str]:
+    return (
+        str(row.get("scheduled_at") or ""),
+        _workflow_version_key(row.get("workflow_version")),
+        str(row.get("completed_at") or ""),
+        str(row.get("started_at") or ""),
+    )
+
 def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict, list[dict]]:
     now = datetime.fromisoformat(observation["observed_at"])
     if now.tzinfo is None:
@@ -82,7 +97,7 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
     latest: dict[str, dict] = {}
     for row in observation.get("runs", []):
         key = row.get("workflow_id", "")
-        if key not in latest or row.get("scheduled_at", "") > latest[key].get("scheduled_at", ""):
+        if key not in latest or _workflow_run_key(row) > _workflow_run_key(latest[key]):
             latest[key] = row
     for key, row in latest.items():
         if key.startswith("verification.") or not fresh(row.get("scheduled_at"), now, 86400):
