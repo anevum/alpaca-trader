@@ -177,9 +177,12 @@ def test_promotion_candidate_query_prefilters_to_complete_outcomes():
         require_complete_outcome=True,
     )
 
-    assert "and exists (" in cur.query.lower()
+    query = cur.query.lower()
+    assert "complete_outcome_identities as materialized" in query
+    assert "join complete_outcome_identities" in query
     assert "candidate_forward_outcome" in cur.query
-    assert "outcome.payload->>'status' = 'complete'" in cur.query
+    assert "payload->>'status' = 'complete'" in cur.query
+    assert "and exists (" not in query
 
 
 def test_promotion_evidence_uses_complete_outcome_prefilter():
