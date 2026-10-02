@@ -9,8 +9,10 @@ import re
 
 import httpx
 from typing import Any, Awaitable, Callable
+from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
+BUSINESS_TZ = ZoneInfo("America/New_York")
 
 TERMINAL_JOB_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 ACTIVE_JOB_STATES = {"QUEUED", "RUNNING", "WAITING", "BLOCKED", "NEEDS_APPROVAL"}
@@ -20,6 +22,7 @@ AUTOPILOT_SAFE_JOB_TYPES = {
     "CONTROL_VERIFY",
     "CONTROL_CAPABILITIES",
     "CONTROL_VERIFIER_SELFTEST",
+    "CONTROL_STABLE_BUILD_VERIFY",
 }
 
 
@@ -340,13 +343,19 @@ def autopilot_decision(
         return {"should_create": False, "reason": "human_decision_pending"}
 
     current = now or datetime.now(UTC)
-    day = current.date().isoformat()
+    business_day = current.astimezone(BUSINESS_TZ).date()
     created_today = 0
     for row in jobs:
         if str(row.get("requested_via") or "").lower() != "autopilot":
             continue
-        created_at = str(row.get("created_at") or "")
-        if created_at.startswith(day):
+        raw_created = str(row.get("created_at") or "")
+        try:
+            created_at = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        if created_at.astimezone(BUSINESS_TZ).date() == business_day:
             created_today += 1
     cap = max(1, min(12, int(settings.get("autopilot_max_jobs_per_day") or 3)))
     if created_today >= cap:
@@ -944,6 +953,72 @@ class IrenWorkEngine:
                         "iren_verifier_selftest_succeeded",
                         job_id=job_id,
                         objective_key=job.get("objective_key"),
+                    )
+                elif job_type == "CONTROL_STABLE_BUILD_VERIFY":
+                    snapshot = await self.snapshot()
+                    state = self.control_state()
+                    objectives = {
+                        _text(row.get("objective_key")): row
+                        for row in snapshot.get("objectives") or []
+                    }
+                    settings = snapshot.get("settings") or {}
+                    commands = list(snapshot.get("commands") or [])
+                    protected_probe = build_job(
+                        {
+                            "title": "protected-probe",
+                            "protected_action": True,
+                            "job_type": "SOFTWARE_BUILD",
+                        },
+                        requested_by="IREN",
+                        source="selftest",
+                    )
+                    criteria = {
+                        "continuous_planner": choose_next_action(snapshot, state) is not None,
+                        "bounded_autopilot": bool(
+                            settings.get("autopilot_enabled")
+                            and 1 <= int(settings.get("autopilot_max_jobs_per_day") or 0) <= 12
+                        ),
+                        "durable_state": bool(
+                            isinstance(snapshot.get("objectives"), list)
+                            and isinstance(snapshot.get("jobs"), list)
+                            and isinstance(settings, dict)
+                        ),
+                        "command_visibility": any(
+                            str(row.get("status") or "").upper() == "SUCCEEDED"
+                            and isinstance(row.get("result"), dict)
+                            for row in commands
+                        ),
+                        "protected_actions_fail_closed": bool(
+                            protected_probe.get("status") == "NEEDS_APPROVAL"
+                            and protected_probe.get("requires_human") is True
+                        ),
+                        "control_state_healthy": str(state.get("state") or "").upper() == "HEALTHY",
+                        "deterministic_executor_complete": str(
+                            (objectives.get("iren.deterministic-executors.v1") or {}).get("status") or ""
+                        ).upper() == "COMPLETE",
+                        "verifier_complete": str(
+                            (objectives.get("iren.verifier.v1") or {}).get("status") or ""
+                        ).upper() == "COMPLETE",
+                    }
+                    result = {
+                        "criteria": criteria,
+                        "control_state": state.get("state"),
+                        "observed_at": state.get("observed_at"),
+                        "verifier": "iren_stable_build_gate_v1",
+                    }
+                    await self.gateway(
+                        "iren_job_update",
+                        job_id=job_id,
+                        status="SUCCEEDED",
+                        result=result,
+                    )
+                    completed = await self._complete_objective_if_verified(job, criteria)
+                    _emit_work_event(
+                        "iren_stable_build_verified",
+                        job_id=job_id,
+                        objective_key=job.get("objective_key"),
+                        completed=completed,
+                        control_state=state.get("state"),
                     )
                 else:
                     await self._route_job(job)
