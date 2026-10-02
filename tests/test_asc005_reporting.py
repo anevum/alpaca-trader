@@ -5,7 +5,8 @@ def test_report_read_preserves_candidate_fields_and_forward_outcomes():
     source = Path("foundation/report_read.py").read_text()
     assert "candidate = dict(raw)" in source
     assert '"decision_cycle_payload"' in source
-    assert 'event_types=["candidate_forward_outcome"]' in source
+    assert '"candidate_forward_outcome"' in source
+    assert "candidate_identities" in source
     assert 'row["outcomes"]' in source
     assert 'row["forward_outcomes"]' in source
 
