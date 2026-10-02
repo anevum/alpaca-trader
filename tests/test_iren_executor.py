@@ -221,3 +221,109 @@ def test_control_verify_persists_incident_evidence():
     assert verification["incident_key"] == "scheduler.health"
     assert verification["incident_open"] is True
     assert verification["scheduler"]["configured"] is True
+
+
+def test_capability_executor_completes_verified_objective():
+    updates = []
+    objective_updates = []
+
+    async def gateway(action, **payload):
+        if action == "iren_jobs_claim":
+            return {
+                "jobs": [{
+                    "job_id": "cap-1",
+                    "objective_key": "iren.deterministic-executors.v1",
+                    "title": "Expand deterministic IREN executors",
+                    "instructions": "Verify safe executor registry.",
+                    "owner_system": "IREN",
+                    "job_type": "CONTROL_CAPABILITIES",
+                    "status": "RUNNING",
+                    "priority": 100,
+                    "protected_action": False,
+                    "requires_human": False,
+                    "metadata": {},
+                }]
+            }
+        if action == "iren_job_update":
+            updates.append(payload)
+            return {"job": payload}
+        if action == "iren_work_snapshot":
+            return {
+                "objectives": [{
+                    "objective_key": "iren.deterministic-executors.v1",
+                    "status": "READY",
+                    "success_criteria": {
+                        "safe_executor_registry": True,
+                        "protected_actions_gated": True,
+                    },
+                }],
+                "jobs": [],
+                "settings": {},
+            }
+        if action == "iren_objective_update":
+            objective_updates.append(payload)
+            return {"objective": payload}
+        return {}
+
+    async def scenario():
+        engine = IrenWorkEngine(gateway, lambda: {"state": "HEALTHY"})
+        await engine._execute_jobs()
+
+    asyncio.run(scenario())
+    assert updates[-1]["status"] == "SUCCEEDED"
+    assert objective_updates[-1] == {
+        "objective_key": "iren.deterministic-executors.v1",
+        "status": "COMPLETE",
+    }
+
+
+def test_verifier_selftest_completes_only_with_positive_and_negative_controls():
+    updates = []
+    objective_updates = []
+
+    async def gateway(action, **payload):
+        if action == "iren_jobs_claim":
+            return {
+                "jobs": [{
+                    "job_id": "verify-self-1",
+                    "objective_key": "iren.verifier.v1",
+                    "title": "Build independent IREN verifier",
+                    "instructions": "Self-test verifier.",
+                    "owner_system": "IREN",
+                    "job_type": "CONTROL_VERIFIER_SELFTEST",
+                    "status": "RUNNING",
+                    "priority": 100,
+                    "protected_action": False,
+                    "requires_human": False,
+                    "metadata": {},
+                }]
+            }
+        if action == "iren_job_update":
+            updates.append(payload)
+            return {"job": payload}
+        if action == "iren_work_snapshot":
+            return {
+                "objectives": [{
+                    "objective_key": "iren.verifier.v1",
+                    "status": "READY",
+                    "success_criteria": {
+                        "evidence_based_completion": True,
+                        "fail_closed": True,
+                    },
+                }],
+                "jobs": [],
+                "settings": {},
+            }
+        if action == "iren_objective_update":
+            objective_updates.append(payload)
+            return {"objective": payload}
+        return {}
+
+    async def scenario():
+        engine = IrenWorkEngine(gateway, lambda: {"state": "HEALTHY"})
+        await engine._execute_jobs()
+
+    asyncio.run(scenario())
+    assert updates[-1]["result"]["positive_control"] is True
+    assert updates[-1]["result"]["negative_control"] is True
+    assert objective_updates[-1]["status"] == "COMPLETE"

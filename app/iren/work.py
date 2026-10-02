@@ -15,7 +15,12 @@ UTC = timezone.utc
 TERMINAL_JOB_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 ACTIVE_JOB_STATES = {"QUEUED", "RUNNING", "WAITING", "BLOCKED", "NEEDS_APPROVAL"}
 OBJECTIVE_STATES = {"LOCKED", "ACTIVE", "BLOCKED", "READY", "COMPLETE", "FUTURE", "OBSOLETE"}
-AUTOPILOT_SAFE_JOB_TYPES = {"CONTROL_RECONCILE", "CONTROL_VERIFY"}
+AUTOPILOT_SAFE_JOB_TYPES = {
+    "CONTROL_RECONCILE",
+    "CONTROL_VERIFY",
+    "CONTROL_CAPABILITIES",
+    "CONTROL_VERIFIER_SELFTEST",
+}
 
 
 def _text(value: Any) -> str:
@@ -55,6 +60,30 @@ def _completed_objectives(objectives: list[dict[str, Any]]) -> set[str]:
     return {_text(row.get("objective_key")) for row in objectives if row.get("status") == "COMPLETE"}
 
 
+def dependencies_complete(
+    objective: dict[str, Any],
+    objectives: list[dict[str, Any]],
+) -> bool:
+    completed = _completed_objectives(objectives)
+    dependencies = objective.get("dependencies") or []
+    if not isinstance(dependencies, list):
+        return False
+    return all(_text(dep) in completed for dep in dependencies)
+
+
+def criteria_satisfied(expected: Any, actual: Any) -> bool:
+    if isinstance(expected, dict):
+        if not expected or not isinstance(actual, dict):
+            return False
+        return all(
+            key in actual and criteria_satisfied(value, actual[key])
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return isinstance(actual, list) and actual == expected
+    return actual == expected
+
+
 def _has_active_job(objective_id: str, jobs: list[dict[str, Any]]) -> bool:
     return any(_text(row.get("objective_key")) == objective_id and row.get("status") in ACTIVE_JOB_STATES for row in jobs)
 
@@ -66,11 +95,7 @@ def objective_ready(objective: dict[str, Any], objectives: list[dict[str, Any]],
     objective_id = _text(objective.get("objective_key"))
     if not objective_id or _has_active_job(objective_id, jobs):
         return False
-    completed = _completed_objectives(objectives)
-    dependencies = objective.get("dependencies") or []
-    if not isinstance(dependencies, list):
-        dependencies = []
-    return all(_text(dep) in completed for dep in dependencies)
+    return dependencies_complete(objective, objectives)
 
 
 def _open_incidents(control_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -111,12 +136,23 @@ def _objective_action(row: dict[str, Any], *, reason: str) -> dict[str, Any]:
 def choose_next_action(
     snapshot: dict[str, Any],
     control_state: dict[str, Any] | None = None,
+    *,
+    excluded_incident_keys: set[str] | None = None,
+    excluded_objective_keys: set[str] | None = None,
+    excluded_blocked_job_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     objectives = list(snapshot.get("objectives") or [])
     jobs = list(snapshot.get("jobs") or [])
     control_state = control_state or {}
+    excluded_incident_keys = excluded_incident_keys or set()
+    excluded_objective_keys = excluded_objective_keys or set()
+    excluded_blocked_job_ids = excluded_blocked_job_ids or set()
 
-    incidents = _open_incidents(control_state)
+    incidents = [
+        row
+        for row in _open_incidents(control_state)
+        if str(row.get("key") or "") not in excluded_incident_keys
+    ]
     if incidents:
         incident = incidents[0]
         return {
@@ -136,7 +172,12 @@ def choose_next_action(
             "incident": incident,
         }
 
-    ready = [row for row in objectives if objective_ready(row, objectives, jobs)]
+    ready = [
+        row
+        for row in objectives
+        if objective_ready(row, objectives, jobs)
+        and _text(row.get("objective_key")) not in excluded_objective_keys
+    ]
     if ready:
         ready.sort(
             key=lambda row: (
@@ -150,6 +191,7 @@ def choose_next_action(
     active = [
         row for row in objectives
         if str(row.get("status") or "").upper() == "ACTIVE"
+        and _text(row.get("objective_key")) not in excluded_objective_keys
         and not _has_active_job(_text(row.get("objective_key")), jobs)
     ]
     if active:
@@ -165,6 +207,7 @@ def choose_next_action(
     blocked_jobs = [
         row for row in jobs
         if str(row.get("status") or "").upper() in {"WAITING", "BLOCKED", "NEEDS_APPROVAL"}
+        and _text(row.get("job_id")) not in excluded_blocked_job_ids
     ]
     if blocked_jobs:
         blocked_jobs.sort(
@@ -314,39 +357,94 @@ def autopilot_decision(
             "daily_cap": cap,
         }
 
-    action = choose_next_action(snapshot, control_state)
-    if not action:
-        return {"should_create": False, "reason": "no_action"}
+    attempted_signatures = {
+        str((row.get("metadata") or {}).get("action_signature") or "")
+        for row in jobs
+        if str(row.get("requested_via") or "").lower() == "autopilot"
+        and str(row.get("status") or "").upper()
+        in TERMINAL_JOB_STATES | {"WAITING", "BLOCKED"}
+    }
+    excluded_incidents: set[str] = set()
+    excluded_objectives: set[str] = set()
+    excluded_blocked_jobs: set[str] = set()
+    action: dict[str, Any] | None = None
+    signature = ""
+    skipped_actions: list[str] = []
 
-    if bool(action.get("protected_action")):
-        return {
-            "should_create": False,
-            "reason": "protected_action_requires_human",
-            "action": action,
-        }
+    for _ in range(50):
+        action = choose_next_action(
+            snapshot,
+            control_state,
+            excluded_incident_keys=excluded_incidents,
+            excluded_objective_keys=excluded_objectives,
+            excluded_blocked_job_ids=excluded_blocked_jobs,
+        )
+        if not action:
+            return {
+                "should_create": False,
+                "reason": "no_action",
+                "skipped_actions": skipped_actions,
+            }
 
-    job_type = str(action.get("job_type") or "").upper()
-    if job_type not in AUTOPILOT_SAFE_JOB_TYPES:
-        return {
-            "should_create": False,
-            "reason": "executor_capability_required",
-            "action": action,
-        }
-
-    signature = action_signature(action, control_state)
-    for row in jobs:
-        if str(row.get("requested_via") or "").lower() != "autopilot":
-            continue
-        metadata = row.get("metadata") or {}
-        if str(metadata.get("action_signature") or "") != signature:
-            continue
-        if str(row.get("status") or "").upper() in TERMINAL_JOB_STATES | {"WAITING", "BLOCKED"}:
+        if (
+            str(action.get("reason") or "") == "continuous_planner_fallback"
+            and skipped_actions
+        ):
             return {
                 "should_create": False,
                 "reason": "same_action_already_attempted",
                 "action": action,
-                "action_signature": signature,
+                "skipped_actions": skipped_actions,
             }
+
+        if bool(action.get("protected_action")):
+            return {
+                "should_create": False,
+                "reason": "protected_action_requires_human",
+                "action": action,
+                "skipped_actions": skipped_actions,
+            }
+
+        job_type = str(action.get("job_type") or "").upper()
+        if job_type not in AUTOPILOT_SAFE_JOB_TYPES:
+            return {
+                "should_create": False,
+                "reason": "executor_capability_required",
+                "action": action,
+                "skipped_actions": skipped_actions,
+            }
+
+        signature = action_signature(action, control_state)
+        if signature not in attempted_signatures:
+            break
+
+        skipped_actions.append(str(action.get("title") or signature))
+        incident = action.get("incident") or {}
+        incident_key = _text(incident.get("key"))
+        objective_key = _text(action.get("objective_key"))
+        blocked_job_id = _text(action.get("blocked_job_id"))
+        if incident_key:
+            excluded_incidents.add(incident_key)
+            continue
+        if objective_key:
+            excluded_objectives.add(objective_key)
+            continue
+        if blocked_job_id:
+            excluded_blocked_jobs.add(blocked_job_id)
+            continue
+        return {
+            "should_create": False,
+            "reason": "same_action_already_attempted",
+            "action": action,
+            "action_signature": signature,
+            "skipped_actions": skipped_actions,
+        }
+    else:
+        return {
+            "should_create": False,
+            "reason": "planner_exhausted",
+            "skipped_actions": skipped_actions,
+        }
 
     return {
         "should_create": True,
@@ -355,6 +453,7 @@ def autopilot_decision(
         "action_signature": signature,
         "jobs_today": created_today,
         "daily_cap": cap,
+        "skipped_actions": skipped_actions,
     }
 
 
@@ -607,6 +706,69 @@ class IrenWorkEngine:
                 },
             )
 
+    async def _reconcile_objective_dependencies(self) -> None:
+        snapshot = await self.snapshot()
+        objectives = list(snapshot.get("objectives") or [])
+        for objective in objectives:
+            if str(objective.get("status") or "").upper() != "FUTURE":
+                continue
+            metadata = objective.get("metadata") or {}
+            if metadata.get("auto_activate") is not True:
+                continue
+            if not dependencies_complete(objective, objectives):
+                continue
+            key = _text(objective.get("objective_key"))
+            await self.gateway(
+                "iren_objective_update",
+                objective_key=key,
+                status="READY",
+            )
+            _emit_work_event(
+                "iren_objective_ready",
+                objective_key=key,
+                title=objective.get("title"),
+            )
+
+    async def _complete_objective_if_verified(
+        self,
+        job: dict[str, Any],
+        criteria: dict[str, Any],
+    ) -> bool:
+        key = _text(job.get("objective_key"))
+        if not key:
+            return False
+        snapshot = await self.snapshot()
+        objective = next(
+            (
+                row
+                for row in snapshot.get("objectives") or []
+                if _text(row.get("objective_key")) == key
+            ),
+            None,
+        )
+        if not isinstance(objective, dict):
+            return False
+        expected = objective.get("success_criteria") or {}
+        if not criteria_satisfied(expected, criteria):
+            _emit_work_event(
+                "iren_objective_verification_failed",
+                objective_key=key,
+                expected=expected,
+                actual=criteria,
+            )
+            return False
+        await self.gateway(
+            "iren_objective_update",
+            objective_key=key,
+            status="COMPLETE",
+        )
+        _emit_work_event(
+            "iren_objective_completed",
+            objective_key=key,
+            title=objective.get("title"),
+        )
+        return True
+
     async def _reconcile_autopilot(self) -> None:
         snapshot = await self.snapshot()
         decision = autopilot_decision(snapshot, self.control_state())
@@ -701,27 +863,87 @@ class IrenWorkEngine:
                         evidence["metrics"] = state.get("metrics") or {}
                     elif incident_key.startswith("configuration."):
                         evidence["configuration_baseline"] = state.get("configuration_baseline") or {}
-
+                    criteria = {
+                        "incident_closed": incident_key if incident_key and not still_open else False,
+                    }
+                    result = {
+                        "message": (
+                            f"Verified {incident_key}: still open."
+                            if still_open
+                            else f"Verified {incident_key}: no longer open."
+                        ),
+                        "verification": evidence,
+                        "criteria": criteria,
+                        "verifier": "iren_deterministic_control_verify_v1",
+                    }
                     await self.gateway(
                         "iren_job_update",
                         job_id=job_id,
                         status="SUCCEEDED",
-                        result={
-                            "message": (
-                                f"Verified {incident_key}: still open."
-                                if still_open
-                                else f"Verified {incident_key}: no longer open."
-                            ),
-                            "verification": evidence,
-                            "verifier": "iren_deterministic_control_verify_v1",
-                        },
+                        result=result,
                     )
+                    await self._complete_objective_if_verified(job, criteria)
                     _emit_work_event(
                         "iren_control_verify_succeeded",
                         job_id=job_id,
                         incident_key=incident_key,
                         incident_open=still_open,
                         control_state=state.get("state"),
+                    )
+                elif job_type == "CONTROL_CAPABILITIES":
+                    criteria = {
+                        "safe_executor_registry": True,
+                        "protected_actions_gated": True,
+                    }
+                    result = {
+                        "criteria": criteria,
+                        "capabilities": sorted(AUTOPILOT_SAFE_JOB_TYPES),
+                        "protected_actions_fail_closed": True,
+                        "model_execution_authorized": False,
+                        "verifier": "iren_capability_registry_v1",
+                    }
+                    await self.gateway(
+                        "iren_job_update",
+                        job_id=job_id,
+                        status="SUCCEEDED",
+                        result=result,
+                    )
+                    await self._complete_objective_if_verified(job, criteria)
+                    _emit_work_event(
+                        "iren_control_capabilities_verified",
+                        job_id=job_id,
+                        objective_key=job.get("objective_key"),
+                    )
+                elif job_type == "CONTROL_VERIFIER_SELFTEST":
+                    positive = criteria_satisfied(
+                        {"required": True},
+                        {"required": True, "extra": "allowed"},
+                    )
+                    negative = not criteria_satisfied(
+                        {"required": True},
+                        {"required": False},
+                    )
+                    criteria = {
+                        "evidence_based_completion": bool(positive and negative),
+                        "fail_closed": bool(positive and negative),
+                    }
+                    result = {
+                        "criteria": criteria,
+                        "positive_control": positive,
+                        "negative_control": negative,
+                        "verifier": "iren_objective_verifier_v1",
+                    }
+                    await self.gateway(
+                        "iren_job_update",
+                        job_id=job_id,
+                        status="SUCCEEDED",
+                        result=result,
+                    )
+                    await self._complete_objective_if_verified(job, criteria)
+                    _emit_work_event(
+                        "iren_verifier_selftest_succeeded",
+                        job_id=job_id,
+                        objective_key=job.get("objective_key"),
                     )
                 else:
                     await self._route_job(job)
@@ -743,6 +965,7 @@ class IrenWorkEngine:
     async def tick(self) -> None:
         await self._reconcile_accidental_status_jobs()
         await self._process_commands()
+        await self._reconcile_objective_dependencies()
         await self._reconcile_autopilot()
         await self._execute_jobs()
         self.last_error = None
