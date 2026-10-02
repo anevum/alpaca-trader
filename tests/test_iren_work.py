@@ -361,3 +361,54 @@ def test_dependencies_complete_requires_all_dependencies():
     ]
     assert dependencies_complete({"dependencies": ["A"]}, objectives)
     assert not dependencies_complete({"dependencies": ["A", "B"]}, objectives)
+
+
+def test_autopilot_skips_already_verified_open_incident_and_advances():
+    data = snapshot()
+    data["objectives"][2]["status"] = "COMPLETE"
+    data["objectives"][3]["status"] = "COMPLETE"
+    data["objectives"].append({
+        "objective_key": "CAPS",
+        "title": "Verify capabilities",
+        "description": "Verify deterministic capabilities.",
+        "status": "READY",
+        "priority": 120,
+        "dependencies": [],
+        "owner_system": "IREN",
+        "protected_action": False,
+        "success_criteria": {"safe_executor_registry": True},
+        "metadata": {"job_type": "CONTROL_CAPABILITIES"},
+    })
+    data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 6}
+    control = {
+        "state": "DEGRADED",
+        "incidents": {
+            "workflow.rhen.session_close": {
+                "status": "OPEN",
+                "severity": "warning",
+                "reason": "current_workflow_failed",
+            }
+        },
+    }
+    incident_action = choose_next_action(data, control)
+    data["jobs"].append({
+        "job_id": "verify-incident",
+        "status": "SUCCEEDED",
+        "requested_via": "autopilot",
+        "created_at": "2026-10-02T10:00:00+00:00",
+        "metadata": {
+            "action_signature": action_signature(incident_action, control),
+        },
+    })
+
+    decision = autopilot_decision(
+        data,
+        control,
+        now=__import__("datetime").datetime(
+            2026, 10, 2, 11, 0,
+            tzinfo=__import__("datetime").timezone.utc,
+        ),
+    )
+    assert decision["should_create"] is True
+    assert decision["action"]["objective_key"] == "CAPS"
+    assert "Resolve workflow.rhen.session_close" in decision["skipped_actions"]
