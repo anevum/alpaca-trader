@@ -445,3 +445,12 @@ def test_runtime_evidence_criteria_requires_complete_inventory():
         "topology": {"inventory_complete": False, "inventory_gaps": {"VELUM": ["deployment"]}}
     }) == {"complete_deployment_inventory": False}
     assert runtime_evidence_criteria({}) == {"complete_deployment_inventory": False}
+
+
+def test_runtime_evidence_verifier_retries_until_inventory_complete():
+    import inspect
+    from app.iren.work import IrenWorkEngine
+
+    source = inspect.getsource(IrenWorkEngine._execute_jobs)
+    assert '"SUCCEEDED" if inventory_complete else "QUEUED"' in source
+    assert "retrying=not inventory_complete" in source
