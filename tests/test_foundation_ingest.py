@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 
+from foundation.nostra_gateway import _point_in_time_candidate
+
 from foundation.ingest.service import (
     EvidenceEvent,
     canonical_payload_hash,
@@ -10,6 +12,7 @@ from foundation.ingest.service import (
     nostra_gateway_authorized,
     reconciliation_result,
     require_foundation_token,
+    require_nostra_gateway_token,
 )
 
 
@@ -86,3 +89,33 @@ def test_nostra_gateway_token_is_scoped_to_nostra_events(monkeypatch):
         ]
     )
     assert nostra_gateway_authorized(mixed_batch, "n" * 32) is False
+
+
+
+def test_nostra_read_gateway_requires_scoped_token(monkeypatch):
+    monkeypatch.setenv("NOSTRA_GATEWAY_TOKEN", "z" * 32)
+    require_nostra_gateway_token("z" * 32)
+    with pytest.raises(HTTPException):
+        require_nostra_gateway_token("wrong")
+
+
+def test_nostra_gateway_candidate_is_point_in_time_and_rejects_future_fields():
+    candidate = {
+        "candidate_key": "cycle:BTC/USD",
+        "symbol": "BTC/USD",
+        "market_lane": "crypto",
+        "observed_at": "2026-10-02T18:00:00+00:00",
+        "run_id": "run-1",
+        "strategy_version_id": "CRYPTO-TEST",
+        "features": {"feature_state": {"raw": {"momentum_return": 0.01}}},
+        "scan_cycle": {"scan_cycle_id": "cycle", "data_status": "healthy"},
+    }
+    projected = _point_in_time_candidate(candidate)
+    assert projected is not None
+    assert projected["candidate_identity"] == "cycle:BTC/USD"
+    assert projected["features"]["feature_state"]["raw"]["momentum_return"] == 0.01
+    assert "forward_outcomes" not in projected
+
+    contaminated = dict(candidate)
+    contaminated["forward_outcomes"] = {"10": {"forward_return": 0.02}}
+    assert _point_in_time_candidate(contaminated) is None
