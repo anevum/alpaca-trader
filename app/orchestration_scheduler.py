@@ -209,6 +209,10 @@ class LedgerClient:
                 "max_attempts": int(retry.get("max_attempts") or 1),
                 "lease_seconds": 1800,
                 "allow_retry": bool(retry.get("transient_only", True)),
+                "retry_delay_seconds": max(
+                    0,
+                    min(3600, int(retry.get("delay_seconds") or 0)),
+                ),
                 "worker_identity": os.getenv("RAILWAY_SERVICE_ID") or "anevum-scheduler",
                 "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
                 "input_identity": item.input_identity,
@@ -893,7 +897,7 @@ class SchedulerRuntime:
 
     @staticmethod
     def _classify_failure(exc: Exception) -> str:
-        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+        if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
             return "transient_infrastructure"
         if isinstance(exc, httpx.HTTPStatusError):
             code = exc.response.status_code
