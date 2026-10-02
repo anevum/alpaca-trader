@@ -193,7 +193,7 @@ class CryptoForwardEvidenceRunner:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         dates = {current.date(), (current - timedelta(days=1)).date()}
         rows: dict[Any, dict[str, Any]] = {}
-        for day in sorted(dates):
+        for day in sorted(dates, reverse=True):
             source = await self.evidence_reader(evidence_session=day.isoformat())
             for candidate in source.get("candidates") or []:
                 if isinstance(candidate, dict) and self._is_crypto(candidate):
