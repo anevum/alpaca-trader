@@ -11,7 +11,7 @@ from app.nostra import (
     score_direction_forecast,
     uniform_direction_baseline,
 )
-from app.nostra.service import NostraRuntime
+from app.nostra.service import NostraRuntime, require_nostra_api_token
 
 
 NOW = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
@@ -85,3 +85,17 @@ def test_nostra_runtime_source_has_no_broker_or_order_client_imports():
     assert "alpaca" not in lowered
     assert "submit_order" not in lowered
     assert "broker_client" not in lowered
+
+
+
+def test_nostra_api_token_required(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("NOSTRA_API_TOKEN", "a" * 32)
+    require_nostra_api_token("a" * 32)
+    try:
+        require_nostra_api_token("wrong")
+    except HTTPException as exc:
+        assert exc.status_code == 401
+    else:
+        raise AssertionError("invalid token must be rejected")

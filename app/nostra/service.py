@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hmac
 import os
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .baselines import uniform_direction_baseline
@@ -35,6 +36,12 @@ class BaselineEvidenceRequest(BaseModel):
     data_quality: dict[str, Any] = Field(default_factory=dict)
     source: dict[str, Any] = Field(default_factory=dict)
     correlation_id: str | None = None
+
+
+def require_nostra_api_token(token: str | None) -> None:
+    expected = os.getenv("NOSTRA_API_TOKEN", "").strip()
+    if not expected or token is None or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
 
 
 class NostraRuntime:
@@ -129,5 +136,9 @@ def ready() -> dict[str, Any]:
 
 
 @app.post("/v1/evidence/baseline")
-async def baseline_evidence(req: BaselineEvidenceRequest) -> dict[str, Any]:
+async def baseline_evidence(
+    req: BaselineEvidenceRequest,
+    x_nostra_api_token: str | None = Header(default=None, alias="x-nostra-api-token"),
+) -> dict[str, Any]:
+    require_nostra_api_token(x_nostra_api_token)
     return await runtime.baseline_evidence(req)
