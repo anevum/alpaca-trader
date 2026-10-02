@@ -71,7 +71,7 @@ class IrenController:
                     services[name] = {"ok": False, "error_type": type(exc).__name__}
             await asyncio.gather(*(probe(item) for item in POLICY["services"]))
             try:
-                executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip().rstrip("/")
+                executor_url = _executor_root_url(os.getenv("IREN_EXECUTOR_URL", ""))
                 executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
                 if executor_url.startswith("http") and len(executor_token) >= 32:
                     response = await client.get(
@@ -249,6 +249,11 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="IREN Deterministic Control Plane", version=POLICY["version"], lifespan=lifespan)
+
+
+def _executor_root_url(value: str) -> str:
+    value = str(value or "").strip().rstrip("/")
+    return value.removesuffix("/v1/jobs/accept").rstrip("/")
 
 
 def _runtime_evidence(state: dict) -> dict:
