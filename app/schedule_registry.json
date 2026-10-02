@@ -83,7 +83,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "trader_session_close",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "protected_action_level": "evidence_write_only"
     },
     {
