@@ -12,6 +12,7 @@ FORECAST_METHODOLOGY_VERSION = "FORECAST-001"
 SNAPSHOT_SCHEMA_VERSION = "nostra-snapshot-v1"
 PROVENANCE_SCHEMA_VERSION = "nostra-provenance-v1"
 OUTCOME_SCHEMA_VERSION = "nostra-outcome-v1"
+EVALUATION_SCHEMA_VERSION = "nostra-evaluation-v1"
 
 TARGET_KINDS = frozenset({"return", "direction", "regime", "volatility", "path"})
 AUTHORITY_STATES = frozenset({
@@ -304,3 +305,81 @@ def build_score_record(
         "execution_authority": False,
     }
     return {"score_id": stable_id("nsc", core), **core}
+
+
+
+def build_evaluation(
+    *,
+    model_id: str,
+    model_version: str,
+    horizon_minutes: int,
+    target_kind: str,
+    window_start: datetime,
+    window_end: datetime,
+    sample_count: int,
+    through_score_id: str,
+    metrics: Mapping[str, Any],
+    calibration: Mapping[str, Any] | None = None,
+    evaluated_at: datetime | None = None,
+    methodology_version: str = EVALUATION_SCHEMA_VERSION,
+    code_sha: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build an immutable aggregate evaluation over already-realized scores.
+
+    The evaluation ID intentionally excludes runtime/deployment provenance and
+    wall-clock evaluation time. The same evidence cut therefore remains
+    idempotent across restarts while preserving the provenance of the first
+    persisted record.
+    """
+
+    model_id = model_id.strip()
+    model_version = model_version.strip()
+    target_kind = target_kind.strip().lower()
+    methodology_version = methodology_version.strip()
+    through_score_id = through_score_id.strip()
+    if not model_id or not model_version or not methodology_version:
+        raise ValueError("model_id, model_version and methodology_version are required")
+    if target_kind not in TARGET_KINDS:
+        raise ValueError(f"unsupported target_kind: {target_kind}")
+    if horizon_minutes <= 0:
+        raise ValueError("horizon_minutes must be positive")
+    if sample_count <= 0:
+        raise ValueError("sample_count must be positive")
+    if not through_score_id:
+        raise ValueError("through_score_id is required")
+
+    start = _aware(window_start, "window_start")
+    end = _aware(window_end, "window_end")
+    evaluated = _aware(evaluated_at or datetime.now(timezone.utc), "evaluated_at")
+    if end < start:
+        raise ValueError("window_end cannot precede window_start")
+    if evaluated < end:
+        raise ValueError("evaluated_at cannot precede window_end")
+
+    identity = {
+        "schema_version": EVALUATION_SCHEMA_VERSION,
+        "methodology_version": methodology_version,
+        "model_id": model_id,
+        "model_version": model_version,
+        "horizon_minutes": int(horizon_minutes),
+        "target_kind": target_kind,
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+        "sample_count": int(sample_count),
+        "through_score_id": through_score_id,
+        "metrics": _jsonable(metrics),
+        "calibration": _jsonable(calibration or {}),
+    }
+    return {
+        "evaluation_id": stable_id("nse", identity),
+        **identity,
+        "evaluated_at": evaluated.isoformat(),
+        "code_sha": code_sha,
+        "provenance": {
+            "schema_version": PROVENANCE_SCHEMA_VERSION,
+            **_jsonable(provenance or {}),
+        },
+        "research_only": True,
+        "execution_authority": False,
+    }
