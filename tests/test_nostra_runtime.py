@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.nostra import (
     NostraLedger,
+    build_evaluation,
     build_forecast,
     build_snapshot,
     score_direction_forecast,
@@ -110,6 +111,7 @@ class _FakeLedger:
         self.forecasts = []
         self.outcomes = []
         self.scores = []
+        self.evaluations = []
 
     async def append_snapshot(self, record, *, correlation_id=None):
         self.snapshots.append((record, correlation_id))
@@ -125,6 +127,10 @@ class _FakeLedger:
 
     async def append_score(self, record, *, correlation_id=None):
         self.scores.append((record, correlation_id))
+        return True
+
+    async def append_evaluation(self, record, *, correlation_id=None):
+        self.evaluations.append((record, correlation_id))
         return True
 
 
@@ -248,3 +254,105 @@ def test_nostra_gateway_derives_scoped_read_url(monkeypatch):
     gateway = NostraGateway()
     assert gateway.configured is True
     assert gateway.url.endswith("/v1/nostra-gateway")
+
+
+
+def test_nostra_evaluation_identity_is_stable_across_runtime_restarts():
+    common = {
+        "model_id": "zero_return",
+        "model_version": "nostra-baselines-v1",
+        "horizon_minutes": 10,
+        "target_kind": "return",
+        "window_start": datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc),
+        "window_end": datetime(2026, 10, 2, 19, 0, tzinfo=timezone.utc),
+        "sample_count": 48,
+        "through_score_id": "nsc_through",
+        "metrics": {
+            "mean_absolute_error": 0.001,
+            "root_mean_squared_error": 0.002,
+        },
+        "calibration": {
+            "residual_mean": 0.0001,
+            "residual_stddev": 0.0015,
+        },
+    }
+    first = build_evaluation(
+        **common,
+        evaluated_at=datetime(2026, 10, 2, 19, 1, tzinfo=timezone.utc),
+        provenance={"deployment_id": "deploy-a"},
+    )
+    second = build_evaluation(
+        **common,
+        evaluated_at=datetime(2026, 10, 2, 19, 2, tzinfo=timezone.utc),
+        provenance={"deployment_id": "deploy-b"},
+    )
+
+    assert first["evaluation_id"] == second["evaluation_id"]
+    assert first["research_only"] is True
+    assert first["execution_authority"] is False
+
+
+def test_live_runtime_persists_rolling_baseline_evaluation_once_per_score_cut():
+    ledger = _FakeLedger()
+    evaluation = {
+        "schema_version": "nostra-baseline-evaluation-work-v1",
+        "model_id": "zero_return",
+        "model_version": "nostra-baselines-v1",
+        "horizon_minutes": 10,
+        "target_kind": "return",
+        "window_start": "2026-10-02T18:10:00+00:00",
+        "window_end": "2026-10-02T18:20:00+00:00",
+        "sample_count": 48,
+        "through_score_id": "nsc_through",
+        "metrics": {
+            "mean_expected_return": 0.0,
+            "mean_realized_return": 0.0002,
+            "bias": -0.0002,
+            "mean_absolute_error": 0.001,
+            "mean_squared_error": 0.000002,
+            "root_mean_squared_error": 0.001414213562,
+        },
+        "calibration": {
+            "residual_mean": 0.0002,
+            "residual_stddev": 0.0014,
+            "realized_return_quantiles": {
+                "p05": -0.002,
+                "p25": -0.0005,
+                "p50": 0.0001,
+                "p75": 0.0008,
+                "p95": 0.0025,
+            },
+            "absolute_error_quantiles": {
+                "p50": 0.0008,
+                "p90": 0.0022,
+                "p95": 0.0028,
+            },
+        },
+        "research_only": True,
+        "execution_authority": False,
+    }
+    gateway = _FakeGateway(
+        {
+            "ok": True,
+            "research_only": True,
+            "execution_authority": False,
+            "forecast_candidates": [],
+            "score_outcomes": [],
+            "baseline_evaluation": evaluation,
+            "counts": {},
+        }
+    )
+    runtime = NostraRuntime(ledger=ledger, gateway=gateway)
+
+    first = asyncio.run(runtime.process_once())
+    second = asyncio.run(runtime.process_once())
+
+    assert first["evaluations_persisted"] == 1
+    assert second["evaluations_persisted"] == 0
+    assert len(ledger.evaluations) == 1
+    persisted = ledger.evaluations[0][0]
+    assert persisted["sample_count"] == 48
+    assert persisted["metrics"]["mean_absolute_error"] == 0.001
+    assert persisted["calibration"]["residual_stddev"] == 0.0014
+    assert persisted["research_only"] is True
+    assert persisted["execution_authority"] is False
