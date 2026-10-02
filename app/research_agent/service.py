@@ -28,6 +28,9 @@ from .semantic import (
 )
 
 
+RUNTIME_STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+
 FORBIDDEN_RUNTIME_VARIABLES = (
     "ALPACA_API_KEY",
     "ALPACA_API_SECRET",
@@ -107,6 +110,12 @@ def _health() -> dict:
         "enabled": enabled,
         "canonical_gateway_configured": gateway.configured,
         "source_commit_bound": commit_bound,
+        "runtime_provenance": {
+            "system_version": RUNTIME_VERSION,
+            "git_commit": _source_commit() or None,
+            "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or None,
+            "runtime_started_at": RUNTIME_STARTED_AT,
+        },
         "semantic_model": {
             "enabled": model_enabled,
             "provider": "openai" if model_enabled else None,
