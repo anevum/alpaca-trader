@@ -293,13 +293,13 @@ def test_autopilot_honors_daily_cap():
     data["objectives"][3]["status"] = "COMPLETE"
     data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 2}
     data["jobs"] = [
-        {"status": "SUCCEEDED", "requested_via": "autopilot", "created_at": "2026-10-02T01:00:00+00:00"},
-        {"status": "SUCCEEDED", "requested_via": "autopilot", "created_at": "2026-10-02T02:00:00+00:00"},
+        {"status": "SUCCEEDED", "requested_via": "autopilot", "created_at": "2026-10-02T05:00:00+00:00"},
+        {"status": "SUCCEEDED", "requested_via": "autopilot", "created_at": "2026-10-02T06:00:00+00:00"},
     ]
     decision = autopilot_decision(
         data,
         {"state": "HEALTHY", "incidents": {}},
-        now=__import__("datetime").datetime(2026, 10, 2, 4, 0, tzinfo=__import__("datetime").timezone.utc),
+        now=__import__("datetime").datetime(2026, 10, 2, 8, 0, tzinfo=__import__("datetime").timezone.utc),
     )
     assert decision["should_create"] is False
     assert decision["reason"] == "autopilot_daily_cap_reached"
