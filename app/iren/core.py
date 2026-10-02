@@ -56,6 +56,11 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
     for item in policy["services"]:
         name = item["id"]
         row = services.get(name, {})
+        # Inventory-only services are observed for deployment provenance but do
+        # not silently expand the established IREN incident policy. Their
+        # missing identity remains a hard Codex-verification blocker.
+        if item.get("inventory_only"):
+            continue
         if row.get("ok") is not True:
             issue(f"service.{name}", "warning", "health_unavailable_or_unhealthy")
     rhen = services.get("RHEN", {})
