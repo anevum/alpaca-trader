@@ -52,6 +52,7 @@ class IrenController:
 
     async def observe(self):
         services = {}
+        provider_inventory = {}
         async with httpx.AsyncClient(timeout=12) as client:
             async def probe(item):
                 name = item["id"]
@@ -70,6 +71,25 @@ class IrenController:
                     services[name] = {"ok": False, "error_type": type(exc).__name__}
             await asyncio.gather(*(probe(item) for item in POLICY["services"]))
             try:
+                executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip().rstrip("/")
+                executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
+                if executor_url.startswith("http") and len(executor_token) >= 32:
+                    response = await client.get(
+                        executor_url + "/v1/evidence/runtime-inventory",
+                        headers={"x-anevum-scheduler-token": executor_token},
+                    )
+                    response.raise_for_status()
+                    body = response.json()
+                    if (
+                        isinstance(body, dict)
+                        and body.get("schema_version") == "iren_provider_inventory.v1"
+                        and body.get("read_only") is True
+                        and body.get("provider_write_authority") is False
+                    ):
+                        provider_inventory = body
+            except Exception:
+                provider_inventory = {}
+            try:
                 response = await client.get(scheduler.runtime.trader_url + "/configuration", headers=scheduler.runtime.scheduler_headers)
                 response.raise_for_status()
                 config = response.json()
@@ -78,7 +98,8 @@ class IrenController:
         recent = await scheduler.runtime.ledger.recent(limit=100)
         rt = scheduler.runtime
         return {"observed_at": datetime.now(UTC).isoformat(), "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            "services": services, "configuration": config, "runs": recent,
+            "services": services, "provider_inventory": provider_inventory,
+            "configuration": config, "runs": recent,
             "scheduler": {"configured": rt.configured, "version": rt.scheduler_version,
                 "started_at": rt.started_at.isoformat(),
                 "last_success_at": rt.last_success_at.isoformat() if rt.last_success_at else None,
@@ -230,6 +251,23 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="IREN Deterministic Control Plane", version=POLICY["version"], lifespan=lifespan)
 
 
+def _runtime_evidence(state: dict) -> dict:
+    topology_state = state.get("topology") if isinstance(state, dict) else {}
+    topology_state = topology_state if isinstance(topology_state, dict) else {}
+    gaps = topology_state.get("inventory_gaps")
+    gaps = gaps if isinstance(gaps, dict) else {}
+    required = topology_state.get("required_inventory")
+    required = required if isinstance(required, list) else []
+    return {
+        "schema_version": "iren_runtime_evidence.v1",
+        "complete_deployment_inventory": topology_state.get("inventory_complete") is True,
+        "required_inventory": list(required),
+        "inventory_gaps": {str(key): list(value) for key, value in gaps.items() if isinstance(value, list)},
+        "inventory_verified_at": topology_state.get("inventory_verified_at"),
+        "observation_source": topology_state.get("inventory_source"),
+    }
+
+
 @app.get("/health")
 async def health():
     # Process readiness differs from the health of the systems being supervised.
@@ -240,6 +278,7 @@ async def health():
         "control_state": controller.state.get("state", "STARTING"), "last_error": controller.last_error,
         "scheduler_version": scheduler.runtime.scheduler_version, "model_invoked": False,
         "runtime_identity": controller.runtime_identity,
+        "runtime_evidence": _runtime_evidence(controller.state),
         "last_heartbeat_at": controller.last_persisted_at,
         "codex_handoff": {"version": "v1", "paid_execution": False, "auto_merge": False},
         "work_engine": {"running": work_alive, "last_error": work_engine.last_error,
