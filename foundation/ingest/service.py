@@ -142,6 +142,91 @@ def ensure_run_for_event(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None
 
 
 def project_event(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None:
+    payload = event.payload
+
+    if event.event_type == "nostra_snapshot":
+        cur.execute(
+            """
+            insert into nostra.snapshots (
+                snapshot_id, as_of_timestamp, symbol, market_lane,
+                feature_set_version, payload
+            )
+            values (%s,%s,%s,%s,%s,%s)
+            on conflict (snapshot_id) do nothing
+            """,
+            (
+                str(payload.get("snapshot_id") or ""),
+                payload.get("as_of_timestamp") or event.occurred_at,
+                payload.get("symbol") or event.symbol,
+                str(payload.get("market_lane") or "research"),
+                str(payload.get("feature_set_version") or "unknown"),
+                Jsonb(payload),
+            ),
+        )
+        return
+
+    if event.event_type == "nostra_forecast":
+        cur.execute(
+            """
+            insert into nostra.forecasts (
+                forecast_id, snapshot_id, generated_at, symbol, market_lane,
+                horizon_minutes, target_kind, model_id, model_version, payload
+            )
+            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            on conflict (forecast_id) do nothing
+            """,
+            (
+                str(payload.get("forecast_id") or ""),
+                str(payload.get("snapshot_id") or ""),
+                payload.get("generated_at") or event.occurred_at,
+                payload.get("symbol") or event.symbol,
+                str(payload.get("market_lane") or "research"),
+                int(payload.get("horizon_minutes") or 0),
+                str(payload.get("target_kind") or ""),
+                str(payload.get("model_id") or ""),
+                str(payload.get("model_version") or ""),
+                Jsonb(payload),
+            ),
+        )
+        return
+
+    if event.event_type == "nostra_outcome":
+        cur.execute(
+            """
+            insert into nostra.outcomes (
+                outcome_id, forecast_id, observed_at, payload
+            )
+            values (%s,%s,%s,%s)
+            on conflict (outcome_id) do nothing
+            """,
+            (
+                str(payload.get("outcome_id") or ""),
+                str(payload.get("forecast_id") or ""),
+                payload.get("observed_at") or event.occurred_at,
+                Jsonb(payload),
+            ),
+        )
+        return
+
+    if event.event_type == "nostra_score":
+        cur.execute(
+            """
+            insert into nostra.scores (
+                score_id, forecast_id, outcome_id, scoring_version, payload
+            )
+            values (%s,%s,%s,%s,%s)
+            on conflict (score_id) do nothing
+            """,
+            (
+                str(payload.get("score_id") or ""),
+                str(payload.get("forecast_id") or ""),
+                str(payload.get("outcome_id") or ""),
+                str(payload.get("scoring_version") or ""),
+                Jsonb(payload),
+            ),
+        )
+        return
+
     if not event.run_id:
         return
 
