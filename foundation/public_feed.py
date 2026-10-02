@@ -108,6 +108,28 @@ def _research_entry(event_type: str, occurred_at: Any, payload: Any) -> dict[str
     }
 
 
+def _public_nostra_state(
+    runtime: dict[str, Any],
+    *,
+    forecast_count: int,
+    last_forecast_at: Any,
+) -> dict[str, Any]:
+    status = str(runtime.get("status") or "UNKNOWN").upper()
+    ready = runtime.get("readiness") is True
+    return {
+        "runtime_state": status,
+        "health_state": "HEALTHY" if ready else status,
+        "tracking_state": "LIVE_BASELINE" if forecast_count else "READY_NO_FORECAST_SAMPLE",
+        "observed_at": _iso(runtime.get("observed_at") or last_forecast_at),
+        "independent_runtime": runtime.get("independent_runtime") is True,
+        "activity": (
+            f"{forecast_count} immutable forecasts / 24h"
+            if forecast_count
+            else "Independent forecast runtime active; awaiting forecast sample"
+        ),
+    }
+
+
 def _account_performance(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
     cur.execute(
         """
@@ -635,26 +657,11 @@ def read_public_feed(database_url: str) -> dict[str, Any]:
                     else "Worker active · queue clear"
                 ),
             },
-            "NOSTRA": {
-                "runtime_state": str(nostra_runtime.get("status") or "UNKNOWN").upper(),
-                "health_state": (
-                    "HEALTHY"
-                    if nostra_runtime.get("readiness") is True
-                    else str(nostra_runtime.get("status") or "UNKNOWN").upper()
-                ),
-                "tracking_state": (
-                    "LIVE_BASELINE"
-                    if nostra_count
-                    else "READY_NO_FORECAST_SAMPLE"
-                ),
-                "observed_at": _iso(nostra_runtime.get("observed_at") or nostra_at),
-                "independent_runtime": nostra_runtime.get("independent_runtime") is True,
-                "activity": (
-                    f"{nostra_count} immutable forecasts / 24h"
-                    if nostra_count
-                    else "Independent forecast runtime active; awaiting forecast sample"
-                ),
-            },
+            "NOSTRA": _public_nostra_state(
+                nostra_runtime,
+                forecast_count=nostra_count,
+                last_forecast_at=nostra_at,
+            ),
             "VELUM": {
                 "runtime_state": velum_status,
                 "health_state": "HEALTHY" if velum_status in {"SUCCEEDED","IDLE"} else velum_status,
