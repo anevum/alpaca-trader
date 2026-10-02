@@ -72,3 +72,35 @@ Infrastructure issue under investigation: Foundation trading-report-read request
 5. Finish cleanup of temporary ops branches/workflows after evidence is recorded.
 
 The Supabase project remains untouched. Deletion requires explicit authorization after final zero-dependency verification; this document is not such authorization.
+
+
+## 2026-10-02 final runtime verification addendum
+
+Foundation report-read reliability was repaired on canonical main through PRs #180-#185:
+
+- PR #180 scopes forward-outcome reads to candidate identities already selected by the request.
+- PR #181 adds the partial PostgreSQL candidate-identity index for forward outcomes; migration 0007 is applied and verified.
+- PR #182 moves decision-candidate expansion/filtering into PostgreSQL instead of materializing whole decision-cycle payloads in Python.
+- PR #183 fixes Psycopg percent-wildcard escaping discovered by the first live #182 probe. The failed build was immediately rolled back to the prior known-good image while the fix passed CI, then the corrected image was redeployed.
+- PR #184 moves the existing crypto "< 7 complete horizons" filter and 5,000-candidate cap into PostgreSQL before candidate materialization.
+- PR #185 raises only the research report HTTP client timeout from 15 seconds to 30 seconds so bounded cold reads cannot be misclassified as failed evidence runs.
+
+Post-deployment live verification on PR #185 observed:
+- crypto promotion: HTTP 200 in 16.287 seconds;
+- active prior-session crypto evidence: HTTP 200 in 9.437 seconds;
+- current-session crypto evidence: HTTP 200 in 0.089 seconds;
+- no client disconnect/499 in the verified post-deployment sample;
+- Foundation ingest current memory approximately 0.53 GB. The one-hour maximum still includes the pre-repair high-water period and is not representative of the current process state.
+
+ANEVUM Core (4 services) and RHEN production (9 services) were re-read after deployment: all 13 services were online with zero active Railway warnings/criticals and zero recent failed deployments. The Foundation migrator is restored to its canonical start command `python -m foundation.migrator.run`.
+
+### Remaining sign-off boundaries
+
+These are evidence/authorization boundaries, not runtime cutover defects:
+
+1. Owner-browser confirmation through an authenticated Cloudflare Access session remains required for the final human sign-off of Command/session/topology and a harmless IREN enqueue.
+2. Railway variable values remain redacted to the connected OAuth clients. Variable-name inventory shows no Supabase-named runtime variables across the required services, but final zero-dependency proof still requires a value-capable Railway session to inspect generic URL/token destinations.
+3. Temporary merged PR branches cannot be deleted through the current GitHub connector. They are non-runtime and do not affect canonical main.
+4. The retained Supabase project remains untouched. Deletion is not authorized and is not required for the running Foundation v2 architecture.
+
+Runtime cutover status: **COMPLETE** for canonical GitHub main -> Railway compute -> Railway PostgreSQL with Cloudflare Access at the private edge. Final zero-dependency sign-off remains **PENDING OWNER/VALUE EVIDENCE** only.
