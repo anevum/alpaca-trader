@@ -82,6 +82,20 @@ def database_url() -> str:
     return value
 
 
+def nostra_gateway_authorized(
+    batch: EvidenceBatch,
+    token: str | None,
+) -> bool:
+    expected = os.environ.get("NOSTRA_GATEWAY_TOKEN", "").strip()
+    return bool(
+        batch.events
+        and all(event.source == "NOSTRA" for event in batch.events)
+        and expected
+        and token
+        and hmac.compare_digest(token, expected)
+    )
+
+
 def require_foundation_token(
     foundation_token: str | None = None,
     ingest_token: str | None = None,
@@ -432,8 +446,10 @@ def ingest(
     batch: EvidenceBatch,
     x_anevum_foundation_token: str | None = Header(default=None, alias="x-anevum-foundation-token"),
     x_anevum_ingest_token: str | None = Header(default=None, alias="x-anevum-ingest-token"),
+    x_nostra_gateway_token: str | None = Header(default=None, alias="x-nostra-gateway-token"),
 ) -> dict[str, Any]:
-    require_foundation_token(x_anevum_foundation_token, x_anevum_ingest_token)
+    if not nostra_gateway_authorized(batch, x_nostra_gateway_token):
+        require_foundation_token(x_anevum_foundation_token, x_anevum_ingest_token)
     inserted = 0
     duplicates = 0
     try:
