@@ -5,10 +5,14 @@ from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
 INVENTORY = {
-    "RHEN": ("SERVICE", "alpaca-trader", "Live execution; research reporting, evidence and legacy NOSTRA/GRAEN calculations remain coupled"),
-    "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; counterfactual functions also remain in RHEN research reporting"),
-    "GRAEN": ("SERVICE", "graen", "Independent mathematical and theoretical research runtime with durable problem queue, run ledger, and artifact store"),
+    "RHEN": ("SERVICE", "alpaca-trader", "Live execution; protected trading runtime"),
+    "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; broker-isolated research"),
+    "GRAEN": ("SERVICE", "graen", "Independent mathematical and theoretical research runtime"),
+    "GRAEN_EXECUTOR": ("WORKER", "graen-research-executor", "Independent research executor; no broker-order authority"),
     "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
+    "RESEARCH_AGENT": ("WORKER", "rhen-research-agent", "Independent evidence-review worker"),
+    "CRYPTO_EDGE": ("WORKER", "rhen-crypto-edge-discovery", "Independent crypto research/shadow service; execution disabled"),
+    "IREN_EXECUTOR": ("SERVICE", "iren-executor", "Bounded IREN execution and GitHub evidence boundary"),
 }
 
 def bounded_health(name, body):
@@ -24,10 +28,28 @@ def bounded_health(name, body):
     provenance = body.get("runtime_provenance") or {}
     if not isinstance(provenance, dict):
         raise ValueError("malformed_provenance")
-    result["runtime_identity"] = {k: provenance.get(k) for k in
-        ("system_version", "git_commit", "deployment_id", "runtime_started_at")}
-    if name == "GRAEN" and not result["runtime_identity"].get("system_version"):
-        result["runtime_identity"]["system_version"] = body.get("program")
+    # Prefer explicit runtime provenance, then bounded direct health fields used by
+    # older read-only services. Never infer a deployment or revision from a name.
+    result["runtime_identity"] = {
+        "system_version": (
+            provenance.get("system_version")
+            or body.get("runtime_version")
+            or body.get("version")
+            or body.get("agent_version")
+            or body.get("program")
+        ),
+        "git_commit": (
+            provenance.get("git_commit")
+            or body.get("revision")
+            or body.get("source_commit")
+        ),
+        "deployment_id": provenance.get("deployment_id") or body.get("deployment"),
+        "runtime_started_at": (
+            provenance.get("runtime_started_at")
+            or provenance.get("started_at")
+            or body.get("started_at")
+        ),
+    }
     for key, value in result["runtime_identity"].items():
         if value is not None and (not isinstance(value, str) or len(value) > 128):
             raise ValueError("malformed_runtime_identity")
@@ -64,7 +86,19 @@ def topology(observation, state, self_identity):
             status = "DEGRADED"
         if incidents.get("service." + name, {}).get("status") == "OPEN":
             status = "INCIDENT"
-        identity = health.get("runtime_identity") or {}
+        identity = dict(health.get("runtime_identity") or {})
+        provider = observation.get("provider_inventory") or {}
+        provider_services = provider.get("services") if isinstance(provider, dict) else {}
+        provider_services = provider_services if isinstance(provider_services, dict) else {}
+        provider_row = provider_services.get(name)
+        provider_used = False
+        if isinstance(provider_row, dict) and provider_row.get("verified") is True:
+            if not identity.get("git_commit") and provider_row.get("revision"):
+                identity["git_commit"] = provider_row["revision"]
+                provider_used = True
+            if not identity.get("deployment_id") and provider_row.get("deployment"):
+                identity["deployment_id"] = provider_row["deployment"]
+                provider_used = True
         row = ServiceObservation(service_id=name, runtime_kind=kind, independent_runtime=True,
             service_name=service_name, service_version=identity.get("system_version"),
             deployment=identity.get("deployment_id"), revision=identity.get("git_commit"),
@@ -74,7 +108,7 @@ def topology(observation, state, self_identity):
             last_success=stamp if ready else None,
             last_failure=health.get("error_type") or ("reported_error" if health.get("last_error") else None),
             configuration_identity=observation.get("configuration", {}).get("fingerprint") if name == "RHEN" else None,
-            observation_source="iren_http_probe", scope=scope)
+            observation_source="iren_http_probe+github_railway_status" if provider_used else "iren_http_probe", scope=scope)
         rows.append(row.model_dump())
     rows.append(ServiceObservation(schema_version="service_heartbeat.v1", service_id="IREN",
         runtime_kind="SERVICE", independent_runtime=True, service_name="rhen-research-scheduler",
@@ -104,9 +138,25 @@ def topology(observation, state, self_identity):
         "telemetry": {"status": "STALE" if not fresh(evidence.get("last_sent_at"), now, 180) else "DEGRADED" if evidence.get("last_error") or evidence_incident else "RUNNING",
                       "last_success": evidence.get("last_sent_at"), "dropped_count": evidence.get("dropped_count")},
     }
+    required_ids = sorted([*INVENTORY, "IREN"])
+    by_id = {row.get("service_id"): row for row in rows}
+    inventory_gaps = {}
+    for service_id in required_ids:
+        row = by_id.get(service_id) or {}
+        missing = [
+            field for field in ("deployment", "revision")
+            if not row.get(field)
+        ]
+        if row.get("readiness") is not True:
+            missing.append("readiness")
+        if missing:
+            inventory_gaps[service_id] = sorted(set(missing))
+    inventory_complete = not inventory_gaps
     return {"schema_version": "runtime_topology.v1", "observed_at": stamp, "services": rows,
-            "dependencies": dependencies, "inventory_verified_at": "2026-09-30T14:12:00+00:00",
-            "inventory_source": "Railway audit; no continuous provider-inventory permission"}
+            "dependencies": dependencies, "required_inventory": required_ids,
+            "inventory_complete": inventory_complete, "inventory_gaps": inventory_gaps,
+            "inventory_verified_at": stamp if inventory_complete else None,
+            "inventory_source": "runtime self-report plus bounded GitHub/Railway deployment status fallback; fail closed on missing identity"}
 
 def project_status(saved, now, stale_after=180):
     """Recompute freshness on every read, even while the writer is dead."""
