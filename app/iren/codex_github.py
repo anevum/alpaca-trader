@@ -1,9 +1,90 @@
 """Bounded, GET-only GitHub evidence using the executor's existing connection."""
 import re
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from .codex_handoff import REQUIRED_CHECKS, REPOSITORY
 from datetime import datetime, timezone
+
+
+
+PINNED_RUNTIME_STATUSES = {
+    "VELUM": {
+        "revision": "1663c5ab4516df890cdea70929a9d14275bfc7d6",
+        "context": "RHEN - rhen-velum",
+        "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
+        "service_id": "55a298e1-ea60-4342-a10f-a736a2d71f8c",
+        "environment_id": "63a64723-574d-497b-b01b-a9fef7ea78ab",
+        "service_name": "rhen-velum",
+    },
+    "CRYPTO_EDGE": {
+        "revision": "1663c5ab4516df890cdea70929a9d14275bfc7d6",
+        "context": "RHEN - rhen-crypto-edge-discovery",
+        "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
+        "service_id": "4ed9d192-102c-4b66-8ed7-b9a650a064c5",
+        "environment_id": "63a64723-574d-497b-b01b-a9fef7ea78ab",
+        "service_name": "rhen-crypto-edge-discovery",
+    },
+}
+
+
+def _railway_status_evidence(row, spec):
+    target = str(row.get("target_url") or "")
+    parsed = urlparse(target)
+    parts = [part for part in parsed.path.split("/") if part]
+    query = parse_qs(parsed.query)
+    try:
+        project = parts[parts.index("project") + 1]
+        service = parts[parts.index("service") + 1]
+    except (ValueError, IndexError):
+        return None
+    deployment = (query.get("id") or [None])[0]
+    environment = (query.get("environmentId") or [None])[0]
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "railway.com"
+        or project != spec["project_id"]
+        or service != spec["service_id"]
+        or environment != spec["environment_id"]
+        or not isinstance(deployment, str)
+        or not re.fullmatch(r"[0-9a-f-]{36}", deployment)
+        or row.get("state") != "success"
+    ):
+        return None
+    return {
+        "verified": True,
+        "revision": spec["revision"],
+        "deployment": deployment,
+        "service_name": spec["service_name"],
+        "status_context": spec["context"],
+        "evidence_source": "github_railway_deployment_status",
+    }
+
+
+async def inspect_runtime_inventory(get):
+    observed_at = datetime.now(timezone.utc).isoformat()
+    services = {}
+    for name, spec in PINNED_RUNTIME_STATUSES.items():
+        body = await get(f"commits/{spec['revision']}/status")
+        rows = [
+            row for row in (body.get("statuses") or [])
+            if row.get("context") == spec["context"]
+        ]
+        evidence = _railway_status_evidence(rows[0], spec) if len(rows) == 1 else None
+        services[name] = evidence or {
+            "verified": False,
+            "revision": spec["revision"],
+            "deployment": None,
+            "service_name": spec["service_name"],
+            "status_context": spec["context"],
+            "evidence_source": "github_railway_deployment_status",
+        }
+    return {
+        "schema_version": "iren_provider_inventory.v1",
+        "observed_at": observed_at,
+        "read_only": True,
+        "provider_write_authority": False,
+        "services": services,
+    }
 
 
 async def inspect_github(get, *, handoff_id=None, objective_key=None, pr_number=None):
