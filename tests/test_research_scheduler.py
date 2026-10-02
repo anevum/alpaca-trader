@@ -450,5 +450,6 @@ def test_post_event_generation_uses_purpose_built_foundation_read():
     import inspect
     from app.research_scheduler import ResearchReportScheduler
     source = inspect.getsource(ResearchReportScheduler.generate_post_event_evidence)
+    assert "timeout=90.0" in source
     assert "post_event_evidence_session=requested" in source
     assert "evidence_reader=post_event_evidence_reader" in source
