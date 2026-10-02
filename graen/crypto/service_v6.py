@@ -795,6 +795,7 @@ async def health():
         "execution_authority": False,
         "broker_orders_possible": False,
         "last_error": state["last_error"],
+        "runtime_provenance": state["runtime_provenance"],
     }
 
 
