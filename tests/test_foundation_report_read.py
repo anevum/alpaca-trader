@@ -294,3 +294,37 @@ def test_event_key_exists_uses_unique_event_key_lookup():
     assert _event_key_exists(present, "marker") is True
     assert _event_key_exists(missing, "marker") is False
     assert "event_key = %s" in present.query
+
+
+
+def test_crypto_candidate_query_can_prioritize_newest_incomplete_rows():
+    cur = _DecisionCandidateCursor([])
+    _decision_candidates(
+        cur,
+        start=None,
+        end=None,
+        crypto=True,
+        max_complete_outcomes=7,
+        result_limit=5000,
+        newest_first=True,
+    )
+
+    query = cur.query.lower()
+    assert "order by occurred_at desc, event_id desc" in query
+    assert "decision_events.occurred_at desc" in query
+    assert "decision_events.event_id desc" in query
+    assert "candidate_row.candidate_ordinal desc" in query
+    assert cur.args[-2:] == (7, 5000)
+
+
+def test_crypto_forward_evidence_route_requests_newest_incomplete_candidates():
+    source = __import__("inspect").getsource(
+        __import__("foundation.report_read", fromlist=["read_report"]).read_report
+    )
+    block = source.split(
+        "if _valid_date(crypto_evidence_session):", 1
+    )[1].split("if _valid_date(post_event_evidence_session):", 1)[0]
+
+    assert "max_complete_outcomes=7" in block
+    assert "result_limit=5000" in block
+    assert "newest_first=True" in block
