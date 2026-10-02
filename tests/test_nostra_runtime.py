@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from app.nostra import (
     build_forecast,
     build_snapshot,
     score_direction_forecast,
+    shrunken_drift_forecast,
     uniform_direction_baseline,
 )
 from app.nostra.service import NostraGateway, NostraRuntime, require_nostra_api_token
@@ -220,6 +222,9 @@ def test_live_baseline_scores_only_gateway_matched_prior_forecast():
                     "forecast_id": "nsf_prior",
                     "candidate_identity": "cycle-1:BTC/USD",
                     "symbol": "BTC/USD",
+                    "model_id": "zero_return",
+                    "model_version": "nostra-baselines-v1",
+                    "expected_return": 0.0,
                     "observed_at": "2026-10-02T18:10:00+00:00",
                     "realized_return": 0.01,
                     "max_favorable_return": "0.015",
@@ -356,3 +361,137 @@ def test_live_runtime_persists_rolling_baseline_evaluation_once_per_score_cut():
     assert persisted["calibration"]["residual_stddev"] == 0.0014
     assert persisted["research_only"] is True
     assert persisted["execution_authority"] is False
+
+
+
+def _drift_training_state(*, cutoff="2026-10-02T17:59:59.999999+00:00"):
+    return {
+        "schema_version": "nostra-drift-training-state-v1",
+        "model_id": "shrunken_drift",
+        "model_version": "nostra-shrunken-drift-v1",
+        "training_cutoff": cutoff,
+        "window_start": "2026-10-02T17:00:00+00:00",
+        "window_end": "2026-10-02T17:50:00+00:00",
+        "raw_outcome_count": 360,
+        "independent_cycles": 30,
+        "minimum_independent_cycles": 30,
+        "mean_cycle_return": 0.002,
+        "through_score_id": "nsc-training-cut",
+        "eligible": True,
+        "reason": "ready",
+        "research_only": True,
+        "execution_authority": False,
+    }
+
+
+def test_shrunken_drift_uses_independent_cycle_shrinkage():
+    forecast = shrunken_drift_forecast(_drift_training_state())
+
+    assert forecast["eligible"] is True
+    assert forecast["expected_return"] == 0.001
+    assert forecast["shrinkage_weight"] == 0.5
+    assert forecast["independent_cycles"] == 30
+    assert forecast["execution_authority"] is False
+
+
+def test_live_runtime_issues_drift_beside_zero_baseline_from_prior_only_training():
+    ledger = _FakeLedger()
+    candidate = _candidate()
+    candidate["missing_model_ids"] = ["zero_return", "shrunken_drift"]
+    gateway = _FakeGateway(
+        {
+            "ok": True,
+            "research_only": True,
+            "execution_authority": False,
+            "forecast_candidates": [candidate],
+            "score_outcomes": [],
+            "model_evaluations": [],
+            "drift_training_state": _drift_training_state(),
+            "counts": {},
+        }
+    )
+    runtime = NostraRuntime(ledger=ledger, gateway=gateway)
+
+    result = asyncio.run(runtime.process_once())
+
+    assert result["forecasts_persisted"] == 2
+    assert result["baseline_forecasts_persisted"] == 1
+    assert result["drift_forecasts_persisted"] == 1
+    by_model = {row[0]["model_id"]: row[0] for row in ledger.forecasts}
+    assert by_model["zero_return"]["forecast_payload"]["expected_return"] == 0.0
+    drift = by_model["shrunken_drift"]
+    assert drift["forecast_payload"]["expected_return"] == 0.001
+    assert (
+        drift["forecast_payload"]["training"]["training_window_end"]
+        < candidate["observed_at"]
+    )
+    assert drift["authority_state"] == "LOW_SUPPORT"
+    assert drift["research_only"] is True
+    assert drift["execution_authority"] is False
+
+
+def test_live_runtime_refuses_drift_training_that_reaches_candidate_time():
+    ledger = _FakeLedger()
+    candidate = _candidate()
+    candidate["missing_model_ids"] = ["shrunken_drift"]
+    gateway = _FakeGateway(
+        {
+            "ok": True,
+            "research_only": True,
+            "execution_authority": False,
+            "forecast_candidates": [candidate],
+            "score_outcomes": [],
+            "model_evaluations": [],
+            "drift_training_state": _drift_training_state(
+                cutoff=candidate["observed_at"],
+            ),
+            "counts": {},
+        }
+    )
+    runtime = NostraRuntime(ledger=ledger, gateway=gateway)
+
+    try:
+        asyncio.run(runtime.process_once())
+    except ValueError as exc:
+        assert "training cutoff must precede" in str(exc)
+    else:
+        raise AssertionError("candidate-time training must fail closed")
+
+
+def test_live_runtime_scores_nonzero_model_against_zero_return_baseline():
+    ledger = _FakeLedger()
+    gateway = _FakeGateway(
+        {
+            "ok": True,
+            "research_only": True,
+            "execution_authority": False,
+            "forecast_candidates": [],
+            "score_outcomes": [
+                {
+                    "forecast_id": "nsf_drift",
+                    "candidate_identity": "cycle-1:BTC/USD",
+                    "symbol": "BTC/USD",
+                    "model_id": "shrunken_drift",
+                    "model_version": "nostra-shrunken-drift-v1",
+                    "expected_return": 0.002,
+                    "observed_at": "2026-10-02T18:10:00+00:00",
+                    "realized_return": 0.01,
+                    "max_favorable_return": "0.015",
+                    "max_adverse_return": "-0.004",
+                    "outcome_methodology_version": "candidate-forward-crypto-v1",
+                }
+            ],
+            "model_evaluations": [],
+            "counts": {},
+        }
+    )
+    runtime = NostraRuntime(ledger=ledger, gateway=gateway)
+
+    result = asyncio.run(runtime.process_once())
+
+    assert result["scores_persisted"] == 1
+    score = ledger.scores[0][0]
+    assert score["metrics"]["absolute_error"] == 0.008
+    assert score["baseline_metrics"]["absolute_error"] == 0.01
+    assert score["skill"]["absolute_error"] == pytest.approx(0.2)
+    assert score["provenance"]["model_id"] == "shrunken_drift"
