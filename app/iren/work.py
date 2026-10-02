@@ -1130,20 +1130,26 @@ class IrenWorkEngine:
                         "observation_source": topology_state.get("inventory_source"),
                         "verifier": "iren_runtime_evidence_verifier_v1",
                     }
+                    inventory_complete = criteria["complete_deployment_inventory"]
                     await self.gateway(
                         "iren_job_update",
                         job_id=job_id,
-                        status="SUCCEEDED",
+                        status="SUCCEEDED" if inventory_complete else "QUEUED",
                         result=result,
                     )
-                    completed = await self._complete_objective_if_verified(job, criteria)
+                    completed = (
+                        await self._complete_objective_if_verified(job, criteria)
+                        if inventory_complete
+                        else False
+                    )
                     _emit_work_event(
                         "iren_runtime_evidence_verified",
                         job_id=job_id,
                         objective_key=job.get("objective_key"),
                         completed=completed,
-                        inventory_complete=criteria["complete_deployment_inventory"],
+                        inventory_complete=inventory_complete,
                         inventory_gap_count=len(gaps),
+                        retrying=not inventory_complete,
                     )
                 elif job_type == "CONTROL_STABLE_BUILD_VERIFY":
                     snapshot = await self.snapshot()
