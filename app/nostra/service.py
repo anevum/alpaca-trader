@@ -12,13 +12,13 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .baselines import uniform_direction_baseline, zero_return_baseline
-from .contracts import build_forecast, build_outcome, build_score_record, build_snapshot
+from .contracts import build_evaluation, build_forecast, build_outcome, build_score_record, build_snapshot
 from .ledger import NostraLedger
 from .scoring import SCORING_VERSION, score_return_forecast
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "nostra-runtime-v1.1.0"
+RUNTIME_VERSION = "nostra-runtime-v1.2.0"
 LIVE_BASELINE_VERSION = "nostra-live-zero-return-v1"
 LIVE_HORIZON_MINUTES = 10
 
@@ -140,6 +140,9 @@ class NostraRuntime:
         self.last_persisted_at: datetime | None = None
         self.last_forecast_at: datetime | None = None
         self.last_score_at: datetime | None = None
+        self.last_evaluation_at: datetime | None = None
+        self.last_evaluation_id: str | None = None
+        self.last_evaluation: dict[str, Any] | None = None
         self.last_error: str | None = None
         self.last_result: dict[str, Any] | None = None
 
@@ -169,6 +172,9 @@ class NostraRuntime:
             "last_persisted_at": self.last_persisted_at.isoformat() if self.last_persisted_at else None,
             "last_forecast_at": self.last_forecast_at.isoformat() if self.last_forecast_at else None,
             "last_score_at": self.last_score_at.isoformat() if self.last_score_at else None,
+            "last_evaluation_at": self.last_evaluation_at.isoformat() if self.last_evaluation_at else None,
+            "last_evaluation_id": self.last_evaluation_id,
+            "last_evaluation": self.last_evaluation,
             "last_result": self.last_result,
             "last_error": self.last_error,
             "runtime_provenance": {
@@ -349,15 +355,64 @@ class NostraRuntime:
         self.last_score_at = self.last_persisted_at
         return score
 
+    async def _persist_baseline_evaluation(
+        self,
+        row: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        if row.get("research_only") is not True or row.get("execution_authority") is not False:
+            raise ValueError("baseline evaluation must preserve the NOSTRA authority boundary")
+
+        evaluation = build_evaluation(
+            model_id=str(row.get("model_id") or ""),
+            model_version=str(row.get("model_version") or ""),
+            horizon_minutes=int(row.get("horizon_minutes") or 0),
+            target_kind=str(row.get("target_kind") or ""),
+            window_start=_aware(row.get("window_start"), "window_start"),
+            window_end=_aware(row.get("window_end"), "window_end"),
+            sample_count=int(row.get("sample_count") or 0),
+            through_score_id=str(row.get("through_score_id") or ""),
+            metrics=_dict(row.get("metrics")),
+            calibration=_dict(row.get("calibration")),
+            evaluated_at=datetime.now(UTC),
+            code_sha=_source_commit(),
+            provenance={
+                "runtime_version": RUNTIME_VERSION,
+                "deployment_id": _deployment_id(),
+                "source_schema_version": row.get("schema_version"),
+                "live_baseline_version": LIVE_BASELINE_VERSION,
+            },
+        )
+        if evaluation["evaluation_id"] == self.last_evaluation_id:
+            return None
+        if not await self.ledger.append_evaluation(
+            evaluation,
+            correlation_id=f"nostra:evaluation:{evaluation['through_score_id']}",
+        ):
+            raise RuntimeError("evaluation_persistence_failed")
+        self.last_persisted_at = datetime.now(UTC)
+        self.last_evaluation_at = self.last_persisted_at
+        self.last_evaluation_id = evaluation["evaluation_id"]
+        self.last_evaluation = {
+            "evaluation_id": evaluation["evaluation_id"],
+            "sample_count": evaluation["sample_count"],
+            "window_start": evaluation["window_start"],
+            "window_end": evaluation["window_end"],
+            "metrics": evaluation["metrics"],
+            "calibration": evaluation["calibration"],
+        }
+        return evaluation
+
     async def process_once(self) -> dict[str, Any]:
         work = await self.gateway.work()
         forecast_rows = work.get("forecast_candidates")
         score_rows = work.get("score_outcomes")
         forecasts = forecast_rows if isinstance(forecast_rows, list) else []
         outcomes = score_rows if isinstance(score_rows, list) else []
+        evaluation_row = work.get("baseline_evaluation")
 
         emitted_forecasts = 0
         emitted_scores = 0
+        emitted_evaluations = 0
         for candidate in forecasts[:200]:
             if not isinstance(candidate, Mapping):
                 continue
@@ -370,6 +425,10 @@ class NostraRuntime:
             await self._score_outcome(outcome)
             emitted_scores += 1
 
+        if isinstance(evaluation_row, Mapping):
+            persisted_evaluation = await self._persist_baseline_evaluation(evaluation_row)
+            emitted_evaluations = 1 if persisted_evaluation is not None else 0
+
         self.last_cycle_at = datetime.now(UTC)
         self.last_result = {
             "status": "HEALTHY",
@@ -377,6 +436,12 @@ class NostraRuntime:
             "forecasts_persisted": emitted_forecasts,
             "score_outcomes": len(outcomes),
             "scores_persisted": emitted_scores,
+            "evaluations_persisted": emitted_evaluations,
+            "evaluation_sample_count": (
+                int(evaluation_row.get("sample_count") or 0)
+                if isinstance(evaluation_row, Mapping)
+                else 0
+            ),
             "gateway_counts": work.get("counts") if isinstance(work.get("counts"), dict) else {},
             "observed_at": self.last_cycle_at.isoformat(),
         }

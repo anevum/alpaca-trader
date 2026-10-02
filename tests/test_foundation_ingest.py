@@ -3,13 +3,14 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 
-from foundation.nostra_gateway import _point_in_time_candidate
+from foundation.nostra_gateway import _baseline_evaluation, _point_in_time_candidate
 
 from foundation.ingest.service import (
     EvidenceEvent,
     canonical_payload_hash,
     infer_run,
     nostra_gateway_authorized,
+    project_event,
     reconciliation_result,
     require_foundation_token,
     require_nostra_gateway_token,
@@ -119,3 +120,109 @@ def test_nostra_gateway_candidate_is_point_in_time_and_rejects_future_fields():
     contaminated = dict(candidate)
     contaminated["forward_outcomes"] = {"10": {"forward_return": 0.02}}
     assert _point_in_time_candidate(contaminated) is None
+
+
+
+class _EvaluationCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.query = ""
+        self.args = None
+
+    def execute(self, query, args=None):
+        self.query = str(query)
+        self.args = args
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+def test_nostra_baseline_evaluation_aggregates_realized_scores():
+    generated = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
+    first_observed = datetime(2026, 10, 2, 18, 10, tzinfo=timezone.utc)
+    second_observed = datetime(2026, 10, 2, 18, 20, tzinfo=timezone.utc)
+    cur = _EvaluationCursor([
+        (
+            "nsc-1",
+            "nostra-baselines-v1",
+            generated,
+            first_observed,
+            "0",
+            "0.01",
+            "0.01",
+            "0.0001",
+        ),
+        (
+            "nsc-2",
+            "nostra-baselines-v1",
+            generated,
+            second_observed,
+            "0",
+            "-0.01",
+            "0.01",
+            "0.0001",
+        ),
+    ])
+
+    result = _baseline_evaluation(
+        cur,
+        current=datetime(2026, 10, 2, 19, 0, tzinfo=timezone.utc),
+        lookback_hours=24,
+    )
+
+    assert result is not None
+    assert result["sample_count"] == 2
+    assert result["through_score_id"] == "nsc-2"
+    assert result["window_start"] == first_observed.isoformat()
+    assert result["window_end"] == second_observed.isoformat()
+    assert result["metrics"]["mean_realized_return"] == pytest.approx(0.0)
+    assert result["metrics"]["mean_absolute_error"] == pytest.approx(0.01)
+    assert result["metrics"]["root_mean_squared_error"] == pytest.approx(0.01)
+    assert result["calibration"]["residual_mean"] == pytest.approx(0.0)
+    assert result["calibration"]["residual_stddev"] == pytest.approx(0.01)
+    assert result["research_only"] is True
+    assert result["execution_authority"] is False
+    assert "nostra.evidence_scores" in cur.query
+
+
+class _ProjectionCursor:
+    def __init__(self):
+        self.query = ""
+        self.args = None
+
+    def execute(self, query, args=None):
+        self.query = str(query)
+        self.args = args
+
+
+def test_nostra_evaluation_projects_to_append_only_evaluation_table():
+    cur = _ProjectionCursor()
+    payload = {
+        "evaluation_id": "nse-1",
+        "evaluated_at": "2026-10-02T19:01:00+00:00",
+        "model_id": "zero_return",
+        "model_version": "nostra-baselines-v1",
+        "horizon_minutes": 10,
+        "target_kind": "return",
+        "window_start": "2026-10-02T18:10:00+00:00",
+        "window_end": "2026-10-02T19:00:00+00:00",
+        "sample_count": 48,
+        "through_score_id": "nsc-through",
+        "research_only": True,
+        "execution_authority": False,
+    }
+    project_event(
+        cur,
+        event(
+            run_id=None,
+            strategy_version_id=None,
+            source="NOSTRA",
+            event_type="nostra_evaluation",
+            payload=payload,
+        ),
+    )
+
+    assert "insert into nostra.evidence_evaluations" in cur.query.lower()
+    assert cur.args[0] == "nse-1"
+    assert cur.args[8] == 48
+    assert cur.args[9] == "nsc-through"

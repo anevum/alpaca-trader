@@ -12,9 +12,11 @@ from .baselines import (
     zero_return_baseline,
 )
 from .contracts import (
+    EVALUATION_SCHEMA_VERSION,
     FORECAST_METHODOLOGY_VERSION,
     PROVENANCE_SCHEMA_VERSION,
     SNAPSHOT_SCHEMA_VERSION,
+    build_evaluation,
     build_forecast,
     build_outcome,
     build_score_record,
@@ -34,11 +36,13 @@ from .scoring import (
 
 __all__ = [
     "BASELINE_VERSION",
+    "EVALUATION_SCHEMA_VERSION",
     "FORECAST_METHODOLOGY_VERSION",
     "NostraLedger",
     "PROVENANCE_SCHEMA_VERSION",
     "SCORING_VERSION",
     "SNAPSHOT_SCHEMA_VERSION",
+    "build_evaluation",
     "build_forecast",
     "build_outcome",
     "build_score_record",

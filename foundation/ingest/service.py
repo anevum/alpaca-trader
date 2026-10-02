@@ -248,6 +248,33 @@ def project_event(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None:
         )
         return
 
+    if event.event_type == "nostra_evaluation":
+        cur.execute(
+            """
+            insert into nostra.evidence_evaluations (
+                evaluation_id, evaluated_at, model_id, model_version,
+                horizon_minutes, target_kind, window_start, window_end,
+                sample_count, through_score_id, payload
+            )
+            values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            on conflict (evaluation_id) do nothing
+            """,
+            (
+                str(payload.get("evaluation_id") or ""),
+                payload.get("evaluated_at") or event.occurred_at,
+                str(payload.get("model_id") or ""),
+                str(payload.get("model_version") or ""),
+                int(payload.get("horizon_minutes") or 0),
+                str(payload.get("target_kind") or ""),
+                payload.get("window_start"),
+                payload.get("window_end"),
+                int(payload.get("sample_count") or 0),
+                str(payload.get("through_score_id") or ""),
+                Jsonb(payload),
+            ),
+        )
+        return
+
     if not event.run_id:
         return
 
