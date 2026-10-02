@@ -5,7 +5,7 @@ begin;
 
 create schema if not exists nostra;
 
-create table if not exists nostra.snapshots (
+create table if not exists nostra.evidence_snapshots (
     snapshot_id text primary key,
     as_of_timestamp timestamptz not null,
     symbol text,
@@ -17,9 +17,9 @@ create table if not exists nostra.snapshots (
     check ((payload->>'execution_authority')::boolean is false)
 );
 
-create table if not exists nostra.forecasts (
+create table if not exists nostra.evidence_forecasts (
     forecast_id text primary key,
-    snapshot_id text not null references nostra.snapshots(snapshot_id),
+    snapshot_id text not null references nostra.evidence_snapshots(snapshot_id),
     generated_at timestamptz not null,
     symbol text,
     market_lane text not null,
@@ -33,9 +33,9 @@ create table if not exists nostra.forecasts (
     check ((payload->>'execution_authority')::boolean is false)
 );
 
-create table if not exists nostra.outcomes (
+create table if not exists nostra.evidence_outcomes (
     outcome_id text primary key,
-    forecast_id text not null references nostra.forecasts(forecast_id),
+    forecast_id text not null references nostra.evidence_forecasts(forecast_id),
     observed_at timestamptz not null,
     payload jsonb not null,
     created_at timestamptz not null default now(),
@@ -43,10 +43,10 @@ create table if not exists nostra.outcomes (
     check ((payload->>'execution_authority')::boolean is false)
 );
 
-create table if not exists nostra.scores (
+create table if not exists nostra.evidence_scores (
     score_id text primary key,
-    forecast_id text not null references nostra.forecasts(forecast_id),
-    outcome_id text not null references nostra.outcomes(outcome_id),
+    forecast_id text not null references nostra.evidence_forecasts(forecast_id),
+    outcome_id text not null references nostra.evidence_outcomes(outcome_id),
     scoring_version text not null,
     payload jsonb not null,
     created_at timestamptz not null default now(),
@@ -61,24 +61,24 @@ begin
 end;
 $$;
 
-drop trigger if exists nostra_snapshots_append_only on nostra.snapshots;
-create trigger nostra_snapshots_append_only before update or delete on nostra.snapshots
+drop trigger if exists nostra_evidence_snapshots_append_only on nostra.evidence_snapshots;
+create trigger nostra_evidence_snapshots_append_only before update or delete on nostra.evidence_snapshots
 for each row execute function nostra.reject_mutation();
 
-drop trigger if exists nostra_forecasts_append_only on nostra.forecasts;
-create trigger nostra_forecasts_append_only before update or delete on nostra.forecasts
+drop trigger if exists nostra_evidence_forecasts_append_only on nostra.evidence_forecasts;
+create trigger nostra_evidence_forecasts_append_only before update or delete on nostra.evidence_forecasts
 for each row execute function nostra.reject_mutation();
 
-drop trigger if exists nostra_outcomes_append_only on nostra.outcomes;
-create trigger nostra_outcomes_append_only before update or delete on nostra.outcomes
+drop trigger if exists nostra_evidence_outcomes_append_only on nostra.evidence_outcomes;
+create trigger nostra_evidence_outcomes_append_only before update or delete on nostra.evidence_outcomes
 for each row execute function nostra.reject_mutation();
 
-drop trigger if exists nostra_scores_append_only on nostra.scores;
-create trigger nostra_scores_append_only before update or delete on nostra.scores
+drop trigger if exists nostra_evidence_scores_append_only on nostra.evidence_scores;
+create trigger nostra_evidence_scores_append_only before update or delete on nostra.evidence_scores
 for each row execute function nostra.reject_mutation();
 
-create index if not exists nostra_forecasts_snapshot_idx on nostra.forecasts(snapshot_id);
-create index if not exists nostra_outcomes_forecast_idx on nostra.outcomes(forecast_id);
-create index if not exists nostra_scores_forecast_idx on nostra.scores(forecast_id);
+create index if not exists nostra_evidence_forecasts_snapshot_idx on nostra.evidence_forecasts(snapshot_id);
+create index if not exists nostra_evidence_outcomes_forecast_idx on nostra.evidence_outcomes(forecast_id);
+create index if not exists nostra_evidence_scores_forecast_idx on nostra.evidence_scores(forecast_id);
 
 commit;
