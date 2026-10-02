@@ -203,6 +203,15 @@ class ExecutorRuntime:
             + usage.output_tokens * self.output_rate_per_million / 1_000_000
         )
 
+    def projected_call_cost(self, input_text: str) -> float:
+        # Deliberately conservative pre-call bound: assume at most one token per
+        # UTF-8 character, then add the configured maximum output allocation.
+        projected_input_tokens = len(input_text)
+        return (
+            projected_input_tokens * self.input_rate_per_million / 1_000_000
+            + self.max_output_tokens * self.output_rate_per_million / 1_000_000
+        )
+
     def health(self) -> dict[str, Any]:
         return {
             "ok": True,
@@ -401,6 +410,9 @@ class ExecutorRuntime:
     ) -> dict[str, Any]:
         if usage.calls >= self.max_calls_per_job:
             raise RuntimeError("model_call_limit_reached")
+        projected_total = self.estimate_cost(usage) + self.projected_call_cost(input_text)
+        if projected_total > self.job_budget_usd:
+            raise RuntimeError("model_job_budget_insufficient_for_bounded_call")
         payload = {
             "model": self.model_name,
             "instructions": instructions,
