@@ -99,6 +99,23 @@ def criteria_satisfied(expected: Any, actual: Any) -> bool:
     return type(actual) is type(expected) and actual == expected
 
 
+def runtime_evidence_verification(control_state: dict[str, Any]) -> dict[str, Any]:
+    topology_state = control_state.get("topology") if isinstance(control_state, dict) else {}
+    topology_state = topology_state if isinstance(topology_state, dict) else {}
+    gaps = topology_state.get("inventory_gaps")
+    gaps = gaps if isinstance(gaps, dict) else {}
+    return {
+        "criteria": {
+            "complete_deployment_inventory": topology_state.get("inventory_complete") is True,
+        },
+        "required_inventory": topology_state.get("required_inventory") or [],
+        "inventory_gaps": gaps,
+        "inventory_verified_at": topology_state.get("inventory_verified_at"),
+        "observation_source": topology_state.get("inventory_source"),
+        "observed_at": topology_state.get("observed_at") or control_state.get("observed_at"),
+    }
+
+
 def _has_active_job(objective_id: str, jobs: list[dict[str, Any]]) -> bool:
     return any(_text(row.get("objective_key")) == objective_id and row.get("status") in ACTIVE_JOB_STATES for row in jobs)
 
@@ -692,6 +709,42 @@ class IrenWorkEngine:
             response.raise_for_status()
             return response.json()
 
+    async def _reconcile_runtime_evidence_objective(self) -> None:
+        snapshot = await self.snapshot()
+        objectives = list(snapshot.get("objectives") or [])
+        objective = next(
+            (
+                row for row in objectives
+                if _text(row.get("objective_key")) == "iren.runtime-evidence.v1"
+            ),
+            None,
+        )
+        if not isinstance(objective, dict):
+            return
+        if str(objective.get("status") or "").upper() == "COMPLETE":
+            return
+        if not dependencies_complete(objective, objectives):
+            return
+        evidence = runtime_evidence_verification(self.control_state())
+        criteria = evidence["criteria"]
+        if criteria.get("complete_deployment_inventory") is not True:
+            return
+        completed = await self._complete_objective_if_verified(
+            {"objective_key": "iren.runtime-evidence.v1"},
+            criteria,
+        )
+        if completed:
+            _emit_work_event(
+                "iren_runtime_evidence_verified",
+                objective_key="iren.runtime-evidence.v1",
+                completed=True,
+                inventory_complete=True,
+                inventory_gap_keys=sorted(
+                    str(key) for key in (evidence.get("inventory_gaps") or {})
+                ),
+                inventory_verified_at=evidence.get("inventory_verified_at"),
+            )
+
     async def _reconcile_handoffs(self, force=False):
         now = datetime.now(UTC)
         if not force and self.last_handoff_check and (now - self.last_handoff_check).total_seconds() < 60:
@@ -1108,21 +1161,11 @@ class IrenWorkEngine:
                         objective_key=job.get("objective_key"),
                     )
                 elif job_type == "CONTROL_RUNTIME_EVIDENCE_VERIFY":
-                    state = self.control_state()
-                    topology_state = state.get("topology") if isinstance(state, dict) else {}
-                    topology_state = topology_state if isinstance(topology_state, dict) else {}
-                    gaps = topology_state.get("inventory_gaps")
-                    gaps = gaps if isinstance(gaps, dict) else {}
-                    criteria = {
-                        "complete_deployment_inventory": topology_state.get("inventory_complete") is True,
-                    }
+                    result = runtime_evidence_verification(self.control_state())
+                    criteria = result["criteria"]
+                    gaps = result["inventory_gaps"]
                     result = {
-                        "criteria": criteria,
-                        "required_inventory": topology_state.get("required_inventory") or [],
-                        "inventory_gaps": gaps,
-                        "inventory_verified_at": topology_state.get("inventory_verified_at"),
-                        "observation_source": topology_state.get("inventory_source"),
-                        "observed_at": topology_state.get("observed_at") or state.get("observed_at"),
+                        **result,
                         "verifier": "iren_runtime_evidence_verifier_v1",
                     }
                     await self.gateway(
@@ -1278,6 +1321,7 @@ class IrenWorkEngine:
         await self._reconcile_accidental_status_jobs()
         await self._process_commands()
         await self._reconcile_objective_dependencies()
+        await self._reconcile_runtime_evidence_objective()
         await self._reconcile_handoffs()
         await self._reconcile_autopilot()
         await self._execute_jobs()
