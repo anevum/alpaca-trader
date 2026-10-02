@@ -759,6 +759,7 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
             session = params.get("session")
             week_end = params.get("week_end")
             evidence_session = params.get("evidence_session")
+            post_event_evidence_session = params.get("post_event_evidence_session")
             crypto_evidence_session = params.get("crypto_evidence_session")
             crypto_promotion = params.get("crypto_promotion")
             start_date = params.get("start")
@@ -820,6 +821,28 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                     "evidence_version": "rhen-crypto-forward-evidence-v2",
                     "evidence_session": crypto_evidence_session,
                     "candidates": candidates,
+                }
+
+            if _valid_date(post_event_evidence_session):
+                start, end = _session_bounds(str(post_event_evidence_session))
+                candidates = _decision_candidates(
+                    cur,
+                    start=start,
+                    end=end,
+                    crypto=False,
+                    result_limit=5000,
+                )
+                return {
+                    "ok": True,
+                    "evidence_version": "rhen-post-event-candidates-v1",
+                    "evidence_session": post_event_evidence_session,
+                    "candidates": candidates,
+                    "post_event": {
+                        "source": "rhen.events",
+                        "analytics_only": True,
+                        "forward_outcomes_loaded": False,
+                        "daily_report_loaded": False,
+                    },
                 }
 
             if _valid_date(evidence_session):
