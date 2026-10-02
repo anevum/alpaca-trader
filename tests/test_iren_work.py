@@ -412,3 +412,26 @@ def test_autopilot_skips_already_verified_open_incident_and_advances():
     assert decision["should_create"] is True
     assert decision["action"]["objective_key"] == "CAPS"
     assert "Resolve workflow.rhen.session_close" in decision["skipped_actions"]
+
+
+def test_autopilot_daily_cap_uses_new_york_business_day():
+    data = {"objectives": [], "jobs": [], "settings": {
+        "autopilot_enabled": True,
+        "autopilot_max_jobs_per_day": 1,
+    }}
+    data["jobs"] = [{
+        "status": "SUCCEEDED",
+        "requested_via": "autopilot",
+        "created_at": "2026-10-02T00:30:00+00:00",
+        "metadata": {},
+    }]
+    # 00:30 UTC is still Oct 1 in New York; 05:00 UTC is Oct 2 in New York.
+    decision = autopilot_decision(
+        data,
+        {"state": "HEALTHY", "incidents": {}},
+        now=__import__("datetime").datetime(
+            2026, 10, 2, 5, 0,
+            tzinfo=__import__("datetime").timezone.utc,
+        ),
+    )
+    assert decision["reason"] != "autopilot_daily_cap_reached"
