@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from foundation.report_read import (
     _attach_outcomes,
     _candidate_is_crypto,
+    _forward_outcomes,
     _valid_date,
 )
 
@@ -52,3 +53,44 @@ def test_attach_equity_outcomes_as_list():
         equity_shape=True,
     )
     assert [row["horizon_minutes"] for row in rows[0]["outcomes"]] == [5, 30]
+
+
+class _ForwardOutcomeCursor:
+    def __init__(self) -> None:
+        self.query = ""
+        self.args = ()
+        self.execute_calls = 0
+
+    def execute(self, query, args) -> None:
+        self.execute_calls += 1
+        self.query = query
+        self.args = args
+
+    def fetchall(self):
+        return []
+
+
+def test_forward_outcomes_filters_by_requested_candidate_identities():
+    cur = _ForwardOutcomeCursor()
+    grouped, complete = _forward_outcomes(
+        cur,
+        candidate_identities={"candidate-b", "candidate-a"},
+    )
+
+    assert grouped == {}
+    assert complete == []
+    assert cur.execute_calls == 1
+    assert "candidate_id" in cur.query
+    assert "candidate_key" in cur.query
+    assert cur.args[0] == "candidate_forward_outcome"
+    assert cur.args[1] == ["candidate-a", "candidate-b"]
+    assert cur.args[-1] == 50000
+
+
+def test_forward_outcomes_skips_database_for_empty_identity_set():
+    cur = _ForwardOutcomeCursor()
+    grouped, complete = _forward_outcomes(cur, candidate_identities=set())
+
+    assert grouped == {}
+    assert complete == []
+    assert cur.execute_calls == 0

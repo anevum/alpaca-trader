@@ -171,14 +171,45 @@ def _forward_outcomes(
     *,
     start: datetime | None = None,
     end: datetime | None = None,
+    candidate_identities: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], list[dict[str, Any]]]:
-    events = _fetch_events(
-        cur,
-        event_types=["candidate_forward_outcome"],
-        start=start,
-        end=end,
-        limit=50000,
+    clauses = ["event_type = %s"]
+    args: list[Any] = ["candidate_forward_outcome"]
+    if start is not None:
+        clauses.append("occurred_at >= %s")
+        args.append(start)
+    if end is not None:
+        clauses.append("occurred_at < %s")
+        args.append(end)
+    if candidate_identities is not None:
+        identities = sorted(
+            {
+                str(identity)
+                for identity in candidate_identities
+                if str(identity)
+            }
+        )
+        if not identities:
+            return {}, []
+        clauses.append(
+            "coalesce(nullif(payload->>'candidate_id',''), "
+            "nullif(payload->>'candidate_key','')) = any(%s)"
+        )
+        args.append(identities)
+    args.append(50000)
+    cur.execute(
+        f"""
+        select
+            event_id, event_key, run_id, strategy_version_id, event_type,
+            occurred_at, symbol, correlation_id, source, payload, ingested_at
+        from rhen.events
+        where {" and ".join(clauses)}
+        order by occurred_at asc, event_id asc
+        limit %s
+        """,
+        tuple(args),
     )
+    events = [_event_dict(row) for row in cur.fetchall()]
     grouped: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     complete_events: list[dict[str, Any]] = []
     for event in events:
@@ -282,7 +313,10 @@ def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
             if _candidate_is_crypto(candidate):
                 candidates[_candidate_identity(candidate)] = candidate
 
-    outcomes, complete = _forward_outcomes(cur)
+    outcomes, complete = _forward_outcomes(
+        cur,
+        candidate_identities=set(candidates),
+    )
     resolved_ids = {
         str((event["payload"] or {}).get("candidate_id") or (event["payload"] or {}).get("candidate_key") or "")
         for event in complete
@@ -656,7 +690,14 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                 candidates = _decision_candidates(
                     cur, start=start, end=end, crypto=True
                 )
-                outcomes, _ = _forward_outcomes(cur)
+                outcomes, _ = _forward_outcomes(
+                    cur,
+                    candidate_identities={
+                        identity
+                        for candidate in candidates
+                        if (identity := _candidate_identity(candidate))
+                    },
+                )
                 candidates = _attach_outcomes(candidates, outcomes)
                 candidates = [
                     row
@@ -680,7 +721,14 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                 candidates = _decision_candidates(
                     cur, start=start, end=end, crypto=False
                 )
-                outcomes, _ = _forward_outcomes(cur)
+                outcomes, _ = _forward_outcomes(
+                    cur,
+                    candidate_identities={
+                        identity
+                        for candidate in candidates
+                        if (identity := _candidate_identity(candidate))
+                    },
+                )
                 candidates = _attach_outcomes(
                     candidates, outcomes, equity_shape=True
                 )
