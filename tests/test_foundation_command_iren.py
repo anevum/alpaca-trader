@@ -53,3 +53,89 @@ def test_command_projection_matches_fail_closed_stale_contract():
     assert projected["topology"]["services"][0]["status"] == "STALE"
     assert projected["topology"]["dependencies"]["railway"]["status"] == "STALE"
     assert projected["work"]["active_jobs"] == 1
+
+
+def test_operator_projection_is_healthy_and_read_only():
+    snapshot = {
+        "control": {
+            "revision": 9,
+            "events": [{
+                "event": {
+                    "key": "service.GRAEN",
+                    "transition": "RECOVERED",
+                    "severity": "warning",
+                    "reason": "healthy_observations_confirmed",
+                },
+                "created_at": "2026-10-02T20:59:00+00:00",
+                "delivery_status": "delivered:test",
+            }],
+            "state": {
+                "state": "HEALTHY",
+                "observed_at": "2026-10-02T21:00:00+00:00",
+                "topology": {
+                    "inventory_complete": True,
+                    "inventory_verified_at": "2026-10-02T21:00:00+00:00",
+                    "inventory_gaps": {},
+                    "services": [{
+                        "service_id": "RHEN",
+                        "independent_runtime": True,
+                        "status": "RUNNING",
+                        "readiness": True,
+                    }],
+                    "dependencies": {},
+                },
+                "incidents": {},
+                "configuration_baseline": {"fingerprint": "sha256:test"},
+            },
+        },
+        "work": {
+            "objectives": [{"objective_key": "stable", "status": "COMPLETE"}],
+            "jobs": [],
+            "commands": [],
+        },
+    }
+    projected = project_command(
+        snapshot,
+        now=datetime(2026, 10, 2, 21, 1, 0, tzinfo=timezone.utc),
+    )
+    operator = projected["operator"]
+    assert operator["version"] == "anevum_operator.v1"
+    assert operator["state"] == "HEALTHY"
+    assert operator["inventory"]["ready"] == 1
+    assert operator["guidance"] == []
+    assert operator["authority"]["read_only_projection"] is True
+    assert operator["authority"]["trading_mutations"] is False
+    assert operator["recent_transitions"][0]["transition"] == "RECOVERED"
+
+
+def test_operator_projection_routes_evidence_incident_to_foundation():
+    snapshot = {
+        "control": {
+            "revision": 10,
+            "state": {
+                "state": "DEGRADED",
+                "observed_at": "2026-10-02T21:00:00+00:00",
+                "topology": {
+                    "inventory_complete": True,
+                    "services": [],
+                    "dependencies": {},
+                },
+                "incidents": {
+                    "evidence.delivery": {
+                        "status": "OPEN",
+                        "severity": "warning",
+                        "reason": "evidence_delivery_error",
+                    },
+                },
+                "configuration_baseline": {"fingerprint": "sha256:test"},
+            },
+        },
+        "work": {"objectives": [], "jobs": [], "commands": []},
+    }
+    projected = project_command(
+        snapshot,
+        now=datetime(2026, 10, 2, 21, 1, 0, tzinfo=timezone.utc),
+    )
+    guidance = projected["operator"]["guidance"]
+    assert guidance[0]["target"] == "Foundation evidence"
+    assert "spool" in guidance[0]["action"]
