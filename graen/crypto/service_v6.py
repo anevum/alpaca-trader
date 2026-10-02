@@ -100,6 +100,7 @@ class GraenCryptoV6Runtime:
         )
         self.last_error: str | None = None
         self.last_result_summary: dict[str, Any] | None = None
+        self.started_at = datetime.now(timezone.utc)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -112,6 +113,12 @@ class GraenCryptoV6Runtime:
             "execution_authority": False,
             "broker_orders_possible": False,
             "crypto_execution_enabled": False,
+            "runtime_provenance": {
+                "system_version": "graen-crypto-native-v6",
+                "git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA") or None,
+                "deployment_id": os.getenv("RAILWAY_DEPLOYMENT_ID") or None,
+                "runtime_started_at": self.started_at.isoformat(),
+            },
             "fresh_corpus": {
                 "development_start": DEVELOPMENT_START.isoformat(),
                 "validation_start": VALIDATION_START.isoformat(),
@@ -788,6 +795,7 @@ async def health():
         "execution_authority": False,
         "broker_orders_possible": False,
         "last_error": state["last_error"],
+        "runtime_provenance": state["runtime_provenance"],
     }
 
 
