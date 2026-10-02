@@ -194,6 +194,7 @@ class ExecutorRuntime:
             and self.github_repo == "anevum/alpaca-trader"
             and self.daily_budget_usd > 0
             and self.job_budget_usd > 0
+            and self.job_budget_usd <= self.daily_budget_usd
         )
 
     def estimate_cost(self, usage: ModelUsage) -> float:
@@ -292,6 +293,11 @@ class ExecutorRuntime:
                     missing.append("IREN_MODEL_DAILY_BUDGET_USD")
                 if self.job_budget_usd <= 0:
                     missing.append("IREN_MODEL_JOB_BUDGET_USD")
+                if (
+                    self.daily_budget_usd > 0
+                    and self.job_budget_usd > self.daily_budget_usd
+                ):
+                    missing.append("IREN_MODEL_JOB_BUDGET_USD<=IREN_MODEL_DAILY_BUDGET_USD")
                 return {
                     "accepted": True,
                     "job_id": job.job_id,
