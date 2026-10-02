@@ -80,6 +80,13 @@ def _services() -> dict:
             "revision": SHA,
             "deployment": "dep-iren-executor",
         }),
+        "NOSTRA": bounded_health("NOSTRA", {
+            "ok": True,
+            "runtime_version": "nostra-runtime-v1.0.0",
+            "research_only": True,
+            "execution_authority": False,
+            "runtime_provenance": _provenance("nostra-runtime-v1.0.0", "dep-nostra"),
+        }),
     }
 
 
@@ -154,13 +161,13 @@ def test_direct_executor_identity_is_bounded_without_inference():
 
 def test_inventory_only_probes_do_not_expand_existing_incident_policy():
     services = _services()
-    for key in ("GRAEN_EXECUTOR", "RESEARCH_AGENT", "CRYPTO_EDGE", "IREN_EXECUTOR"):
+    for key in ("GRAEN_EXECUTOR", "RESEARCH_AGENT", "CRYPTO_EDGE", "IREN_EXECUTOR", "NOSTRA"):
         services.pop(key)
     state, events = reduce_state({}, _observation(services), POLICY)
     assert state["state"] == "HEALTHY"
     assert events == []
     assert not any(key.startswith("service.") and key.split(".", 1)[1] in {
-        "GRAEN_EXECUTOR", "RESEARCH_AGENT", "CRYPTO_EDGE", "IREN_EXECUTOR"
+        "GRAEN_EXECUTOR", "RESEARCH_AGENT", "CRYPTO_EDGE", "IREN_EXECUTOR", "NOSTRA"
     } for key in state["incidents"])
 
 
