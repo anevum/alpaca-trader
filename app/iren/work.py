@@ -23,6 +23,7 @@ AUTOPILOT_SAFE_JOB_TYPES = {
     "CONTROL_CAPABILITIES",
     "CONTROL_VERIFIER_SELFTEST",
     "CONTROL_STABLE_BUILD_VERIFY",
+    "CONTROL_MODEL_WORKER_VERIFY",
 }
 MODEL_WORKER_MAX_JOBS_PER_DAY = 1
 
@@ -1055,6 +1056,57 @@ class IrenWorkEngine:
                         objective_key=job.get("objective_key"),
                         completed=completed,
                         control_state=state.get("state"),
+                    )
+                elif job_type == "CONTROL_MODEL_WORKER_VERIFY":
+                    if not self.executor_url or len(self.executor_token) < 32:
+                        criteria = {
+                            "bounded_worker_built": False,
+                            "draft_pr_only": False,
+                            "auto_merge_disabled": False,
+                            "daily_job_cap": MODEL_WORKER_MAX_JOBS_PER_DAY,
+                            "budget_required": False,
+                            "protected_actions_fail_closed": False,
+                        }
+                        health = {"reason": "executor_router_not_configured"}
+                    else:
+                        health_url = self.executor_url
+                        if health_url.endswith("/v1/jobs/accept"):
+                            health_url = health_url[: -len("/v1/jobs/accept")]
+                        health_url = health_url.rstrip("/") + "/health"
+                        try:
+                            async with httpx.AsyncClient(timeout=20.0) as client:
+                                response = await client.get(health_url)
+                                response.raise_for_status()
+                                health = response.json()
+                        except (httpx.HTTPError, ValueError) as exc:
+                            health = {"reason": "executor_health_unavailable", "error_type": type(exc).__name__}
+                        worker = health.get("software_worker") if isinstance(health, dict) else {}
+                        worker = worker if isinstance(worker, dict) else {}
+                        criteria = {
+                            "bounded_worker_built": str(health.get("version") or "").startswith("iren-executor-v1.1"),
+                            "draft_pr_only": worker.get("draft_pr_only") is True,
+                            "auto_merge_disabled": worker.get("auto_merge") is False,
+                            "daily_job_cap": MODEL_WORKER_MAX_JOBS_PER_DAY,
+                            "budget_required": worker.get("budget_required") is True,
+                            "protected_actions_fail_closed": worker.get("protected_actions_fail_closed") is True,
+                        }
+                    await self.gateway(
+                        "iren_job_update",
+                        job_id=job_id,
+                        status="SUCCEEDED",
+                        result={
+                            "criteria": criteria,
+                            "executor_health": health,
+                            "verifier": "iren_model_worker_verifier_v1",
+                        },
+                    )
+                    completed = await self._complete_objective_if_verified(job, criteria)
+                    _emit_work_event(
+                        "iren_model_worker_verified",
+                        job_id=job_id,
+                        objective_key=job.get("objective_key"),
+                        completed=completed,
+                        configured=bool((health or {}).get("software_backend_configured")),
                     )
                 else:
                     await self._route_job(job)
