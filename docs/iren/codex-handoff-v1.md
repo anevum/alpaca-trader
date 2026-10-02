@@ -21,7 +21,7 @@ IREN does not merge. The prompt itself does not authorize merging.
 PREPARED → IN_PROGRESS (explicit association) → PR_OPEN → VERIFYING → VERIFIED.
 A merged PR remains VERIFYING until evidence passes. FAILED and SUPERSEDED are terminal.
 A fresh preparation supersedes an untouched PREPARED package if main or objective identity changed.
-In-progress changes require explicit operator resolution; they are never silently replaced.
+In-progress changes require "supersede Codex handoff <UUID>" followed by preparation; they are never silently replaced.
 
 Each minute, the existing work loop reads GitHub branch/PR/CI evidence through iren-executor,
 canonical control state, Foundation migration names and application health. It requires:
@@ -40,7 +40,7 @@ dependency-satisfied future objectives, and exposes the next action through Comm
 The current topology does not cover all nine RHEN-side runtimes, and legacy workers may omit
 deployment provenance. Do not claim complete provider isolation from that subset. The next
 software objective iren.runtime-evidence.v1 explicitly closes this observed evidence gap.
-No provider credentials or runtime privileges are added by this feature.
+No provider credentials or runtime privileges are added by this feature. Packages captured before complete inventory evidence remain blocked even if a future observation becomes complete: explicitly supersede and rebaseline them. The verifier must not retroactively invent a missing before-deployment baseline.
 
 ## API and persistence
 Existing /v1/command/iren GET exposes work.next_action, execution_mode and handoffs including

@@ -153,3 +153,17 @@ def evidence_snapshot(conn):
                 "handoff_count": len(handoffs), "copyable_prompts": all(bool((r.get("package") or {}).get("prompt")) for r in handoffs)},
             "migrations": migrations, "health": {"ok": True, "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
             "deployment": os.getenv("RAILWAY_DEPLOYMENT_ID"), "codex_handoff": "v1"}}
+
+
+def supersede(conn, body):
+    with conn.transaction():
+        with conn.cursor() as cur:
+            row = _job(cur, str(body.get("handoff_id") or ""))
+            result = row["result"]
+            if result.get("handoff_status") in TERMINAL:
+                raise ValueError("handoff_terminal")
+            result.update(handoff_status="SUPERSEDED", superseded_reason="explicit_operator_request")
+            cur.execute("update iren.jobs set status='CANCELLED',output=%s,updated_at=now(),completed_at=now() where job_id=%s",
+                        (Jsonb(result), UUID(row["job_id"])))
+            _event(cur, row["job_id"], "SUPERSEDED", {"reason":"explicit_operator_request"})
+            return {"job": _job(cur, row["job_id"])}

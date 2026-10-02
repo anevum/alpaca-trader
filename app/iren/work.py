@@ -39,6 +39,8 @@ def normalize_command(command: str) -> str:
         return "CODEX_HANDOFF"
     if value in {"verify codex handoff", "verify codex", "check codex work"}:
         return "CODEX_VERIFY"
+    if re.fullmatch(r"supersede codex handoff [0-9a-f-]{36}", value):
+        return "CODEX_SUPERSEDE"
     if re.fullmatch(r"associate codex handoff [0-9a-f-]{36} pr [1-9][0-9]*", value):
         return "CODEX_ASSOCIATE"
     if not value:
@@ -615,7 +617,11 @@ class IrenWorkEngine:
                 snapshot = await self.snapshot()
                 result = process_command(text, snapshot, self.control_state(), requested_by=requested_by, source=source)
                 job_row = None
-                if result.intent == "CODEX_ASSOCIATE":
+                if result.intent == "CODEX_SUPERSEDE":
+                    superseded = await self.gateway("iren_handoff_supersede", handoff_id=text.lower().split()[3])
+                    result = CommandResult("CODEX_SUPERSEDE", {"message": "Handoff superseded. Prepare for Codex to capture fresh state; prior evidence is preserved."})
+                    job_row = superseded.get("job")
+                elif result.intent == "CODEX_ASSOCIATE":
                     parts = text.lower().split()
                     associated = await self.gateway("iren_handoff_associate", handoff_id=parts[3], pr_number=int(parts[5]))
                     result = CommandResult("CODEX_ASSOCIATE", {"message": "PR associated; independent verification is pending."})
@@ -723,6 +729,8 @@ class IrenWorkEngine:
                     spending_authority=worker.get("spending_authority"),
                     control_state=self.control_state().get("state"))
             except (httpx.HTTPError, ValueError, KeyError):
+                await self.gateway("iren_handoff_verify", handoff_id=job["job_id"],
+                    package_digest=package["package_digest"], github={}, observations={}, migrations=[])
                 _emit_work_event("iren_codex_evidence_unavailable", handoff_id=job["job_id"])
 
     async def _model_worker_daily_limit_reached(self, job_id: str) -> bool:

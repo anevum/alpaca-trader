@@ -510,7 +510,7 @@ def handle_work_action(
         "iren_job_update",
         "iren_settings_update",
         "iren_objective_update",
-        "iren_handoff_prepare", "iren_handoff_associate", "iren_handoff_verify", "iren_handoff_evidence",
+        "iren_handoff_prepare", "iren_handoff_associate", "iren_handoff_verify", "iren_handoff_evidence", "iren_handoff_supersede",
     }
     if action not in actions:
         return None
@@ -521,7 +521,7 @@ def handle_work_action(
             if action == "iren_handoff_evidence":
                 return handoff.evidence_snapshot(conn)
             handler = {"iren_handoff_prepare": handoff.prepare, "iren_handoff_associate": handoff.associate,
-                       "iren_handoff_verify": handoff.verify}[action]
+                       "iren_handoff_verify": handoff.verify, "iren_handoff_supersede": handoff.supersede}[action]
             return handler(conn, body)
         if action == "iren_work_snapshot":
             return snapshot(conn)

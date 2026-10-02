@@ -28,7 +28,7 @@ def objective():
 def control():
     return {"state": "HEALTHY", "observed_at": NOW.isoformat(), "incidents": {},
             "configuration_baseline": {"fingerprint": "fixed"},
-            "topology": {"services": [
+            "topology": {"inventory_complete": True, "services": [
                 {"service_id": "RHEN", "independent_runtime": True, "deployment": "protected", "revision": "b"*40, "readiness": True},
                 {"service_id": "IREN", "independent_runtime": True, "deployment": "iren-before", "revision": SHA, "readiness": True},
             ]}}

@@ -39,7 +39,7 @@ def setup(conn):
         "ready":{"source":"IREN","path":["ready"]}}}}
     state={"state":"HEALTHY","observed_at":datetime.now(timezone.utc).isoformat(),
         "incidents":{},"configuration_baseline":{"fingerprint":"fixed"},
-        "topology":{"services":[
+        "topology":{"inventory_complete":True,"services":[
             {"service_id":"IREN","independent_runtime":True,"deployment":"iren","revision":SHA,"readiness":True},
             {"service_id":"RHEN","independent_runtime":True,"deployment":"rhen","revision":"b"*40,"readiness":True}]}}
     with conn.cursor() as cur:
@@ -113,3 +113,13 @@ def test_rolling_deploy_old_worker_cannot_claim_handoff_commands(conn):
     assert not any(r["command_id"]==command_id for r in old)
     new=commands_claim(conn,owner="iren-work-engine-codex-v1",limit=20)["commands"]
     assert any(r["command_id"]==command_id for r in new)
+
+
+def test_explicit_supersession_preserves_association_history(conn):
+    from foundation.iren_handoff_gateway import supersede
+    key=setup(conn)
+    job=prepare(conn,{"objective_key":key,"main_sha":SHA})["job"]
+    associate(conn,{"handoff_id":job["job_id"],"pr_number":99})
+    old=supersede(conn,{"handoff_id":job["job_id"]})["job"]
+    assert old["result"]["association"]["pr_number"]==99 and old["status"]=="CANCELLED"
+    assert prepare(conn,{"objective_key":key,"main_sha":"d"*40})["job"]["job_id"]!=job["job_id"]

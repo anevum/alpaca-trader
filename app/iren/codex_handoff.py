@@ -96,6 +96,7 @@ def package_for(objective: dict, *, handoff_id: str, command_id: str | None,
         "active_incidents": incidents, "control_state": control.get("state"),
         "control_observed_at": control.get("observed_at"),
         "runtime_baseline": baseline,
+        "inventory_complete": (control.get("topology") or {}).get("inventory_complete") is True,
         "configuration_identity": (control.get("configuration_baseline") or {}).get("fingerprint"),
         "protected_boundaries": PROTECTED, "protected_authority": False,
         "paid_model_execution": False, "auto_merge": False,
@@ -202,6 +203,8 @@ def verification(package: dict, github: dict, control: dict, observations: dict,
     require(bool(package.get("configuration_identity")) and
             package["configuration_identity"] == (control.get("configuration_baseline") or {}).get("fingerprint"),
             "protected_configuration_unverified")
+    require(package.get("inventory_complete") is True and (control.get("topology") or {}).get("inventory_complete") is True,
+            "deployment_inventory_incomplete")
     require(bool((package.get("runtime_baseline") or {}).get("RHEN", {}).get("deployment")), "protected_runtime_baseline_missing")
     current = {r.get("service_id"): r for r in (control.get("topology") or {}).get("services", [])}
     for key, before in package.get("runtime_baseline", {}).items():
