@@ -208,7 +208,7 @@ The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpac
 
 ## Durable canonical trading ledger
 
-Production trading telemetry is written through the authenticated `trading-ingest` backend into ANEVUM's private Supabase schema.
+Production trading telemetry is written through the authenticated Railway Foundation `trading-ingest` backend into canonical Railway PostgreSQL. Private Command uses Cloudflare Access. See [Foundation v2 current state](docs/foundation-v2/CURRENT_STATE.md) for verification evidence and outstanding gates.
 
 The execution path records:
 

@@ -11,4 +11,4 @@ Properties:
 - events remain on disk after delivery failure or process restart;
 - remote Postgres ingest remains idempotent.
 
-During migration this sink is shadow-only. Existing Supabase persistence remains authoritative for live RHEN until parity and reconciliation gates pass.
+Railway PostgreSQL is now the canonical persistence destination. The `FOUNDATION_SHADOW_ENABLED` variable retains its historical name for the durable mirror/outbox transport. It does not make the retired Supabase store canonical. See [current state](CURRENT_STATE.md) for verification limits; preserve existing outbox contents.
