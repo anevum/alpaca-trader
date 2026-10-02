@@ -120,6 +120,7 @@ def _decision_candidates(
     max_complete_outcomes: int | None = None,
     require_complete_outcome: bool = False,
     result_limit: int | None = None,
+    newest_first: bool = False,
 ) -> list[dict[str, Any]]:
     clauses = ["event_type = %s"]
     args: list[Any] = ["decision_cycle"]
@@ -207,6 +208,8 @@ def _decision_candidates(
         result_limit_sql = " limit %s"
         outer_args.append(result_limit)
 
+    direction = "desc" if newest_first else "asc"
+
     cur.execute(
         f"""
         with
@@ -217,7 +220,7 @@ def _decision_candidates(
                 occurred_at, payload
             from rhen.events
             where {" and ".join(clauses)}
-            order by occurred_at asc, event_id asc
+            order by occurred_at {direction}, event_id {direction}
             limit %s
         )
         select
@@ -247,9 +250,9 @@ def _decision_candidates(
         where jsonb_typeof(candidate_row.candidate) = 'object'
         {candidate_filter}
         order by
-            decision_events.occurred_at asc,
-            decision_events.event_id asc,
-            candidate_row.candidate_ordinal asc
+            decision_events.occurred_at {direction},
+            decision_events.event_id {direction},
+            candidate_row.candidate_ordinal {direction}
         {result_limit_sql}
         """,
         tuple(args + outer_args),
@@ -875,6 +878,7 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                     crypto=True,
                     max_complete_outcomes=7,
                     result_limit=5000,
+                    newest_first=True,
                 )
                 outcomes, _ = _forward_outcomes(
                     cur,
