@@ -241,6 +241,7 @@ async def health():
         "scheduler_version": scheduler.runtime.scheduler_version, "model_invoked": False,
         "runtime_identity": controller.runtime_identity,
         "last_heartbeat_at": controller.last_persisted_at,
+        "codex_handoff": {"version": "v1", "paid_execution": False, "auto_merge": False},
         "work_engine": {"running": work_alive, "last_error": work_engine.last_error,
             "last_command_at": work_engine.last_command_at, "last_job_at": work_engine.last_job_at,
             "last_autopilot_at": work_engine.last_autopilot_at,
@@ -318,6 +319,8 @@ async def job_callback(
     job = next((row for row in snapshot.get("jobs") or [] if str(row.get("job_id")) == job_id), None)
     if job is None:
         raise HTTPException(status_code=404, detail="job_not_found")
+    if job.get("job_type") == "CODEX_HANDOFF":
+        raise HTTPException(status_code=409, detail="handoff_requires_independent_verifier")
     if bool(job.get("protected_action")) and status in {"SUCCEEDED"}:
         raise HTTPException(status_code=409, detail="protected_job_requires_human_authority")
     result = body.get("result") if isinstance(body.get("result"), dict) else {}

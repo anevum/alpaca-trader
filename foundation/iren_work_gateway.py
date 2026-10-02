@@ -66,7 +66,7 @@ def snapshot(conn: psycopg.Connection[Any]) -> dict[str, Any]:
                 lease_owner as claimed_by,lease_until,started_at,completed_at,
                 output as result,error,metadata,created_at,updated_at
             from iren.jobs
-            order by created_at desc
+            order by (status in ('QUEUED','RUNNING','WAITING','BLOCKED','NEEDS_APPROVAL')) desc, created_at desc
             limit 200
             """
         )
@@ -248,6 +248,8 @@ def job_create(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[str,
     job_id = uuid4()
     job_key = f"iren-work:{job_id}"
     job_type = str(job.get("job_type") or "AGENT_WORK").strip()[:80] or "AGENT_WORK"
+    if job_type == "CODEX_HANDOFF":
+        raise ValueError("use_canonical_handoff_prepare")
     owner_system = str(job.get("owner_system") or "IREN").strip()[:80] or "IREN"
 
     with conn.transaction():
@@ -378,7 +380,7 @@ def job_update(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[str,
                     lease_until=null,
                     lease_owner=null,
                     updated_at=now()
-                where job_id=%s
+                where job_id=%s and job_type <> 'CODEX_HANDOFF'
                 returning
                     job_id,objective_key,title,instructions,owner_system,
                     job_type,status,priority,protected_action,requires_human,
@@ -475,9 +477,11 @@ def objective_update(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dic
                     updated_at=now(),
                     completed_at=case when %s='COMPLETE' then now() else completed_at end
                 where objective_key=%s
+                  and not (%s='COMPLETE' and exists(select 1 from iren.jobs j where j.objective_key=iren.objectives.objective_key
+                      and j.job_type='CODEX_HANDOFF' and j.status='WAITING'))
                 returning *
                 """,
-                (status, status, key),
+                (status, status, key, status),
             )
             row = cur.fetchone()
             if not row:
@@ -501,11 +505,19 @@ def handle_work_action(
         "iren_job_update",
         "iren_settings_update",
         "iren_objective_update",
+        "iren_handoff_prepare", "iren_handoff_associate", "iren_handoff_verify", "iren_handoff_evidence",
     }
     if action not in actions:
         return None
 
     with psycopg.connect(database_url, connect_timeout=5) as conn:
+        if action.startswith("iren_handoff_"):
+            from foundation import iren_handoff_gateway as handoff
+            if action == "iren_handoff_evidence":
+                return handoff.evidence_snapshot(conn)
+            handler = {"iren_handoff_prepare": handoff.prepare, "iren_handoff_associate": handoff.associate,
+                       "iren_handoff_verify": handoff.verify}[action]
+            return handler(conn, body)
         if action == "iren_work_snapshot":
             return snapshot(conn)
         if action == "iren_command_create":
