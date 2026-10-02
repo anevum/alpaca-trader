@@ -1,4 +1,4 @@
-from app.iren.work import choose_next_action, normalize_command, process_command
+from app.iren.work import choose_next_action, normalize_command, process_command, status_summary
 
 
 def snapshot():
@@ -126,4 +126,73 @@ def test_current_iren_status_is_read_only_and_creates_no_job():
 
     assert result.intent == "STATUS"
     assert result.job is None
-    assert result.response["message"] == "Current IREN status."
+    assert result.response["message"].startswith("IREN is DEGRADED.")
+    assert "Next:" in result.response["message"]
+
+
+def test_status_message_reports_state_and_next_action():
+    data = snapshot()
+    summary = status_summary(
+        data,
+        {
+            "state": "DEGRADED",
+            "incidents": {
+                "evidence.loss": {
+                    "status": "OPEN",
+                    "severity": "warning",
+                    "reason": "runtime_event_loss_increasing",
+                }
+            },
+        },
+    )
+
+    assert summary["control_state"] == "DEGRADED"
+    assert summary["open_incidents"][0]["key"] == "evidence.loss"
+    assert summary["next_action"]["title"] == "Resolve evidence.loss"
+    assert "IREN is DEGRADED." in summary["message"]
+    assert "Next: Resolve evidence.loss." in summary["message"]
+
+
+def test_active_objective_is_actionable_when_no_ready_objective_exists():
+    data = snapshot()
+    data["objectives"][2]["status"] = "COMPLETE"
+    data["objectives"][3]["status"] = "COMPLETE"
+    data["objectives"].append({
+        "objective_key": "ACTIVE-ONE",
+        "title": "Continue active work",
+        "description": "Keep moving.",
+        "status": "ACTIVE",
+        "priority": 80,
+        "dependencies": [],
+        "owner_system": "IREN",
+        "protected_action": False,
+        "success_criteria": {},
+        "metadata": {},
+    })
+
+    action = choose_next_action(data, {"state": "HEALTHY", "incidents": {}})
+
+    assert action["objective_key"] == "ACTIVE-ONE"
+    assert action["job_type"] == "CONTROL_RECONCILE"
+    assert action["reason"] == "highest_priority_active_objective"
+
+
+def test_continuous_planner_always_returns_fallback():
+    data = {"objectives": [], "jobs": []}
+    action = choose_next_action(data, {"state": "HEALTHY", "incidents": {}})
+    assert action["job_type"] == "CONTROL_RECONCILE"
+    assert action["title"] == "Reconcile system and derive next objective"
+
+
+def test_status_command_returns_substantive_summary():
+    result = process_command(
+        "status",
+        snapshot(),
+        {"state": "HEALTHY", "incidents": {}},
+        requested_by="devon",
+        source="command",
+    )
+    assert result.intent == "STATUS"
+    assert result.job is None
+    assert result.response["message"].startswith("IREN is HEALTHY.")
+    assert "Next:" in result.response["message"]
