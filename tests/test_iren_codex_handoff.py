@@ -144,6 +144,7 @@ def test_github_reader_requires_auth(monkeypatch):
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.get("/v1/codex/github")).status_code == 401
+            assert (await client.get("/v1/evidence/runtime-inventory")).status_code == 401
     asyncio.run(run())
 
 
