@@ -227,3 +227,59 @@ def test_private_sql_revision_fence_and_bounded_notification_retries():
     assert sql.count("enable row level security") == 2
     assert "attempts < 3" in gateway and "skip locked" in gateway
     assert "owner_uuid" in gateway and "owner=%s" in gateway
+
+
+def test_runtime_probe_retries_once_after_transient_failure(monkeypatch):
+    calls = {"count": 0}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "ok": True,
+                "startup_reconciled": True,
+                "reconciliation_safe": True,
+                "strategy_version_id": POLICY["expected_strategy"],
+                "crypto_execution_enabled": False,
+                "runtime_provenance": {
+                    "system_version": "rhen-test",
+                    "git_commit": "a" * 40,
+                    "deployment_id": "dep-rhen",
+                    "runtime_started_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "persistence": {
+                    "enabled": True,
+                    "last_sent_at": datetime.now(timezone.utc).isoformat(),
+                    "dropped_count": 0,
+                },
+            }
+
+    class Client:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return None
+        async def get(self, url, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise httpx.ConnectTimeout("transient")
+            return Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(POLICY, "__class__", dict, raising=False)
+
+    async def scenario():
+        controller = IrenController()
+        original = POLICY["services"]
+        try:
+            POLICY["services"] = [next(item for item in original if item["id"] == "RHEN")]
+            controller.gateway = AsyncMock()
+            scheduler.runtime.ledger.recent = AsyncMock(return_value=[])
+            result = await controller.observe()
+            assert result["services"]["RHEN"]["ok"] is True
+            assert calls["count"] >= 2
+        finally:
+            POLICY["services"] = original
+
+    asyncio.run(scenario())
