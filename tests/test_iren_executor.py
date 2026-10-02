@@ -327,3 +327,65 @@ def test_verifier_selftest_completes_only_with_positive_and_negative_controls():
     assert updates[-1]["result"]["positive_control"] is True
     assert updates[-1]["result"]["negative_control"] is True
     assert objective_updates[-1]["status"] == "COMPLETE"
+
+
+def test_stable_build_gate_fails_closed_while_control_state_degraded():
+    job_updates = []
+    objective_updates = []
+
+    async def gateway(action, **payload):
+        if action == "iren_jobs_claim":
+            return {"jobs": [{
+                "job_id": "stable-1",
+                "objective_key": "iren.stable-build.2026-10-05",
+                "title": "IREN stable build by 2026-10-05",
+                "owner_system": "IREN",
+                "job_type": "CONTROL_STABLE_BUILD_VERIFY",
+                "status": "RUNNING",
+                "priority": 120,
+                "protected_action": False,
+                "requires_human": False,
+                "metadata": {},
+            }]}
+        if action == "iren_work_snapshot":
+            return {
+                "objectives": [
+                    {
+                        "objective_key": "iren.stable-build.2026-10-05",
+                        "status": "ACTIVE",
+                        "success_criteria": {
+                            "continuous_planner": True,
+                            "bounded_autopilot": True,
+                            "durable_state": True,
+                            "command_visibility": True,
+                            "protected_actions_fail_closed": True,
+                            "control_state_healthy": True,
+                            "deterministic_executor_complete": True,
+                            "verifier_complete": True,
+                        },
+                    },
+                    {"objective_key": "iren.deterministic-executors.v1", "status": "COMPLETE"},
+                    {"objective_key": "iren.verifier.v1", "status": "COMPLETE"},
+                ],
+                "jobs": [],
+                "commands": [{"status": "SUCCEEDED", "result": {"message": "ok"}}],
+                "settings": {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 6},
+            }
+        if action == "iren_job_update":
+            job_updates.append(payload)
+            return {"job": payload}
+        if action == "iren_objective_update":
+            objective_updates.append(payload)
+            return {"objective": payload}
+        return {}
+
+    async def scenario():
+        engine = IrenWorkEngine(
+            gateway,
+            lambda: {"state": "DEGRADED", "incidents": {"x": {"status": "OPEN"}}},
+        )
+        await engine._execute_jobs()
+
+    asyncio.run(scenario())
+    assert job_updates[-1]["result"]["criteria"]["control_state_healthy"] is False
+    assert objective_updates == []
