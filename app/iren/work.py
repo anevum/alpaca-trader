@@ -10,6 +10,7 @@ import re
 import httpx
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
+from . import codex_handoff as codex
 
 UTC = timezone.utc
 BUSINESS_TZ = ZoneInfo("America/New_York")
@@ -33,7 +34,15 @@ def _text(value: Any) -> str:
 
 
 def normalize_command(command: str) -> str:
-    value = re.sub(r"\s+", " ", command.strip().lower()).rstrip(" ?!.")
+    value = re.sub(r"\s+", " ", command.strip().lower().replace("’", "\'")).rstrip(" ?!.")
+    if value in {"prepare for codex", "prepare codex handoff", "codex handoff", "what should codex do next", "prepare work for codex"}:
+        return "CODEX_HANDOFF"
+    if value in {"verify codex handoff", "verify codex", "check codex work"}:
+        return "CODEX_VERIFY"
+    if re.fullmatch(r"supersede codex handoff [0-9a-f-]{36}", value):
+        return "CODEX_SUPERSEDE"
+    if re.fullmatch(r"associate codex handoff [0-9a-f-]{36} pr [1-9][0-9]*", value):
+        return "CODEX_ASSOCIATE"
     if not value:
         return "STATUS"
     if value in {
@@ -86,7 +95,7 @@ def criteria_satisfied(expected: Any, actual: Any) -> bool:
         )
     if isinstance(expected, list):
         return isinstance(actual, list) and actual == expected
-    return actual == expected
+    return type(actual) is type(expected) and actual == expected
 
 
 def _has_active_job(objective_id: str, jobs: list[dict[str, Any]]) -> bool:
@@ -135,6 +144,8 @@ def _objective_action(row: dict[str, Any], *, reason: str) -> dict[str, Any]:
         "reason": reason,
         "success_criteria": row.get("success_criteria") or {},
         "description": row.get("description") or "",
+        "metadata": row.get("metadata") or {},
+        "execution_mode": codex.mode({"job_type": job_type, **row}),
     }
 
 
@@ -199,6 +210,7 @@ def choose_next_action(
         and _text(row.get("objective_key")) not in excluded_objective_keys
         and not _has_active_job(_text(row.get("objective_key")), jobs)
     ]
+    active = [row for row in active if dependencies_complete(row, objectives)]
     if active:
         active.sort(
             key=lambda row: (
@@ -503,12 +515,13 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
     summary = status_summary(snapshot, control_state)
     if intent == "STATUS":
         return CommandResult(intent, summary)
-    if intent == "NEXT":
+    if intent in {"NEXT", "CODEX_HANDOFF"}:
         action = summary.get("next_action")
         title = str((action or {}).get("title") or "Reconcile system and derive next objective")
         return CommandResult(intent, {
             **summary,
-            "message": f"Next: {title}.",
+            "message": f"Next: {title}. " + ("Prepare for Codex to create the canonical software package." if codex.mode(action) == "codex/manual software" else "IREN can execute this deterministic action." if codex.mode(action) == "deterministic" else "Devon’s authorization is required."),
+            "execution_mode": codex.mode(action),
         })
     if intent == "DECISIONS":
         decisions = [row for row in snapshot.get("jobs") or [] if row.get("status") == "NEEDS_APPROVAL" or row.get("requires_human") is True]
@@ -574,6 +587,7 @@ class IrenWorkEngine:
         self.last_job_at: str | None = None
         self.last_autopilot_at: str | None = None
         self.last_autopilot_reason: str | None = None
+        self.last_handoff_check = None
         self.executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip()
         self.executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
 
@@ -593,7 +607,7 @@ class IrenWorkEngine:
             await self.notify(text, context or {})
 
     async def _process_commands(self) -> None:
-        claimed = await self.gateway("iren_commands_claim", owner="iren-work-engine", limit=5)
+        claimed = await self.gateway("iren_commands_claim", owner="iren-work-engine-codex-v1", limit=5)
         for command in claimed.get("commands") or []:
             command_id = command.get("command_id")
             text = _text(command.get("command_text"))
@@ -603,6 +617,48 @@ class IrenWorkEngine:
                 snapshot = await self.snapshot()
                 result = process_command(text, snapshot, self.control_state(), requested_by=requested_by, source=source)
                 job_row = None
+                if result.intent == "CODEX_SUPERSEDE":
+                    superseded = await self.gateway("iren_handoff_supersede", handoff_id=text.lower().split()[3])
+                    result = CommandResult("CODEX_SUPERSEDE", {"message": "Handoff superseded. Prepare for Codex to capture fresh state; prior evidence is preserved."})
+                    job_row = superseded.get("job")
+                elif result.intent == "CODEX_ASSOCIATE":
+                    parts = text.lower().split()
+                    associated = await self.gateway("iren_handoff_associate", handoff_id=parts[3], pr_number=int(parts[5]))
+                    result = CommandResult("CODEX_ASSOCIATE", {"message": "PR associated; independent verification is pending."})
+                    job_row = associated.get("job")
+                elif result.intent == "CODEX_VERIFY":
+                    await self._reconcile_handoffs(force=True)
+                    result = CommandResult("CODEX_VERIFY", {"message": "Codex verification checked. See the handoff evidence and blockers."})
+                elif result.intent in {"CODEX_HANDOFF", "NEXT", "EXECUTE_NEXT"}:
+                    active = codex.active_handoffs(snapshot)
+                    action = (result.response or {}).get("next_action") or {}
+                    if active and result.intent in {"CODEX_HANDOFF", "NEXT"}:
+                        job_row = active[0]
+                        if result.intent == "CODEX_HANDOFF":
+                            github = await self._github_evidence()
+                            created = await self.gateway("iren_handoff_prepare", objective_key=job_row["objective_key"],
+                                main_sha=github["main_sha"], command_id=str(command_id), requested_by=requested_by)
+                            job_row = created["job"]
+                        result = CommandResult(result.intent, {**result.response, "message": "Continue the prepared Codex handoff. Copy the canonical prompt below.",
+                            "execution_mode": "codex/manual software"})
+                    elif codex.mode(action) == "protected/requires Devon":
+                        result = CommandResult(result.intent, {**result.response, "message": "This objective requires Devon. No executable handoff or expanded authority was created.",
+                            "execution_mode": "protected/requires Devon"})
+                    elif codex.mode(action) == "codex/manual software":
+                        github = await self._github_evidence()
+                        created = await self.gateway("iren_handoff_prepare", objective_key=action.get("objective_key"),
+                            main_sha=github["main_sha"], command_id=str(command_id), requested_by=requested_by)
+                        job_row = created["job"]
+                        package = (job_row.get("result") or {}).get("package") or {}
+                        _emit_work_event("iren_codex_prepared", handoff_id=job_row.get("job_id"),
+                            objective_key=package.get("objective_key"), base_sha=package.get("base_sha"),
+                            prompt_chars=len(package.get("prompt") or ""), package_digest=package.get("package_digest"),
+                            title=package.get("title"), paid_model_execution=False)
+                        result = CommandResult(result.intent, {**result.response, "message": "Codex handoff prepared. Copy the complete prompt; paid execution remains disabled.",
+                            "execution_mode": "codex/manual software"})
+                    elif result.intent == "CODEX_HANDOFF":
+                        result = CommandResult(result.intent, {**result.response, "message": "The next action is deterministic; no Codex handoff is needed. Use do that.",
+                            "execution_mode": "deterministic"})
                 if result.job:
                     created = await self.gateway("iren_job_create", job=result.job)
                     job_row = created.get("job")
@@ -617,6 +673,65 @@ class IrenWorkEngine:
             except Exception as exc:
                 self.last_error = type(exc).__name__
                 await self.gateway("iren_command_complete", command_id=command_id, status="FAILED", response={"error": type(exc).__name__})
+
+    async def _github_evidence(self, job=None):
+        if not self.executor_url or len(self.executor_token) < 32:
+            raise ValueError("github_evidence_router_unavailable")
+        root = self.executor_url.removesuffix("/v1/jobs/accept").rstrip("/")
+        params = {}
+        if job:
+            package = job["result"]["package"]
+            params = {"handoff_id": job["job_id"], "objective_key": package["objective_key"]}
+            association = job["result"].get("association") or {}
+            if association.get("pr_number"):
+                params["pr_number"] = association["pr_number"]
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.get(root + "/v1/codex/github",
+                headers={"x-anevum-scheduler-token": self.executor_token}, params=params)
+            response.raise_for_status()
+            return response.json()
+
+    async def _reconcile_handoffs(self, force=False):
+        now = datetime.now(UTC)
+        if not force and self.last_handoff_check and (now - self.last_handoff_check).total_seconds() < 60:
+            return
+        self.last_handoff_check = now
+        snapshot = await self.snapshot()
+        for job in codex.active_handoffs(snapshot)[:5]:
+            package = (job.get("result") or {}).get("package") or {}
+            try:
+                github = await self._github_evidence(job)
+                foundation = await self.gateway("iren_handoff_evidence")
+                root = self.executor_url.removesuffix("/v1/jobs/accept").rstrip("/")
+                async with httpx.AsyncClient(timeout=20) as client:
+                    response = await client.get(root + "/health")
+                    response.raise_for_status()
+                    worker = response.json()
+                async with httpx.AsyncClient(timeout=10) as client:
+                    own = await client.get("http://127.0.0.1:" + os.getenv("PORT", "8080") + "/health")
+                    own.raise_for_status()
+                    own_health = own.json()
+                observations = {"IREN": own_health,
+                    "IREN_EXECUTOR": worker, "FOUNDATION": foundation.get("health") or {}}
+                outcome = await self.gateway("iren_handoff_verify", handoff_id=job["job_id"],
+                    package_digest=package["package_digest"], github=github, observations=observations,
+                    migrations=foundation.get("migrations") or [])
+                if outcome.get("objective_completed"):
+                    await self._reconcile_objective_dependencies()
+                updated = (outcome.get("job") or {}).get("result") or {}
+                _emit_work_event("iren_codex_verified" if outcome.get("objective_completed") else "iren_codex_observed",
+                    handoff_id=job["job_id"], objective_key=job["objective_key"],
+                    handoff_status=updated.get("handoff_status"),
+                    blockers=(updated.get("verification") or {}).get("blockers"),
+                    command_contract=foundation.get("command_contract"),
+                    daily_budget_usd=(worker.get("software_worker") or {}).get("daily_budget_usd"),
+                    job_budget_usd=(worker.get("software_worker") or {}).get("job_budget_usd"),
+                    spending_authority=worker.get("spending_authority"),
+                    control_state=self.control_state().get("state"))
+            except (httpx.HTTPError, ValueError, KeyError):
+                await self.gateway("iren_handoff_verify", handoff_id=job["job_id"],
+                    package_digest=package["package_digest"], github={}, observations={}, migrations=[])
+                _emit_work_event("iren_codex_evidence_unavailable", handoff_id=job["job_id"])
 
     async def _model_worker_daily_limit_reached(self, job_id: str) -> bool:
         snapshot = await self.snapshot()
@@ -1129,6 +1244,7 @@ class IrenWorkEngine:
         await self._reconcile_accidental_status_jobs()
         await self._process_commands()
         await self._reconcile_objective_dependencies()
+        await self._reconcile_handoffs()
         await self._reconcile_autopilot()
         await self._execute_jobs()
         self.last_error = None

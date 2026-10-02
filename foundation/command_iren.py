@@ -165,6 +165,11 @@ def project_command(
     commands = _rows(work.get("commands"))
     current_state = str(state.get("state") or "UNKNOWN")
 
+    from app.iren.work import status_summary
+    from app.iren.codex_handoff import active_handoffs, mode
+    summary = status_summary(work, state)
+    handoffs = active_handoffs(work)
+
     baseline = state.get("configuration_baseline")
     baseline = baseline if isinstance(baseline, dict) else {}
 
@@ -182,6 +187,9 @@ def project_command(
         "configuration_identity": baseline.get("fingerprint"),
         "work": {
             **_summary({"objectives": objectives, "jobs": jobs}),
+            "next_action": summary.get("next_action"),
+            "execution_mode": "codex/manual software" if handoffs else mode(summary.get("next_action")),
+            "handoffs": [r.get("result") | {"handoff_id": r.get("job_id"), "objective_key": r.get("objective_key")} for r in jobs if r.get("job_type") == "CODEX_HANDOFF" and isinstance(r.get("result"), dict)],
             "objectives": objectives,
             "jobs": jobs,
             "commands": commands,

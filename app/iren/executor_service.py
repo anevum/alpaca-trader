@@ -218,6 +218,9 @@ class ExecutorRuntime:
             "system": "IREN",
             "service": "iren-executor",
             "version": "iren-executor-v1.1.0",
+            "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            "deployment": os.getenv("RAILWAY_DEPLOYMENT_ID"),
+            "codex_handoff": {"version": "v1", "github_read_only": True, "auto_merge": False},
             "service_enabled": self.service_enabled,
             "model_execution_authorized": self.model_execution_authorized,
             "model_invoked": False,
@@ -728,3 +731,21 @@ async def accept_job(
     if job_type == "GRAEN_RESEARCH_PROBLEM" and accepted.get("accepted"):
         return await runtime.submit_graen(job)
     return accepted
+
+@app.get("/v1/codex/github")
+async def codex_github(
+    handoff_id: str | None = None,
+    objective_key: str | None = None,
+    pr_number: int | None = None,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    _require_token(x_anevum_scheduler_token)
+    from .codex_github import inspect_github
+    if runtime.github_repo != "anevum/alpaca-trader" or len(runtime.github_token) < 20:
+        raise HTTPException(status_code=503, detail="github_evidence_unavailable")
+    async def get(path):
+        return await runtime._github_json("GET", path)
+    try:
+        return await inspect_github(get, handoff_id=handoff_id, objective_key=objective_key, pr_number=pr_number)
+    except (httpx.HTTPError, ValueError, KeyError):
+        raise HTTPException(status_code=503, detail="github_evidence_unavailable")
