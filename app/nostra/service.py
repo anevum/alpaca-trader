@@ -270,7 +270,7 @@ class NostraRuntime:
             symbol=symbol,
             market_lane="crypto",
             as_of_timestamp=as_of,
-            generated_at=as_of,
+            generated_at=datetime.now(UTC),
             horizon_minutes=LIVE_HORIZON_MINUTES,
             target_kind="return",
             model_id=baseline["baseline_id"],
