@@ -339,11 +339,35 @@ class GraenRuntime:
                     )
                     self.last_heartbeat_at = datetime.now(UTC)
                 if self.last_error and self.active_problem_id is None:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "graen_cycle_recovered",
+                                "at": datetime.now(UTC).isoformat(),
+                                "previous_error": self.last_error,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
                     self.last_error = None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"[:1000]
+                print(
+                    json.dumps(
+                        {
+                            "event": "graen_cycle_failed",
+                            "at": datetime.now(UTC).isoformat(),
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:500],
+                            "active_problem_id": self.active_problem_id,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
                 try:
                     await self.gateway.heartbeat(
                         self.worker_id,
