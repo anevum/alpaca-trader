@@ -1,4 +1,11 @@
-from app.iren.work import choose_next_action, normalize_command, process_command, status_summary
+from app.iren.work import (
+    action_signature,
+    autopilot_decision,
+    choose_next_action,
+    normalize_command,
+    process_command,
+    status_summary,
+)
 
 
 def snapshot():
@@ -196,3 +203,101 @@ def test_status_command_returns_substantive_summary():
     assert result.job is None
     assert result.response["message"].startswith("IREN is HEALTHY.")
     assert "Next:" in result.response["message"]
+
+
+def test_autopilot_disabled_does_nothing():
+    data = snapshot()
+    data["settings"] = {"autopilot_enabled": False, "autopilot_max_jobs_per_day": 3}
+    decision = autopilot_decision(data, {"state": "HEALTHY", "incidents": {}})
+    assert decision["should_create"] is False
+    assert decision["reason"] == "autopilot_disabled"
+
+
+def test_autopilot_creates_only_safe_control_reconcile_work():
+    data = snapshot()
+    data["objectives"][2]["status"] = "COMPLETE"
+    data["objectives"][3]["status"] = "COMPLETE"
+    data["objectives"].append({
+        "objective_key": "ACTIVE-SAFE",
+        "title": "Reconcile stable build",
+        "description": "Verify and advance stable build.",
+        "status": "ACTIVE",
+        "priority": 120,
+        "dependencies": [],
+        "owner_system": "IREN",
+        "protected_action": False,
+        "success_criteria": {},
+        "metadata": {"job_type": "CONTROL_RECONCILE"},
+    })
+    data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 3}
+
+    decision = autopilot_decision(data, {"state": "HEALTHY", "incidents": {}})
+
+    assert decision["should_create"] is True
+    assert decision["reason"] == "safe_action_ready"
+    assert decision["action"]["job_type"] == "CONTROL_RECONCILE"
+    assert len(decision["action_signature"]) == 64
+
+
+def test_autopilot_refuses_model_backed_software_build():
+    data = snapshot()
+    data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 3}
+    decision = autopilot_decision(data, {"state": "HEALTHY", "incidents": {}})
+    assert decision["should_create"] is False
+    assert decision["reason"] == "executor_capability_required"
+    assert decision["action"]["job_type"] == "SOFTWARE_BUILD"
+
+
+def test_autopilot_does_not_repeat_same_completed_action():
+    data = snapshot()
+    data["objectives"][2]["status"] = "COMPLETE"
+    data["objectives"][3]["status"] = "COMPLETE"
+    data["objectives"].append({
+        "objective_key": "ACTIVE-SAFE",
+        "title": "Reconcile stable build",
+        "description": "Verify and advance stable build.",
+        "status": "ACTIVE",
+        "priority": 120,
+        "dependencies": [],
+        "owner_system": "IREN",
+        "protected_action": False,
+        "success_criteria": {},
+        "metadata": {"job_type": "CONTROL_RECONCILE"},
+    })
+    data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 3}
+    control = {"state": "HEALTHY", "incidents": {}, "observed_at": "2026-10-02T03:00:00+00:00"}
+    action = choose_next_action(data, control)
+    sig = action_signature(action, control)
+    data["jobs"].append({
+        "job_id": "auto-1",
+        "status": "SUCCEEDED",
+        "requested_via": "autopilot",
+        "created_at": "2026-10-02T03:01:00+00:00",
+        "metadata": {"action_signature": sig},
+    })
+
+    decision = autopilot_decision(
+        data,
+        control,
+        now=__import__("datetime").datetime(2026, 10, 2, 4, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert decision["should_create"] is False
+    assert decision["reason"] == "same_action_already_attempted"
+
+
+def test_autopilot_honors_daily_cap():
+    data = snapshot()
+    data["objectives"][2]["status"] = "COMPLETE"
+    data["objectives"][3]["status"] = "COMPLETE"
+    data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 2}
+    data["jobs"] = [
+        {"status": "SUCCEEDED", "requested_via": "autopilot", "created_at": "2026-10-02T01:00:00+00:00"},
+        {"status": "SUCCEEDED", "requested_via": "autopilot", "created_at": "2026-10-02T02:00:00+00:00"},
+    ]
+    decision = autopilot_decision(
+        data,
+        {"state": "HEALTHY", "incidents": {}},
+        now=__import__("datetime").datetime(2026, 10, 2, 4, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert decision["should_create"] is False
+    assert decision["reason"] == "autopilot_daily_cap_reached"
