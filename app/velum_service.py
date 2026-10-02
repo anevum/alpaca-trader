@@ -709,6 +709,7 @@ async def health():
         "running": current["running"],
         "broker_orders_possible": False,
         "last_error": current["last_error"],
+        "runtime_provenance": current["runtime_provenance"],
     }
 
 
