@@ -386,6 +386,17 @@ def autopilot_decision(
                 "skipped_actions": skipped_actions,
             }
 
+        if (
+            str(action.get("reason") or "") == "continuous_planner_fallback"
+            and skipped_actions
+        ):
+            return {
+                "should_create": False,
+                "reason": "same_action_already_attempted",
+                "action": action,
+                "skipped_actions": skipped_actions,
+            }
+
         if bool(action.get("protected_action")):
             return {
                 "should_create": False,
