@@ -1,7 +1,9 @@
 # Foundation v2 — Production Parity Gate
 
-Status: ACTIVE / READY FOR PRODUCTION ACTIVATION
+Status: ARCHIVAL — superseded by [current production state](CURRENT_STATE.md)
 Date: 2026-10-01
+
+This document preserves the original migration gate. Its Supabase-canonical and shadow-activation instructions are historical and must not be reapplied to the current production runtime.
 
 ## Purpose
 

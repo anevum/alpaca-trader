@@ -99,7 +99,7 @@ def test_canonical_weekly_generation_persists_once_with_deterministic_key():
 
     sink = Sink()
     settings = SimpleNamespace(
-        trading_ingest_url="https://example.test/functions/v1/trading-ingest",
+        trading_ingest_url="https://foundation.example.test/v1/trading-ingest",
         trading_ingest_token="x" * 32,
         trading_run_id="11111111-1111-1111-1111-111111111111",
         strategy_version_id="LIVE-2026-09-25-003",
