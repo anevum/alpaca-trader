@@ -126,7 +126,8 @@ def test_current_iren_status_is_read_only_and_creates_no_job():
 
     assert result.intent == "STATUS"
     assert result.job is None
-    assert result.response["message"] == "Current IREN status."
+    assert result.response["message"].startswith("IREN is DEGRADED.")
+    assert "Next:" in result.response["message"]
 
 
 def test_status_message_reports_state_and_next_action():
