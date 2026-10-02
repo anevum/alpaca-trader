@@ -118,4 +118,4 @@ def test_projected_model_call_cost_is_preventive(monkeypatch):
 
     projected = runtime.projected_call_cost("x" * 10_000)
 
-    assert projected == 0.15
+    assert round(projected, 6) == 0.15
