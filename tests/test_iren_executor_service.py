@@ -108,3 +108,14 @@ def test_health_never_exposes_credentials(monkeypatch):
     assert "github-secret-value" not in rendered
     assert body["software_worker"]["draft_pr_only"] is True
     assert body["software_worker"]["auto_merge"] is False
+
+
+def test_projected_model_call_cost_is_preventive(monkeypatch):
+    monkeypatch.setenv("IREN_MODEL_INPUT_USD_PER_MILLION", "10")
+    monkeypatch.setenv("IREN_MODEL_OUTPUT_USD_PER_MILLION", "50")
+    monkeypatch.setenv("IREN_MODEL_MAX_OUTPUT_TOKENS", "1000")
+    runtime = ExecutorRuntime()
+
+    projected = runtime.projected_call_cost("x" * 10_000)
+
+    assert projected == 0.15
