@@ -1,6 +1,8 @@
 from app.iren.work import (
     action_signature,
     autopilot_decision,
+    criteria_satisfied,
+    dependencies_complete,
     choose_next_action,
     normalize_command,
     process_command,
@@ -340,3 +342,22 @@ def test_control_verify_is_autopilot_safe():
     )
     assert decision["should_create"] is True
     assert decision["action"]["job_type"] == "CONTROL_VERIFY"
+
+
+def test_criteria_verifier_is_subset_based_and_fail_closed():
+    assert criteria_satisfied(
+        {"a": True, "nested": {"b": 3}},
+        {"a": True, "nested": {"b": 3, "extra": 4}, "other": 1},
+    )
+    assert not criteria_satisfied({"a": True}, {"a": False})
+    assert not criteria_satisfied({}, {})
+    assert not criteria_satisfied({"missing": True}, {})
+
+
+def test_dependencies_complete_requires_all_dependencies():
+    objectives = [
+        {"objective_key": "A", "status": "COMPLETE"},
+        {"objective_key": "B", "status": "READY"},
+    ]
+    assert dependencies_complete({"dependencies": ["A"]}, objectives)
+    assert not dependencies_complete({"dependencies": ["A", "B"]}, objectives)
