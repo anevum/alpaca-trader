@@ -168,3 +168,56 @@ def test_graen_research_job_submits_to_problem_api(monkeypatch):
         assert result["model_invoked"] is False
 
     asyncio.run(scenario())
+
+
+def test_control_verify_persists_incident_evidence():
+    updates = []
+
+    async def gateway(action, **payload):
+        if action == "iren_job_update":
+            updates.append(payload)
+            return {"job": payload}
+        if action == "iren_jobs_claim":
+            return {
+                "jobs": [{
+                    "job_id": "verify-1",
+                    "objective_key": None,
+                    "title": "Resolve scheduler.health",
+                    "instructions": "Verify scheduler health.",
+                    "owner_system": "IREN",
+                    "job_type": "CONTROL_VERIFY",
+                    "status": "RUNNING",
+                    "priority": 100,
+                    "protected_action": False,
+                    "requires_human": False,
+                    "metadata": {
+                        "incident": {"key": "scheduler.health"},
+                        "success_criteria": {"incident_closed": "scheduler.health"},
+                    },
+                }]
+            }
+        return {}
+
+    state = {
+        "state": "DEGRADED",
+        "observed_at": "2026-10-02T10:00:00+00:00",
+        "incidents": {
+            "scheduler.health": {
+                "status": "OPEN",
+                "severity": "warning",
+                "reason": "canonical_scheduler_degraded",
+            }
+        },
+        "scheduler": {"configured": True, "last_error": False},
+    }
+
+    async def scenario():
+        engine = IrenWorkEngine(gateway, lambda: state)
+        await engine._execute_jobs()
+
+    asyncio.run(scenario())
+    assert updates[-1]["status"] == "SUCCEEDED"
+    verification = updates[-1]["result"]["verification"]
+    assert verification["incident_key"] == "scheduler.health"
+    assert verification["incident_open"] is True
+    assert verification["scheduler"]["configured"] is True
