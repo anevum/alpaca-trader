@@ -61,14 +61,22 @@ class IrenController:
                     url = os.getenv(item["url_env"], scheduler.runtime.trader_url.split("/v1/scheduler")[0] + "/health")
                 if name == "VELUM":
                     url = os.getenv(item["url_env"], scheduler.runtime.velum_url.split("/v1/scheduler")[0] + "/health")
-                try:
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    body = response.json()
-                    bounded = bounded_health(name, body)
-                    services[name] = bounded
-                except Exception as exc:
-                    services[name] = {"ok": False, "error_type": type(exc).__name__}
+                last_error: Exception | None = None
+                for attempt in range(2):
+                    try:
+                        response = await client.get(url)
+                        response.raise_for_status()
+                        body = response.json()
+                        services[name] = bounded_health(name, body)
+                        return
+                    except Exception as exc:
+                        last_error = exc
+                        if attempt == 0:
+                            await asyncio.sleep(0.25)
+                services[name] = {
+                    "ok": False,
+                    "error_type": type(last_error).__name__ if last_error else "UnknownError",
+                }
             await asyncio.gather(*(probe(item) for item in POLICY["services"]))
             try:
                 executor_url = _executor_root_url(os.getenv("IREN_EXECUTOR_URL", ""))
