@@ -13,6 +13,7 @@ INVENTORY = {
     "RESEARCH_AGENT": ("WORKER", "rhen-research-agent", "Independent evidence-review worker"),
     "CRYPTO_EDGE": ("WORKER", "rhen-crypto-edge-discovery", "Independent crypto research/shadow service; execution disabled"),
     "IREN_EXECUTOR": ("SERVICE", "iren-executor", "Bounded IREN execution and GitHub evidence boundary"),
+    "NOSTRA": ("SERVICE", "nostra", "Independent FORWARD forecasting research runtime; research-only evidence authority"),
 }
 
 def bounded_health(name, body):
@@ -119,10 +120,6 @@ def topology(observation, state, self_identity):
         last_success=stamp, dependency_state={"durable_state": "commit_required"},
         configuration_identity=self_identity["configuration_identity"],
         observation_source="durable_iren_commit", scope="Independent from RHEN; shares its process with the scheduler").model_dump())
-    rows.append(ServiceObservation(service_id="NOSTRA", runtime_kind="SUBSYSTEM",
-        independent_runtime=False, observed_at=stamp, status="UNKNOWN",
-        current_activity="Independent forecast hooks disabled; legacy calculations in RHEN",
-        observation_source="audited_registry", scope="Not independently deployed; preopen capture is separate").model_dump())
     scheduler = observation.get("scheduler", {})
     scheduler_ok = scheduler.get("configured") is True and not scheduler.get("last_error") and (
         fresh(scheduler.get("last_success_at"), now, 180) or fresh(scheduler.get("started_at"), now, 180))

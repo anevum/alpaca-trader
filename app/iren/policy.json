@@ -72,6 +72,12 @@
       "url_env": "IREN_EXECUTOR_HEALTH_URL",
       "default_url": "http://iren-executor.railway.internal:8080/health",
       "inventory_only": true
+    },
+    {
+      "id": "NOSTRA",
+      "url_env": "IREN_NOSTRA_HEALTH_URL",
+      "default_url": "https://nostra-staging.up.railway.app/health",
+      "inventory_only": true
     }
   ]
 }
