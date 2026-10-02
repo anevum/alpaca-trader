@@ -118,6 +118,7 @@ def _decision_candidates(
     crypto: bool | None,
     inherit_event_strategy_for_crypto: bool = True,
     max_complete_outcomes: int | None = None,
+    require_complete_outcome: bool = False,
     result_limit: int | None = None,
 ) -> list[dict[str, Any]]:
     clauses = ["event_type = %s"]
@@ -165,6 +166,17 @@ def _decision_candidates(
         )
     )"""
     outer_args: list[Any] = []
+    if require_complete_outcome:
+        candidate_filter += f""" and exists (
+            select 1
+            from rhen.events outcome
+            where outcome.event_type = 'candidate_forward_outcome'
+              and outcome.payload->>'status' = 'complete'
+              and coalesce(
+                    nullif(outcome.payload->>'candidate_id', ''),
+                    nullif(outcome.payload->>'candidate_key', '')
+                  ) = {candidate_identity}
+        )"""
     if max_complete_outcomes is not None:
         candidate_filter += f""" and (
             select count(distinct outcome.payload->>'horizon_minutes')
@@ -462,6 +474,7 @@ def _promotion_evidence(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
             end=None,
             crypto=True,
             inherit_event_strategy_for_crypto=False,
+            require_complete_outcome=True,
         )
     }
 
