@@ -448,6 +448,7 @@ def test_crypto_promotion_tick_fails_closed_from_durable_evidence():
 
 def test_post_event_generation_uses_purpose_built_foundation_read():
     import inspect
-    source = inspect.getsource(ResearchReportEngine.generate_post_event_evidence)
+    from app.research_scheduler import ResearchReportScheduler
+    source = inspect.getsource(ResearchReportScheduler.generate_post_event_evidence)
     assert "post_event_evidence_session=requested" in source
     assert "evidence_reader=post_event_evidence_reader" in source
