@@ -112,8 +112,14 @@ class IrenController:
             await self.dispatch()
             if not self.api_verified:
                 await self.verify_api()
+            open_incident_keys = sorted(
+                key
+                for key, row in state["incidents"].items()
+                if row.get("status") == "OPEN"
+            )
             print(json.dumps({"event": "iren_observation_committed", "revision": self.revision,
-                "state": state["state"], "open_incidents": sum(x["status"] == "OPEN" for x in state["incidents"].values())}), flush=True)
+                "state": state["state"], "open_incidents": len(open_incident_keys),
+                "open_incident_keys": open_incident_keys}), flush=True)
 
     async def dispatch(self):
         owner = str(uuid4())
