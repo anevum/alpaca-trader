@@ -202,3 +202,70 @@ def test_crypto_forward_evidence_does_not_emit_incomplete_outcomes():
     assert summary.incomplete > 0
     assert summary.emitted == 0
     assert sink.events == []
+
+
+
+def test_crypto_forward_evidence_prioritizes_current_day_before_backlog(monkeypatch):
+    now = datetime(2026, 10, 2, 20, 20, tzinfo=timezone.utc)
+    current_reference = now - timedelta(minutes=10)
+    prior_reference = current_reference - timedelta(days=1)
+
+    def row(identity, reference):
+        return {
+            "candidate_id": identity,
+            "candidate_key": identity,
+            "symbol": "BTC/USD",
+            "decision_reference_price": "100",
+            "observed_at": (reference + timedelta(minutes=1)).isoformat(),
+            "features": {"bar_time": reference.isoformat(), "market": "crypto"},
+            "market_lane": "crypto",
+            "strategy_version_id": "CRYPTO-2026-09-29-001",
+            "forward_outcomes": {},
+        }
+
+    current = row("current-candidate", current_reference)
+    prior = row("prior-candidate", prior_reference)
+    calls = []
+
+    async def evidence_reader(*, evidence_session):
+        calls.append(evidence_session)
+        if evidence_session == now.date().isoformat():
+            return {"candidates": [current]}
+        return {"candidates": [prior]}
+
+    bars = [
+        _bar(current_reference + timedelta(minutes=i), 100 + i)
+        for i in range(1, 11)
+    ] + [
+        _bar(prior_reference + timedelta(minutes=i), 100 + i)
+        for i in range(1, 11)
+    ]
+
+    class MarketData:
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {"BTC/USD": bars}
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    monkeypatch.setattr(crypto_evidence, "MAX_EMITTED_OUTCOMES_PER_RUN", 1)
+    sink = Sink()
+    runner = crypto_evidence.CryptoForwardEvidenceRunner(
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=evidence_reader,
+        state=SimpleNamespace(crypto_forward_evidence_state={}),
+    )
+
+    summary = asyncio.run(runner.run_recent(now))
+
+    assert calls == [
+        now.date().isoformat(),
+        (now - timedelta(days=1)).date().isoformat(),
+    ]
+    assert summary.emitted == 1
+    assert sink.events[0]["payload"]["candidate_id"] == "current-candidate"
