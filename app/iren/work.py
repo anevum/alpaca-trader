@@ -25,6 +25,7 @@ AUTOPILOT_SAFE_JOB_TYPES = {
     "CONTROL_VERIFIER_SELFTEST",
     "CONTROL_STABLE_BUILD_VERIFY",
     "CONTROL_MODEL_WORKER_VERIFY",
+    "CONTROL_RUNTIME_EVIDENCE_VERIFY",
 }
 MODEL_WORKER_MAX_JOBS_PER_DAY = 1
 
@@ -1105,6 +1106,39 @@ class IrenWorkEngine:
                         "iren_verifier_selftest_succeeded",
                         job_id=job_id,
                         objective_key=job.get("objective_key"),
+                    )
+                elif job_type == "CONTROL_RUNTIME_EVIDENCE_VERIFY":
+                    state = self.control_state()
+                    topology_state = state.get("topology") if isinstance(state, dict) else {}
+                    topology_state = topology_state if isinstance(topology_state, dict) else {}
+                    gaps = topology_state.get("inventory_gaps")
+                    gaps = gaps if isinstance(gaps, dict) else {}
+                    criteria = {
+                        "complete_deployment_inventory": topology_state.get("inventory_complete") is True,
+                    }
+                    result = {
+                        "criteria": criteria,
+                        "required_inventory": topology_state.get("required_inventory") or [],
+                        "inventory_gaps": gaps,
+                        "inventory_verified_at": topology_state.get("inventory_verified_at"),
+                        "observation_source": topology_state.get("inventory_source"),
+                        "observed_at": topology_state.get("observed_at") or state.get("observed_at"),
+                        "verifier": "iren_runtime_evidence_verifier_v1",
+                    }
+                    await self.gateway(
+                        "iren_job_update",
+                        job_id=job_id,
+                        status="SUCCEEDED",
+                        result=result,
+                    )
+                    completed = await self._complete_objective_if_verified(job, criteria)
+                    _emit_work_event(
+                        "iren_runtime_evidence_verified",
+                        job_id=job_id,
+                        objective_key=job.get("objective_key"),
+                        completed=completed,
+                        inventory_complete=criteria["complete_deployment_inventory"],
+                        inventory_gap_keys=sorted(str(key) for key in gaps),
                     )
                 elif job_type == "CONTROL_STABLE_BUILD_VERIFY":
                     snapshot = await self.snapshot()
