@@ -24,6 +24,7 @@ AUTOPILOT_SAFE_JOB_TYPES = {
     "CONTROL_VERIFIER_SELFTEST",
     "CONTROL_STABLE_BUILD_VERIFY",
 }
+MODEL_WORKER_MAX_JOBS_PER_DAY = 1
 
 
 def _text(value: Any) -> str:
@@ -616,6 +617,28 @@ class IrenWorkEngine:
                 self.last_error = type(exc).__name__
                 await self.gateway("iren_command_complete", command_id=command_id, status="FAILED", response={"error": type(exc).__name__})
 
+    async def _model_worker_daily_limit_reached(self, job_id: str) -> bool:
+        snapshot = await self.snapshot()
+        today = datetime.now(UTC).astimezone(BUSINESS_TZ).date()
+        count = 0
+        for row in snapshot.get("jobs") or []:
+            if _text(row.get("job_type")).upper() != "SOFTWARE_BUILD":
+                continue
+            if _text(row.get("job_id")) == job_id:
+                continue
+            if str(row.get("status") or "").upper() == "CANCELLED":
+                continue
+            raw_created = _text(row.get("created_at"))
+            try:
+                created_at = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if created_at.astimezone(BUSINESS_TZ).date() == today:
+                count += 1
+        return count >= MODEL_WORKER_MAX_JOBS_PER_DAY
+
     async def _route_job(self, job: dict[str, Any]) -> None:
         job_id = _text(job.get("job_id"))
         job_type = _text(job.get("job_type")) or "AGENT_WORK"
@@ -626,6 +649,18 @@ class IrenWorkEngine:
                 job_id=job_id,
                 status="BLOCKED",
                 error={"reason": "unsupported_job_type", "job_type": job_type},
+            )
+            return
+
+        if job_type == "SOFTWARE_BUILD" and await self._model_worker_daily_limit_reached(job_id):
+            await self.gateway(
+                "iren_job_update",
+                job_id=job_id,
+                status="BLOCKED",
+                error={
+                    "reason": "model_worker_daily_job_cap_reached",
+                    "daily_job_cap": MODEL_WORKER_MAX_JOBS_PER_DAY,
+                },
             )
             return
 
@@ -654,7 +689,8 @@ class IrenWorkEngine:
             "metadata": job.get("metadata") or {},
         }
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            timeout_seconds = 285.0 if job_type == "SOFTWARE_BUILD" else 20.0
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(
                     self.executor_url,
                     headers={"x-anevum-scheduler-token": self.executor_token},
