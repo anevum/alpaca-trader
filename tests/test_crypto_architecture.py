@@ -151,14 +151,18 @@ def test_crypto_forward_evidence_bounds_catchup_and_skips_nonfinal_states(monkey
     summary = asyncio.run(runner.run_recent(now))
 
     assert summary.emitted == 2
-    assert summary.complete > summary.emitted
-    assert summary.deferred == summary.complete - summary.emitted
+    assert summary.complete == summary.emitted
+    assert summary.evaluation_limited is True
+    assert summary.evaluated_candidates < summary.candidates
+    assert summary.deferred > 0
     assert summary.incomplete == 0
     assert all(
         event["payload"]["status"] == "complete"
         for event in sink.events
     )
     assert state.crypto_forward_evidence_state["deferred"] == summary.deferred
+    assert state.crypto_forward_evidence_state["deferred_unit"] == "candidate_rows"
+    assert state.crypto_forward_evidence_state["evaluation_limited"] is True
 
 
 def test_crypto_forward_evidence_does_not_emit_incomplete_outcomes():
