@@ -168,6 +168,12 @@ async def health() -> dict[str, Any]:
         "last_error": runtime["last_error"],
         "worker_alive": alive,
         "last_tick_age_seconds": age,
+        "runtime_provenance": {
+            "system_version": "rhen-preopen-state-v1.0",
+            "git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA") or None,
+            "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or None,
+            "runtime_started_at": runtime.get("started_at"),
+        },
         "slack_notifications": notifications.status(),
     }
 
