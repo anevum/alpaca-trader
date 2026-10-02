@@ -166,6 +166,29 @@ def test_promotion_filter_does_not_inherit_event_strategy_version():
     assert "else decision_events.strategy_version_id end" not in cur.query
 
 
+def test_promotion_candidate_query_prefilters_to_complete_outcomes():
+    cur = _DecisionCandidateCursor([])
+    _decision_candidates(
+        cur,
+        start=None,
+        end=None,
+        crypto=True,
+        inherit_event_strategy_for_crypto=False,
+        require_complete_outcome=True,
+    )
+
+    assert "and exists (" in cur.query.lower()
+    assert "candidate_forward_outcome" in cur.query
+    assert "outcome.payload->>'status' = 'complete'" in cur.query
+
+
+def test_promotion_evidence_uses_complete_outcome_prefilter():
+    source = __import__("inspect").getsource(
+        __import__("foundation.report_read", fromlist=["_promotion_evidence"])._promotion_evidence
+    )
+    assert "require_complete_outcome=True" in source
+
+
 def test_decision_candidate_query_escapes_psycopg_like_wildcard():
     cur = _DecisionCandidateCursor([])
     _decision_candidates(
