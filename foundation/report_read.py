@@ -137,7 +137,7 @@ def _decision_candidates(
     )
     crypto_expression = f"""(
         lower(coalesce(candidate_row.candidate->>'market_lane', '')) = 'crypto'
-        or upper(coalesce({raw_strategy}, '')) like 'CRYPTO-%'
+        or upper(coalesce({raw_strategy}, '')) like 'CRYPTO-%%'
         or lower(coalesce(candidate_row.candidate->'features'->>'market', '')) = 'crypto'
         or lower(coalesce(candidate_row.candidate->'research_attribution'->>'market', '')) = 'crypto'
     )"""
