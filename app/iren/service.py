@@ -138,9 +138,14 @@ class IrenController:
                 for key, row in state["incidents"].items()
                 if row.get("status") == "OPEN"
             )
+            topology_state = state.get("topology") if isinstance(state.get("topology"), dict) else {}
+            inventory_gaps = topology_state.get("inventory_gaps") if isinstance(topology_state.get("inventory_gaps"), dict) else {}
             print(json.dumps({"event": "iren_observation_committed", "revision": self.revision,
                 "state": state["state"], "open_incidents": len(open_incident_keys),
-                "open_incident_keys": open_incident_keys}), flush=True)
+                "open_incident_keys": open_incident_keys,
+                "runtime_inventory_complete": topology_state.get("inventory_complete") is True,
+                "runtime_inventory_gap_count": len(inventory_gaps),
+                "runtime_inventory_gaps": inventory_gaps}, sort_keys=True), flush=True)
 
     async def dispatch(self):
         owner = str(uuid4())
