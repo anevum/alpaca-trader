@@ -265,7 +265,6 @@ def action_signature(action: dict[str, Any], control_state: dict[str, Any]) -> s
         "incident": action.get("incident") or {},
         "blocked_job_id": action.get("blocked_job_id"),
         "control_state": control_state.get("state"),
-        "observed_at": control_state.get("observed_at"),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
