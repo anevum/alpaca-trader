@@ -17,7 +17,8 @@
     "prioritize_ready_objectives",
     "create_jobs",
     "gate_protected_actions",
-    "route_subsystem_work"
+    "route_subsystem_work",
+    "verify_runtime_inventory"
   ],
   "protected_actions": [
     "broker_orders",
@@ -47,6 +48,30 @@
       "id": "GRAEN",
       "url_env": "IREN_GRAEN_HEALTH_URL",
       "default_url": "http://graen.railway.internal:8080/health"
+    },
+    {
+      "id": "GRAEN_EXECUTOR",
+      "url_env": "IREN_GRAEN_EXECUTOR_HEALTH_URL",
+      "default_url": "http://graen-research-executor.railway.internal:8080/health",
+      "inventory_only": true
+    },
+    {
+      "id": "RESEARCH_AGENT",
+      "url_env": "IREN_RESEARCH_AGENT_HEALTH_URL",
+      "default_url": "http://rhen-research-agent.railway.internal:8080/health",
+      "inventory_only": true
+    },
+    {
+      "id": "CRYPTO_EDGE",
+      "url_env": "IREN_CRYPTO_EDGE_HEALTH_URL",
+      "default_url": "http://rhen-crypto-edge-discovery.railway.internal:8080/health",
+      "inventory_only": true
+    },
+    {
+      "id": "IREN_EXECUTOR",
+      "url_env": "IREN_EXECUTOR_HEALTH_URL",
+      "default_url": "http://iren-executor.railway.internal:8080/health",
+      "inventory_only": true
     }
   ]
 }
