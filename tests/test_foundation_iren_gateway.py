@@ -54,3 +54,14 @@ def test_state_commit_rejects_invalid_transition():
 def test_parse_datetime_requires_timezone():
     with pytest.raises(ValueError):
         _parse_datetime("2026-10-01T12:00:00", "stamp")
+
+
+def test_recent_runs_prefers_latest_completion_for_equal_schedule():
+    import inspect
+    from foundation.iren_gateway import recent_runs
+
+    source = inspect.getsource(recent_runs)
+    assert "scheduled_at desc" in source
+    assert "completed_at desc nulls last" in source
+    assert "started_at desc nulls last" in source
+    assert "run_id desc" in source
