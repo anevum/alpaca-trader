@@ -200,3 +200,18 @@ def test_equity_evidence_read_bounds_candidates_before_outcome_lookup():
     )[0]
     assert "crypto=False" in equity_block
     assert "result_limit=5000" in equity_block
+
+
+def test_post_event_evidence_read_avoids_outcome_and_daily_report_work():
+    source = __import__("inspect").getsource(
+        __import__("foundation.report_read", fromlist=["read_report"]).read_report
+    )
+    block = source.split(
+        "if _valid_date(post_event_evidence_session):", 1
+    )[1].split("if _valid_date(evidence_session):", 1)[0]
+
+    assert "crypto=False" in block
+    assert "result_limit=5000" in block
+    assert "_forward_outcomes" not in block
+    assert "_latest_report" not in block
+    assert '"forward_outcomes_loaded": False' in block

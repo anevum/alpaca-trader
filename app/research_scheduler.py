@@ -441,11 +441,19 @@ class ResearchReportScheduler:
 
     async def generate_post_event_evidence(self, session: date) -> dict[str, Any]:
         """Compute analytics only after the session and all requested horizons mature."""
+        async def post_event_evidence_reader(**params: str) -> dict[str, Any]:
+            requested = params.get("evidence_session")
+            if not requested:
+                raise RuntimeError("post-event evidence session is required")
+            return await self._report_api_get(
+                post_event_evidence_session=requested,
+            )
+
         runner = PostEventEvidenceRunner(
             settings=self.settings,
             market_data=self.market_data,
             event_sink=self.event_sink,
-            evidence_reader=self._report_api_get,
+            evidence_reader=post_event_evidence_reader,
         )
         summary = await runner.run_session(session)
         if getattr(self.event_sink, "enabled", False):

@@ -444,3 +444,11 @@ def test_crypto_promotion_tick_fails_closed_from_durable_evidence():
     assert scheduler.last_crypto_promotion_at == now
     assert state.events[-1]["kind"] == "crypto_promotion"
     assert state.events[-1]["action"] == "blocked"
+
+
+def test_post_event_generation_uses_purpose_built_foundation_read():
+    import inspect
+    from app.research_scheduler import ResearchReportScheduler
+    source = inspect.getsource(ResearchReportScheduler.generate_post_event_evidence)
+    assert "post_event_evidence_session=requested" in source
+    assert "evidence_reader=post_event_evidence_reader" in source
