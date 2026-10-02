@@ -17,6 +17,7 @@ from foundation.iren_gateway import handle_action as handle_iren_action, recent_
 from foundation.graen_gateway import handle_graen_action
 from foundation.research_agent_gateway import read_evidence, record_run, record_search_ledger
 from foundation.public_feed import read_public_feed
+from foundation.nostra_gateway import read_nostra_work
 from foundation.cloudflare_access import (
     AccessAuthorizationError,
     AccessConfigurationError,
@@ -94,6 +95,12 @@ def nostra_gateway_authorized(
         and token
         and hmac.compare_digest(token, expected)
     )
+
+
+def require_nostra_gateway_token(token: str | None) -> None:
+    expected = os.environ.get("NOSTRA_GATEWAY_TOKEN", "").strip()
+    if not expected or token is None or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
 
 
 def require_foundation_token(
@@ -695,6 +702,23 @@ def trading_public_feed() -> dict[str, Any]:
         raise HTTPException(
             status_code=500,
             detail=f"public_feed_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/nostra-gateway")
+def nostra_gateway_get(
+    x_nostra_gateway_token: str | None = Header(
+        default=None,
+        alias="x-nostra-gateway-token",
+    ),
+) -> dict[str, Any]:
+    require_nostra_gateway_token(x_nostra_gateway_token)
+    try:
+        return read_nostra_work(database_url())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"nostra_gateway_failed:{type(exc).__name__}",
         ) from exc
 
 
