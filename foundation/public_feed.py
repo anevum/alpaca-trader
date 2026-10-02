@@ -457,11 +457,11 @@ def read_public_feed(database_url: str) -> dict[str, Any]:
 
             cur.execute(
                 """
-                select max(issued_at),
+                select max(generated_at),
                        count(*) filter (
-                         where issued_at >= now() - interval '24 hours'
+                         where generated_at >= now() - interval '24 hours'
                        )::int
-                from nostra.forecasts
+                from nostra.evidence_forecasts
                 """
             )
             nostra_row = cur.fetchone()
@@ -487,6 +487,18 @@ def read_public_feed(database_url: str) -> dict[str, Any]:
     live = freshness is not None and freshness < 120.0
 
     iren = iren_states.get("IREN") or {}
+    iren_state = _obj(iren.get("state"))
+    iren_topology = _obj(iren_state.get("topology"))
+    topology_services = iren_topology.get("services")
+    topology_services = topology_services if isinstance(topology_services, list) else []
+    nostra_runtime = next(
+        (
+            row
+            for row in topology_services
+            if isinstance(row, dict) and str(row.get("service_id") or "").upper() == "NOSTRA"
+        ),
+        {},
+    )
     graen_heartbeat = graen_row[0] if graen_row else None
     graen_age = (
         (now - graen_heartbeat.astimezone(UTC)).total_seconds()
@@ -624,15 +636,23 @@ def read_public_feed(database_url: str) -> dict[str, Any]:
                 ),
             },
             "NOSTRA": {
-                "runtime_state": "EMBEDDED" if nostra_count == 0 else "COLLECTING",
-                "health_state": "RESEARCH_ONLY",
-                "tracking_state": "COLLECTING" if nostra_count else "AWAITING_INDEPENDENT_RUNTIME",
-                "observed_at": _iso(nostra_at),
-                "independent_runtime": False,
-                "activity": (
-                    f"{nostra_count} forecasts / 24h"
+                "runtime_state": str(nostra_runtime.get("status") or "UNKNOWN").upper(),
+                "health_state": (
+                    "HEALTHY"
+                    if nostra_runtime.get("readiness") is True
+                    else str(nostra_runtime.get("status") or "UNKNOWN").upper()
+                ),
+                "tracking_state": (
+                    "LIVE_BASELINE"
                     if nostra_count
-                    else "Independent forecast runtime not yet activated"
+                    else "READY_NO_FORECAST_SAMPLE"
+                ),
+                "observed_at": _iso(nostra_runtime.get("observed_at") or nostra_at),
+                "independent_runtime": nostra_runtime.get("independent_runtime") is True,
+                "activity": (
+                    f"{nostra_count} immutable forecasts / 24h"
+                    if nostra_count
+                    else "Independent forecast runtime active; awaiting forecast sample"
                 ),
             },
             "VELUM": {
@@ -689,7 +709,7 @@ def read_public_feed(database_url: str) -> dict[str, Any]:
             },
             "limitations": [
                 "Foundation v2 exposes only research evidence already present in canonical Railway PostgreSQL.",
-                "Legacy Supabase-only analytical projections are not fabricated during migration.",
+                "Legacy-only analytical projections are not fabricated during migration.",
             ],
             "journal": journal,
         },
