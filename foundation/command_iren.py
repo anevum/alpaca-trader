@@ -68,6 +68,193 @@ def _summary(work: dict[str, Any]) -> dict[str, int]:
     }
 
 
+
+def _operator_guidance(
+    *,
+    stale: bool,
+    current_state: str,
+    incidents: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if stale:
+        return [{
+            "severity": "critical",
+            "target": "IREN / Foundation",
+            "title": "Canonical operations state is stale",
+            "action": (
+                "Restore fresh IREN observations before trusting downstream status. "
+                "Check the canonical scheduler, Foundation availability, and durable state first."
+            ),
+        }]
+
+    rows: list[dict[str, str]] = []
+    for incident in incidents:
+        key = str(incident.get("key") or "")
+        severity = (
+            "critical"
+            if str(incident.get("severity") or "").lower() == "critical"
+            else "warning"
+        )
+        if key.startswith("service."):
+            rows.append({
+                "severity": severity,
+                "target": key.removeprefix("service."),
+                "title": "Runtime health is unavailable or unhealthy",
+                "action": (
+                    "Inspect the service deployment and logs, verify its health endpoint "
+                    "and dependencies, then let IREN confirm recovery."
+                ),
+            })
+        elif key.startswith("evidence."):
+            rows.append({
+                "severity": severity,
+                "target": "Foundation evidence",
+                "title": "Durable evidence delivery is degraded",
+                "action": (
+                    "Check Foundation ingest and the RHEN evidence spool. Confirm new events "
+                    "are durably landing before evaluating research or retrying downstream work."
+                ),
+            })
+        elif key.startswith("scheduler.") or key.startswith("workflow."):
+            rows.append({
+                "severity": severity,
+                "target": "IREN scheduler",
+                "title": "Scheduled work is degraded",
+                "action": (
+                    "Inspect the latest scheduler run and failure classification. Retry only "
+                    "idempotent work after the underlying dependency is healthy."
+                ),
+            })
+        elif key.startswith("configuration."):
+            rows.append({
+                "severity": severity,
+                "target": "Protected configuration",
+                "title": "Configuration identity changed",
+                "action": (
+                    "Compare the current protected configuration with the recorded baseline "
+                    "and explain the drift before accepting a new baseline."
+                ),
+            })
+        elif key.startswith("safety."):
+            rows.append({
+                "severity": "critical",
+                "target": "Safety boundary",
+                "title": "Protected runtime invariant failed",
+                "action": (
+                    "Keep execution authority unchanged. Restore the expected safe state "
+                    "before promotion, execution, or configuration changes."
+                ),
+            })
+        else:
+            rows.append({
+                "severity": severity,
+                "target": key or "ANEVUM",
+                "title": str(incident.get("reason") or "Operational incident").replace("_", " "),
+                "action": (
+                    "Inspect the affected subsystem and its latest deployment evidence, "
+                    "repair the root cause, then wait for IREN to verify recovery."
+                ),
+            })
+
+    if not rows and current_state != "HEALTHY":
+        rows.append({
+            "severity": "warning",
+            "target": "ANEVUM",
+            "title": "Control state is not healthy",
+            "action": (
+                "Review runtime readiness and dependency freshness, then allow the next "
+                "IREN observation cycle to confirm the state."
+            ),
+        })
+    return rows
+
+
+def _operator_projection(
+    *,
+    state: dict[str, Any],
+    control: dict[str, Any],
+    work: dict[str, Any],
+    stale: bool,
+    incidents: list[dict[str, Any]],
+    current_state: str,
+) -> dict[str, Any]:
+    topology = state.get("topology")
+    topology = topology if isinstance(topology, dict) else {}
+    services = _rows(topology.get("services"))
+    independent = [
+        row for row in services if row.get("independent_runtime") is True
+    ]
+    ready = [
+        row
+        for row in independent
+        if row.get("readiness") is True
+        and str(row.get("status") or "") in {"RUNNING", "IDLE"}
+    ]
+    problems = [
+        row
+        for row in independent
+        if str(row.get("status") or "") not in {"RUNNING", "IDLE"}
+        or row.get("readiness") is not True
+    ]
+
+    summary = _summary(work)
+    transitions = []
+    for row in _rows(control.get("events"))[:20]:
+        event = row.get("event")
+        if not isinstance(event, dict):
+            continue
+        transitions.append({
+            "key": event.get("key"),
+            "transition": event.get("transition"),
+            "severity": event.get("severity"),
+            "reason": event.get("reason"),
+            "created_at": row.get("created_at"),
+            "delivery_status": row.get("delivery_status"),
+        })
+
+    guidance = _operator_guidance(
+        stale=stale,
+        current_state=current_state,
+        incidents=incidents,
+    )
+    if stale:
+        message = (
+            "Canonical ANEVUM operations state is stale. Restore IREN/Foundation "
+            "before trusting downstream health."
+        )
+    elif current_state == "HEALTHY" and not guidance:
+        message = (
+            f"ANEVUM healthy. {len(ready)}/{len(independent)} independent runtimes "
+            "ready. No operator action required."
+        )
+    else:
+        message = (
+            f"{len(guidance)} operator item"
+            + ("" if len(guidance) == 1 else "s")
+            + " require review."
+        )
+
+    return {
+        "version": "anevum_operator.v1",
+        "state": "STALE" if stale else current_state,
+        "message": message,
+        "inventory": {
+            "independent_runtimes": len(independent),
+            "ready": len(ready),
+            "problems": len(problems),
+            "complete": topology.get("inventory_complete") is True,
+            "gaps": topology.get("inventory_gaps") or {},
+            "verified_at": topology.get("inventory_verified_at"),
+        },
+        "work": summary,
+        "guidance": guidance,
+        "recent_transitions": transitions,
+        "authority": {
+            "read_only_projection": True,
+            "trading_mutations": False,
+            "protected_actions_bypassed": False,
+        },
+    }
+
 def read_command_snapshot(database_url: str) -> dict[str, Any]:
     with psycopg.connect(database_url, connect_timeout=5) as conn:
         return {
@@ -173,6 +360,15 @@ def project_command(
     baseline = state.get("configuration_baseline")
     baseline = baseline if isinstance(baseline, dict) else {}
 
+    operator = _operator_projection(
+        state=state,
+        control=control,
+        work={"objectives": objectives, "jobs": jobs},
+        stale=stale,
+        incidents=incidents,
+        current_state=current_state,
+    )
+
     return {
         "schema_version": "iren_command.v2",
         "work_schema_version": "iren_work.v1",
@@ -185,6 +381,7 @@ def project_command(
         "scheduler": state.get("scheduler"),
         "action_required": stale or current_state != "HEALTHY" or bool(incidents),
         "configuration_identity": baseline.get("fingerprint"),
+        "operator": operator,
         "work": {
             **_summary({"objectives": objectives, "jobs": jobs}),
             "next_action": summary.get("next_action"),
