@@ -231,6 +231,9 @@ class ExecutorRuntime:
                 "base_branch": self.base_branch,
                 "draft_pr_only": True,
                 "auto_merge": False,
+                "budget_required": True,
+                "protected_actions_fail_closed": True,
+                "provider": "openai_responses_api",
                 "allowed_write_prefixes": list(self.software_write_prefixes),
             },
             "execution_backends": {
