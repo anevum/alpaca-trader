@@ -71,10 +71,10 @@
       "timezone": "America/New_York",
       "market_calendar_dependency": true,
       "catchup_policy": "catch_up",
-      "stale_after_minutes": 720,
+      "stale_after_minutes": 1440,
       "recovery_after_minutes": 15,
       "retry_policy": {
-        "max_attempts": 3,
+        "max_attempts": 4,
         "transient_only": true
       },
       "notification_policy": {
@@ -83,7 +83,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "trader_session_close",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "protected_action_level": "evidence_write_only"
     },
     {

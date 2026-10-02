@@ -313,3 +313,26 @@ def test_scheduler_notification_uses_workflow_subsystem_identity():
     assert args[0] == "rhen-research"
     assert args[1].startswith("*GRAEN // graen.research.checkpoint // SUCCEEDED*")
     assert "scheduled by IREN:" in args[1]
+
+
+def test_session_close_can_recover_next_morning():
+    runtime = runtime_for_process_test()
+    w = workflow(
+        workflow_id="rhen.session_close",
+        version="1.0.1",
+        anchor="close",
+        offset_minutes=15,
+        catchup_policy="catch_up",
+        stale_after_minutes=1440,
+        recovery_after_minutes=15,
+        retry_policy={"max_attempts": 4, "transient_only": True},
+        implementation_target="trader_session_close",
+    )
+    scheduled = datetime(2026, 10, 1, 20, 15, tzinfo=UTC)
+    item = ScheduledItem(w, scheduled, "2026-10-01", {"session": "2026-10-01"})
+
+    asyncio.run(runtime._process(item, scheduled + timedelta(hours=15)))
+
+    assert runtime._execute.await_count == 1
+    assert runtime.ledger.completions[0][1]["status"] == "SUCCEEDED"
+    assert runtime.ledger.completions[0][1]["catchup_state"] == "catchup"
