@@ -274,6 +274,57 @@ def _decision_candidates(
     return candidates
 
 
+
+def _complete_forward_horizons(
+    cur: psycopg.Cursor[Any],
+    *,
+    candidate_identities: set[str],
+) -> dict[str, set[int]]:
+    identities = sorted(
+        {
+            str(identity)
+            for identity in candidate_identities
+            if str(identity)
+        }
+    )
+    if not identities:
+        return {}
+    cur.execute(
+        """
+        select
+            coalesce(
+                nullif(payload->>'candidate_id', ''),
+                nullif(payload->>'candidate_key', '')
+            ) as candidate_identity,
+            (payload->>'horizon_minutes')::int as horizon_minutes
+        from rhen.events
+        where event_type = %s
+          and payload->>'status' = 'complete'
+          and coalesce(
+                nullif(payload->>'candidate_id', ''),
+                nullif(payload->>'candidate_key', '')
+              ) = any(%s)
+          and payload->>'horizon_minutes' ~ '^[0-9]+$'
+        group by 1, 2
+        order by 1, 2
+        """,
+        ("candidate_forward_outcome", identities),
+    )
+    grouped: dict[str, set[int]] = {}
+    for identity, horizon in cur.fetchall():
+        if identity in {None, ""} or horizon is None:
+            continue
+        grouped.setdefault(str(identity), set()).add(int(horizon))
+    return grouped
+
+
+def _event_key_exists(cur: psycopg.Cursor[Any], event_key: str) -> bool:
+    cur.execute(
+        "select 1 from rhen.events where event_key = %s limit 1",
+        (event_key,),
+    )
+    return cur.fetchone() is not None
+
 def _forward_outcomes(
     cur: psycopg.Cursor[Any],
     *,
@@ -832,16 +883,39 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                     crypto=False,
                     result_limit=5000,
                 )
+                identities = {
+                    identity
+                    for candidate in candidates
+                    if (identity := _candidate_identity(candidate))
+                }
+                complete_horizons = _complete_forward_horizons(
+                    cur,
+                    candidate_identities=identities,
+                )
+                post_event_complete = _event_key_exists(
+                    cur,
+                    (
+                        "ads002_postclose_refresh:"
+                        f"{post_event_evidence_session}:ADS-002-v1"
+                    ),
+                )
                 return {
                     "ok": True,
-                    "evidence_version": "rhen-post-event-candidates-v1",
+                    "evidence_version": "rhen-post-event-candidates-v2",
                     "evidence_session": post_event_evidence_session,
                     "candidates": candidates,
+                    "complete_horizons": {
+                        identity: sorted(horizons)
+                        for identity, horizons in complete_horizons.items()
+                    },
+                    "post_event_complete": post_event_complete,
                     "post_event": {
                         "source": "rhen.events",
                         "analytics_only": True,
                         "forward_outcomes_loaded": False,
+                        "forward_outcome_payloads_loaded": False,
                         "daily_report_loaded": False,
+                        "resumable": True,
                     },
                 }
 

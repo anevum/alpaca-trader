@@ -767,6 +767,8 @@ class PostEventRunSummary:
     complete_outcomes: int = 0
     incomplete_outcomes: int = 0
     error_outcomes: int = 0
+    skipped_complete_outcomes: int = 0
+    reused_existing_evidence: bool = False
 
 
 class PostEventEvidenceRunner:
@@ -1002,6 +1004,19 @@ class PostEventEvidenceRunner:
 
     async def run_session(self, session: date) -> PostEventRunSummary:
         source = await self.evidence_reader(evidence_session=session.isoformat())
+        raw_complete_horizons = source.get("complete_horizons") or {}
+        complete_horizons: dict[str, set[int]] = {}
+        if isinstance(raw_complete_horizons, dict):
+            for identity, raw_horizons in raw_complete_horizons.items():
+                if not isinstance(raw_horizons, (list, tuple, set)):
+                    continue
+                normalized: set[int] = set()
+                for horizon in raw_horizons:
+                    try:
+                        normalized.add(int(horizon))
+                    except (TypeError, ValueError):
+                        continue
+                complete_horizons[str(identity)] = normalized
         candidates = [
             dict(row)
             for row in (source.get("candidates") or [])
@@ -1012,6 +1027,14 @@ class PostEventEvidenceRunner:
             candidates=len(candidates),
         )
         if not candidates:
+            return summary
+
+        if source.get("post_event_complete") is True:
+            summary.complete_outcomes = sum(
+                len(horizons) for horizons in complete_horizons.values()
+            )
+            summary.skipped_complete_outcomes = summary.complete_outcomes
+            summary.reused_existing_evidence = True
             return summary
 
         calendar = await self.market_data.market_calendar_details(
@@ -1073,7 +1096,19 @@ class PostEventEvidenceRunner:
                 or (candidate.get("scan_cycle") or {}).get("bar_interval")
                 or getattr(self.settings, "bar_timeframe", "1Min")
             )
+            candidate_identity = (
+                candidate.get("candidate_id")
+                or candidate.get("candidate_key")
+            )
+            already_complete = complete_horizons.get(
+                str(candidate_identity),
+                set(),
+            )
             for horizon in FORWARD_HORIZONS_MINUTES:
+                if horizon in already_complete:
+                    summary.complete_outcomes += 1
+                    summary.skipped_complete_outcomes += 1
+                    continue
                 if bar_error:
                     outcome = {
                         "candidate_id": candidate.get("candidate_id"),
