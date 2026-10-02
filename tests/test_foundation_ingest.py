@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 
-from foundation.nostra_gateway import _baseline_evaluation, _point_in_time_candidate
+from foundation.nostra_gateway import (
+    _baseline_evaluation,
+    _drift_training_state,
+    _point_in_time_candidate,
+)
 
 from foundation.ingest.service import (
     EvidenceEvent,
@@ -151,6 +155,8 @@ def test_nostra_baseline_evaluation_aggregates_realized_scores():
             "0.01",
             "0.01",
             "0.0001",
+            "0.01",
+            "0.0001",
         ),
         (
             "nsc-2",
@@ -159,6 +165,8 @@ def test_nostra_baseline_evaluation_aggregates_realized_scores():
             second_observed,
             "0",
             "-0.01",
+            "0.01",
+            "0.0001",
             "0.01",
             "0.0001",
         ),
@@ -178,6 +186,8 @@ def test_nostra_baseline_evaluation_aggregates_realized_scores():
     assert result["metrics"]["mean_realized_return"] == pytest.approx(0.0)
     assert result["metrics"]["mean_absolute_error"] == pytest.approx(0.01)
     assert result["metrics"]["root_mean_squared_error"] == pytest.approx(0.01)
+    assert result["metrics"]["mae_skill_vs_zero"] == pytest.approx(0.0)
+    assert result["metrics"]["mse_skill_vs_zero"] == pytest.approx(0.0)
     assert result["calibration"]["residual_mean"] == pytest.approx(0.0)
     assert result["calibration"]["residual_stddev"] == pytest.approx(0.01)
     assert result["research_only"] is True
@@ -226,3 +236,65 @@ def test_nostra_evaluation_projects_to_append_only_evaluation_table():
     assert cur.args[0] == "nse-1"
     assert cur.args[8] == 48
     assert cur.args[9] == "nsc-through"
+
+
+
+def test_nostra_model_evaluation_reports_skill_against_zero_baseline():
+    generated = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
+    observed = datetime(2026, 10, 2, 18, 10, tzinfo=timezone.utc)
+    cur = _EvaluationCursor([
+        (
+            "nsc-drift",
+            "nostra-shrunken-drift-v1",
+            generated,
+            observed,
+            "0.002",
+            "0.01",
+            "0.008",
+            "0.000064",
+            "0.01",
+            "0.0001",
+        ),
+    ])
+
+    result = _baseline_evaluation(
+        cur,
+        current=datetime(2026, 10, 2, 19, 0, tzinfo=timezone.utc),
+        lookback_hours=24,
+        model_id="shrunken_drift",
+    )
+
+    assert result is not None
+    assert result["model_id"] == "shrunken_drift"
+    assert result["metrics"]["mae_skill_vs_zero"] == pytest.approx(0.2)
+    assert result["metrics"]["mse_skill_vs_zero"] == pytest.approx(0.36)
+
+
+def test_nostra_drift_training_uses_only_prior_independent_cycles():
+    cutoff = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
+    rows = [
+        (
+            f"nsc-{index}",
+            f"cycle-{index}",
+            datetime(2026, 10, 2, 17, index, tzinfo=timezone.utc),
+            "0.002",
+        )
+        for index in range(30)
+    ]
+    cur = _EvaluationCursor(rows)
+
+    result = _drift_training_state(
+        cur,
+        cutoff=cutoff,
+        lookback_hours=24,
+    )
+
+    assert result["eligible"] is True
+    assert result["independent_cycles"] == 30
+    assert result["raw_outcome_count"] == 30
+    assert result["mean_cycle_return"] == pytest.approx(0.002)
+    assert result["window_end"] < cutoff.isoformat()
+    assert "o.observed_at < %s" in cur.query
+    assert cur.args[-1] == cutoff
+    assert result["research_only"] is True
+    assert result["execution_authority"] is False

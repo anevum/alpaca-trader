@@ -12,13 +12,14 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .baselines import uniform_direction_baseline, zero_return_baseline
+from .models import MODEL_ID as DRIFT_MODEL_ID, shrunken_drift_forecast
 from .contracts import build_evaluation, build_forecast, build_outcome, build_score_record, build_snapshot
 from .ledger import NostraLedger
 from .scoring import SCORING_VERSION, score_return_forecast
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "nostra-runtime-v1.2.0"
+RUNTIME_VERSION = "nostra-runtime-v1.3.0"
 LIVE_BASELINE_VERSION = "nostra-live-zero-return-v1"
 LIVE_HORIZON_MINUTES = 10
 
@@ -142,7 +143,9 @@ class NostraRuntime:
         self.last_score_at: datetime | None = None
         self.last_evaluation_at: datetime | None = None
         self.last_evaluation_id: str | None = None
+        self.last_evaluation_ids: dict[str, str] = {}
         self.last_evaluation: dict[str, Any] | None = None
+        self.last_evaluations: dict[str, dict[str, Any]] = {}
         self.last_error: str | None = None
         self.last_result: dict[str, Any] | None = None
 
@@ -174,7 +177,9 @@ class NostraRuntime:
             "last_score_at": self.last_score_at.isoformat() if self.last_score_at else None,
             "last_evaluation_at": self.last_evaluation_at.isoformat() if self.last_evaluation_at else None,
             "last_evaluation_id": self.last_evaluation_id,
+            "last_evaluation_ids": dict(self.last_evaluation_ids),
             "last_evaluation": self.last_evaluation,
+            "last_evaluations": dict(self.last_evaluations),
             "last_result": self.last_result,
             "last_error": self.last_error,
             "runtime_provenance": {
@@ -220,7 +225,11 @@ class NostraRuntime:
             except asyncio.TimeoutError:
                 pass
 
-    async def _forecast_candidate(self, candidate: Mapping[str, Any]) -> dict[str, Any]:
+    async def _forecast_candidate(
+        self,
+        candidate: Mapping[str, Any],
+        drift_training_state: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         identity = str(candidate.get("candidate_identity") or "").strip()
         symbol = str(candidate.get("symbol") or "").strip().upper()
         if not identity or not symbol:
@@ -234,6 +243,13 @@ class NostraRuntime:
         time_state = _dict(feature_state.get("time_state"))
         scan_cycle = _dict(candidate.get("scan_cycle"))
         attribution = _dict(candidate.get("research_attribution"))
+        requested_models = {
+            str(value)
+            for value in (candidate.get("missing_model_ids") or [])
+            if str(value).strip()
+        }
+        if not requested_models:
+            requested_models = {zero_return_baseline()["baseline_id"]}
 
         feature_set_version = str(
             feature_state.get("methodology_version")
@@ -270,34 +286,93 @@ class NostraRuntime:
             code_sha=_source_commit(),
             provenance=provenance,
         )
-        baseline = zero_return_baseline()
-        forecast = build_forecast(
-            snapshot_id=snapshot["snapshot_id"],
-            symbol=symbol,
-            market_lane="crypto",
-            as_of_timestamp=as_of,
-            generated_at=datetime.now(UTC),
-            horizon_minutes=LIVE_HORIZON_MINUTES,
-            target_kind="return",
-            model_id=baseline["baseline_id"],
-            model_version=baseline["baseline_version"],
-            feature_set_version=feature_set_version,
-            forecast_payload={"expected_return": baseline["expected_return"]},
-            authority_state="LOW_SUPPORT",
-            run_id=candidate.get("run_id"),
-            strategy_version_id=candidate.get("strategy_version_id"),
-            code_sha=_source_commit(),
-            provenance=provenance,
-        )
-
         correlation_id = f"nostra:{identity}"
         if not await self.ledger.append_snapshot(snapshot, correlation_id=correlation_id):
             raise RuntimeError("snapshot_persistence_failed")
-        if not await self.ledger.append_forecast(forecast, correlation_id=correlation_id):
-            raise RuntimeError("forecast_persistence_failed")
-        self.last_persisted_at = datetime.now(UTC)
-        self.last_forecast_at = self.last_persisted_at
-        return forecast
+
+        forecasts: list[dict[str, Any]] = []
+        generated_at = datetime.now(UTC)
+        baseline = zero_return_baseline()
+        if baseline["baseline_id"] in requested_models:
+            baseline_forecast = build_forecast(
+                snapshot_id=snapshot["snapshot_id"],
+                symbol=symbol,
+                market_lane="crypto",
+                as_of_timestamp=as_of,
+                generated_at=generated_at,
+                horizon_minutes=LIVE_HORIZON_MINUTES,
+                target_kind="return",
+                model_id=baseline["baseline_id"],
+                model_version=baseline["baseline_version"],
+                feature_set_version=feature_set_version,
+                forecast_payload={"expected_return": baseline["expected_return"]},
+                authority_state="LOW_SUPPORT",
+                run_id=candidate.get("run_id"),
+                strategy_version_id=candidate.get("strategy_version_id"),
+                code_sha=_source_commit(),
+                provenance=provenance,
+            )
+            if not await self.ledger.append_forecast(
+                baseline_forecast,
+                correlation_id=correlation_id,
+            ):
+                raise RuntimeError("forecast_persistence_failed")
+            forecasts.append(baseline_forecast)
+
+        if DRIFT_MODEL_ID in requested_models:
+            drift = shrunken_drift_forecast(_dict(drift_training_state))
+            if drift.get("eligible") is not True:
+                raise ValueError("drift forecast requested without eligible point-in-time training")
+            cutoff = _aware(drift.get("training_cutoff"), "training_cutoff")
+            if cutoff >= as_of:
+                raise ValueError("drift training cutoff must precede candidate observation")
+            drift_forecast = build_forecast(
+                snapshot_id=snapshot["snapshot_id"],
+                symbol=symbol,
+                market_lane="crypto",
+                as_of_timestamp=as_of,
+                generated_at=generated_at,
+                horizon_minutes=LIVE_HORIZON_MINUTES,
+                target_kind="return",
+                model_id=str(drift["model_id"]),
+                model_version=str(drift["model_version"]),
+                feature_set_version=feature_set_version,
+                forecast_payload={
+                    "expected_return": drift["expected_return"],
+                    "training": {
+                        "methodology_version": drift["methodology_version"],
+                        "training_cutoff": drift["training_cutoff"],
+                        "training_window_start": drift["training_window_start"],
+                        "training_window_end": drift["training_window_end"],
+                        "through_score_id": drift["through_score_id"],
+                        "independent_cycles": drift["independent_cycles"],
+                        "raw_outcome_count": drift["raw_outcome_count"],
+                        "raw_mean_cycle_return": drift["raw_mean_cycle_return"],
+                        "shrinkage_weight": drift["shrinkage_weight"],
+                        "shrinkage_cycles": drift["shrinkage_cycles"],
+                    },
+                },
+                authority_state="LOW_SUPPORT",
+                run_id=candidate.get("run_id"),
+                strategy_version_id=candidate.get("strategy_version_id"),
+                code_sha=_source_commit(),
+                provenance={
+                    **provenance,
+                    "training_cutoff": drift["training_cutoff"],
+                    "training_through_score_id": drift["through_score_id"],
+                },
+            )
+            if not await self.ledger.append_forecast(
+                drift_forecast,
+                correlation_id=correlation_id,
+            ):
+                raise RuntimeError("drift_forecast_persistence_failed")
+            forecasts.append(drift_forecast)
+
+        if forecasts:
+            self.last_persisted_at = datetime.now(UTC)
+            self.last_forecast_at = self.last_persisted_at
+        return forecasts
 
     async def _score_outcome(self, row: Mapping[str, Any]) -> dict[str, Any]:
         forecast_id = str(row.get("forecast_id") or "").strip()
@@ -306,10 +381,15 @@ class NostraRuntime:
             raise ValueError("forecast_id and candidate_identity are required")
         observed_at = _aware(row.get("observed_at"), "observed_at")
         realized_return = float(row.get("realized_return"))
+        expected_return = float(row.get("expected_return"))
+        model_id = str(row.get("model_id") or "").strip()
+        model_version = str(row.get("model_version") or "").strip()
+        if not model_id or not model_version:
+            raise ValueError("model_id and model_version are required for scoring")
 
         baseline = zero_return_baseline()
         scored = score_return_forecast(
-            baseline["expected_return"],
+            expected_return,
             realized_return,
             baseline_expected_return=baseline["expected_return"],
         )
@@ -318,6 +398,9 @@ class NostraRuntime:
             "deployment_id": _deployment_id(),
             "candidate_identity": identity,
             "live_baseline_version": LIVE_BASELINE_VERSION,
+            "model_id": model_id,
+            "model_version": model_version,
+            "expected_return": expected_return,
         }
         outcome = build_outcome(
             forecast_id=forecast_id,
@@ -355,12 +438,12 @@ class NostraRuntime:
         self.last_score_at = self.last_persisted_at
         return score
 
-    async def _persist_baseline_evaluation(
+    async def _persist_model_evaluation(
         self,
         row: Mapping[str, Any],
     ) -> dict[str, Any] | None:
         if row.get("research_only") is not True or row.get("execution_authority") is not False:
-            raise ValueError("baseline evaluation must preserve the NOSTRA authority boundary")
+            raise ValueError("model evaluation must preserve the NOSTRA authority boundary")
 
         evaluation = build_evaluation(
             model_id=str(row.get("model_id") or ""),
@@ -382,7 +465,8 @@ class NostraRuntime:
                 "live_baseline_version": LIVE_BASELINE_VERSION,
             },
         )
-        if evaluation["evaluation_id"] == self.last_evaluation_id:
+        evaluation_key = f"{evaluation['model_id']}:{evaluation['model_version']}"
+        if self.last_evaluation_ids.get(evaluation_key) == evaluation["evaluation_id"]:
             return None
         if not await self.ledger.append_evaluation(
             evaluation,
@@ -392,14 +476,18 @@ class NostraRuntime:
         self.last_persisted_at = datetime.now(UTC)
         self.last_evaluation_at = self.last_persisted_at
         self.last_evaluation_id = evaluation["evaluation_id"]
+        self.last_evaluation_ids[evaluation_key] = evaluation["evaluation_id"]
         self.last_evaluation = {
             "evaluation_id": evaluation["evaluation_id"],
             "sample_count": evaluation["sample_count"],
             "window_start": evaluation["window_start"],
             "window_end": evaluation["window_end"],
             "metrics": evaluation["metrics"],
+            "model_id": evaluation["model_id"],
+            "model_version": evaluation["model_version"],
             "calibration": evaluation["calibration"],
         }
+        self.last_evaluations[evaluation_key] = dict(self.last_evaluation)
         return evaluation
 
     async def process_once(self) -> dict[str, Any]:
@@ -408,16 +496,33 @@ class NostraRuntime:
         score_rows = work.get("score_outcomes")
         forecasts = forecast_rows if isinstance(forecast_rows, list) else []
         outcomes = score_rows if isinstance(score_rows, list) else []
-        evaluation_row = work.get("baseline_evaluation")
+        evaluation_rows = work.get("model_evaluations")
+        evaluations = evaluation_rows if isinstance(evaluation_rows, list) else []
+        if not evaluations and isinstance(work.get("baseline_evaluation"), Mapping):
+            evaluations = [work["baseline_evaluation"]]
+        drift_training_state = _dict(work.get("drift_training_state"))
 
         emitted_forecasts = 0
+        emitted_baseline_forecasts = 0
+        emitted_drift_forecasts = 0
         emitted_scores = 0
         emitted_evaluations = 0
         for candidate in forecasts[:200]:
             if not isinstance(candidate, Mapping):
                 continue
-            await self._forecast_candidate(candidate)
-            emitted_forecasts += 1
+            persisted = await self._forecast_candidate(
+                candidate,
+                drift_training_state=drift_training_state,
+            )
+            emitted_forecasts += len(persisted)
+            emitted_baseline_forecasts += sum(
+                row.get("model_id") == zero_return_baseline()["baseline_id"]
+                for row in persisted
+            )
+            emitted_drift_forecasts += sum(
+                row.get("model_id") == DRIFT_MODEL_ID
+                for row in persisted
+            )
 
         for outcome in outcomes[:500]:
             if not isinstance(outcome, Mapping):
@@ -425,24 +530,39 @@ class NostraRuntime:
             await self._score_outcome(outcome)
             emitted_scores += 1
 
-        if isinstance(evaluation_row, Mapping):
-            persisted_evaluation = await self._persist_baseline_evaluation(evaluation_row)
-            emitted_evaluations = 1 if persisted_evaluation is not None else 0
+        for evaluation_row in evaluations:
+            if not isinstance(evaluation_row, Mapping):
+                continue
+            persisted_evaluation = await self._persist_model_evaluation(evaluation_row)
+            emitted_evaluations += int(persisted_evaluation is not None)
 
         self.last_cycle_at = datetime.now(UTC)
         self.last_result = {
             "status": "HEALTHY",
             "forecast_candidates": len(forecasts),
             "forecasts_persisted": emitted_forecasts,
+            "baseline_forecasts_persisted": emitted_baseline_forecasts,
+            "drift_forecasts_persisted": emitted_drift_forecasts,
             "score_outcomes": len(outcomes),
             "scores_persisted": emitted_scores,
             "evaluations_persisted": emitted_evaluations,
-            "evaluation_sample_count": (
-                int(evaluation_row.get("sample_count") or 0)
-                if isinstance(evaluation_row, Mapping)
-                else 0
+            "evaluation_models": len(evaluations),
+            "drift_training": {
+                "eligible": bool(drift_training_state.get("eligible")),
+                "independent_cycles": int(
+                    drift_training_state.get("independent_cycles") or 0
+                ),
+                "raw_outcome_count": int(
+                    drift_training_state.get("raw_outcome_count") or 0
+                ),
+                "training_cutoff": drift_training_state.get("training_cutoff"),
+                "mean_cycle_return": drift_training_state.get("mean_cycle_return"),
+            },
+            "gateway_counts": (
+                work.get("counts")
+                if isinstance(work.get("counts"), dict)
+                else {}
             ),
-            "gateway_counts": work.get("counts") if isinstance(work.get("counts"), dict) else {},
             "observed_at": self.last_cycle_at.isoformat(),
         }
         return self.last_result
