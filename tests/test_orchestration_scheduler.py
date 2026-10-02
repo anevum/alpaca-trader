@@ -319,7 +319,7 @@ def test_session_close_can_recover_next_morning():
     runtime = runtime_for_process_test()
     w = workflow(
         workflow_id="rhen.session_close",
-        version="1.0.2",
+        version="1.0.3",
         anchor="close",
         offset_minutes=15,
         catchup_policy="catch_up",
