@@ -166,17 +166,29 @@ def _decision_candidates(
         )
     )"""
     outer_args: list[Any] = []
+    complete_outcome_cte = ""
+    complete_outcome_join = ""
     if require_complete_outcome:
-        candidate_filter += f""" and exists (
-            select 1
-            from rhen.events outcome
-            where outcome.event_type = 'candidate_forward_outcome'
-              and outcome.payload->>'status' = 'complete'
+        complete_outcome_cte = """
+        complete_outcome_identities as materialized (
+            select distinct
+                coalesce(
+                    nullif(payload->>'candidate_id', ''),
+                    nullif(payload->>'candidate_key', '')
+                ) as candidate_identity
+            from rhen.events
+            where event_type = 'candidate_forward_outcome'
+              and payload->>'status' = 'complete'
               and coalesce(
-                    nullif(outcome.payload->>'candidate_id', ''),
-                    nullif(outcome.payload->>'candidate_key', '')
-                  ) = {candidate_identity}
-        )"""
+                    nullif(payload->>'candidate_id', ''),
+                    nullif(payload->>'candidate_key', '')
+                  ) is not null
+        ),
+        """
+        complete_outcome_join = f"""
+        join complete_outcome_identities complete_outcome
+          on complete_outcome.candidate_identity = {candidate_identity}
+        """
     if max_complete_outcomes is not None:
         candidate_filter += f""" and (
             select count(distinct outcome.payload->>'horizon_minutes')
@@ -197,7 +209,9 @@ def _decision_candidates(
 
     cur.execute(
         f"""
-        with decision_events as (
+        with
+        {complete_outcome_cte}
+        decision_events as (
             select
                 event_id, event_key, run_id, strategy_version_id,
                 occurred_at, payload
@@ -229,6 +243,7 @@ def _decision_candidates(
                 else '[]'::jsonb
             end
         ) with ordinality as candidate_row(candidate, candidate_ordinal)
+        {complete_outcome_join}
         where jsonb_typeof(candidate_row.candidate) = 'object'
         {candidate_filter}
         order by
