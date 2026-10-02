@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.0",
+  "scheduler_version": "anevum-scheduler-v1.0.1",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -75,7 +75,8 @@
       "recovery_after_minutes": 15,
       "retry_policy": {
         "max_attempts": 4,
-        "transient_only": true
+        "transient_only": true,
+        "delay_seconds": 120
       },
       "notification_policy": {
         "success": true,
@@ -83,7 +84,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "trader_session_close",
-      "version": "1.0.5",
+      "version": "1.0.6",
       "protected_action_level": "evidence_write_only"
     },
     {
@@ -102,7 +103,8 @@
       "recovery_after_minutes": 15,
       "retry_policy": {
         "max_attempts": 3,
-        "transient_only": true
+        "transient_only": true,
+        "delay_seconds": 180
       },
       "notification_policy": {
         "success": true,
@@ -110,7 +112,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "research_agent_daily",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "protected_action_level": "research_only"
     },
     {

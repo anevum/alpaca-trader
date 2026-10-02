@@ -321,6 +321,11 @@ def scheduler_claim(conn: psycopg.Connection[Any], job: dict[str, Any]) -> dict[
         min(3600, _positive_int(job.get("lease_seconds"), 900, 3600)),
     )
     allow_retry = bool(job.get("allow_retry", False))
+    try:
+        retry_delay_seconds = int(job.get("retry_delay_seconds") or 0)
+    except (TypeError, ValueError):
+        retry_delay_seconds = 0
+    retry_delay_seconds = max(0, min(3600, retry_delay_seconds))
     details = job.get("details") if isinstance(job.get("details"), dict) else {}
 
     with conn.transaction():
@@ -373,7 +378,7 @@ def scheduler_claim(conn: psycopg.Connection[Any], job: dict[str, Any]) -> dict[
                 """
                 select
                     run_id, status, attempt, max_attempts,
-                    lease_until, error_classification
+                    lease_until, error_classification, updated_at
                 from iren.scheduler_runs
                 where job_key=%s
                 for update
@@ -384,7 +389,15 @@ def scheduler_claim(conn: psycopg.Connection[Any], job: dict[str, Any]) -> dict[
             if not row:
                 raise RuntimeError("scheduler_claim_missing_row")
 
-            run_id, status, attempt, existing_max, lease_until, classification = row
+            (
+                run_id,
+                status,
+                attempt,
+                existing_max,
+                lease_until,
+                classification,
+                updated_at,
+            ) = row
             effective_max = max(int(existing_max), max_attempts)
 
             if (
@@ -437,6 +450,26 @@ def scheduler_claim(conn: psycopg.Connection[Any], job: dict[str, Any]) -> dict[
                 and classification in RETRYABLE_FAILURES
                 and int(attempt) < effective_max
             ):
+                if retry_delay_seconds > 0 and updated_at is not None:
+                    delay_seconds = min(
+                        3600,
+                        retry_delay_seconds * (2 ** max(0, int(attempt) - 1)),
+                    )
+                    retry_at = updated_at + timedelta(seconds=delay_seconds)
+                    if datetime.now(UTC) < retry_at:
+                        return {
+                            "claimed": False,
+                            "duplicate": False,
+                            "busy": False,
+                            "exhausted": False,
+                            "retry_waiting": True,
+                            "retry_at": _serialize(retry_at),
+                            "run_id": str(run_id),
+                            "status": status,
+                            "attempt": int(attempt),
+                            "max_attempts": int(existing_max),
+                            "lease_until": _serialize(lease_until),
+                        }
                 cur.execute(
                     """
                     update iren.scheduler_runs
