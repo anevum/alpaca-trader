@@ -162,3 +162,15 @@ def test_promotion_filter_does_not_inherit_event_strategy_version():
 
     assert "candidate_row.candidate->>'strategy_version_id'" in cur.query
     assert "else decision_events.strategy_version_id end" not in cur.query
+
+
+def test_decision_candidate_query_escapes_psycopg_like_wildcard():
+    cur = _DecisionCandidateCursor([])
+    _decision_candidates(
+        cur,
+        start=None,
+        end=None,
+        crypto=True,
+    )
+
+    assert "like 'CRYPTO-%%'" in cur.query
