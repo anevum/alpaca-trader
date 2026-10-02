@@ -771,3 +771,103 @@ def test_equity_post_event_runner_excludes_crypto_candidates():
     assert summary.outcome_events == 0
     assert summary.comparison_events == 0
     assert sink.events == []
+
+
+def test_post_event_runner_skips_already_complete_horizons():
+    reference_bar = datetime(2026, 9, 25, 10, 30, tzinfo=NY)
+    row = {
+        **candidate(reference_bar),
+        "candidate_id": 1,
+        "candidate_key": "candidate-1",
+        "scan_cycle_id": "cycle-1",
+        "decision_cycle_payload": {},
+        "scan_cycle": {},
+    }
+    rows = [
+        bar(
+            reference_bar + timedelta(minutes=minute),
+            str(Decimal("100") + Decimal(minute) / Decimal("100")),
+        )
+        for minute in range(1, 61)
+    ]
+
+    class MarketData:
+        async def market_calendar_details(self, *, start, end):
+            return [{"date": start, "open": "09:30", "close": "16:00"}]
+
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {"SPY": rows}
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def reader(**params):
+        return {
+            "candidates": [row],
+            "complete_horizons": {"1": [1, 3, 5, 10, 15, 30]},
+            "post_event_complete": False,
+        }
+
+    sink = Sink()
+    runner = PostEventEvidenceRunner(
+        settings=type("Settings", (), {"data_feed": "iex", "bar_timeframe": "1Min"})(),
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=reader,
+    )
+
+    summary = asyncio.run(runner.run_session(date(2026, 9, 25)))
+    forward_events = [
+        event
+        for event in sink.events
+        if event["event_type"] == "candidate_forward_outcome"
+    ]
+
+    assert len(forward_events) == 1
+    assert forward_events[0]["payload"]["horizon_minutes"] == 60
+    assert summary.skipped_complete_outcomes == 6
+    assert summary.complete_outcomes == 7
+    assert summary.outcome_events == 1
+
+
+def test_post_event_runner_reuses_completed_session_marker():
+    reference_bar = datetime(2026, 9, 25, 10, 30, tzinfo=NY)
+    row = {
+        **candidate(reference_bar),
+        "candidate_id": 1,
+        "candidate_key": "candidate-1",
+    }
+
+    class MarketData:
+        async def market_calendar_details(self, *, start, end):
+            raise AssertionError("completed session should not fetch market data")
+
+    class Sink:
+        def emit(self, **event):
+            raise AssertionError("completed session should not emit evidence")
+
+    async def reader(**params):
+        return {
+            "candidates": [row],
+            "complete_horizons": {"1": [1, 3, 5, 10, 15, 30, 60]},
+            "post_event_complete": True,
+        }
+
+    runner = PostEventEvidenceRunner(
+        settings=type("Settings", (), {"data_feed": "iex", "bar_timeframe": "1Min"})(),
+        market_data=MarketData(),
+        event_sink=Sink(),
+        evidence_reader=reader,
+    )
+
+    summary = asyncio.run(runner.run_session(date(2026, 9, 25)))
+
+    assert summary.reused_existing_evidence is True
+    assert summary.skipped_complete_outcomes == 7
+    assert summary.complete_outcomes == 7
+    assert summary.outcome_events == 0
+    assert summary.comparison_events == 0
