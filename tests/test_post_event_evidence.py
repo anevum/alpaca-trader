@@ -871,3 +871,49 @@ def test_post_event_runner_reuses_completed_session_marker():
     assert summary.complete_outcomes == 7
     assert summary.outcome_events == 0
     assert summary.comparison_events == 0
+
+
+def test_crypto_forward_outcome_carries_promotion_context():
+    from datetime import datetime, timedelta, timezone
+    from app.crypto_post_event_evidence import calculate_continuous_forward_outcome
+
+    now = datetime(2026, 10, 2, 12, 10, tzinfo=timezone.utc)
+    reference = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+    candidate_row = {
+        "candidate_id": "crypto-test",
+        "candidate_key": "cycle:BTC/USD",
+        "observed_at": "2026-10-02T12:01:00+00:00",
+        "decision_reference_price": "100",
+        "features": {
+            "bar_time": reference.isoformat(),
+            "feature_state": {
+                "raw": {
+                    "realized_volatility": "0.0012",
+                    "spread_bps": "7.5",
+                }
+            },
+        },
+        "market_lane": "crypto",
+        "strategy_version_id": "CRYPTO-TEST",
+    }
+    bars = [
+        {
+            "t": (reference + timedelta(minutes=i)).isoformat(),
+            "h": "101",
+            "l": "99",
+            "c": "100.5",
+        }
+        for i in range(1, 6)
+    ]
+    outcome = calculate_continuous_forward_outcome(
+        candidate_row,
+        bars,
+        horizon_minutes=5,
+        now=now,
+    )
+    assert outcome["status"] == "complete"
+    assert outcome["candidate_observed_at"] == candidate_row["observed_at"]
+    assert outcome["promotion_context"] == {
+        "realized_volatility": "0.0012",
+        "spread_bps": "7.5",
+    }
