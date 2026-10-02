@@ -13,6 +13,10 @@ from app.nostra.models import (
     MODEL_VERSION as DRIFT_MODEL_VERSION,
 )
 
+ASSESSMENT_MIN_INDEPENDENT_CYCLES = 50
+ASSESSMENT_MIN_WINDOW_MINUTES = 60.0
+ASSESSMENT_Z95 = 1.96
+
 
 UTC = timezone.utc
 FORECAST_HORIZON_MINUTES = 10
@@ -96,6 +100,100 @@ def _quantile(values: list[float], q: float) -> float | None:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def _mean_ci95(values: list[float]) -> dict[str, float | int | None]:
+    count = len(values)
+    if not values:
+        return {
+            "count": 0,
+            "mean": None,
+            "standard_error": None,
+            "lower_95": None,
+            "upper_95": None,
+        }
+    mean = sum(values) / count
+    if count < 2:
+        return {
+            "count": count,
+            "mean": mean,
+            "standard_error": None,
+            "lower_95": None,
+            "upper_95": None,
+        }
+    variance = sum((value - mean) ** 2 for value in values) / (count - 1)
+    standard_error = math.sqrt(max(0.0, variance) / count)
+    return {
+        "count": count,
+        "mean": mean,
+        "standard_error": standard_error,
+        "lower_95": mean - ASSESSMENT_Z95 * standard_error,
+        "upper_95": mean + ASSESSMENT_Z95 * standard_error,
+    }
+
+
+def _development_assessment(
+    *,
+    model_id: str,
+    independent_cycles: int,
+    window_minutes: float,
+    mae_delta: dict[str, Any],
+    mse_delta: dict[str, Any],
+) -> dict[str, Any]:
+    if model_id == BASELINE_MODEL_ID:
+        return {
+            "status": "REFERENCE",
+            "reason_codes": ["ZERO_RETURN_REFERENCE"],
+            "minimum_independent_cycles": ASSESSMENT_MIN_INDEPENDENT_CYCLES,
+            "minimum_window_minutes": ASSESSMENT_MIN_WINDOW_MINUTES,
+            "promotion_authorized": False,
+            "execution_authority": False,
+        }
+
+    reasons: list[str] = []
+    if independent_cycles < ASSESSMENT_MIN_INDEPENDENT_CYCLES:
+        reasons.append("INDEPENDENT_CYCLE_FLOOR")
+    if window_minutes < ASSESSMENT_MIN_WINDOW_MINUTES:
+        reasons.append("TIME_WINDOW_FLOOR")
+    if reasons:
+        status = "COLLECTING"
+    else:
+        mae_low = _finite_float(mae_delta.get("lower_95"))
+        mae_high = _finite_float(mae_delta.get("upper_95"))
+        mse_low = _finite_float(mse_delta.get("lower_95"))
+        mse_high = _finite_float(mse_delta.get("upper_95"))
+        if (
+            mae_low is not None
+            and mse_low is not None
+            and mae_low > 0
+            and mse_low > 0
+        ):
+            status = "EVIDENCE_POSITIVE"
+            reasons = ["PAIRED_ERROR_IMPROVEMENT_95"]
+        elif (
+            mae_high is not None
+            and mse_high is not None
+            and mae_high < 0
+            and mse_high < 0
+        ):
+            status = "EVIDENCE_NEGATIVE"
+            reasons = ["PAIRED_ERROR_DEGRADATION_95"]
+        else:
+            status = "INCONCLUSIVE"
+            reasons = ["PAIRED_ERROR_INTERVAL_CROSSES_ZERO"]
+
+    return {
+        "status": status,
+        "reason_codes": reasons,
+        "independent_cycles": independent_cycles,
+        "window_minutes": window_minutes,
+        "minimum_independent_cycles": ASSESSMENT_MIN_INDEPENDENT_CYCLES,
+        "minimum_window_minutes": ASSESSMENT_MIN_WINDOW_MINUTES,
+        "mae_delta_lower_95": mae_delta.get("lower_95"),
+        "mse_delta_lower_95": mse_delta.get("lower_95"),
+        "promotion_authorized": False,
+        "execution_authority": False,
+    }
+
+
 def _baseline_evaluation(
     cur: psycopg.Cursor[Any],
     *,
@@ -108,6 +206,7 @@ def _baseline_evaluation(
         """
         select
             s.score_id,
+            nullif(sn.payload->'source'->>'scan_cycle_id','') as scan_cycle_id,
             f.model_version,
             f.generated_at,
             o.observed_at,
@@ -122,6 +221,8 @@ def _baseline_evaluation(
           on f.forecast_id = s.forecast_id
         join nostra.evidence_outcomes o
           on o.outcome_id = s.outcome_id
+        join nostra.evidence_snapshots sn
+          on sn.snapshot_id = f.snapshot_id
         where f.horizon_minutes = %s
           and f.target_kind = 'return'
           and f.model_id = %s
@@ -136,6 +237,7 @@ def _baseline_evaluation(
     observations: list[dict[str, Any]] = []
     for (
         score_id,
+        scan_cycle_id,
         model_version,
         generated_at,
         observed_at,
@@ -171,6 +273,7 @@ def _baseline_evaluation(
         observations.append(
             {
                 "score_id": str(score_id),
+                "scan_cycle_id": str(scan_cycle_id or "").strip(),
                 "model_version": str(model_version),
                 "observed_at": observed,
                 "expected_return": expected,
@@ -208,6 +311,49 @@ def _baseline_evaluation(
         (value - residual_mean) ** 2 for value in residuals
     ) / count
 
+    absolute_delta_by_cycle: dict[str, list[float]] = {}
+    squared_delta_by_cycle: dict[str, list[float]] = {}
+    for row in observations:
+        cycle_id = row["scan_cycle_id"]
+        if not cycle_id:
+            continue
+        absolute_delta_by_cycle.setdefault(cycle_id, []).append(
+            row["baseline_absolute_error"] - row["absolute_error"]
+        )
+        squared_delta_by_cycle.setdefault(cycle_id, []).append(
+            row["baseline_squared_error"] - row["squared_error"]
+        )
+    cycle_absolute_deltas = [
+        sum(values) / len(values)
+        for values in absolute_delta_by_cycle.values()
+        if values
+    ]
+    cycle_squared_deltas = [
+        sum(values) / len(values)
+        for values in squared_delta_by_cycle.values()
+        if values
+    ]
+    mae_delta = _mean_ci95(cycle_absolute_deltas)
+    mse_delta = _mean_ci95(cycle_squared_deltas)
+    independent_cycles = min(
+        int(mae_delta["count"] or 0),
+        int(mse_delta["count"] or 0),
+    )
+    window_minutes = max(
+        0.0,
+        (
+            observations[-1]["observed_at"]
+            - observations[0]["observed_at"]
+        ).total_seconds() / 60.0,
+    )
+    assessment = _development_assessment(
+        model_id=model_id,
+        independent_cycles=independent_cycles,
+        window_minutes=window_minutes,
+        mae_delta=mae_delta,
+        mse_delta=mse_delta,
+    )
+
     return {
         "schema_version": "nostra-model-evaluation-work-v1",
         "model_id": model_id,
@@ -235,6 +381,10 @@ def _baseline_evaluation(
                 1.0 - mean_squared / baseline_mean_squared
                 if baseline_mean_squared > 0 else 0.0
             ),
+            "independent_cycles": independent_cycles,
+            "window_minutes": window_minutes,
+            "cycle_mae_delta_vs_zero": mae_delta,
+            "cycle_mse_delta_vs_zero": mse_delta,
         },
         "calibration": {
             "residual_mean": residual_mean,
@@ -251,6 +401,7 @@ def _baseline_evaluation(
                 "p90": _quantile(absolute_errors, 0.90),
                 "p95": _quantile(absolute_errors, 0.95),
             },
+            "development_assessment": assessment,
         },
         "research_only": True,
         "execution_authority": False,
