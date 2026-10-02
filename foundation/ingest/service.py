@@ -432,8 +432,18 @@ def ingest(
     batch: EvidenceBatch,
     x_anevum_foundation_token: str | None = Header(default=None, alias="x-anevum-foundation-token"),
     x_anevum_ingest_token: str | None = Header(default=None, alias="x-anevum-ingest-token"),
+    x_nostra_gateway_token: str | None = Header(default=None, alias="x-nostra-gateway-token"),
 ) -> dict[str, Any]:
-    require_foundation_token(x_anevum_foundation_token, x_anevum_ingest_token)
+    nostra_only = bool(batch.events) and all(event.source == "NOSTRA" for event in batch.events)
+    expected_nostra = os.environ.get("NOSTRA_GATEWAY_TOKEN", "").strip()
+    nostra_authorized = bool(
+        nostra_only
+        and expected_nostra
+        and x_nostra_gateway_token
+        and hmac.compare_digest(x_nostra_gateway_token, expected_nostra)
+    )
+    if not nostra_authorized:
+        require_foundation_token(x_anevum_foundation_token, x_anevum_ingest_token)
     inserted = 0
     duplicates = 0
     try:
