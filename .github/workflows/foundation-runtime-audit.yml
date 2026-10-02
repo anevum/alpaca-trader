@@ -21,7 +21,7 @@ jobs:
       - name: Reject legacy vendor endpoints in required runtime
         shell: bash
         run: |
-          if rg -n -i 'supabase\.co|/functions/v1|SUPABASE_(URL|KEY|SERVICE_ROLE|ANON)' app foundation graen requirements.txt Dockerfile; then
+          if git grep -n -i -I -E 'supabase\.co|/functions/v1|SUPABASE_(URL|KEY|SERVICE_ROLE|ANON)' app foundation graen requirements.txt Dockerfile; then
             exit 1
           else
             test "$?" = 1
