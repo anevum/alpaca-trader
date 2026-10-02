@@ -23,7 +23,9 @@ AUTOPILOT_SAFE_JOB_TYPES = {
     "CONTROL_CAPABILITIES",
     "CONTROL_VERIFIER_SELFTEST",
     "CONTROL_STABLE_BUILD_VERIFY",
+    "CONTROL_MODEL_WORKER_VERIFY",
 }
+MODEL_WORKER_MAX_JOBS_PER_DAY = 1
 
 
 def _text(value: Any) -> str:
@@ -616,6 +618,28 @@ class IrenWorkEngine:
                 self.last_error = type(exc).__name__
                 await self.gateway("iren_command_complete", command_id=command_id, status="FAILED", response={"error": type(exc).__name__})
 
+    async def _model_worker_daily_limit_reached(self, job_id: str) -> bool:
+        snapshot = await self.snapshot()
+        today = datetime.now(UTC).astimezone(BUSINESS_TZ).date()
+        count = 0
+        for row in snapshot.get("jobs") or []:
+            if _text(row.get("job_type")).upper() != "SOFTWARE_BUILD":
+                continue
+            if _text(row.get("job_id")) == job_id:
+                continue
+            if str(row.get("status") or "").upper() == "CANCELLED":
+                continue
+            raw_created = _text(row.get("created_at"))
+            try:
+                created_at = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if created_at.astimezone(BUSINESS_TZ).date() == today:
+                count += 1
+        return count >= MODEL_WORKER_MAX_JOBS_PER_DAY
+
     async def _route_job(self, job: dict[str, Any]) -> None:
         job_id = _text(job.get("job_id"))
         job_type = _text(job.get("job_type")) or "AGENT_WORK"
@@ -626,6 +650,18 @@ class IrenWorkEngine:
                 job_id=job_id,
                 status="BLOCKED",
                 error={"reason": "unsupported_job_type", "job_type": job_type},
+            )
+            return
+
+        if job_type == "SOFTWARE_BUILD" and await self._model_worker_daily_limit_reached(job_id):
+            await self.gateway(
+                "iren_job_update",
+                job_id=job_id,
+                status="BLOCKED",
+                error={
+                    "reason": "model_worker_daily_job_cap_reached",
+                    "daily_job_cap": MODEL_WORKER_MAX_JOBS_PER_DAY,
+                },
             )
             return
 
@@ -654,7 +690,8 @@ class IrenWorkEngine:
             "metadata": job.get("metadata") or {},
         }
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            timeout_seconds = 285.0 if job_type == "SOFTWARE_BUILD" else 20.0
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(
                     self.executor_url,
                     headers={"x-anevum-scheduler-token": self.executor_token},
@@ -1019,6 +1056,57 @@ class IrenWorkEngine:
                         objective_key=job.get("objective_key"),
                         completed=completed,
                         control_state=state.get("state"),
+                    )
+                elif job_type == "CONTROL_MODEL_WORKER_VERIFY":
+                    if not self.executor_url or len(self.executor_token) < 32:
+                        criteria = {
+                            "bounded_worker_built": False,
+                            "draft_pr_only": False,
+                            "auto_merge_disabled": False,
+                            "daily_job_cap": MODEL_WORKER_MAX_JOBS_PER_DAY,
+                            "budget_required": False,
+                            "protected_actions_fail_closed": False,
+                        }
+                        health = {"reason": "executor_router_not_configured"}
+                    else:
+                        health_url = self.executor_url
+                        if health_url.endswith("/v1/jobs/accept"):
+                            health_url = health_url[: -len("/v1/jobs/accept")]
+                        health_url = health_url.rstrip("/") + "/health"
+                        try:
+                            async with httpx.AsyncClient(timeout=20.0) as client:
+                                response = await client.get(health_url)
+                                response.raise_for_status()
+                                health = response.json()
+                        except (httpx.HTTPError, ValueError) as exc:
+                            health = {"reason": "executor_health_unavailable", "error_type": type(exc).__name__}
+                        worker = health.get("software_worker") if isinstance(health, dict) else {}
+                        worker = worker if isinstance(worker, dict) else {}
+                        criteria = {
+                            "bounded_worker_built": str(health.get("version") or "").startswith("iren-executor-v1.1"),
+                            "draft_pr_only": worker.get("draft_pr_only") is True,
+                            "auto_merge_disabled": worker.get("auto_merge") is False,
+                            "daily_job_cap": MODEL_WORKER_MAX_JOBS_PER_DAY,
+                            "budget_required": worker.get("budget_required") is True,
+                            "protected_actions_fail_closed": worker.get("protected_actions_fail_closed") is True,
+                        }
+                    await self.gateway(
+                        "iren_job_update",
+                        job_id=job_id,
+                        status="SUCCEEDED",
+                        result={
+                            "criteria": criteria,
+                            "executor_health": health,
+                            "verifier": "iren_model_worker_verifier_v1",
+                        },
+                    )
+                    completed = await self._complete_objective_if_verified(job, criteria)
+                    _emit_work_event(
+                        "iren_model_worker_verified",
+                        job_id=job_id,
+                        objective_key=job.get("objective_key"),
+                        completed=completed,
+                        configured=bool((health or {}).get("software_backend_configured")),
                     )
                 else:
                     await self._route_job(job)

@@ -389,3 +389,26 @@ def test_stable_build_gate_fails_closed_while_control_state_degraded():
     asyncio.run(scenario())
     assert job_updates[-1]["result"]["criteria"]["control_state_healthy"] is False
     assert objective_updates == []
+
+
+def test_model_worker_daily_cap_uses_durable_job_history():
+    async def gateway(action, **payload):
+        if action == "iren_work_snapshot":
+            return {
+                "objectives": [],
+                "commands": [],
+                "settings": {},
+                "jobs": [{
+                    "job_id": "prior-model-job",
+                    "job_type": "SOFTWARE_BUILD",
+                    "status": "SUCCEEDED",
+                    "created_at": "2026-10-02T14:00:00+00:00",
+                }],
+            }
+        return {}
+
+    async def scenario():
+        engine = IrenWorkEngine(gateway, lambda: {"state": "HEALTHY"})
+        return await engine._model_worker_daily_limit_reached("current-job")
+
+    assert asyncio.run(scenario()) is True
