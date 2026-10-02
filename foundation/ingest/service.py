@@ -147,7 +147,7 @@ def project_event(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None:
     if event.event_type == "nostra_snapshot":
         cur.execute(
             """
-            insert into nostra.snapshots (
+            insert into nostra.evidence_snapshots (
                 snapshot_id, as_of_timestamp, symbol, market_lane,
                 feature_set_version, payload
             )
@@ -168,7 +168,7 @@ def project_event(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None:
     if event.event_type == "nostra_forecast":
         cur.execute(
             """
-            insert into nostra.forecasts (
+            insert into nostra.evidence_forecasts (
                 forecast_id, snapshot_id, generated_at, symbol, market_lane,
                 horizon_minutes, target_kind, model_id, model_version, payload
             )
@@ -193,7 +193,7 @@ def project_event(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None:
     if event.event_type == "nostra_outcome":
         cur.execute(
             """
-            insert into nostra.outcomes (
+            insert into nostra.evidence_outcomes (
                 outcome_id, forecast_id, observed_at, payload
             )
             values (%s,%s,%s,%s)
@@ -211,7 +211,7 @@ def project_event(cur: psycopg.Cursor[Any], event: EvidenceEvent) -> None:
     if event.event_type == "nostra_score":
         cur.execute(
             """
-            insert into nostra.scores (
+            insert into nostra.evidence_scores (
                 score_id, forecast_id, outcome_id, scoring_version, payload
             )
             values (%s,%s,%s,%s,%s)
