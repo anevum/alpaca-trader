@@ -11,15 +11,14 @@ METHODOLOGY_VERSION = "graen-cross-sectional-momentum-v14-r2c"
 CAMPAIGN_ID = "v14-r2c-alpaca-cross-sectional-momentum"
 FAMILY = "alpaca_cross_sectional_crypto_momentum"
 
-# Updated version of Alpaca's published tutorial basket. MATIC became POL and
-# ALGO is omitted because it is not currently tradable in the connected Alpaca
-# crypto asset inventory.
+# Long-history subset of Alpaca's published tutorial basket. MATIC/POL and
+# ALGO are excluded from this preflight because they do not provide enough
+# common Alpaca US daily history for the pre-registered chronological split.
 UNIVERSE = (
     "BTC/USD",
     "ETH/USD",
     "DOGE/USD",
     "SHIB/USD",
-    "POL/USD",
     "AVAX/USD",
     "LINK/USD",
     "SOL/USD",
@@ -53,6 +52,10 @@ def campaign_manifest() -> dict[str, Any]:
             "published_rule": "long the highest-ranked crypto by seven-day momentum",
         },
         "universe": list(UNIVERSE),
+        "universe_selection": (
+            "currently tradable USD pairs overlapping Alpaca's published basket "
+            "with sufficient common daily history; no symbol selected by outcomes"
+        ),
         "bar_screen_start": BAR_SCREEN_START.isoformat(),
         "bar_screen_end": BAR_SCREEN_END.isoformat(),
         "momentum_lookback_days": MOMENTUM_LOOKBACK_DAYS,
