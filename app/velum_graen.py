@@ -33,6 +33,12 @@ from graen.crypto.btc_mechanisms_v12 import (
     evaluate_candidate as evaluate_v12_candidate,
     spec_from_dict as v12_spec_from_dict,
 )
+from graen.crypto.btc_hypotheses_v13 import (
+    FAMILY as V13_FAMILY,
+    METHODOLOGY_VERSION as V13_METHODOLOGY_VERSION,
+    evaluate_candidate as evaluate_v13_candidate,
+    spec_from_dict as v13_spec_from_dict,
+)
 
 
 METHODOLOGY_VERSION = "velum-graen-candidate-replay-v5"
@@ -84,7 +90,21 @@ def replay_candidate(
     end: datetime,
     seed: int = 91000,
 ) -> dict[str, Any]:
-    if candidate_methodology == V12_METHODOLOGY_VERSION:
+    if candidate_methodology == V13_METHODOLOGY_VERSION:
+        spec = v13_spec_from_dict(candidate_spec)
+        scenarios = {
+            scenario: evaluate_v13_candidate(
+                bars_by_symbol,
+                spec=spec,
+                start=start,
+                end=end,
+                scenario=scenario,
+                seed=seed + index * 20,
+            )
+            for index, scenario in enumerate(("low", "base", "high"))
+        }
+        candidate_family = V13_FAMILY
+    elif candidate_methodology == V12_METHODOLOGY_VERSION:
         spec = v12_spec_from_dict(candidate_spec)
         scenarios = {
             scenario: evaluate_v12_candidate(

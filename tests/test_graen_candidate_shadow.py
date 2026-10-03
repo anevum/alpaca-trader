@@ -18,6 +18,10 @@ from graen.crypto.btc_mechanisms_v12 import (
     METHODOLOGY_VERSION as V12_METHODOLOGY_VERSION,
     candidate_specs as v12_candidate_specs,
 )
+from graen.crypto.btc_hypotheses_v13 import (
+    METHODOLOGY_VERSION as V13_METHODOLOGY_VERSION,
+    candidate_specs as v13_candidate_specs,
+)
 from graen.crypto.candidate_shadow import CandidateForwardShadow
 
 
@@ -203,3 +207,34 @@ def test_candidate_shadow_accepts_v12_as_btc_only_without_execution_authority():
     assert runtime.status()["candidate_methodology"] == V12_METHODOLOGY_VERSION
     assert runtime.execution_authority is False
     assert runtime.broker_orders_possible is False
+
+
+def test_candidate_shadow_accepts_v13_btc_phase_without_execution_authority():
+    spec = v13_candidate_specs()[0].to_dict()
+    payload = {
+        **activation(),
+        "activation_id": "activation-v13-validation-001",
+        "campaign_id": "btc-hypothesis-tournament-v13",
+        "candidate_methodology": V13_METHODOLOGY_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+        "evidence_phase": "VALIDATION",
+    }
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(payload)
+
+    assert runtime._symbols() == ("BTC/USD",)
+    assert runtime._active_spec().candidate_id == spec["candidate_id"]
+    assert runtime.status()["candidate_methodology"] == V13_METHODOLOGY_VERSION
+    checkpoint = runtime._checkpoint()
+    assert checkpoint["evidence_phase"] == "VALIDATION"
+    assert checkpoint["execution_authority"] is False
+    assert checkpoint["broker_orders_possible"] is False
+    assert checkpoint["promotion_authorized"] is False
+
+    # Regression: V12/V13 specs do not have activity_lookback_hours.
+    _, series = runtime._build_active_series(
+        {"BTC/USD": [], "ETH/USD": [], "SOL/USD": []},
+        latest_end=datetime(2026, 10, 3, tzinfo=UTC),
+    )
+    assert isinstance(series, dict)

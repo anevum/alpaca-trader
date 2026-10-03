@@ -34,6 +34,10 @@ RESEARCH_STAGES = {
     "CRYPTO_BTC_TREND_PULLBACK_V11_VELUM_REPLAY",
     "CRYPTO_BTC_MECHANISMS_V12_DEVELOPMENT",
     "CRYPTO_BTC_MECHANISMS_V12_VELUM_REPLAY",
+    "CRYPTO_BTC_HYPOTHESES_V13_DEVELOPMENT",
+    "CRYPTO_BTC_HYPOTHESES_V13_VELUM_REPLAY",
+    "CRYPTO_BTC_HYPOTHESES_V13_VALIDATION",
+    "CRYPTO_BTC_HYPOTHESES_V13_HOLDOUT",
     "CRYPTO_COMPILED_DEVELOPMENT",
     "CRYPTO_COMPILED_VALIDATION",
     "CRYPTO_COMPILED_HOLDOUT",
@@ -691,20 +695,59 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
     activation=str(body.get("activation_id") or "").strip()[:160]
     candidate=str(body.get("candidate_id") or "").strip()[:160]
     status=str(body.get("status") or "").strip().upper()
+    evidence=_obj(body.get("evidence"))
+    methodology=str(evidence.get("candidate_methodology") or "").strip()
+    evidence_phase=str(evidence.get("evidence_phase") or "FORWARD_SHADOW").strip().upper()
     if not activation or not candidate or status not in {
         "COLLECTING","READY_FOR_HUMAN_REVIEW","SHADOW_REJECTED"
     }:
         raise ValueError("invalid_shadow_checkpoint")
+    if evidence_phase not in {"FORWARD_SHADOW","VALIDATION","HOLDOUT"}:
+        raise ValueError("invalid_shadow_checkpoint_phase")
     shadow={
         "activation_id":activation,
         "candidate_id":candidate,
+        "candidate_methodology":methodology or None,
+        "evidence_phase":evidence_phase,
         "status":status,
-        "evidence":_obj(body.get("evidence")),
+        "evidence":evidence,
         "synced_at":datetime.now(UTC).isoformat(),
         "execution_authority":False,
         "broker_orders_possible":False,
         "promotion_authorized":False,
     }
+
+    def record_v13_artifact(cur: psycopg.Cursor[Any], artifact_type: str, content: dict[str, Any]) -> str | None:
+        content_hash=_hash(content)
+        artifact_key=":".join([str(problem_id),"none",artifact_type,content_hash])
+        cur.execute(
+            """
+            insert into graen.artifacts (
+                problem_id,run_id,artifact_key,artifact_type,methodology_version,
+                source_commit,content_hash,content
+            ) values (%s,null,%s,%s,%s,null,%s,%s)
+            on conflict (artifact_key) do nothing
+            returning artifact_id
+            """,
+            (
+                problem_id,artifact_key,artifact_type,
+                "graen-btc-hypothesis-tournament-v13",
+                content_hash,Jsonb(content),
+            ),
+        )
+        inserted=cur.fetchone()
+        if inserted:
+            return str(inserted[0])
+        cur.execute(
+            "select artifact_id from graen.artifacts where artifact_key=%s",
+            (artifact_key,),
+        )
+        row=cur.fetchone()
+        return str(row[0]) if row else None
+
+    protected_action_required=status=="READY_FOR_HUMAN_REVIEW"
+    transition=None
+    artifact_id=None
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
@@ -718,6 +761,77 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
             metadata=_obj(row[1])
             metadata.pop("research_stage",None)
             metadata["forward_shadow"]=shadow
+
+            if methodology=="graen-btc-hypothesis-tournament-v13":
+                frozen=_obj(metadata.get("v13_candidate_spec"))
+                if frozen and str(frozen.get("candidate_id") or "")!=candidate:
+                    raise ValueError("v13_shadow_candidate_does_not_match_frozen_spec")
+                if evidence_phase=="VALIDATION" and status in {
+                    "READY_FOR_HUMAN_REVIEW","SHADOW_REJECTED"
+                }:
+                    validation_passed=status=="READY_FOR_HUMAN_REVIEW"
+                    if validation_passed and metadata.get("v13_velum_passed") is not True:
+                        raise ValueError("v13_validation_without_velum_pass")
+                    metadata["v13_validation_passed"]=validation_passed
+                    metadata["v13_validation_activation_id"]=activation
+                    content={
+                        "campaign_id":"btc-hypothesis-tournament-v13",
+                        "candidate_id":candidate,
+                        "candidate_spec":frozen,
+                        "stage":"VALIDATION",
+                        "passed":validation_passed,
+                        "checkpoint":evidence,
+                        "execution_authority":False,
+                        "broker_orders_possible":False,
+                        "promotion_authorized":False,
+                    }
+                    artifact_id=record_v13_artifact(
+                        cur,"CRYPTO_BTC_V13_VALIDATION_RESULT",content
+                    )
+                    metadata["v13_validation_artifact_id"]=artifact_id
+                    if validation_passed:
+                        metadata["research_stage"]="CRYPTO_BTC_HYPOTHESES_V13_HOLDOUT"
+                        transition="QUEUE_HOLDOUT"
+                    else:
+                        transition="VALIDATION_REJECTED"
+                elif evidence_phase=="HOLDOUT" and status in {
+                    "READY_FOR_HUMAN_REVIEW","SHADOW_REJECTED"
+                }:
+                    if (
+                        metadata.get("v13_velum_passed") is not True
+                        or metadata.get("v13_validation_passed") is not True
+                    ):
+                        raise ValueError("v13_holdout_opened_before_predecessor_gates")
+                    holdout_passed=status=="READY_FOR_HUMAN_REVIEW"
+                    metadata["v13_holdout_passed"]=holdout_passed
+                    metadata["v13_holdout_activation_id"]=activation
+                    metadata["v13_promotion_ready"]=holdout_passed
+                    content={
+                        "campaign_id":"btc-hypothesis-tournament-v13",
+                        "candidate_id":candidate,
+                        "candidate_spec":frozen,
+                        "stage":"HOLDOUT",
+                        "passed":holdout_passed,
+                        "checkpoint":evidence,
+                        "statistical_promotion_ready":holdout_passed,
+                        "live_execution_authorized":False,
+                        "execution_authority":False,
+                        "broker_orders_possible":False,
+                        "promotion_authorized":False,
+                    }
+                    artifact_type=(
+                        "CRYPTO_BTC_V13_PROMOTION_READY"
+                        if holdout_passed
+                        else "CRYPTO_BTC_V13_HOLDOUT_REJECTED"
+                    )
+                    artifact_id=record_v13_artifact(cur,artifact_type,content)
+                    metadata["v13_holdout_artifact_id"]=artifact_id
+                    transition=(
+                        "PROMOTION_READY_RESEARCH_ONLY"
+                        if holdout_passed
+                        else "HOLDOUT_REJECTED"
+                    )
+
             cur.execute(
                 """
                 update graen.problems
@@ -736,13 +850,21 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
                     output=_obj(j[0])
                     output.update({
                         "current_stage":(
-                            "FORWARD_SHADOW_READY_FOR_HUMAN_REVIEW"
+                            "V13_HOLDOUT_QUEUED"
+                            if transition=="QUEUE_HOLDOUT"
+                            else "V13_PROMOTION_READY_RESEARCH_ONLY"
+                            if transition=="PROMOTION_READY_RESEARCH_ONLY"
+                            else "FORWARD_SHADOW_READY_FOR_HUMAN_REVIEW"
                             if status=="READY_FOR_HUMAN_REVIEW"
                             else "FORWARD_SHADOW_REJECTED"
                             if status=="SHADOW_REJECTED"
                             else "FORWARD_SHADOW_RUNNING"
                         ),
                         "forward_shadow":shadow,
+                        "v13_transition":transition,
+                        "v13_artifact_id":artifact_id,
+                        "execution_authority":False,
+                        "broker_orders_possible":False,
                     })
                     cur.execute(
                         """
@@ -754,11 +876,29 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
                             updated_at=now()
                         where job_id=%s
                         """,
-                        (status=="READY_FOR_HUMAN_REVIEW",Jsonb(output),linked),
+                        (
+                            bool(
+                                transition=="PROMOTION_READY_RESEARCH_ONLY"
+                                or (
+                                    status=="READY_FOR_HUMAN_REVIEW"
+                                    and transition!="QUEUE_HOLDOUT"
+                                )
+                            ),
+                            Jsonb(output),linked,
+                        ),
                     )
     return {
         "status":status,
-        "protected_action_required":status=="READY_FOR_HUMAN_REVIEW",
+        "evidence_phase":evidence_phase,
+        "transition":transition,
+        "artifact_id":artifact_id,
+        "protected_action_required":bool(
+            transition=="PROMOTION_READY_RESEARCH_ONLY"
+            or (protected_action_required and transition!="QUEUE_HOLDOUT")
+        ),
+        "execution_authority":False,
+        "broker_orders_possible":False,
+        "promotion_authorized":False,
     }
 
 

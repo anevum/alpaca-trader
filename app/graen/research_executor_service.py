@@ -88,10 +88,22 @@ from graen.crypto.btc_mechanisms_v12 import (
     evaluate_development as evaluate_v12_development,
     verify_development_corpus as verify_v12_development_corpus,
 )
+from graen.crypto.btc_hypotheses_v13 import (
+    CAMPAIGN_ID as V13_CAMPAIGN_ID,
+    DEVELOPMENT_END as V13_DEVELOPMENT_END,
+    DEVELOPMENT_START as V13_DEVELOPMENT_START,
+    FAMILY as V13_FAMILY,
+    METHODOLOGY_VERSION as V13_METHODOLOGY_VERSION,
+    UNIVERSE as V13_UNIVERSE,
+    candidate_specs as v13_candidate_specs,
+    evaluate_development as evaluate_v13_development,
+    hypothesis_registry as v13_hypothesis_registry,
+    verify_development_corpus as verify_v13_development_corpus,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.10.2"
+RUNTIME_VERSION = "graen-research-executor-v1.11.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -188,6 +200,17 @@ V12_VELUM_STAGE = "CRYPTO_BTC_MECHANISMS_V12_VELUM_REPLAY"
 V12_STAGE_KEYS = {
     V12_DEVELOPMENT_STAGE,
     V12_VELUM_STAGE,
+}
+
+V13_DEVELOPMENT_STAGE = "CRYPTO_BTC_HYPOTHESES_V13_DEVELOPMENT"
+V13_VELUM_STAGE = "CRYPTO_BTC_HYPOTHESES_V13_VELUM_REPLAY"
+V13_VALIDATION_STAGE = "CRYPTO_BTC_HYPOTHESES_V13_VALIDATION"
+V13_HOLDOUT_STAGE = "CRYPTO_BTC_HYPOTHESES_V13_HOLDOUT"
+V13_STAGE_KEYS = {
+    V13_DEVELOPMENT_STAGE,
+    V13_VELUM_STAGE,
+    V13_VALIDATION_STAGE,
+    V13_HOLDOUT_STAGE,
 }
 
 
@@ -3269,6 +3292,445 @@ class GraenResearchExecutor:
 
         raise RuntimeError(f"unsupported_v12_research_stage:{stage}")
 
+    async def _execute_btc_hypotheses_v13(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        stage = str(metadata.get("research_stage") or V13_DEVELOPMENT_STAGE)
+        self.active_methodology_version = V13_METHODOLOGY_VERSION
+
+        def artifact_id(response: Mapping[str, Any]) -> str | None:
+            artifact = response.get("artifact")
+            return (
+                str(artifact.get("artifact_id"))
+                if isinstance(artifact, Mapping) and artifact.get("artifact_id")
+                else None
+            )
+
+        async def record_stage(artifact_type: str, content: dict[str, Any]) -> str | None:
+            response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type=artifact_type,
+                methodology_version=V13_METHODOLOGY_VERSION,
+                content={
+                    **content,
+                    "campaign_id": V13_CAMPAIGN_ID,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_promotion_authority": False,
+                    "production_state_changed": False,
+                    "crypto_execution_enabled": False,
+                },
+            )
+            return artifact_id(response)
+
+        if stage == V13_DEVELOPMENT_STAGE:
+            failure_map = [
+                {
+                    "campaign": "V6",
+                    "mechanisms": ["cross_sectional_residual_downshock_reclaim"],
+                    "result": "DEVELOPMENT_ONLY_NOT_CONFIRMED",
+                    "lesson": "residual-reclaim evidence did not establish a promotable edge",
+                },
+                {
+                    "campaign": "V7",
+                    "mechanisms": ["cross_asset_lead_lag_response", "broad_market_laggard_response"],
+                    "result": "NO_PROMOTION",
+                    "lesson": "market-transmission families did not survive the protected pipeline",
+                },
+                {
+                    "campaign": "V8",
+                    "mechanisms": [
+                        "adaptive_cross_asset_lead_lag",
+                        "adaptive_broad_market_laggard_response",
+                        "adaptive_calendar_regime_drift",
+                    ],
+                    "result": "HYPOTHESIS_ENGINE_EXHAUSTED",
+                    "lesson": "adaptive threshold cycling did not justify further tuning of those families",
+                },
+                {
+                    "campaign": "V9",
+                    "mechanisms": ["activity_confirmed_momentum_continuation"],
+                    "result": "FALSIFIED",
+                    "lesson": "activity-confirmed impulse continuation did not survive",
+                },
+                {
+                    "campaign": "V10",
+                    "mechanisms": ["activity_confirmed_trend_pullback_recovery"],
+                    "result": "MIXED_DEVELOPMENT_CORPUS_EXHAUSTED",
+                    "lesson": (
+                        "one epoch rejected development; one development candidate froze, but "
+                        "validation was never run because SOL stage corpus was incomplete"
+                    ),
+                },
+                {
+                    "campaign": "V11",
+                    "mechanisms": ["btc_activity_confirmed_trend_pullback_recovery"],
+                    "result": "NO_DEVELOPMENT_SURVIVOR",
+                    "lesson": "BTC-only trend/pullback did not survive stressed-cost development",
+                },
+                {
+                    "campaign": "V12",
+                    "mechanisms": ["compression_breakout", "vol_normalized_trend", "downshock_reclaim"],
+                    "result": "NO_DEVELOPMENT_SURVIVOR",
+                    "lesson": (
+                        "large samples still showed nonpositive stressed-cost/delayed expectancy, "
+                        "profit factor at or below one, and inadequate temporal-fold consistency"
+                    ),
+                },
+            ]
+            prespec = {
+                "schema_version": "graen.btc_hypothesis_tournament_v13.prespec.v1",
+                "campaign_id": V13_CAMPAIGN_ID,
+                "methodology_version": V13_METHODOLOGY_VERSION,
+                "family": V13_FAMILY,
+                "universe": list(V13_UNIVERSE),
+                "failure_map": failure_map,
+                "hypothesis_registry": list(v13_hypothesis_registry()),
+                "candidate_registry": [row.to_dict() for row in v13_candidate_specs()],
+                "candidate_count": len(v13_candidate_specs()),
+                "mechanisms": sorted({row.mechanism for row in v13_candidate_specs()}),
+                "historical_evidence_role": "DEVELOPMENT_ONLY",
+                "historical_development": [
+                    V13_DEVELOPMENT_START.isoformat(),
+                    V13_DEVELOPMENT_END.isoformat(),
+                ],
+                "stage_order": [
+                    V13_DEVELOPMENT_STAGE,
+                    V13_VELUM_STAGE,
+                    V13_VALIDATION_STAGE,
+                    V13_HOLDOUT_STAGE,
+                ],
+                "independent_historical_validation_available": False,
+                "independent_historical_holdout_available": False,
+                "validation_evidence": "FRESH_FORWARD_ONLY",
+                "holdout_evidence": "FRESH_FORWARD_AFTER_VALIDATION_ONLY",
+                "selection_rule": (
+                    "freeze at most one candidate only if high-cost expectancy and delayed-entry "
+                    "expectancy are positive, profit factor exceeds one, at least 5 of 7 fixed "
+                    "temporal folds pass, minimum trade/day-block gates pass, and the candidate "
+                    "survives Benjamini-Yekutieli multiplicity control"
+                ),
+                "authority": {
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "risk_or_sizing_authority": False,
+                    "production_promotion_authority": False,
+                    "crypto_execution_enabled": False,
+                },
+            }
+            prespec_artifact_id = await record_stage(
+                "CRYPTO_BTC_HYPOTHESES_V13_PRESPEC",
+                prespec,
+            )
+            bars = await self._fetch_stage(
+                V13_UNIVERSE,
+                start=V13_DEVELOPMENT_START,
+                end=V13_DEVELOPMENT_END,
+                warmup_hours=26,
+            )
+            corpus = verify_v13_development_corpus(
+                bars,
+                start=V13_DEVELOPMENT_START,
+                end=V13_DEVELOPMENT_END,
+            )
+            development = await asyncio.to_thread(
+                evaluate_v13_development,
+                bars,
+            )
+            development_artifact_id = await record_stage(
+                "CRYPTO_BTC_HYPOTHESES_V13_DEVELOPMENT_RESULT",
+                {
+                    "prespec_artifact_id": prespec_artifact_id,
+                    "corpus": corpus,
+                    "development": development,
+                    "bar_counts": {symbol: len(rows) for symbol, rows in bars.items()},
+                },
+            )
+            selected_spec = development.get("selected_candidate_spec")
+            selected_id = development.get("selected_candidate_id")
+
+            diagnostics: list[dict[str, Any]] = []
+            for candidate_id, row in (development.get("results") or {}).items():
+                if not isinstance(row, Mapping):
+                    continue
+                high = row.get("aggregate_high") if isinstance(row.get("aggregate_high"), Mapping) else {}
+                base = row.get("aggregate_base") if isinstance(row.get("aggregate_base"), Mapping) else {}
+                primary = high.get("primary") if isinstance(high.get("primary"), Mapping) else {}
+                delayed = high.get("one_bar_delay") if isinstance(high.get("one_bar_delay"), Mapping) else {}
+                base_primary = base.get("primary") if isinstance(base.get("primary"), Mapping) else {}
+                candidate = high.get("candidate") if isinstance(high.get("candidate"), Mapping) else {}
+                diagnostics.append({
+                    "candidate_id": candidate_id,
+                    "mechanism": candidate.get("mechanism"),
+                    "parameters": dict(candidate),
+                    "trade_count": primary.get("trade_count"),
+                    "independent_day_blocks": primary.get("independent_day_blocks"),
+                    "expectancy_per_trade": primary.get("expectancy_per_trade"),
+                    "profit_factor": primary.get("profit_factor"),
+                    "max_drawdown": primary.get("max_drawdown"),
+                    "win_loss_distribution": primary.get("win_loss_distribution"),
+                    "mfe_mae": primary.get("mfe_mae"),
+                    "positive_temporal_folds": row.get("positive_temporal_folds"),
+                    "delayed_entry_expectancy": delayed.get("expectancy_per_trade"),
+                    "base_cost_expectancy": base_primary.get("expectancy_per_trade"),
+                    "high_cost_expectancy": primary.get("expectancy_per_trade"),
+                    "dependence_adjusted_p_value": row.get("dependence_adjusted_p_value"),
+                    "statistical_survival": row.get("statistical_survival"),
+                    "economic_survival": row.get("economic_survival"),
+                    "selection_score": row.get("selection_score"),
+                    "rejection_reasons": list(row.get("reasons") or []),
+                })
+            diagnostics.sort(key=lambda row: str(row.get("candidate_id") or ""))
+            print("GRAEN_V13_DIAGNOSTICS", diagnostics, flush=True)
+
+            if not isinstance(selected_spec, Mapping) or not selected_id:
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary={
+                        "state": "V13_NO_DEVELOPMENT_SURVIVOR",
+                        "status": "NO_DEVELOPMENT_SURVIVOR",
+                        "decision": "V13_HYPOTHESES_FALSIFIED",
+                        "campaign_id": V13_CAMPAIGN_ID,
+                        "candidate_family": V13_FAMILY,
+                        "development_artifact_id": development_artifact_id,
+                        "candidate_diagnostics": diagnostics,
+                        "failure_map": failure_map,
+                        "validation_opened": False,
+                        "holdout_opened": False,
+                        "next_action": "DESIGN_NEXT_BTC_HYPOTHESIS",
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                    },
+                )
+
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "V13_CANDIDATE_FROZEN_FOR_VELUM",
+                    "status": "DEVELOPMENT_PASS",
+                    "decision": "CONTINUE_RESEARCH",
+                    "campaign_id": V13_CAMPAIGN_ID,
+                    "candidate_id": str(selected_id),
+                    "candidate_family": V13_FAMILY,
+                    "candidate_spec": dict(selected_spec),
+                    "development_artifact_id": development_artifact_id,
+                    "candidate_diagnostics": diagnostics,
+                    "validation_opened": False,
+                    "holdout_opened": False,
+                    "next_action": "RUN_VELUM_ENGINEERING_REPLAY",
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+                next_stage=V13_VELUM_STAGE,
+                next_metadata={
+                    "v13_campaign_id": V13_CAMPAIGN_ID,
+                    "v13_candidate_spec": dict(selected_spec),
+                    "v13_development_artifact_id": development_artifact_id,
+                    "v13_velum_passed": False,
+                    "v13_validation_passed": False,
+                    "v13_holdout_passed": False,
+                },
+            )
+
+        if stage == V13_VELUM_STAGE:
+            candidate_spec = metadata.get("v13_candidate_spec")
+            if not isinstance(candidate_spec, Mapping):
+                raise RuntimeError("v13_velum_candidate_spec_missing")
+            replay_start = V13_DEVELOPMENT_END - timedelta(days=60)
+            replay = await self._replay_in_velum(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id=V13_CAMPAIGN_ID,
+                epoch_index=0,
+                generation=1,
+                candidate_methodology=V13_METHODOLOGY_VERSION,
+                candidate_spec=candidate_spec,
+                replay_start=replay_start,
+                replay_end=V13_DEVELOPMENT_END,
+                seed=139000,
+            )
+            velum_artifact_id = await record_stage(
+                "CRYPTO_BTC_HYPOTHESES_V13_VELUM_RESULT",
+                {
+                    "candidate_spec": dict(candidate_spec),
+                    "replay": replay,
+                    "replay_evidence_role": "POST_DEVELOPMENT_ENGINEERING_ONLY",
+                    "independent_confirmatory_evidence": False,
+                },
+            )
+            gate = replay.get("engineering_gate") if isinstance(replay.get("engineering_gate"), Mapping) else {}
+            if not bool(gate.get("passed")):
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary={
+                        "state": "V13_VELUM_REJECTED",
+                        "status": "ENGINEERING_REPLAY_FAIL",
+                        "decision": "V13_CANDIDATE_REJECTED",
+                        "campaign_id": V13_CAMPAIGN_ID,
+                        "candidate_id": candidate_spec.get("candidate_id"),
+                        "candidate_family": V13_FAMILY,
+                        "velum_artifact_id": velum_artifact_id,
+                        "validation_opened": False,
+                        "holdout_opened": False,
+                        "next_action": "DESIGN_NEXT_BTC_HYPOTHESIS",
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                    },
+                )
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "V13_VELUM_PASS",
+                    "status": "ENGINEERING_REPLAY_PASS",
+                    "decision": "CONTINUE_RESEARCH",
+                    "campaign_id": V13_CAMPAIGN_ID,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V13_FAMILY,
+                    "velum_artifact_id": velum_artifact_id,
+                    "validation_opened": False,
+                    "holdout_opened": False,
+                    "next_action": "OPEN_FRESH_FORWARD_VALIDATION",
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+                next_stage=V13_VALIDATION_STAGE,
+                next_metadata={
+                    "v13_campaign_id": V13_CAMPAIGN_ID,
+                    "v13_candidate_spec": dict(candidate_spec),
+                    "v13_development_artifact_id": metadata.get("v13_development_artifact_id"),
+                    "v13_velum_artifact_id": velum_artifact_id,
+                    "v13_velum_passed": True,
+                    "v13_validation_passed": False,
+                    "v13_holdout_passed": False,
+                },
+            )
+
+        if stage == V13_VALIDATION_STAGE:
+            candidate_spec = metadata.get("v13_candidate_spec")
+            if not isinstance(candidate_spec, Mapping):
+                raise RuntimeError("v13_validation_candidate_spec_missing")
+            if metadata.get("v13_velum_passed") is not True:
+                raise RuntimeError("v13_validation_opened_before_velum_pass")
+            velum_artifact_id = str(metadata.get("v13_velum_artifact_id") or "")
+            if not velum_artifact_id:
+                raise RuntimeError("v13_validation_velum_artifact_missing")
+            activation = await self._activate_forward_shadow(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id=V13_CAMPAIGN_ID,
+                epoch_index=0,
+                generation=1,
+                candidate_methodology=V13_METHODOLOGY_VERSION,
+                candidate_spec=candidate_spec,
+                velum_artifact_id=velum_artifact_id,
+                evidence_phase="VALIDATION",
+            )
+            activation_artifact_id = await record_stage(
+                "CRYPTO_BTC_V13_VALIDATION_ACTIVATION",
+                {
+                    "candidate_spec": dict(candidate_spec),
+                    "velum_artifact_id": velum_artifact_id,
+                    "activation": activation,
+                    "fresh_confirmation": True,
+                    "validation_opened": True,
+                    "holdout_opened": False,
+                    "promotion_authorized": False,
+                },
+            )
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "V13_VALIDATION_ACTIVE",
+                    "status": "FORWARD_VALIDATION_ACTIVE",
+                    "decision": "COLLECT_FRESH_VALIDATION_EVIDENCE",
+                    "campaign_id": V13_CAMPAIGN_ID,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V13_FAMILY,
+                    "velum_artifact_id": velum_artifact_id,
+                    "activation_artifact_id": activation_artifact_id,
+                    "validation_opened": True,
+                    "holdout_opened": False,
+                    "next_action": "WAIT_FOR_VALIDATION_GATE",
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+            )
+
+        if stage == V13_HOLDOUT_STAGE:
+            candidate_spec = metadata.get("v13_candidate_spec")
+            if not isinstance(candidate_spec, Mapping):
+                raise RuntimeError("v13_holdout_candidate_spec_missing")
+            if (
+                metadata.get("v13_velum_passed") is not True
+                or metadata.get("v13_validation_passed") is not True
+            ):
+                raise RuntimeError("v13_holdout_opened_before_predecessor_gates")
+            velum_artifact_id = str(metadata.get("v13_velum_artifact_id") or "")
+            activation = await self._activate_forward_shadow(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id=V13_CAMPAIGN_ID,
+                epoch_index=0,
+                generation=1,
+                candidate_methodology=V13_METHODOLOGY_VERSION,
+                candidate_spec=candidate_spec,
+                velum_artifact_id=velum_artifact_id,
+                evidence_phase="HOLDOUT",
+            )
+            activation_artifact_id = await record_stage(
+                "CRYPTO_BTC_V13_HOLDOUT_ACTIVATION",
+                {
+                    "candidate_spec": dict(candidate_spec),
+                    "validation_artifact_id": metadata.get("v13_validation_artifact_id"),
+                    "velum_artifact_id": velum_artifact_id,
+                    "activation": activation,
+                    "validation_passed": True,
+                    "holdout_opened": True,
+                    "promotion_authorized": False,
+                },
+            )
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "V13_HOLDOUT_ACTIVE",
+                    "status": "FORWARD_HOLDOUT_ACTIVE",
+                    "decision": "COLLECT_FRESH_HOLDOUT_EVIDENCE",
+                    "campaign_id": V13_CAMPAIGN_ID,
+                    "candidate_id": candidate_spec.get("candidate_id"),
+                    "candidate_family": V13_FAMILY,
+                    "activation_artifact_id": activation_artifact_id,
+                    "validation_opened": True,
+                    "holdout_opened": True,
+                    "next_action": "WAIT_FOR_HOLDOUT_GATE",
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+            )
+
+        raise RuntimeError(f"unsupported_v13_research_stage:{stage}")
+
     async def _activate_forward_shadow(
         self,
         *,
@@ -3280,6 +3742,7 @@ class GraenResearchExecutor:
         candidate_methodology: str,
         candidate_spec: Mapping[str, Any],
         velum_artifact_id: str | None,
+        evidence_phase: str = "FORWARD_SHADOW",
     ) -> dict[str, Any]:
         if not self.shadow_configured:
             raise RuntimeError("forward shadow service is not configured")
@@ -3296,6 +3759,7 @@ class GraenResearchExecutor:
                     "candidate_methodology": candidate_methodology,
                     "candidate_spec": dict(candidate_spec),
                     "velum_artifact_id": str(velum_artifact_id or ""),
+                    "evidence_phase": evidence_phase,
                 },
             )
             response.raise_for_status()
@@ -3889,6 +4353,92 @@ class GraenResearchExecutor:
             return result
         return None
 
+    async def _recover_exhausted_v12_into_v13(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Advance the canonical V12 no-survivor result into the frozen V13 tournament."""
+        problems = snapshot.get("problems") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            if metadata.get("v13_campaign_id") == V13_CAMPAIGN_ID:
+                return None
+            if metadata.get("research_stage") in V13_STAGE_KEYS:
+                return None
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            terminal_run: Mapping[str, Any] | None = None
+            for run in snapshot.get("runs") or []:
+                if not isinstance(run, Mapping):
+                    continue
+                if str(run.get("problem_id") or "") != problem_id:
+                    continue
+                summary = run.get("result_summary") if isinstance(run.get("result_summary"), Mapping) else {}
+                if (
+                    summary.get("campaign_id") == V12_CAMPAIGN_ID
+                    and summary.get("state") == "V12_NO_DEVELOPMENT_SURVIVOR"
+                    and summary.get("decision") == "NEEDS_NEW_HYPOTHESIS_ENGINE"
+                ):
+                    terminal_run = run
+                    break
+            if terminal_run is None:
+                continue
+            run_id = str(terminal_run.get("run_id") or "")
+            artifact = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id or None,
+                artifact_type="CRYPTO_BTC_V12_EXHAUSTION",
+                methodology_version=V12_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V12_CAMPAIGN_ID,
+                    "state": "V12_CAMPAIGN_EXHAUSTED",
+                    "reason": "NO_DEVELOPMENT_SURVIVOR",
+                    "next_methodology": V13_METHODOLOGY_VERSION,
+                    "next_campaign_id": V13_CAMPAIGN_ID,
+                    "historical_promotion_eligible": False,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_promotion_authority": False,
+                },
+            )
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V13_DEVELOPMENT_STAGE,
+                metadata={
+                    "v13_campaign_id": V13_CAMPAIGN_ID,
+                    "v13_origin": "v12_no_development_survivor",
+                    "v12_terminal_run_id": run_id or None,
+                    "v12_terminal_artifact_id": (
+                        (artifact.get("artifact") or {}).get("artifact_id")
+                        if isinstance(artifact.get("artifact"), Mapping)
+                        else None
+                    ),
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v13_queue_after_v12_exhaustion_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "state": "V12_CAMPAIGN_EXHAUSTED",
+                "next_research_stage": V13_DEVELOPMENT_STAGE,
+                "v13_campaign_id": V13_CAMPAIGN_ID,
+                "execution_authority": False,
+            }
+            print("GRAEN_V12_TO_V13", result, flush=True)
+            return result
+        return None
+
     async def _reconcile_v12_native_stage_precedence(
         self,
         snapshot: Mapping[str, Any],
@@ -3947,6 +4497,8 @@ class GraenResearchExecutor:
                 continue
             metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
             stage = str(metadata.get("research_stage") or "")
+            if metadata.get("v13_campaign_id") == V13_CAMPAIGN_ID or stage in V13_STAGE_KEYS:
+                continue
             if metadata.get("v12_campaign_id") != V12_CAMPAIGN_ID and stage not in V12_STAGE_KEYS:
                 continue
 
@@ -4031,6 +4583,9 @@ class GraenResearchExecutor:
         v11_to_v12_recovery = await self._recover_exhausted_v11_into_v12(snapshot)
         if v11_to_v12_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v12_to_v13_recovery = await self._recover_exhausted_v12_into_v13(snapshot)
+        if v12_to_v13_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v12_native_stage_precedence = await self._reconcile_v12_native_stage_precedence(snapshot)
         if v12_native_stage_precedence is not None:
             snapshot = await self.gateway.snapshot()
@@ -4055,6 +4610,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_v13 = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") in V13_STAGE_KEYS
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v12 = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -4104,7 +4667,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V12_METHODOLOGY_VERSION
+            V13_METHODOLOGY_VERSION
+            if staged_v13
+            else V12_METHODOLOGY_VERSION
             if staged_v12
             else V11_METHODOLOGY_VERSION
             if staged_v11
@@ -4139,6 +4704,7 @@ class GraenResearchExecutor:
                 "v10_campaign_seed": v10_campaign_seed,
                 "v10_corpus_recovery": v10_corpus_recovery,
                 "v11_to_v12_recovery": v11_to_v12_recovery,
+                "v12_to_v13_recovery": v12_to_v13_recovery,
                 "v12_native_stage_precedence": v12_native_stage_precedence,
                 "v12_claim_diagnostic": v12_claim_diagnostic,
                 "blocked_v10": blocked_v10,
@@ -4159,6 +4725,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") in V13_STAGE_KEYS:
+                return await self._execute_btc_hypotheses_v13(problem, run)
             if metadata.get("research_stage") in V12_STAGE_KEYS:
                 return await self._execute_btc_mechanisms_v12(problem, run)
             if metadata.get("research_stage") in V11_STAGE_KEYS:
