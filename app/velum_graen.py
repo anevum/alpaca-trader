@@ -27,9 +27,15 @@ from graen.crypto.btc_trend_pullback_v11 import (
     evaluate_candidate as evaluate_v11_candidate,
     spec_from_dict as v11_spec_from_dict,
 )
+from graen.crypto.btc_mechanisms_v12 import (
+    FAMILY as V12_FAMILY,
+    METHODOLOGY_VERSION as V12_METHODOLOGY_VERSION,
+    evaluate_candidate as evaluate_v12_candidate,
+    spec_from_dict as v12_spec_from_dict,
+)
 
 
-METHODOLOGY_VERSION = "velum-graen-candidate-replay-v4"
+METHODOLOGY_VERSION = "velum-graen-candidate-replay-v5"
 GRAEN_CONTEXT_UNIVERSE = CONTEXT_UNIVERSE
 
 
@@ -78,7 +84,21 @@ def replay_candidate(
     end: datetime,
     seed: int = 91000,
 ) -> dict[str, Any]:
-    if candidate_methodology == V11_METHODOLOGY_VERSION:
+    if candidate_methodology == V12_METHODOLOGY_VERSION:
+        spec = v12_spec_from_dict(candidate_spec)
+        scenarios = {
+            scenario: evaluate_v12_candidate(
+                bars_by_symbol,
+                spec=spec,
+                start=start,
+                end=end,
+                scenario=scenario,
+                seed=seed + index * 20,
+            )
+            for index, scenario in enumerate(("low", "base", "high"))
+        }
+        candidate_family = V12_FAMILY
+    elif candidate_methodology == V11_METHODOLOGY_VERSION:
         spec = v11_spec_from_dict(candidate_spec)
         scenarios = {
             scenario: evaluate_v11_candidate(
