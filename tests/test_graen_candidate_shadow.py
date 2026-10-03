@@ -10,6 +10,10 @@ from graen.crypto.trend_pullback_v10 import (
     METHODOLOGY_VERSION as V10_METHODOLOGY_VERSION,
     candidate_specs as v10_candidate_specs,
 )
+from graen.crypto.btc_trend_pullback_v11 import (
+    METHODOLOGY_VERSION as V11_METHODOLOGY_VERSION,
+    candidate_specs as v11_candidate_specs,
+)
 from graen.crypto.candidate_shadow import CandidateForwardShadow
 
 
@@ -138,3 +142,41 @@ def test_candidate_shadow_accepts_v10_without_execution_authority():
     assert runtime.status()["candidate_id"] == spec["candidate_id"]
     assert runtime.execution_authority is False
     assert runtime.broker_orders_possible is False
+
+
+def test_candidate_shadow_accepts_v11_as_btc_only_without_execution_authority(monkeypatch):
+    spec = v11_candidate_specs()[0].to_dict()
+    payload = {
+        **activation(),
+        "activation_id": "activation-v11-001",
+        "campaign_id": "btc-trend-pullback-forward-v11",
+        "candidate_methodology": V11_METHODOLOGY_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+    }
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(payload)
+
+    assert runtime._symbols() == ("BTC/USD",)
+    assert runtime.status()["candidate_methodology"] == V11_METHODOLOGY_VERSION
+    assert runtime.execution_authority is False
+    assert runtime.broker_orders_possible is False
+
+    monkeypatch.setattr(
+        candidate_shadow,
+        "_moving_block_null_pvalue",
+        lambda values, **kwargs: {"p_value": 0.01},
+    )
+    start = datetime(2026, 10, 3, tzinfo=UTC)
+    for index in range(30):
+        runtime.closed.append({
+            "symbol": "BTC/USD",
+            "exit_at": (start + timedelta(days=index)).isoformat(),
+            "stressed_cost_net_return": 0.002 if index % 5 else -0.001,
+        })
+
+    checkpoint = runtime._checkpoint()
+    assert checkpoint["status"] == "READY_FOR_HUMAN_REVIEW"
+    assert checkpoint["symbol_concentration_max_share"] == 1.0
+    assert checkpoint["ready_gate"]["symbol_concentration_max_share"] == 1.0
+    assert checkpoint["promotion_authorized"] is False
