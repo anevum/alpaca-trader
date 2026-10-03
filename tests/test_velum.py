@@ -28,6 +28,11 @@ from graen.crypto.btc_mechanisms_v12 import (
     METHODOLOGY_VERSION as V12_METHODOLOGY_VERSION,
     candidate_specs as v12_candidate_specs,
 )
+from graen.crypto.btc_hypotheses_v13 import (
+    FAMILY as V13_FAMILY,
+    METHODOLOGY_VERSION as V13_METHODOLOGY_VERSION,
+    candidate_specs as v13_candidate_specs,
+)
 
 
 class HoldStrategy:
@@ -326,6 +331,40 @@ def test_velum_dispatches_v12_btc_candidate_without_execution_authority(monkeypa
 
     assert result["candidate_methodology"] == V12_METHODOLOGY_VERSION
     assert result["candidate_family"] == V12_FAMILY
+    assert result["engineering_gate"]["passed"] is True
+    assert result["execution_authority"] is False
+    assert result["broker_orders_possible"] is False
+    assert result["promotion_authorized"] is False
+
+
+def test_velum_dispatches_v13_exact_candidate_without_execution_authority(monkeypatch):
+    summary = {
+        "trade_count": 30,
+        "independent_day_blocks": 15,
+        "trades_per_day": 0.6,
+        "expectancy_per_trade": 0.001,
+        "profit_factor": 1.3,
+        "symbol_concentration": {"max_share": 1.0},
+        "dependence_adjusted_null": {"p_value": 0.01},
+    }
+
+    def fake_v13(*args, **kwargs):
+        return {
+            "primary": dict(summary),
+            "one_bar_delay": {**summary, "expectancy_per_trade": 0.0005},
+            "candidate": kwargs["spec"].to_dict(),
+        }
+
+    monkeypatch.setattr(velum_graen, "evaluate_v13_candidate", fake_v13)
+    result = velum_graen.replay_candidate(
+        {},
+        candidate_spec=v13_candidate_specs()[0].to_dict(),
+        candidate_methodology=V13_METHODOLOGY_VERSION,
+        start=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    )
+    assert result["candidate_methodology"] == V13_METHODOLOGY_VERSION
+    assert result["candidate_family"] == V13_FAMILY
     assert result["engineering_gate"]["passed"] is True
     assert result["execution_authority"] is False
     assert result["broker_orders_possible"] is False
