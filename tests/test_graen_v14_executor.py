@@ -545,3 +545,238 @@ def test_v14_surviving_preflight_still_does_not_skip_original_replication(monkey
         assert runtime.gateway.queued == []
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r1_failure_advances_once_to_r2a_queue_imbalance():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-03T20:53:26+00:00",
+                    "methodology_version": service.V14_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_CAMPAIGN_ID,
+                        "state": "V14_R1_BROKER_FEASIBILITY_FAIL",
+                        "decision": "V14_R1_DO_NOT_REPLICATE_FURTHER",
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_v14_r1_fail_into_r2a(snapshot)
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_R2A_STAGE
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2A_STAGE
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_BTC_V14_R2A_QUEUE_IMBALANCE_SELECTION"
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["runs"].append(
+            {
+                "run_id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                "problem_id": PROBLEM_ID,
+                "status": "WAITING",
+                "methodology_version": service.V14_R2A_METHODOLOGY_VERSION,
+                "result_summary": {
+                    "campaign_id": service.V14_R2A_CAMPAIGN_ID,
+                    "state": "V14_R2A_BROKER_FEASIBILITY_FAIL",
+                },
+            }
+        )
+        runtime.gateway.queued.clear()
+        second = await runtime._recover_v14_r1_fail_into_r2a(snapshot)
+        assert second is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2a_quote_fetch_paginates_without_order_authority(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, _url, *, headers, params):
+            token = params.get("page_token")
+            if token is None:
+                return FakeResponse(
+                    {
+                        "quotes": {
+                            "BTC/USD": [
+                                {
+                                    "t": "2026-09-28T00:00:00Z",
+                                    "bp": 100.0,
+                                    "ap": 100.1,
+                                    "bs": 2.0,
+                                    "as": 1.0,
+                                }
+                            ]
+                        },
+                        "next_page_token": "page-2",
+                    }
+                )
+            return FakeResponse(
+                {
+                    "quotes": {
+                        "BTC/USD": [
+                            {
+                                "t": "2026-09-28T00:00:15Z",
+                                "bp": 100.1,
+                                "ap": 100.2,
+                                "bs": 2.0,
+                                "as": 1.0,
+                            }
+                        ]
+                    },
+                    "next_page_token": None,
+                }
+            )
+
+    async def scenario():
+        runtime = _runtime()
+        runtime.settings = SimpleNamespace(
+            credentials_configured=True,
+            data_base_url="https://example.test",
+            crypto_location="us",
+        )
+        runtime.market_data = SimpleNamespace(headers={"X-Test": "1"})
+        monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+        rows = await runtime._fetch_v14_r2a_quotes()
+        assert len(rows) == 2
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2a_failed_preflight_never_opens_live_gates(monkeypatch):
+    async def scenario():
+        runtime = _runtime()
+
+        async def fake_fetch():
+            return [{"t": "2026-09-28T00:00:00Z", "bp": 100, "ap": 101, "bs": 2, "as": 1}]
+
+        runtime._fetch_v14_r2a_quotes = fake_fetch
+
+        def fake_evaluate(_rows):
+            return {
+                "campaign_id": service.V14_R2A_CAMPAIGN_ID,
+                "oos": {
+                    "config": {"config_id": "qi-0.40-60s"},
+                    "scenarios": {
+                        "taker_base_50bp": {
+                            "trade_count": 30,
+                            "sharpe": -0.1,
+                            "total_return": -0.02,
+                        }
+                    },
+                    "taker_base_50bp_positive_quarter_share": 0.25,
+                },
+                "broker_feasibility_gate": {"survives_to_live_l2_shadow": False},
+            }
+
+        monkeypatch.setattr(service, "evaluate_v14_r2a_queue_imbalance", fake_evaluate)
+        problem = {
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V14_R2A_STAGE,
+                "v14_r2a_campaign_id": service.V14_R2A_CAMPAIGN_ID,
+            },
+        }
+        result = await runtime._execute_btc_queue_imbalance_v14_r2a(
+            problem,
+            {"run_id": V14_RUN_ID},
+        )
+        assert result["state"] == "V14_R2A_BROKER_FEASIBILITY_FAIL"
+        assert result["decision"] == "V14_R2A_DO_NOT_PROMOTE"
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["crypto_execution_enabled"] is False
+        assert result["live_execution_authorized"] is False
+        assert result["shadow_only"] is False
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2a_pass_still_stops_at_live_l2_shadow(monkeypatch):
+    async def scenario():
+        runtime = _runtime()
+
+        async def fake_fetch():
+            return [{"t": "2026-09-28T00:00:00Z", "bp": 100, "ap": 101, "bs": 2, "as": 1}]
+
+        runtime._fetch_v14_r2a_quotes = fake_fetch
+
+        def fake_evaluate(_rows):
+            return {
+                "campaign_id": service.V14_R2A_CAMPAIGN_ID,
+                "oos": {
+                    "config": {"config_id": "qi-0.40-60s"},
+                    "scenarios": {
+                        "taker_base_50bp": {
+                            "trade_count": 40,
+                            "sharpe": 0.4,
+                            "total_return": 0.03,
+                        }
+                    },
+                    "taker_base_50bp_positive_quarter_share": 0.75,
+                },
+                "broker_feasibility_gate": {"survives_to_live_l2_shadow": True},
+            }
+
+        monkeypatch.setattr(service, "evaluate_v14_r2a_queue_imbalance", fake_evaluate)
+        problem = {
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V14_R2A_STAGE,
+                "v14_r2a_campaign_id": service.V14_R2A_CAMPAIGN_ID,
+            },
+        }
+        result = await runtime._execute_btc_queue_imbalance_v14_r2a(
+            problem,
+            {"run_id": V14_RUN_ID},
+        )
+        assert result["state"] == "V14_R2A_SURVIVES_TO_LIVE_L2_SHADOW"
+        assert result["next_action"] == "START_V14_R2A_LIVE_L2_SHADOW_CONFIRMATION"
+        assert result["shadow_only"] is True
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["crypto_execution_enabled"] is False
+        assert result["live_execution_authorized"] is False
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
