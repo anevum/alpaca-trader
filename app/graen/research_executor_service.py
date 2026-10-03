@@ -627,7 +627,8 @@ class GraenResearchExecutor:
         page_token: str | None = None
         seen_page_tokens: set[str] = set()
         page_count = 0
-        max_pages = 128
+        max_pages = 768
+        max_rate_limit_retries = 6
         async with httpx.AsyncClient(timeout=45.0) as client:
             for page_index in range(max_pages):
                 request_params = dict(params)
@@ -636,17 +637,59 @@ class GraenResearchExecutor:
                         raise RuntimeError("v14_hourly_btc_pagination_token_cycle")
                     seen_page_tokens.add(page_token)
                     request_params["page_token"] = page_token
-                response = await client.get(
-                    f"{self.settings.data_base_url}/v1beta3/crypto/"
-                    f"{self.settings.crypto_location}/bars",
-                    headers=self.market_data.headers,
-                    params=request_params,
-                )
+
+                response = None
+                for retry_index in range(max_rate_limit_retries + 1):
+                    response = await client.get(
+                        f"{self.settings.data_base_url}/v1beta3/crypto/"
+                        f"{self.settings.crypto_location}/bars",
+                        headers=self.market_data.headers,
+                        params=request_params,
+                    )
+                    if response.status_code != 429:
+                        break
+                    if retry_index >= max_rate_limit_retries:
+                        raise RuntimeError("v14_hourly_btc_rate_limit_retries_exhausted")
+                    retry_after_raw = response.headers.get("Retry-After")
+                    try:
+                        retry_after = float(retry_after_raw) if retry_after_raw else 0.0
+                    except (TypeError, ValueError):
+                        retry_after = 0.0
+                    delay = min(
+                        max(retry_after, 0.5 * (2 ** retry_index)),
+                        8.0,
+                    )
+                    print(
+                        "GRAEN_V14_DATA_RATE_LIMIT",
+                        {
+                            "page": page_index + 1,
+                            "retry": retry_index + 1,
+                            "delay_seconds": delay,
+                            "execution_authority": False,
+                        },
+                        flush=True,
+                    )
+                    await asyncio.sleep(delay)
+
+                if response is None:
+                    raise RuntimeError("v14_hourly_btc_response_missing")
                 response.raise_for_status()
                 payload = response.json()
                 rows.extend((payload.get("bars") or {}).get("BTC/USD", []) or [])
                 page_count = page_index + 1
                 page_token = payload.get("next_page_token")
+
+                if page_count % 50 == 0:
+                    print(
+                        "GRAEN_V14_DATA_FETCH_PROGRESS",
+                        {
+                            "pages": page_count,
+                            "raw_rows": len(rows),
+                            "max_pages": max_pages,
+                            "execution_authority": False,
+                        },
+                        flush=True,
+                    )
                 if not page_token:
                     break
             else:
@@ -657,6 +700,7 @@ class GraenResearchExecutor:
                 "pages": page_count,
                 "raw_rows": len(rows),
                 "max_pages": max_pages,
+                "rate_limit_retry_cap": max_rate_limit_retries,
                 "execution_authority": False,
             },
             flush=True,
@@ -4660,7 +4704,7 @@ class GraenResearchExecutor:
         self,
         snapshot: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        """Resume the frozen V14 preflight once after the bounded pagination repair."""
+        """Resume a frozen V14 pagination failure through bounded repair versions."""
         problems = snapshot.get("problems") or []
         runs = snapshot.get("runs") or []
         for problem in problems:
@@ -4676,8 +4720,10 @@ class GraenResearchExecutor:
                 or problem.get("domain") != PROBLEM_DOMAIN
                 or metadata.get("research_stage") != V14_PREFLIGHT_STAGE
                 or metadata.get("v14_campaign_id") != V14_CAMPAIGN_ID
-                or metadata.get("v14_pagination_recovery_version")
             ):
+                continue
+            recovery_version = int(metadata.get("v14_pagination_recovery_version") or 0)
+            if recovery_version >= 2:
                 continue
             problem_id = str(problem.get("problem_id") or "")
             matching_runs = [
@@ -4708,10 +4754,16 @@ class GraenResearchExecutor:
                     "blocked_error": (
                         blocked_run.get("result_summary", {}).get("error")
                     ),
-                    "repair": "expand_bounded_alpaca_history_pagination",
-                    "pagination_max_pages": 128,
+                    "repair": (
+                        "expand_bounded_alpaca_history_pagination"
+                        if recovery_version == 0
+                        else "alpaca_aggregation_pagination_v2"
+                    ),
+                    "pagination_max_pages": 768,
                     "pagination_cycle_detection": True,
-                    "retry_count": 1,
+                    "rate_limit_retry_cap": 6,
+                    "recovery_from_version": recovery_version,
+                    "retry_count": recovery_version + 1,
                     "research_only": True,
                     "execution_authority": False,
                     "broker_orders_possible": False,
@@ -4731,7 +4783,7 @@ class GraenResearchExecutor:
                 stage=V14_PREFLIGHT_STAGE,
                 metadata={
                     "v14_campaign_id": V14_CAMPAIGN_ID,
-                    "v14_pagination_recovery_version": 1,
+                    "v14_pagination_recovery_version": recovery_version + 1,
                     "v14_recovered_blocked_run_id": blocked_run_id or None,
                     "v14_infra_repair_artifact_id": repair_artifact.get("artifact_id"),
                 },
