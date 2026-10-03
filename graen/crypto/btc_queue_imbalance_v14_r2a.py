@@ -12,6 +12,8 @@ METHODOLOGY_VERSION = "graen-btc-queue-imbalance-v14-r2a"
 CAMPAIGN_ID = "v14-r2a-alpaca-queue-imbalance"
 FAMILY = "alpaca_top_of_book_queue_imbalance"
 UNIVERSE = ("BTC/USD",)
+QUOTE_SCREEN_START = datetime(2026, 9, 28, tzinfo=UTC)
+QUOTE_SCREEN_END = datetime(2026, 10, 1, tzinfo=UTC)
 
 BUCKET_SECONDS = 15
 DEVELOPMENT_SHARE = 0.60
@@ -64,6 +66,8 @@ def campaign_manifest() -> dict[str, Any]:
         "campaign_id": CAMPAIGN_ID,
         "family": FAMILY,
         "universe": list(UNIVERSE),
+        "quote_screen_start": QUOTE_SCREEN_START.isoformat(),
+        "quote_screen_end": QUOTE_SCREEN_END.isoformat(),
         "signal": (
             "top-of-book queue imbalance=(bid_size-ask_size)/(bid_size+ask_size); "
             "long/cash only"
