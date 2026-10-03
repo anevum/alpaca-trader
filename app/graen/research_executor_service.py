@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.market_data import MarketDataClient
 from app.graen.service import GraenGateway
 from app.graen.research_promotion import ResearchPromotion, engineering_problem_ids
+from app.graen.research_director_client import ResearchDirectorClient
 from graen.crypto.research_v7 import (
     CONTEXT_UNIVERSE,
     METHODOLOGY_VERSION as V7_METHODOLOGY_VERSION,
@@ -213,6 +214,10 @@ V13_STAGE_KEYS = {
     V13_HOLDOUT_STAGE,
 }
 
+RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
+RESEARCH_DIRECTOR_METHODOLOGY = "graen-research-director-v1"
+RESEARCH_DIRECTOR_STAGE_KEYS = {RESEARCH_DIRECTOR_STAGE}
+
 
 def _v10_epoch_contract(epoch_index: int) -> dict[str, Any]:
     if epoch_index < 0 or epoch_index >= len(V10_EPOCHS):
@@ -320,6 +325,11 @@ class GraenResearchExecutor:
             timeout_seconds=30.0,
         )
         self.research_promotion = ResearchPromotion(self.gateway)
+        self.research_director = ResearchDirectorClient()
+        self.research_director_autorun = _truthy(
+            "GRAEN_RESEARCH_DIRECTOR_AUTORUN",
+            False,
+        )
         self.callback_base_url = os.getenv("IREN_CALLBACK_BASE_URL", "").strip().rstrip("/")
         self.callback_token = os.getenv("IREN_CALLBACK_TOKEN", "").strip()
         self.velum_base_url = os.getenv("VELUM_SERVICE_URL", "").strip().rstrip("/")
@@ -388,6 +398,7 @@ class GraenResearchExecutor:
                 V11_METHODOLOGY_VERSION,
                 V12_METHODOLOGY_VERSION,
                 V13_METHODOLOGY_VERSION,
+                RESEARCH_DIRECTOR_METHODOLOGY,
             ],
             "running": running,
             "autorun": self.autorun,
@@ -395,6 +406,8 @@ class GraenResearchExecutor:
             "gateway_configured": self.gateway.configured,
             "research_code_promotion_enabled": True,
             "runtime_github_authorization_configured": self.research_promotion.repository.configured,
+            "research_director_configured": self.research_director.configured,
+            "research_director_autorun": self.research_director_autorun,
             "iren_callback_configured": self.callback_configured,
             "velum_candidate_replay_configured": self.velum_configured,
             "forward_shadow_configured": self.shadow_configured,
@@ -592,6 +605,7 @@ class GraenResearchExecutor:
         summary: dict[str, Any],
         next_stage: str | None = None,
         next_metadata: dict[str, Any] | None = None,
+        model_usage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         problem_id = str(problem.get("problem_id"))
         run_id = str(run.get("run_id"))
@@ -606,7 +620,7 @@ class GraenResearchExecutor:
             worker_id=self.worker_id,
             status=status,
             result_summary=summary,
-            model_usage={"invoked": False},
+            model_usage=model_usage or {"invoked": False},
         )
 
         if (
@@ -4453,6 +4467,296 @@ class GraenResearchExecutor:
             return result
         return None
 
+    def _research_director_evidence_packet(
+        self,
+        snapshot: Mapping[str, Any],
+        problem: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        history: list[dict[str, Any]] = []
+        detailed_v13: dict[str, Any] | None = None
+        for run in snapshot.get("runs") or []:
+            if not isinstance(run, Mapping):
+                continue
+            summary = (
+                run.get("result_summary")
+                if isinstance(run.get("result_summary"), Mapping)
+                else {}
+            )
+            campaign_id = str(summary.get("campaign_id") or "")
+            state = str(summary.get("state") or "")
+            if not campaign_id and not any(
+                token in state for token in ("V6", "V7", "V8", "V9", "V10", "V11", "V12", "V13")
+            ):
+                continue
+            compact = {
+                "run_id": run.get("run_id"),
+                "status": run.get("status"),
+                "methodology_version": run.get("methodology_version"),
+                "campaign_id": summary.get("campaign_id"),
+                "state": summary.get("state"),
+                "decision": summary.get("decision"),
+                "next_action": summary.get("next_action"),
+                "candidate_family": summary.get("candidate_family"),
+                "candidate_id": summary.get("candidate_id"),
+                "validation_opened": summary.get("validation_opened"),
+                "holdout_opened": summary.get("holdout_opened"),
+                "holdout_passed": summary.get("holdout_passed"),
+                "failure_map": summary.get("failure_map"),
+            }
+            if summary.get("state") == "V13_NO_DEVELOPMENT_SURVIVOR":
+                detailed_v13 = {
+                    **compact,
+                    "candidate_diagnostics": list(
+                        summary.get("candidate_diagnostics") or []
+                    )[:20],
+                }
+            history.append(compact)
+            if len(history) >= 80:
+                break
+
+        return {
+            "schema_version": "graen.research-director-evidence.v1",
+            "objective_context": "BTC strategy research after V13 exhaustion",
+            "current_problem": {
+                "problem_id": problem.get("problem_id"),
+                "title": problem.get("title"),
+                "statement": problem.get("statement"),
+                "constraints": problem.get("constraints"),
+                "success_criteria": problem.get("success_criteria"),
+            },
+            "canonical_research_history": history,
+            "v13_terminal_evidence": detailed_v13,
+            "known_research_state": {
+                "v13_result": "V13_NO_DEVELOPMENT_SURVIVOR",
+                "v13_decision": "V13_HYPOTHESES_FALSIFIED",
+                "live_crypto_execution_enabled": False,
+                "promotion_ready_strategy": None,
+            },
+            "data_inventory": {
+                "currently_integrated": [
+                    "Alpaca crypto 5-minute OHLCV historical bars",
+                    "Foundation/PostgreSQL canonical research artifacts",
+                ],
+                "provider_capabilities_to_reverify_before_use": [
+                    "historical BTC top-of-book quotes",
+                    "historical BTC trades",
+                    "latest crypto orderbook",
+                ],
+                "historical_full_depth_orderbook_integrated": False,
+            },
+            "protected_methodology": {
+                "stage_order": [
+                    "DEVELOPMENT",
+                    "VELUM",
+                    "VALIDATION",
+                    "HOLDOUT",
+                ],
+                "holdout_sealed_until_validation_pass": True,
+                "realistic_costs_required": True,
+                "delayed_entry_sensitivity_required": True,
+                "multiplicity_control_required": True,
+                "temporal_splits_required": True,
+                "live_execution_requires_separate_protected_authorization": True,
+            },
+            "trusted_compiler_inventory": {
+                "currently_supported_mechanisms": ["bar_flow_pressure_v1"],
+                "arbitrary_model_code_generation_allowed": False,
+                "compiler_self_modification_allowed": False,
+            },
+            "authority": {
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "risk_or_sizing_authority": False,
+                "production_promotion_authority": False,
+                "crypto_execution_enabled": False,
+            },
+        }
+
+    async def _recover_v13_into_research_director(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Queue the model-driven research decision only when explicitly enabled."""
+        if not self.research_director_autorun:
+            return None
+        if not self.research_director.configured:
+            return None
+
+        for problem in snapshot.get("problems") or []:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage") == RESEARCH_DIRECTOR_STAGE:
+                return None
+
+        latest_by_problem: dict[str, Mapping[str, Any]] = {}
+        for run in snapshot.get("runs") or []:
+            if not isinstance(run, Mapping):
+                continue
+            problem_id = str(run.get("problem_id") or "")
+            if problem_id and problem_id not in latest_by_problem:
+                latest_by_problem[problem_id] = run
+
+        for problem in snapshot.get("problems") or []:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            latest = latest_by_problem.get(problem_id)
+            if not isinstance(latest, Mapping):
+                continue
+            summary = (
+                latest.get("result_summary")
+                if isinstance(latest.get("result_summary"), Mapping)
+                else {}
+            )
+            if not (
+                summary.get("campaign_id") == V13_CAMPAIGN_ID
+                and summary.get("state") == "V13_NO_DEVELOPMENT_SURVIVOR"
+                and summary.get("decision") == "V13_HYPOTHESES_FALSIFIED"
+            ):
+                continue
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=RESEARCH_DIRECTOR_STAGE,
+                metadata={
+                    "research_director_version": RESEARCH_DIRECTOR_METHODOLOGY,
+                    "research_director_origin_run_id": latest.get("run_id"),
+                    "research_director_origin_campaign": V13_CAMPAIGN_ID,
+                    "research_director_cycle": 1,
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("research_director_stage_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "next_research_stage": RESEARCH_DIRECTOR_STAGE,
+                "execution_authority": False,
+            }
+            print("GRAEN_V13_TO_RESEARCH_DIRECTOR", result, flush=True)
+            return result
+        return None
+
+    async def _execute_research_director(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        self.active_methodology_version = RESEARCH_DIRECTOR_METHODOLOGY
+
+        snapshot = await self.gateway.snapshot()
+        evidence = self._research_director_evidence_packet(snapshot, problem)
+        objective = (
+            "Identify the highest-value next BTC research program after V13. "
+            "Prefer faithful replication of a credible existing quantitative, AI, "
+            "machine-learning, statistical-arbitrage, market-microstructure, or "
+            "execution methodology over another arbitrary internally invented indicator. "
+            "Evaluate positive and negative evidence, reproducibility, transaction costs, "
+            "data availability, BTC transferability, and whether the method requires a new "
+            "trusted compiler. Do not authorize live trading."
+        )
+        response = await self.research_director.research(
+            objective=objective,
+            canonical_evidence=evidence,
+        )
+        decision = response.get("decision")
+        if not isinstance(decision, Mapping):
+            raise RuntimeError("research_director_decision_missing")
+        usage = (
+            dict(response.get("usage"))
+            if isinstance(response.get("usage"), Mapping)
+            else {"invoked": True}
+        )
+        artifact_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_RESEARCH_DIRECTOR_DECISION",
+            methodology_version=RESEARCH_DIRECTOR_METHODOLOGY,
+            content={
+                "schema_version": "graen.research-director-artifact.v1",
+                "decision": dict(decision),
+                "retrieved_sources": list(response.get("retrieved_sources") or []),
+                "web_search_calls": int(response.get("web_search_calls") or 0),
+                "model_response_id": response.get("response_id"),
+                "origin_campaign": V13_CAMPAIGN_ID,
+                "origin_state": "V13_NO_DEVELOPMENT_SURVIVOR",
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_promotion_authority": False,
+                "crypto_execution_enabled": False,
+                "live_execution_authorized": False,
+            },
+        )
+        artifact = (
+            artifact_response.get("artifact")
+            if isinstance(artifact_response.get("artifact"), Mapping)
+            else {}
+        )
+        artifact_id = artifact.get("artifact_id")
+
+        implementation_class = str(decision.get("implementation_class") or "")
+        action = str(decision.get("action") or "")
+        next_action = str(decision.get("next_action") or "")
+        method = (
+            decision.get("selected_method")
+            if isinstance(decision.get("selected_method"), Mapping)
+            else {}
+        )
+
+        state = "RESEARCH_DIRECTOR_NO_ACTION"
+        if implementation_class == "TRUSTED_COMPILER_EXTENSION_REQUIRED":
+            state = "RESEARCH_DIRECTOR_COMPILER_EXTENSION_REQUIRED"
+        elif implementation_class == "DATA_COLLECTION_REQUIRED":
+            state = "RESEARCH_DIRECTOR_DATA_COLLECTION_REQUIRED"
+        elif implementation_class == "EXISTING_TRUSTED_COMPILER":
+            state = "RESEARCH_DIRECTOR_TRUSTED_COMPILER_TARGET_SELECTED"
+        elif action == "REPLICATE_EXTERNAL_METHOD":
+            state = "RESEARCH_DIRECTOR_REPLICATION_TARGET_SELECTED"
+
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary={
+                "state": state,
+                "status": "RESEARCH_DECISION_COMPLETE",
+                "decision": "RESEARCH_BLUEPRINT_READY",
+                "campaign_id": "graen-research-director-v1",
+                "selected_method": method.get("name"),
+                "selected_method_category": method.get("category"),
+                "implementation_class": implementation_class,
+                "research_action": action,
+                "research_decision_artifact_id": artifact_id,
+                "web_search_calls": int(response.get("web_search_calls") or 0),
+                "next_action": next_action,
+                "live_execution_authorized": False,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_state_changed": False,
+            },
+            model_usage=usage,
+        )
+
     async def _recover_exhausted_v12_into_v13(
         self,
         snapshot: Mapping[str, Any],
@@ -4775,6 +5079,9 @@ class GraenResearchExecutor:
         v12_to_v13_recovery = await self._recover_exhausted_v12_into_v13(snapshot)
         if v12_to_v13_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v13_to_director_recovery = await self._recover_v13_into_research_director(snapshot)
+        if v13_to_director_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v12_native_stage_precedence = await self._reconcile_v12_native_stage_precedence(snapshot)
         if v12_native_stage_precedence is not None:
             snapshot = await self.gateway.snapshot()
@@ -4800,6 +5107,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_director = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") == RESEARCH_DIRECTOR_STAGE
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v13 = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -4857,7 +5172,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V13_METHODOLOGY_VERSION
+            RESEARCH_DIRECTOR_METHODOLOGY
+            if staged_director
+            else V13_METHODOLOGY_VERSION
             if staged_v13
             else V12_METHODOLOGY_VERSION
             if staged_v12
@@ -4896,6 +5213,7 @@ class GraenResearchExecutor:
                 "v11_to_v12_recovery": v11_to_v12_recovery,
                 "v13_interrupted_stage_recovery": v13_interrupted_stage_recovery,
                 "v12_to_v13_recovery": v12_to_v13_recovery,
+                "v13_to_director_recovery": v13_to_director_recovery,
                 "v12_native_stage_precedence": v12_native_stage_precedence,
                 "v12_claim_diagnostic": v12_claim_diagnostic,
                 "v13_claim_diagnostic": v13_claim_diagnostic,
@@ -4917,6 +5235,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") == RESEARCH_DIRECTOR_STAGE:
+                return await self._execute_research_director(problem, run)
             if metadata.get("research_stage") in V13_STAGE_KEYS:
                 return await self._execute_btc_hypotheses_v13(problem, run)
             if metadata.get("research_stage") in V12_STAGE_KEYS:
