@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from foundation.graen_gateway import RESEARCH_STAGES, _hash, _obj, _status
+from foundation.graen_gateway import RESEARCH_STAGES, _hash, _is_native_research_stage, _obj, _status
 
 
 def test_hash_is_canonical():
@@ -35,3 +35,11 @@ def test_btc_v11_stages_are_claimable_research_stages():
 def test_btc_v12_stages_are_claimable_research_stages():
     assert "CRYPTO_BTC_MECHANISMS_V12_DEVELOPMENT" in RESEARCH_STAGES
     assert "CRYPTO_BTC_MECHANISMS_V12_VELUM_REPLAY" in RESEARCH_STAGES
+
+
+
+def test_native_research_stage_precedence_excludes_compiled_stages():
+    assert _is_native_research_stage("CRYPTO_BTC_MECHANISMS_V12_DEVELOPMENT") is True
+    assert _is_native_research_stage("CRYPTO_BTC_MECHANISMS_V12_VELUM_REPLAY") is True
+    assert _is_native_research_stage("CRYPTO_COMPILED_DEVELOPMENT") is False
+    assert _is_native_research_stage("RESEARCH_IMPLEMENTATION_REQUIRED") is False
