@@ -18,9 +18,10 @@ def _bars(*, count: int = 2100, start: datetime | None = None):
     price = 100.0
     rows = []
     for i in range(count):
-        # Multi-year trend with long positive regimes and bounded drawdowns.
-        cycle = i % 520
-        drift = 0.0020 if cycle < 390 else -0.0012
+        # Repeated long bull/bear regimes force the 180-day signal through
+        # multiple causal entries/exits while keeping the full path upward.
+        cycle = i % 360
+        drift = 0.0040 if cycle < 210 else -0.0030
         next_price = price * (1.0 + drift)
         rows.append(
             {
