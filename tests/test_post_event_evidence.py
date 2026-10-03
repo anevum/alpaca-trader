@@ -397,6 +397,32 @@ def test_replay_invalid_decision_timestamp_is_stale_input():
     assert result[0]["mismatch_category"] == "STALE_INPUT"
 
 
+def test_replay_malformed_risk_reference_is_unreconstructable_not_exception():
+    cycle, live_candidate, rows = replay_cycle_and_candidate()
+    cycle["comparison_context"]["execution_context"]["account"][
+        "risk_reference_equity"
+    ] = "unavailable"
+
+    result = reconstruct_cycle(cycle, [live_candidate], rows)
+
+    assert result[0]["match_state"] == "UNRECONSTRUCTABLE"
+    assert result[0]["mismatch_category"] == "INVALID_ACCOUNT_RISK_STATE"
+    assert result[0]["source_data_completeness"] == "invalid_decision_time_account"
+    assert result[0]["details"]["invalid_inputs"] == ["risk_reference_equity"]
+    assert result[0]["details"]["future_data_used"] is False
+
+
+def test_replay_missing_risk_reference_falls_back_to_valid_last_equity():
+    cycle, live_candidate, rows = replay_cycle_and_candidate()
+    account = cycle["comparison_context"]["execution_context"]["account"]
+    account.pop("risk_reference_equity", None)
+
+    result = reconstruct_cycle(cycle, [live_candidate], rows)
+
+    assert result[0]["match_state"] == "MATCH"
+    assert result[0]["offline_result"] == "eligible_to_submit"
+
+
 def test_post_event_backfill_is_restart_safe_and_uses_stable_event_keys():
     reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
     row = {

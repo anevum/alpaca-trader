@@ -253,6 +253,28 @@ def _decimal(value: Any, default: str = "0") -> Decimal:
     return parsed if parsed is not None else Decimal(default)
 
 
+def _invalid_replay_account_fields(account: dict[str, Any]) -> list[str]:
+    """Return decision-time account fields that cannot be replayed faithfully.
+
+    Historical comparison must not substitute a different equity baseline when
+    the live decision explicitly recorded an invalid risk reference.
+    """
+    required = ["cash", "equity"]
+    reference_key = (
+        "risk_reference_equity"
+        if "risk_reference_equity" in account
+        else "last_equity"
+    )
+    required.append(reference_key)
+
+    invalid: list[str] = []
+    for key in required:
+        value = d(account.get(key))
+        if value is None or not value.is_finite():
+            invalid.append(key)
+    return invalid
+
+
 def _time_value(value: Any, default: str) -> time:
     return time.fromisoformat(str(value or default))
 
@@ -496,6 +518,25 @@ def reconstruct_cycle(
     recent_orders = [dict(row) for row in execution_context["recent_orders"]]
     open_order_symbols = set(str(x).upper() for x in execution_context["open_order_symbols"])
     account = dict(execution_context["account"])
+    invalid_account_fields = _invalid_replay_account_fields(account)
+    if invalid_account_fields:
+        return [
+            {
+                **base,
+                "candidate_id": candidate.get("candidate_id"),
+                "symbol": candidate.get("symbol"),
+                "live_result": _live_candidate_result(candidate, execution_result)[0],
+                "offline_result": None,
+                "match_state": "UNRECONSTRUCTABLE",
+                "mismatch_category": "INVALID_ACCOUNT_RISK_STATE",
+                "source_data_completeness": "invalid_decision_time_account",
+                "details": {
+                    "invalid_inputs": invalid_account_fields,
+                    "future_data_used": False,
+                },
+            }
+            for candidate in candidates
+        ]
     confirmations = {
         symbol: safe_bars.get(symbol, [])
         for symbol in tuple(configuration.get("confirmation_symbols") or ())
