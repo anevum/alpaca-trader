@@ -190,9 +190,15 @@ def engineering_problem_ids(snapshot):
             continue
         metadata = problem.get("metadata") or {}
         promotion = metadata.get("code_promotion") or {}
+        research_stage = str(metadata.get("research_stage") or "")
+        # An explicitly queued native CRYPTO_* stage already has trusted
+        # implementation in the deployed runtime. It owns the problem until
+        # that stage completes; generic code promotion must not race it.
+        if research_stage.startswith("CRYPTO_") and not research_stage.startswith("CRYPTO_COMPILED_"):
+            continue
         summary = latest.get(str(problem.get("problem_id")), {})
         triggered = any(summary.get(key) in TRIGGERS for key in ("state", "decision", "next_action"))
         if promotion.get("phase") == "COMPLETE":
             continue
-        if triggered or promotion or metadata.get("research_stage") == "RESEARCH_IMPLEMENTATION_REQUIRED":
+        if triggered or promotion or research_stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
             yield str(problem["problem_id"])
