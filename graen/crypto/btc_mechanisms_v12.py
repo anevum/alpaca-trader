@@ -340,13 +340,19 @@ def collect_opportunities(
     *,
     start: datetime,
     end: datetime,
+    signal_cache: dict[datetime, Opportunity | None] | None = None,
 ) -> list[Opportunity]:
     rows: list[Opportunity] = []
     cooldown_until: datetime | None = None
     for stamp in _grid(start, end):
         if cooldown_until is not None and stamp < cooldown_until:
             continue
-        opportunity = opportunity_at(series, spec, "BTC/USD", stamp)
+        if signal_cache is not None and stamp in signal_cache:
+            opportunity = signal_cache[stamp]
+        else:
+            opportunity = opportunity_at(series, spec, "BTC/USD", stamp)
+            if signal_cache is not None:
+                signal_cache[stamp] = opportunity
         if opportunity is None:
             continue
         rows.append(opportunity)
@@ -362,15 +368,27 @@ def evaluate_candidate(
     end: datetime,
     scenario: str = "high",
     seed: int,
+    prepared_series: Mapping[str, Mapping[datetime, Mapping[str, Any]]] | None = None,
+    signal_cache: dict[datetime, Opportunity | None] | None = None,
 ) -> dict[str, Any]:
     warmup_hours = max(spec.slow_minutes // 60 + 2, 26)
-    series = build_series(
-        bars_by_symbol,
+    series = (
+        prepared_series
+        if prepared_series is not None
+        else build_series(
+            bars_by_symbol,
+            start=start,
+            end=end,
+            warmup_hours=warmup_hours,
+        )
+    )
+    opportunities = collect_opportunities(
+        series,
+        spec,
         start=start,
         end=end,
-        warmup_hours=warmup_hours,
+        signal_cache=signal_cache,
     )
-    opportunities = collect_opportunities(series, spec, start=start, end=end)
     primary = simulate(
         series,
         opportunities,
@@ -445,6 +463,18 @@ def evaluate_development(
     results: dict[str, Any] = {}
     survivors: list[dict[str, Any]] = []
     for index, spec in enumerate(candidate_specs()):
+        # Build the full deterministic series once per frozen candidate and
+        # cache raw signal decisions by timestamp. Temporal folds still reset
+        # cooldown state and use their original seeds/gates; only duplicate
+        # feature computation is removed.
+        warmup_hours = max(spec.slow_minutes // 60 + 2, 26)
+        prepared_series = build_series(
+            bars_by_symbol,
+            start=DEVELOPMENT_START,
+            end=DEVELOPMENT_END,
+            warmup_hours=warmup_hours,
+        )
+        signal_cache: dict[datetime, Opportunity | None] = {}
         aggregate = evaluate_candidate(
             bars_by_symbol,
             spec=spec,
@@ -452,6 +482,8 @@ def evaluate_development(
             end=DEVELOPMENT_END,
             scenario="high",
             seed=121000 + index * 100,
+            prepared_series=prepared_series,
+            signal_cache=signal_cache,
         )
         folds: list[dict[str, Any]] = []
         for fold_index, (label, start, end) in enumerate(DEVELOPMENT_FOLDS):
@@ -462,6 +494,8 @@ def evaluate_development(
                 end=end,
                 scenario="high",
                 seed=122000 + index * 100 + fold_index * 10,
+                prepared_series=prepared_series,
+                signal_cache=signal_cache,
             )
             folds.append({
                 "label": label,
