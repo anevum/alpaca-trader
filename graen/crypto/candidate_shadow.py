@@ -36,6 +36,12 @@ from graen.crypto.btc_mechanisms_v12 import (
     opportunity_at as v12_opportunity_at,
     spec_from_dict as v12_spec_from_dict,
 )
+from graen.crypto.btc_hypotheses_v13 import (
+    METHODOLOGY_VERSION as V13_METHODOLOGY_VERSION,
+    UNIVERSE as V13_UNIVERSE,
+    opportunity_at as v13_opportunity_at,
+    spec_from_dict as v13_spec_from_dict,
+)
 
 
 UTC = timezone.utc
@@ -45,6 +51,7 @@ SUPPORTED_CANDIDATE_METHODOLOGIES = {
     V10_METHODOLOGY_VERSION,
     V11_METHODOLOGY_VERSION,
     V12_METHODOLOGY_VERSION,
+    V13_METHODOLOGY_VERSION,
 }
 MIN_READY_TRADES = 30
 MIN_READY_DAYS = 20
@@ -209,6 +216,8 @@ class CandidateForwardShadow:
 
     def _symbols(self) -> tuple[str, ...]:
         methodology = self._candidate_methodology()
+        if methodology == V13_METHODOLOGY_VERSION:
+            return tuple(V13_UNIVERSE)
         if methodology == V12_METHODOLOGY_VERSION:
             return tuple(V12_UNIVERSE)
         if methodology == V11_METHODOLOGY_VERSION:
@@ -265,6 +274,8 @@ class CandidateForwardShadow:
             v11_spec_from_dict(candidate_spec)
         elif methodology == V12_METHODOLOGY_VERSION:
             v12_spec_from_dict(candidate_spec)
+        elif methodology == V13_METHODOLOGY_VERSION:
+            v13_spec_from_dict(candidate_spec)
 
         activation_id = str(activation.get("activation_id") or "")
         if not activation_id:
@@ -432,6 +443,7 @@ class CandidateForwardShadow:
             "activation_id": self._activation_id(),
             "candidate_id": self._candidate_id(),
             "candidate_methodology": self._candidate_methodology(),
+            "evidence_phase": str((self.activation or {}).get("evidence_phase") or "FORWARD_SHADOW"),
             "status": status,
             "trade_count": len(rows),
             "independent_day_blocks": len(daily_means),
@@ -466,6 +478,8 @@ class CandidateForwardShadow:
             return v11_spec_from_dict(self._candidate_spec())
         if methodology == V12_METHODOLOGY_VERSION:
             return v12_spec_from_dict(self._candidate_spec())
+        if methodology == V13_METHODOLOGY_VERSION:
+            return v13_spec_from_dict(self._candidate_spec())
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
@@ -477,7 +491,14 @@ class CandidateForwardShadow:
         latest_end: datetime,
     ):
         spec = self._active_spec()
-        warmup_hours = max(spec.activity_lookback_hours + 2, 26)
+        activity_hours = int(getattr(spec, "activity_lookback_hours", 0) or 0)
+        slow_minutes = int(getattr(spec, "slow_minutes", 0) or 0)
+        fast_minutes = int(getattr(spec, "fast_minutes", 0) or 0)
+        warmup_hours = max(
+            activity_hours + 2,
+            (max(slow_minutes, fast_minutes) + 59) // 60 + 2,
+            26,
+        )
         return (
             spec,
             build_v9_series(
@@ -498,6 +519,8 @@ class CandidateForwardShadow:
         methodology = self._candidate_methodology()
         if methodology == V9_METHODOLOGY_VERSION:
             return v9_opportunity_at(series, spec, symbol, stamp)
+        if methodology == V13_METHODOLOGY_VERSION:
+            return v13_opportunity_at(series, spec, symbol, stamp)
         if methodology == V12_METHODOLOGY_VERSION:
             return v12_opportunity_at(series, spec, symbol, stamp)
         if methodology in {V10_METHODOLOGY_VERSION, V11_METHODOLOGY_VERSION}:
@@ -521,9 +544,15 @@ class CandidateForwardShadow:
             )
 
         spec = self._active_spec()
+        activity_minutes = int(getattr(spec, "activity_lookback_hours", 0) or 0) * 60
+        slow_minutes = int(getattr(spec, "slow_minutes", 0) or 0)
+        fast_minutes = int(getattr(spec, "fast_minutes", 0) or 0)
         lookback_minutes = max(
-            spec.activity_lookback_hours * 60 + 180,
+            activity_minutes + 180,
+            slow_minutes + 180,
+            fast_minutes + 180,
             spec.hold_minutes + 180,
+            26 * 60,
         )
         symbols = self._symbols()
         bars = await self.market_data.bars_many(
@@ -627,7 +656,7 @@ class CandidateForwardShadow:
                 },
             })
 
-        for symbol in V9_UNIVERSE:
+        for symbol in symbols:
             if symbol in self.pending or symbol in self.positions:
                 continue
             if self.suppressed_until.get(
