@@ -12,14 +12,16 @@ from graen.crypto.btc_4h_trend_v14_r2e import (
 UTC = timezone.utc
 
 
-def _bars(*, start: datetime, count: int, growth: float = 0.00045):
+def _bars(*, start: datetime, count: int):
     rows = []
     price = 100.0
     for i in range(count):
         stamp = start + timedelta(hours=4 * i)
-        # Smooth secular trend with small deterministic waves.
-        wave = 1.0 + 0.002 * ((i % 17) - 8) / 8.0
-        next_price = price * (1.0 + growth) * wave
+        # Repeated long bull phases and shorter bear phases create multiple
+        # causal SMA entries/exits while keeping the full synthetic path positive.
+        cycle = i % 600
+        drift = 0.0010 if cycle < 420 else -0.0008
+        next_price = price * (1.0 + drift)
         rows.append(
             {
                 "t": stamp.isoformat().replace("+00:00", "Z"),
