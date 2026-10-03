@@ -354,6 +354,43 @@ def collect_opportunities(
     return rows
 
 
+def collect_raw_opportunities(
+    series: Mapping[str, Mapping[datetime, Mapping[str, Any]]],
+    spec: BtcMechanismSpec,
+    *,
+    start: datetime,
+    end: datetime,
+) -> list[Opportunity]:
+    """Evaluate the causal signal once per timestamp, without cooldown state."""
+    rows: list[Opportunity] = []
+    for stamp in _grid(start, end):
+        opportunity = opportunity_at(series, spec, "BTC/USD", stamp)
+        if opportunity is not None:
+            rows.append(opportunity)
+    return rows
+
+
+def apply_cooldown(
+    opportunities: Sequence[Opportunity],
+    spec: BtcMechanismSpec,
+    *,
+    start: datetime,
+    end: datetime,
+) -> list[Opportunity]:
+    """Apply the same per-window cooldown contract as collect_opportunities."""
+    rows: list[Opportunity] = []
+    cooldown_until: datetime | None = None
+    for opportunity in opportunities:
+        stamp = opportunity.opportunity_at
+        if stamp < start or stamp >= end:
+            continue
+        if cooldown_until is not None and stamp < cooldown_until:
+            continue
+        rows.append(opportunity)
+        cooldown_until = stamp + timedelta(minutes=spec.cooldown_minutes)
+    return rows
+
+
 def evaluate_candidate_from_series(
     series: Mapping[str, Mapping[datetime, Mapping[str, Any]]],
     *,
@@ -362,8 +399,18 @@ def evaluate_candidate_from_series(
     end: datetime,
     scenario: str = "high",
     seed: int,
+    raw_opportunities: Sequence[Opportunity] | None = None,
 ) -> dict[str, Any]:
-    opportunities = collect_opportunities(series, spec, start=start, end=end)
+    opportunities = (
+        apply_cooldown(
+            raw_opportunities,
+            spec,
+            start=start,
+            end=end,
+        )
+        if raw_opportunities is not None
+        else collect_opportunities(series, spec, start=start, end=end)
+    )
     primary = simulate(
         series,
         opportunities,
@@ -475,6 +522,12 @@ def evaluate_development(
         warmup_hours=shared_warmup_hours,
     )
     for index, spec in enumerate(specs):
+        raw_opportunities = collect_raw_opportunities(
+            shared_series,
+            spec,
+            start=DEVELOPMENT_START,
+            end=DEVELOPMENT_END,
+        )
         aggregate = evaluate_candidate_from_series(
             shared_series,
             spec=spec,
@@ -482,6 +535,7 @@ def evaluate_development(
             end=DEVELOPMENT_END,
             scenario="high",
             seed=121000 + index * 100,
+            raw_opportunities=raw_opportunities,
         )
         folds: list[dict[str, Any]] = []
         for fold_index, (label, start, end) in enumerate(DEVELOPMENT_FOLDS):
@@ -492,6 +546,7 @@ def evaluate_development(
                 end=end,
                 scenario="high",
                 seed=122000 + index * 100 + fold_index * 10,
+                raw_opportunities=raw_opportunities,
             )
             folds.append({
                 "label": label,
