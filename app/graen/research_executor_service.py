@@ -69,7 +69,7 @@ from graen.crypto.trend_pullback_v10 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.8.2"
+RUNTIME_VERSION = "graen-research-executor-v1.8.3"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -285,6 +285,7 @@ class GraenResearchExecutor:
         self.active_problem_id: str | None = None
         self.last_error: str | None = None
         self.last_result: dict[str, Any] | None = None
+        self.last_observed_blocked_run_id: str | None = None
         self.active_methodology_version = V7_METHODOLOGY_VERSION
 
     @property
@@ -3106,8 +3107,51 @@ class GraenResearchExecutor:
         print("GRAEN_V10_BOOTSTRAP", result, flush=True)
         return result
 
+    def _observe_blocked_v10(self, snapshot: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Surface the stored failure for a blocked v10 stage without mutating research state."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            stage = str(metadata.get("research_stage") or "")
+            if problem.get("status") != "BLOCKED" or stage not in V10_STAGE_KEYS:
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            for run in runs:
+                if not isinstance(run, Mapping):
+                    continue
+                if str(run.get("problem_id") or "") != problem_id or run.get("status") != "BLOCKED":
+                    continue
+                summary = run.get("result_summary") if isinstance(run.get("result_summary"), Mapping) else {}
+                if summary.get("state") != "RESEARCH_EXECUTION_BLOCKED":
+                    continue
+                run_id = str(run.get("run_id") or "")
+                if run_id and run_id == self.last_observed_blocked_run_id:
+                    return None
+                result = {
+                    "problem_id": problem_id,
+                    "run_id": run_id or None,
+                    "research_stage": stage,
+                    "epoch_index": metadata.get("v10_epoch_index"),
+                    "candidate_id": (
+                        metadata.get("v10_candidate_spec", {}).get("candidate_id")
+                        if isinstance(metadata.get("v10_candidate_spec"), Mapping)
+                        else None
+                    ),
+                    "error": str(summary.get("error") or "unknown_research_execution_error")[:1000],
+                    "next_action": summary.get("next_action"),
+                    "execution_authority": False,
+                }
+                self.last_observed_blocked_run_id = run_id or None
+                print("GRAEN_V10_BLOCKED", result, flush=True)
+                return result
+        return None
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+        blocked_v10 = self._observe_blocked_v10(snapshot)
         reconciliation = await self._reconcile_orphaned_confirmatory_claim(snapshot)
         if reconciliation is not None:
             snapshot = await self.gateway.snapshot()
@@ -3190,6 +3234,7 @@ class GraenResearchExecutor:
                 "reconciliation": reconciliation,
                 "v10_transition_recovery": v10_transition_recovery,
                 "v10_campaign_seed": v10_campaign_seed,
+                "blocked_v10": blocked_v10,
             }
 
         problem_id = str(problem.get("problem_id"))
@@ -3221,6 +3266,23 @@ class GraenResearchExecutor:
             # abandoned it. Preserve the frozen stage and block it for an
             # explicit repair/reconciliation decision.
             failure = f"{type(exc).__name__}: {exc}"[:1000]
+            print(
+                "GRAEN_RESEARCH_FAILURE",
+                {
+                    "problem_id": problem_id,
+                    "run_id": run_id,
+                    "research_stage": metadata.get("research_stage"),
+                    "epoch_index": metadata.get("v10_epoch_index"),
+                    "candidate_id": (
+                        metadata.get("v10_candidate_spec", {}).get("candidate_id")
+                        if isinstance(metadata.get("v10_candidate_spec"), Mapping)
+                        else None
+                    ),
+                    "error": failure,
+                    "execution_authority": False,
+                },
+                flush=True,
+            )
             try:
                 await self.gateway.block_research_claim(
                     problem_id=problem_id,
