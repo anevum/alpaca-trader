@@ -1,6 +1,8 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+# Leave dockerfilePath unset here. Normal services still auto-detect the root
+# Dockerfile, while services with RAILWAY_DOCKERFILE_PATH can select a
+# service-specific Dockerfile without being overridden by this global config.
 
 [deploy]
 healthcheckPath = "/health"
