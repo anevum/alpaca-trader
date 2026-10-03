@@ -76,3 +76,12 @@ def test_v14_rolling_mean_does_not_poison_all_future_windows_after_warmup_nan():
     assert np.isnan(result[2])
     assert result[3] == 2.0
     assert result[4] == 3.0
+
+
+def test_v14_ml_runtime_can_construct_xgb_regressor():
+    import pytest
+
+    xgboost = pytest.importorskip("xgboost")
+    pytest.importorskip("sklearn")
+    model = xgboost.XGBRegressor(n_estimators=1)
+    assert model.n_estimators == 1
