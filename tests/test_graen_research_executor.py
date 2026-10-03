@@ -11,9 +11,22 @@ class FakeGateway:
         self.completions = []
         self.heartbeats = []
         self.queued_stages = []
+        self.created_problems = []
 
     async def snapshot(self):
         return {"problems": []}
+
+    async def create_problem(self, payload):
+        self.created_problems.append(payload)
+        return {
+            "ok": True,
+            "problem": {
+                "problem_id": "99999999-9999-9999-9999-999999999999",
+                "status": "QUEUED",
+                "domain": payload.get("domain"),
+                "metadata": payload.get("metadata") or {},
+            },
+        }
 
     async def claim_research_problem(self, **kwargs):
         return {
