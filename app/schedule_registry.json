@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.1",
+  "scheduler_version": "anevum-scheduler-v1.0.2",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -84,7 +84,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "trader_session_close",
-      "version": "1.0.6",
+      "version": "1.0.7",
       "protected_action_level": "evidence_write_only"
     },
     {
@@ -112,7 +112,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "research_agent_daily",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "protected_action_level": "research_only"
     },
     {
