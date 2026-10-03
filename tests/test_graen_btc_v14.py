@@ -9,6 +9,7 @@ from graen.crypto.btc_xgb_replication_v14 import (
     COST_SCENARIOS,
     LAMBDA_COST,
     METHODOLOGY_VERSION,
+    _rolling_mean,
     campaign_manifest,
     cost_aware_positions,
     walk_forward_folds,
@@ -62,3 +63,16 @@ def test_paper_and_alpaca_cost_scenarios_are_not_conflated():
     assert COST_SCENARIOS["paper_10bp"] < COST_SCENARIOS["alpaca_fee_only_25bp"]
     assert COST_SCENARIOS["alpaca_fee_only_25bp"] < COST_SCENARIOS["alpaca_base_30bp"]
     assert COST_SCENARIOS["alpaca_base_30bp"] < COST_SCENARIOS["alpaca_stress_40bp"]
+
+
+def test_v14_rolling_mean_does_not_poison_all_future_windows_after_warmup_nan():
+    import pytest
+
+    np = pytest.importorskip("numpy")
+    values = np.asarray([np.nan, 1.0, 2.0, 3.0, 4.0], dtype=float)
+    result = _rolling_mean(values, 3)
+    assert np.isnan(result[0])
+    assert np.isnan(result[1])
+    assert np.isnan(result[2])
+    assert result[3] == 2.0
+    assert result[4] == 3.0
