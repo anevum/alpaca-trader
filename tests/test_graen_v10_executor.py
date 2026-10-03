@@ -464,3 +464,43 @@ def test_ensure_v10_campaign_seed_creates_one_research_only_problem():
         assert len(runtime.gateway.queued_stages) == 1
 
     asyncio.run(scenario())
+
+
+def test_observe_blocked_v10_surfaces_stored_error_once():
+    runtime = _runtime()
+    candidate = candidate_specs()[0].to_dict()
+    snapshot = {
+        "problems": [{
+            "problem_id": "11111111-1111-1111-1111-111111111111",
+            "status": "BLOCKED",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V10_VALIDATION_STAGE,
+                "v10_epoch_index": 1,
+                "v10_candidate_spec": candidate,
+            },
+        }],
+        "runs": [{
+            "run_id": "22222222-2222-2222-2222-222222222222",
+            "problem_id": "11111111-1111-1111-1111-111111111111",
+            "status": "BLOCKED",
+            "result_summary": {
+                "state": "RESEARCH_EXECUTION_BLOCKED",
+                "next_action": "RESUME_FROZEN_STAGE_AFTER_REPAIR",
+                "error": "RuntimeError: synthetic-validation-failure",
+            },
+        }],
+    }
+    observed = runtime._observe_blocked_v10(snapshot)
+    assert observed == {
+        "problem_id": "11111111-1111-1111-1111-111111111111",
+        "run_id": "22222222-2222-2222-2222-222222222222",
+        "research_stage": service.V10_VALIDATION_STAGE,
+        "epoch_index": 1,
+        "candidate_id": candidate["candidate_id"],
+        "error": "RuntimeError: synthetic-validation-failure",
+        "next_action": "RESUME_FROZEN_STAGE_AFTER_REPAIR",
+        "execution_authority": False,
+    }
+    assert runtime._observe_blocked_v10(snapshot) is None
+
