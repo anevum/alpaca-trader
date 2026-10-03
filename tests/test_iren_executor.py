@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import httpx
 
@@ -402,7 +403,7 @@ def test_model_worker_daily_cap_uses_durable_job_history():
                     "job_id": "prior-model-job",
                     "job_type": "SOFTWARE_BUILD",
                     "status": "SUCCEEDED",
-                    "created_at": "2026-10-02T14:00:00+00:00",
+                    "created_at": datetime.now(UTC).isoformat(),
                 }],
             }
         return {}

@@ -347,3 +347,72 @@ def test_process_once_blocks_claim_when_research_execution_raises(monkeypatch):
         assert runtime.last_error == "RuntimeError: synthetic-stage-failure"
 
     asyncio.run(scenario())
+
+
+def test_recover_exhausted_v9_into_v10_is_fail_closed_and_idempotent():
+    problem_id = "33333333-3333-3333-3333-333333333333"
+    terminal_run_id = "44444444-4444-4444-4444-444444444444"
+    snapshot = {
+        "problems": [{
+            "problem_id": problem_id,
+            "status": "WAITING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {},
+        }],
+        "runs": [{
+            "run_id": terminal_run_id,
+            "problem_id": problem_id,
+            "result_summary": {
+                "campaign_id": service.V9_CAMPAIGN_ID,
+                "state": "V9_CAMPAIGN_EXHAUSTED",
+                "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+            },
+        }],
+    }
+
+    async def scenario():
+        runtime = _runtime()
+        recovered = await runtime._recover_exhausted_v9_into_v10(snapshot)
+        assert recovered == {
+            "recovered": True,
+            "problem_id": problem_id,
+            "next_research_stage": service.V10_DEVELOPMENT_STAGE,
+            "source": "V9_CAMPAIGN_EXHAUSTED",
+        }
+        assert runtime.gateway.queued_stages == [{
+            "problem_id": problem_id,
+            "stage": service.V10_DEVELOPMENT_STAGE,
+            "metadata": {
+                "v10_campaign_id": service.V10_CAMPAIGN_ID,
+                "v10_epoch_index": 0,
+                "v10_generation": 1,
+                "v10_transition_source": "v9_campaign_exhausted",
+                "v9_terminal_run_id": terminal_run_id,
+            },
+        }]
+
+        already_recovered = {
+            **snapshot,
+            "problems": [{
+                **snapshot["problems"][0],
+                "metadata": {"v10_campaign_id": service.V10_CAMPAIGN_ID},
+            }],
+        }
+        assert await runtime._recover_exhausted_v9_into_v10(already_recovered) is None
+        assert len(runtime.gateway.queued_stages) == 1
+
+        wrong_terminal = {
+            **snapshot,
+            "runs": [{
+                **snapshot["runs"][0],
+                "result_summary": {
+                    **snapshot["runs"][0]["result_summary"],
+                    "state": "V9_CANDIDATE_REJECTED_VALIDATION",
+                },
+            }],
+        }
+        assert await runtime._recover_exhausted_v9_into_v10(wrong_terminal) is None
+        assert len(runtime.gateway.queued_stages) == 1
+
+    asyncio.run(scenario())
