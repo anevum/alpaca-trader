@@ -29,7 +29,8 @@ def settings(**overrides):
 
 
 def bars(prices, volumes=None):
-    base = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    # Keep synthetic intraday bars in one session, including runs near midnight.
+    base = datetime(2026, 10, 2, 15, 0, tzinfo=timezone.utc)
     volumes = volumes or [1000] * len(prices)
     return [
         {

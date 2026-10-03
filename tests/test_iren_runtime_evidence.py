@@ -446,9 +446,9 @@ def test_unverified_provider_evidence_cannot_fill_topology_gaps():
 
 
 def test_inventory_http_contract_keeps_auth_and_reports_partial_failure(monkeypatch, capsys):
-    monkeypatch.setattr(executor_service.runtime, "token", "t" * 40)
-    monkeypatch.setattr(executor_service.runtime, "github_token", "g" * 40)
-    monkeypatch.setattr(executor_service.runtime, "github_repo", "anevum/alpaca-trader")
+    monkeypatch.setenv("IREN_EXECUTOR_TOKEN", "t" * 40)
+    monkeypatch.setenv("IREN_GITHUB_TOKEN", "g" * 40)
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "anevum/alpaca-trader")
     calls = []
 
     async def github(method, path):
@@ -484,9 +484,9 @@ def test_inventory_http_contract_keeps_auth_and_reports_partial_failure(monkeypa
     ("anevum/alpaca-trader", "g" * 40, "provider_forbidden"),
 ])
 def test_inventory_http_200_does_not_mean_evidence_is_verified(monkeypatch, repo, token, reason):
-    monkeypatch.setattr(executor_service.runtime, "token", "t" * 40)
-    monkeypatch.setattr(executor_service.runtime, "github_token", token)
-    monkeypatch.setattr(executor_service.runtime, "github_repo", repo)
+    monkeypatch.setenv("IREN_EXECUTOR_TOKEN", "t" * 40)
+    monkeypatch.setenv("IREN_GITHUB_TOKEN", token)
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", repo)
     calls = []
 
     async def github(method, path):

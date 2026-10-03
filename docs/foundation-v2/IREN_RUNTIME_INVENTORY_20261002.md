@@ -8,8 +8,10 @@ Provider HTTP errors, timeouts, invalid responses and missing/ambiguous/invalid 
 
 HTTP 200 means the authenticated inventory envelope was produced. It does not mean the evidence is healthy. The envelope exposes complete plus verified/reason on every service, and warning logs retain the failure and exact request. Missing credentials and disallowed repository configuration also produce explicit unverified records without a request. Authentication remains mandatory. No fallback credential, fabricated deployment identity or stale response is used.
 
-Regression coverage includes partial and total failure, credential/configuration failure, provider 401/403/404/429/503, transport errors, hard deadlines, malformed responses, status ambiguity, log redaction and topology refusal to use unverified evidence. The existing runtime evidence suite is now part of required CI.
+Regression coverage includes partial and total failure, credential/configuration failure, provider 401/403/404/429/503, transport errors, hard deadlines, malformed responses, status ambiguity, log redaction and topology refusal to use unverified evidence. The existing runtime evidence suite is now also named in the explicit IREN CI step. The full staging suite already discovers it.
 
 Before this change, IREN production logs already reported runtime_inventory_complete=true from runtime self-reported identities, while state remained DEGRADED with workflow.rhen.research.daily and workflow.rhen.session_close incidents. Those workflow failures are separate from this provider endpoint defect and must not be cleared or relabeled by this repair.
+
+The first CI run also exposed an existing opportunity-test fixture that used the wall clock: at 00:07 UTC, its eleven synthetic bars spanned midnight and the latest-session filter correctly retained only seven bars (six returns). The fixture now uses a fixed intraday timestamp; all assertions and production opportunity/trading logic are unchanged.
 
 Deployment and post-merge verification results will be recorded in the PR.
