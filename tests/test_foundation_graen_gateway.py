@@ -88,3 +88,9 @@ def test_crypto_promotion_artifact_requires_exact_execution_contract():
         "live_execution_authorized": False,
     }
     assert crypto_promotion_matches_contract(missing_contract, contract) is False
+
+
+def test_research_director_is_a_native_claimable_stage():
+    stage = "CRYPTO_RESEARCH_DIRECTOR_V1"
+    assert stage in RESEARCH_STAGES
+    assert _is_native_research_stage(stage) is True
