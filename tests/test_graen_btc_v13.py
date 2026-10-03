@@ -10,6 +10,7 @@ from graen.crypto.btc_hypotheses_v13 import (
     holdout_may_open,
     hypothesis_registry,
     spec_from_dict,
+    evaluate_candidate,
 )
 
 
@@ -98,3 +99,31 @@ def test_v13_definitions_never_grant_execution_authority():
     # Strategy definitions contain signals only; broker configuration is not part of the spec.
     forbidden = {"broker", "position_size", "capital_allocation", "live_execution"}
     assert all(not (forbidden & set(row)) for row in registry)
+
+
+def test_v13_candidate_reproduction_is_deterministic_on_same_corpus_and_seed():
+    origin = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = _bars(origin, count=500)
+    start = origin + timedelta(hours=27)
+    end = origin + timedelta(hours=40)
+    spec = candidate_specs()[0]
+    left = evaluate_candidate(
+        {"BTC/USD": rows},
+        spec=spec,
+        start=start,
+        end=end,
+        scenario="high",
+        seed=130013,
+    )
+    right = evaluate_candidate(
+        {"BTC/USD": rows},
+        spec=spec,
+        start=start,
+        end=end,
+        scenario="high",
+        seed=130013,
+    )
+    assert left == right
+    assert left["cost_scenario"] == "high"
+    assert left["cost_assumptions"]["spread_bps"] > 0
+    assert left["cost_assumptions"]["slippage_bps_per_side"] > 0
