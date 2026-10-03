@@ -278,8 +278,16 @@ def _rolling_mean(values: Any, window: int) -> Any:
     out = np.full(arr.shape, np.nan)
     if window <= 0 or arr.size < window:
         return out
-    csum = np.cumsum(np.insert(arr, 0, 0.0))
-    out[window - 1 :] = (csum[window:] - csum[:-window]) / window
+
+    finite = np.isfinite(arr)
+    values_filled = np.where(finite, arr, 0.0)
+    csum = np.cumsum(np.insert(values_filled, 0, 0.0))
+    counts = np.cumsum(np.insert(finite.astype(int), 0, 0))
+    rolling_sum = csum[window:] - csum[:-window]
+    rolling_count = counts[window:] - counts[:-window]
+    target = out[window - 1 :]
+    complete = rolling_count == window
+    target[complete] = rolling_sum[complete] / window
     return out
 
 
