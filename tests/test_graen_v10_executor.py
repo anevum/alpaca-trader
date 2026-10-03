@@ -572,3 +572,70 @@ def test_terminal_v10_corpus_failure_routes_to_v11_without_execution_authority()
         assert len(runtime.gateway.queued_stages) == 1
 
     asyncio.run(scenario())
+
+
+def test_v11_no_survivor_routes_to_v12_once_without_execution_authority():
+    problem_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    run_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    snapshot = {
+        "problems": [{
+            "problem_id": problem_id,
+            "status": "WAITING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "v11_campaign_id": service.V11_CAMPAIGN_ID,
+                "v11_generation": 1,
+            },
+        }],
+        "runs": [{
+            "run_id": run_id,
+            "problem_id": problem_id,
+            "status": "WAITING",
+            "result_summary": {
+                "state": "V11_NO_DEVELOPMENT_SURVIVOR",
+                "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "campaign_id": service.V11_CAMPAIGN_ID,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            },
+        }],
+    }
+
+    async def scenario():
+        runtime = _runtime()
+        recovered = await runtime._recover_exhausted_v11_into_v12(snapshot)
+        assert recovered == {
+            "recovered": True,
+            "problem_id": problem_id,
+            "state": "V11_CAMPAIGN_EXHAUSTED",
+            "next_research_stage": service.V12_DEVELOPMENT_STAGE,
+            "v12_campaign_id": service.V12_CAMPAIGN_ID,
+            "execution_authority": False,
+        }
+
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_BTC_V11_EXHAUSTION"
+        assert artifact["content"]["historical_promotion_eligible"] is False
+        assert artifact["content"]["execution_authority"] is False
+        assert artifact["content"]["broker_orders_possible"] is False
+        assert artifact["content"]["production_promotion_authority"] is False
+
+        queued = runtime.gateway.queued_stages[-1]
+        assert queued["stage"] == service.V12_DEVELOPMENT_STAGE
+        assert queued["metadata"]["v12_campaign_id"] == service.V12_CAMPAIGN_ID
+        assert queued["metadata"]["v12_origin"] == "v11_no_development_survivor"
+
+        already_v12 = {
+            **snapshot,
+            "problems": [{
+                **snapshot["problems"][0],
+                "metadata": {
+                    **snapshot["problems"][0]["metadata"],
+                    "v12_campaign_id": service.V12_CAMPAIGN_ID,
+                },
+            }],
+        }
+        assert await runtime._recover_exhausted_v11_into_v12(already_v12) is None
+        assert len(runtime.gateway.queued_stages) == 1
+
+    asyncio.run(scenario())
