@@ -63,6 +63,12 @@ def test_btc_v13_stages_are_native_claimable_research_stages():
     assert all(_is_native_research_stage(stage) for stage in stages)
 
 
+def test_btc_v14_preflight_is_native_claimable_research_only_stage():
+    stage = "CRYPTO_BTC_XGB_V14_R1_BROKER_PREFLIGHT"
+    assert stage in RESEARCH_STAGES
+    assert _is_native_research_stage(stage) is True
+
+
 def test_crypto_promotion_artifact_requires_exact_execution_contract():
     contract = {
         "strategy_family": "replication-test",

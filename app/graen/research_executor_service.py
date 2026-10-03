@@ -5250,7 +5250,7 @@ class GraenResearchExecutor:
             )
             status_waiting = problem.get("status") == "WAITING"
             domain_match = problem.get("domain") == PROBLEM_DOMAIN
-            stage_recognized = stage in V13_STAGE_KEYS
+            stage_recognized = stage in V13_STAGE_KEYS or stage in V14_STAGE_KEYS
             code_promotion_allows = (
                 code_promotion is None or code_promotion_phase == "COMPLETE"
             )
@@ -5261,6 +5261,7 @@ class GraenResearchExecutor:
                 "domain": problem.get("domain"),
                 "research_stage": stage or None,
                 "v13_campaign_id": metadata.get("v13_campaign_id"),
+                "v14_campaign_id": metadata.get("v14_campaign_id"),
                 "code_promotion_phase": code_promotion_phase,
                 "latest_run_status": latest_run.get("status") if isinstance(latest_run, Mapping) else None,
                 "latest_run_methodology_version": (
