@@ -1258,3 +1258,55 @@ def test_v14_r2e_pass_still_stops_at_shadow(monkeypatch):
         assert result["live_execution_authorized"] is False
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r2e_pagination_block_retries_once_after_cap_repair():
+    async def scenario():
+        error = "RuntimeError: v14_r2e_bar_pagination_exceeded_safety_limit"
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {
+                        "research_stage": service.V14_R2E_STAGE,
+                        "v14_r2e_campaign_id": service.V14_R2E_CAMPAIGN_ID,
+                    },
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "started_at": "2026-10-03T22:53:16+00:00",
+                    "methodology_version": service.V14_R2E_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2E_CAMPAIGN_ID,
+                        "state": "RESEARCH_EXECUTION_BLOCKED",
+                        "error": error,
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_blocked_v14_r2e_pagination(snapshot)
+        assert result["recovered"] is True
+        assert result["retry_count"] == 1
+        assert result["next_research_stage"] == service.V14_R2E_STAGE
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2E_STAGE
+        assert runtime.gateway.queued[-1]["metadata"]["v14_r2e_pagination_retry_count"] == 1
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_V14_R2E_PAGINATION_REPAIR"
+        assert artifact["content"]["pagination_max_pages"] == 256
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["problems"][0]["metadata"]["v14_r2e_pagination_retry_count"] = 1
+        runtime.gateway.queued.clear()
+        second = await runtime._recover_blocked_v14_r2e_pagination(snapshot)
+        assert second is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
