@@ -18,8 +18,11 @@ def _bars(*, count: int = 2100):
     price = 100.0
     rows = []
     for index in range(count):
-        cycle = index % 420
-        drift = 0.0035 if cycle < 285 else -0.0018
+        # Long alternating regimes force the 180d momentum and 250d SMA
+        # consensus through repeated exits and re-entries while preserving an
+        # upward long-run path.
+        cycle = index % 500
+        drift = 0.0040 if cycle < 260 else -0.0030
         next_price = price * (1.0 + drift)
         rows.append(
             {
