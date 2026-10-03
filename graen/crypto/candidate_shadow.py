@@ -25,6 +25,12 @@ from graen.crypto.trend_pullback_v10 import (
     opportunity_at as v10_opportunity_at,
     spec_from_dict as v10_spec_from_dict,
 )
+from graen.crypto.btc_forward_v11 import (
+    METHODOLOGY_VERSION as V11_METHODOLOGY_VERSION,
+    UNIVERSE as V11_UNIVERSE,
+    opportunity_at as v11_opportunity_at,
+    spec_from_dict as v11_spec_from_dict,
+)
 
 
 UTC = timezone.utc
@@ -32,6 +38,7 @@ SHADOW_METHODOLOGY_VERSION = "graen-forward-shadow-v1"
 SUPPORTED_CANDIDATE_METHODOLOGIES = {
     V9_METHODOLOGY_VERSION,
     V10_METHODOLOGY_VERSION,
+    V11_METHODOLOGY_VERSION,
 }
 MIN_READY_TRADES = 30
 MIN_READY_DAYS = 20
@@ -196,7 +203,9 @@ class CandidateForwardShadow:
 
     def _symbols(self) -> tuple[str, ...]:
         methodology = self._candidate_methodology()
-        if methodology in SUPPORTED_CANDIDATE_METHODOLOGIES:
+        if methodology == V11_METHODOLOGY_VERSION:
+            return tuple(V11_UNIVERSE)
+        if methodology in {V9_METHODOLOGY_VERSION, V10_METHODOLOGY_VERSION}:
             return tuple(V9_UNIVERSE)
         return ()
 
@@ -244,6 +253,8 @@ class CandidateForwardShadow:
             v9_spec_from_dict(candidate_spec)
         elif methodology == V10_METHODOLOGY_VERSION:
             v10_spec_from_dict(candidate_spec)
+        elif methodology == V11_METHODOLOGY_VERSION:
+            v11_spec_from_dict(candidate_spec)
 
         activation_id = str(activation.get("activation_id") or "")
         if not activation_id:
@@ -384,6 +395,11 @@ class CandidateForwardShadow:
             else 0.0
         )
 
+        concentration_limit = (
+            1.0
+            if self._candidate_methodology() == V11_METHODOLOGY_VERSION
+            else 0.70
+        )
         ready = bool(
             len(rows) >= MIN_READY_TRADES
             and len(daily_means) >= MIN_READY_DAYS
@@ -391,7 +407,7 @@ class CandidateForwardShadow:
             and profit_factor is not None
             and profit_factor > 1.0
             and p_value <= DEPENDENCE_P_MAX
-            and concentration <= 0.70
+            and concentration <= concentration_limit
         )
         review_limit_reached = bool(
             len(rows) >= MAX_REVIEW_TRADES
@@ -423,7 +439,7 @@ class CandidateForwardShadow:
                 "expectancy_positive": True,
                 "profit_factor_min": 1.0,
                 "dependence_p_max": DEPENDENCE_P_MAX,
-                "symbol_concentration_max_share": 0.70,
+                "symbol_concentration_max_share": concentration_limit,
             },
             "terminal_rejection_gate": {
                 "max_review_trades": MAX_REVIEW_TRADES,
@@ -440,6 +456,8 @@ class CandidateForwardShadow:
             return v9_spec_from_dict(self._candidate_spec())
         if methodology == V10_METHODOLOGY_VERSION:
             return v10_spec_from_dict(self._candidate_spec())
+        if methodology == V11_METHODOLOGY_VERSION:
+            return v11_spec_from_dict(self._candidate_spec())
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
@@ -474,6 +492,8 @@ class CandidateForwardShadow:
             return v9_opportunity_at(series, spec, symbol, stamp)
         if methodology == V10_METHODOLOGY_VERSION:
             return v10_opportunity_at(series, spec, symbol, stamp)
+        if methodology == V11_METHODOLOGY_VERSION:
+            return v11_opportunity_at(series, spec, symbol, stamp)
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
@@ -493,18 +513,19 @@ class CandidateForwardShadow:
             )
 
         spec = self._active_spec()
+        symbols = self._symbols()
         lookback_minutes = max(
             spec.activity_lookback_hours * 60 + 180,
             spec.hold_minutes + 180,
         )
         bars = await self.market_data.bars_many(
-            list(V9_UNIVERSE),
+            list(symbols),
             timeframe="5Min",
             lookback_minutes=lookback_minutes,
         )
         latest_end = _latest_common_completed_end(
             bars,
-            symbols=V9_UNIVERSE,
+            symbols=symbols,
             now=current,
         )
         if latest_end is None or latest_end == self.last_processed_bar_end:
@@ -598,7 +619,7 @@ class CandidateForwardShadow:
                 },
             })
 
-        for symbol in V9_UNIVERSE:
+        for symbol in symbols:
             if symbol in self.pending or symbol in self.positions:
                 continue
             if self.suppressed_until.get(
