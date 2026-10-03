@@ -101,10 +101,20 @@ from graen.crypto.btc_hypotheses_v13 import (
     hypothesis_registry as v13_hypothesis_registry,
     verify_development_corpus as verify_v13_development_corpus,
 )
+from graen.crypto.btc_xgb_replication_v14 import (
+    ALPACA_SCREEN_END as V14_ALPACA_SCREEN_END,
+    ALPACA_SCREEN_START as V14_ALPACA_SCREEN_START,
+    CAMPAIGN_ID as V14_CAMPAIGN_ID,
+    FAMILY as V14_FAMILY,
+    METHODOLOGY_VERSION as V14_METHODOLOGY_VERSION,
+    UNIVERSE as V14_UNIVERSE,
+    campaign_manifest as v14_campaign_manifest,
+    evaluate_alpaca_transfer_screen as evaluate_v14_alpaca_transfer_screen,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.11.0"
+RUNTIME_VERSION = "graen-research-executor-v1.12.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -213,6 +223,9 @@ V13_STAGE_KEYS = {
     V13_VALIDATION_STAGE,
     V13_HOLDOUT_STAGE,
 }
+
+V14_PREFLIGHT_STAGE = "CRYPTO_BTC_XGB_V14_R1_BROKER_PREFLIGHT"
+V14_STAGE_KEYS = {V14_PREFLIGHT_STAGE}
 
 RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
 RESEARCH_DIRECTOR_METHODOLOGY = "graen-research-director-v1"
@@ -398,6 +411,7 @@ class GraenResearchExecutor:
                 V11_METHODOLOGY_VERSION,
                 V12_METHODOLOGY_VERSION,
                 V13_METHODOLOGY_VERSION,
+                V14_METHODOLOGY_VERSION,
                 RESEARCH_DIRECTOR_METHODOLOGY,
             ],
             "running": running,
@@ -595,6 +609,57 @@ class GraenResearchExecutor:
                     rows.append(bar)
             clean[symbol] = rows
         return clean
+
+
+    async def _fetch_v14_hourly_btc(self) -> list[dict[str, Any]]:
+        """Fetch the frozen Alpaca BTC/USD hourly transfer-screen corpus."""
+        if not self.settings.credentials_configured:
+            raise RuntimeError("market-data credentials are not configured")
+        params: dict[str, Any] = {
+            "symbols": ",".join(V14_UNIVERSE),
+            "timeframe": "1Hour",
+            "start": V14_ALPACA_SCREEN_START.isoformat(),
+            "end": V14_ALPACA_SCREEN_END.isoformat(),
+            "limit": 10000,
+            "sort": "asc",
+        }
+        rows: list[dict[str, Any]] = []
+        page_token: str | None = None
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            for _ in range(12):
+                request_params = dict(params)
+                if page_token:
+                    request_params["page_token"] = page_token
+                response = await client.get(
+                    f"{self.settings.data_base_url}/v1beta3/crypto/"
+                    f"{self.settings.crypto_location}/bars",
+                    headers=self.market_data.headers,
+                    params=request_params,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                rows.extend((payload.get("bars") or {}).get("BTC/USD", []) or [])
+                page_token = payload.get("next_page_token")
+                if not page_token:
+                    break
+            else:
+                raise RuntimeError("v14_hourly_btc_pagination_exceeded_safety_limit")
+
+        unique: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            stamp = str(row.get("t") or row.get("timestamp") or "")
+            if not stamp:
+                continue
+            try:
+                parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            parsed = parsed.astimezone(UTC)
+            if V14_ALPACA_SCREEN_START <= parsed < V14_ALPACA_SCREEN_END:
+                unique[parsed.isoformat()] = dict(row)
+        return [unique[key] for key in sorted(unique)]
 
     async def _finalize(
         self,
@@ -4573,6 +4638,263 @@ class GraenResearchExecutor:
             },
         }
 
+
+    async def _recover_v13_into_v14(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Advance the terminal V13 result into the external V14-R1 preflight."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("v14_campaign_id") == V14_CAMPAIGN_ID:
+                return None
+            if metadata.get("research_stage") in V14_STAGE_KEYS:
+                return None
+
+        for run in runs:
+            if not isinstance(run, Mapping):
+                continue
+            summary = (
+                run.get("result_summary")
+                if isinstance(run.get("result_summary"), Mapping)
+                else {}
+            )
+            if summary.get("campaign_id") == V14_CAMPAIGN_ID:
+                return None
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            terminal_run: Mapping[str, Any] | None = None
+            for run in runs:
+                if not isinstance(run, Mapping):
+                    continue
+                if str(run.get("problem_id") or "") != problem_id:
+                    continue
+                summary = (
+                    run.get("result_summary")
+                    if isinstance(run.get("result_summary"), Mapping)
+                    else {}
+                )
+                if (
+                    summary.get("campaign_id") == V13_CAMPAIGN_ID
+                    and summary.get("state") == "V13_NO_DEVELOPMENT_SURVIVOR"
+                    and summary.get("decision") == "V13_HYPOTHESES_FALSIFIED"
+                ):
+                    terminal_run = run
+                    break
+            if terminal_run is None:
+                continue
+
+            origin_run_id = str(terminal_run.get("run_id") or "")
+            selection = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=origin_run_id or None,
+                artifact_type="CRYPTO_BTC_V14_EXTERNAL_REPLICATION_SELECTION",
+                methodology_version=V14_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V14_CAMPAIGN_ID,
+                    "selected_method": "cost_aware_xgboost_btc",
+                    "selection_basis": (
+                        "deep evidence review prioritized chronological walk-forward "
+                        "BTC XGBoost with transaction-cost-aware switching before any "
+                        "new proprietary hypothesis family"
+                    ),
+                    "manifest": v14_campaign_manifest(),
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_promotion_authority": False,
+                    "crypto_execution_enabled": False,
+                    "live_execution_authorized": False,
+                },
+            )
+            artifact = (
+                selection.get("artifact")
+                if isinstance(selection.get("artifact"), Mapping)
+                else {}
+            )
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V14_PREFLIGHT_STAGE,
+                metadata={
+                    "v14_campaign_id": V14_CAMPAIGN_ID,
+                    "v14_origin": "v13_no_development_survivor_external_replication",
+                    "v13_terminal_run_id": origin_run_id or None,
+                    "v14_selection_artifact_id": artifact.get("artifact_id"),
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v14_preflight_stage_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "next_research_stage": V14_PREFLIGHT_STAGE,
+                "v14_campaign_id": V14_CAMPAIGN_ID,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            print("GRAEN_V13_TO_V14_R1", result, flush=True)
+            return result
+        return None
+
+    async def _execute_btc_xgb_v14(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        stage = str(metadata.get("research_stage") or V14_PREFLIGHT_STAGE)
+        if stage != V14_PREFLIGHT_STAGE:
+            raise RuntimeError(f"unsupported_v14_research_stage:{stage}")
+        self.active_methodology_version = V14_METHODOLOGY_VERSION
+
+        prespec_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_BTC_V14_R1_PREFLIGHT_PRESPEC",
+            methodology_version=V14_METHODOLOGY_VERSION,
+            content={
+                **v14_campaign_manifest(),
+                "frozen_before_alpaca_corpus_access": True,
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        prespec_artifact = (
+            prespec_response.get("artifact")
+            if isinstance(prespec_response.get("artifact"), Mapping)
+            else {}
+        )
+
+        rows = await self._fetch_v14_hourly_btc()
+        result = await asyncio.to_thread(
+            evaluate_v14_alpaca_transfer_screen,
+            rows,
+        )
+        result_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_BTC_V14_R1_BROKER_PREFLIGHT_RESULT",
+            methodology_version=V14_METHODOLOGY_VERSION,
+            content={
+                **result,
+                "prespec_artifact_id": prespec_artifact.get("artifact_id"),
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        result_artifact = (
+            result_response.get("artifact")
+            if isinstance(result_response.get("artifact"), Mapping)
+            else {}
+        )
+        gate = (
+            result.get("broker_feasibility_gate")
+            if isinstance(result.get("broker_feasibility_gate"), Mapping)
+            else {}
+        )
+        survived = bool(gate.get("worth_full_original_replication"))
+        aggregate = (
+            result.get("aggregate")
+            if isinstance(result.get("aggregate"), Mapping)
+            else {}
+        )
+        paper = (
+            aggregate.get("paper_10bp")
+            if isinstance(aggregate.get("paper_10bp"), Mapping)
+            else {}
+        )
+        alpaca = (
+            aggregate.get("alpaca_base_30bp")
+            if isinstance(aggregate.get("alpaca_base_30bp"), Mapping)
+            else {}
+        )
+        if not survived:
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "V14_R1_BROKER_FEASIBILITY_FAIL",
+                    "status": "EXTERNAL_METHOD_PREFLIGHT_REJECTED",
+                    "decision": "V14_R1_DO_NOT_REPLICATE_FURTHER",
+                    "campaign_id": V14_CAMPAIGN_ID,
+                    "candidate_family": V14_FAMILY,
+                    "result_artifact_id": result_artifact.get("artifact_id"),
+                    "paper_10bp_sharpe": paper.get("sharpe"),
+                    "alpaca_base_30bp_sharpe": alpaca.get("sharpe"),
+                    "alpaca_base_30bp_total_return": alpaca.get("total_return"),
+                    "positive_fold_share": gate.get("alpaca_base_positive_fold_share"),
+                    "original_replication_complete": False,
+                    "development_opened": False,
+                    "validation_opened": False,
+                    "holdout_opened": False,
+                    "next_action": "ADVANCE_TO_V14_R2_QUEUE_IMBALANCE_RESEARCH",
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "crypto_execution_enabled": False,
+                    "live_execution_authorized": False,
+                },
+            )
+
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary={
+                "state": "V14_R1_BROKER_FEASIBILITY_SURVIVES",
+                "status": "EXTERNAL_METHOD_PREFLIGHT_PASS",
+                "decision": "CONTINUE_RESEARCH",
+                "campaign_id": V14_CAMPAIGN_ID,
+                "candidate_family": V14_FAMILY,
+                "result_artifact_id": result_artifact.get("artifact_id"),
+                "paper_10bp_sharpe": paper.get("sharpe"),
+                "alpaca_base_30bp_sharpe": alpaca.get("sharpe"),
+                "alpaca_base_30bp_total_return": alpaca.get("total_return"),
+                "positive_fold_share": gate.get("alpaca_base_positive_fold_share"),
+                "original_replication_complete": False,
+                "development_opened": False,
+                "validation_opened": False,
+                "holdout_opened": False,
+                "next_action": "VERIFY_SOURCE_AND_RUN_V14_R1_ORIGINAL_REPLICATION",
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "crypto_execution_enabled": False,
+                "live_execution_authorized": False,
+            },
+        )
+
     async def _recover_v13_into_research_director(
         self,
         snapshot: Mapping[str, Any],
@@ -5079,6 +5401,9 @@ class GraenResearchExecutor:
         v12_to_v13_recovery = await self._recover_exhausted_v12_into_v13(snapshot)
         if v12_to_v13_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v13_to_v14_recovery = await self._recover_v13_into_v14(snapshot)
+        if v13_to_v14_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v13_to_director_recovery = await self._recover_v13_into_research_director(snapshot)
         if v13_to_director_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -5107,6 +5432,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_v14 = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") in V14_STAGE_KEYS
+            for row in (snapshot.get("problems") or [])
+        )
         staged_director = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -5172,7 +5505,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            RESEARCH_DIRECTOR_METHODOLOGY
+            V14_METHODOLOGY_VERSION
+            if staged_v14
+            else RESEARCH_DIRECTOR_METHODOLOGY
             if staged_director
             else V13_METHODOLOGY_VERSION
             if staged_v13
@@ -5213,6 +5548,7 @@ class GraenResearchExecutor:
                 "v11_to_v12_recovery": v11_to_v12_recovery,
                 "v13_interrupted_stage_recovery": v13_interrupted_stage_recovery,
                 "v12_to_v13_recovery": v12_to_v13_recovery,
+                "v13_to_v14_recovery": v13_to_v14_recovery,
                 "v13_to_director_recovery": v13_to_director_recovery,
                 "v12_native_stage_precedence": v12_native_stage_precedence,
                 "v12_claim_diagnostic": v12_claim_diagnostic,
@@ -5235,6 +5571,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") in V14_STAGE_KEYS:
+                return await self._execute_btc_xgb_v14(problem, run)
             if metadata.get("research_stage") == RESEARCH_DIRECTOR_STAGE:
                 return await self._execute_research_director(problem, run)
             if metadata.get("research_stage") in V13_STAGE_KEYS:
