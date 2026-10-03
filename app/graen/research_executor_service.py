@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.market_data import MarketDataClient
 from app.graen.service import GraenGateway
 from app.graen.research_promotion import ResearchPromotion, engineering_problem_ids
+from app.graen.research_director_client import ResearchDirectorClient
 from graen.crypto.research_v7 import (
     CONTEXT_UNIVERSE,
     METHODOLOGY_VERSION as V7_METHODOLOGY_VERSION,
@@ -213,6 +214,10 @@ V13_STAGE_KEYS = {
     V13_HOLDOUT_STAGE,
 }
 
+RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
+RESEARCH_DIRECTOR_METHODOLOGY = "graen-research-director-v1"
+RESEARCH_DIRECTOR_STAGE_KEYS = {RESEARCH_DIRECTOR_STAGE}
+
 
 def _v10_epoch_contract(epoch_index: int) -> dict[str, Any]:
     if epoch_index < 0 or epoch_index >= len(V10_EPOCHS):
@@ -320,6 +325,7 @@ class GraenResearchExecutor:
             timeout_seconds=30.0,
         )
         self.research_promotion = ResearchPromotion(self.gateway)
+        self.research_director = ResearchDirectorClient()
         self.callback_base_url = os.getenv("IREN_CALLBACK_BASE_URL", "").strip().rstrip("/")
         self.callback_token = os.getenv("IREN_CALLBACK_TOKEN", "").strip()
         self.velum_base_url = os.getenv("VELUM_SERVICE_URL", "").strip().rstrip("/")
@@ -388,6 +394,7 @@ class GraenResearchExecutor:
                 V11_METHODOLOGY_VERSION,
                 V12_METHODOLOGY_VERSION,
                 V13_METHODOLOGY_VERSION,
+                RESEARCH_DIRECTOR_METHODOLOGY,
             ],
             "running": running,
             "autorun": self.autorun,
@@ -395,6 +402,7 @@ class GraenResearchExecutor:
             "gateway_configured": self.gateway.configured,
             "research_code_promotion_enabled": True,
             "runtime_github_authorization_configured": self.research_promotion.repository.configured,
+            "research_director_configured": self.research_director.configured,
             "iren_callback_configured": self.callback_configured,
             "velum_candidate_replay_configured": self.velum_configured,
             "forward_shadow_configured": self.shadow_configured,
