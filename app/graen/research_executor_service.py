@@ -691,7 +691,11 @@ class GraenResearchExecutor:
         page_token: str | None = None
         seen_page_tokens: set[str] = set()
         page_count = 0
-        max_pages = 64
+        # Alpaca can paginate this multi-year 4h corpus at substantially
+        # smaller effective page sizes than the requested limit. Keep the
+        # request bounded, but allow enough pages for the frozen 2021-2026
+        # screen while retaining cycle detection.
+        max_pages = 256
         max_rate_limit_retries = 6
         async with httpx.AsyncClient(timeout=45.0) as client:
             for page_index in range(max_pages):
@@ -728,6 +732,20 @@ class GraenResearchExecutor:
                     rows[symbol].extend(payload_bars.get(symbol, []) or [])
                 page_count = page_index + 1
                 page_token = payload.get("next_page_token")
+                if page_count % 25 == 0:
+                    print(
+                        "GRAEN_V14_R2E_DATA_FETCH_PROGRESS",
+                        {
+                            "pages": page_count,
+                            "raw_rows": {
+                                symbol: len(values)
+                                for symbol, values in rows.items()
+                            },
+                            "max_pages": max_pages,
+                            "execution_authority": False,
+                        },
+                        flush=True,
+                    )
                 if not page_token:
                     break
             else:
@@ -5388,6 +5406,109 @@ class GraenResearchExecutor:
             return result
         return None
 
+
+    async def _recover_blocked_v14_r2e_pagination(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Retry the R2E frozen corpus once after the bounded page-cap repair."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if (
+                problem.get("status") != "BLOCKED"
+                or problem.get("domain") != PROBLEM_DOMAIN
+                or metadata.get("research_stage") != V14_R2E_STAGE
+            ):
+                continue
+            retry_count = int(metadata.get("v14_r2e_pagination_retry_count") or 0)
+            if retry_count >= 1:
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            matching_runs = [
+                run
+                for run in runs
+                if isinstance(run, Mapping)
+                and str(run.get("problem_id") or "") == problem_id
+                and run.get("status") == "BLOCKED"
+                and run.get("methodology_version") == V14_R2E_METHODOLOGY_VERSION
+                and isinstance(run.get("result_summary"), Mapping)
+                and str(run.get("result_summary", {}).get("error") or "")
+                == "RuntimeError: v14_r2e_bar_pagination_exceeded_safety_limit"
+            ]
+            if not matching_runs:
+                continue
+            blocked_run = max(
+                matching_runs,
+                key=lambda row: str(row.get("started_at") or ""),
+            )
+            blocked_run_id = str(blocked_run.get("run_id") or "")
+            artifact_response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=blocked_run_id or None,
+                artifact_type="CRYPTO_V14_R2E_PAGINATION_REPAIR",
+                methodology_version=V14_R2E_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V14_R2E_CAMPAIGN_ID,
+                    "blocked_run_id": blocked_run_id or None,
+                    "blocked_error": (
+                        blocked_run.get("result_summary", {}).get("error")
+                    ),
+                    "repair": "expand_bounded_4h_pagination_64_to_256",
+                    "pagination_max_pages": 256,
+                    "pagination_cycle_detection": True,
+                    "rate_limit_retry_cap": 6,
+                    "retry_count": retry_count + 1,
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "crypto_execution_enabled": False,
+                    "live_execution_authorized": False,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            repair_artifact = (
+                artifact_response.get("artifact")
+                if isinstance(artifact_response.get("artifact"), Mapping)
+                else {}
+            )
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V14_R2E_STAGE,
+                metadata={
+                    "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
+                    "v14_r2e_pagination_retry_count": retry_count + 1,
+                    "v14_r2e_recovered_blocked_run_id": blocked_run_id or None,
+                    "v14_r2e_pagination_repair_artifact_id": (
+                        repair_artifact.get("artifact_id")
+                    ),
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v14_r2e_pagination_recovery_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "blocked_run_id": blocked_run_id or None,
+                "next_research_stage": V14_R2E_STAGE,
+                "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
+                "retry_count": retry_count + 1,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            print("GRAEN_V14_R2E_PAGINATION_RECOVERY", result, flush=True)
+            return result
+        return None
+
+
     async def _recover_v13_into_v14(
         self,
         snapshot: Mapping[str, Any],
@@ -7117,6 +7238,9 @@ class GraenResearchExecutor:
         v13_to_v14_recovery = await self._recover_v13_into_v14(snapshot)
         if v13_to_v14_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v14_r2e_pagination_recovery = await self._recover_blocked_v14_r2e_pagination(snapshot)
+        if v14_r2e_pagination_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v14_r2d_to_r2e_recovery = await self._recover_v14_r2d_fail_into_r2e(snapshot)
         if v14_r2d_to_r2e_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -7330,6 +7454,7 @@ class GraenResearchExecutor:
                 "v14_feature_recovery": v14_feature_recovery,
                 "v14_pagination_recovery": v14_pagination_recovery,
                 "v13_to_v14_recovery": v13_to_v14_recovery,
+                "v14_r2e_pagination_recovery": v14_r2e_pagination_recovery,
                 "v14_r2d_to_r2e_recovery": v14_r2d_to_r2e_recovery,
                 "v14_r2c_to_r2d_recovery": v14_r2c_to_r2d_recovery,
                 "v14_r2b_to_r2c_recovery": v14_r2b_to_r2c_recovery,
