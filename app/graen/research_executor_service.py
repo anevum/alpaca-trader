@@ -4700,6 +4700,99 @@ class GraenResearchExecutor:
         }
 
 
+    async def _recover_blocked_v14_runtime_dependency(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Resume the frozen V14 preflight after restoring its ML dependency."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if (
+                problem.get("status") != "BLOCKED"
+                or problem.get("domain") != PROBLEM_DOMAIN
+                or metadata.get("research_stage") != V14_PREFLIGHT_STAGE
+                or metadata.get("v14_campaign_id") != V14_CAMPAIGN_ID
+                or int(metadata.get("v14_dependency_recovery_version") or 0) >= 1
+            ):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            matching_runs = [
+                run
+                for run in runs
+                if isinstance(run, Mapping)
+                and str(run.get("problem_id") or "") == problem_id
+                and run.get("status") == "BLOCKED"
+                and isinstance(run.get("result_summary"), Mapping)
+                and str(run.get("result_summary", {}).get("error") or "")
+                == "ImportError: sklearn needs to be installed in order to use this module"
+            ]
+            if not matching_runs:
+                continue
+            blocked_run = max(
+                matching_runs,
+                key=lambda row: str(row.get("started_at") or ""),
+            )
+            blocked_run_id = str(blocked_run.get("run_id") or "")
+            artifact = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=blocked_run_id or None,
+                artifact_type="CRYPTO_BTC_V14_R1_RUNTIME_DEPENDENCY_REPAIR",
+                methodology_version=V14_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V14_CAMPAIGN_ID,
+                    "blocked_run_id": blocked_run_id or None,
+                    "blocked_error": blocked_run.get("result_summary", {}).get("error"),
+                    "repair": "add_scikit_learn_to_isolated_graen_ml_runtime",
+                    "dependency": "scikit-learn==1.9.1",
+                    "methodology_changed": False,
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "crypto_execution_enabled": False,
+                    "live_execution_authorized": False,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            repair_artifact = (
+                artifact.get("artifact")
+                if isinstance(artifact.get("artifact"), Mapping)
+                else {}
+            )
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V14_PREFLIGHT_STAGE,
+                metadata={
+                    "v14_campaign_id": V14_CAMPAIGN_ID,
+                    "v14_dependency_recovery_version": 1,
+                    "v14_recovered_blocked_run_id": blocked_run_id or None,
+                    "v14_dependency_repair_artifact_id": repair_artifact.get("artifact_id"),
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v14_runtime_dependency_recovery_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "blocked_run_id": blocked_run_id or None,
+                "next_research_stage": V14_PREFLIGHT_STAGE,
+                "v14_campaign_id": V14_CAMPAIGN_ID,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            print("GRAEN_V14_RUNTIME_DEPENDENCY_RECOVERY", result, flush=True)
+            return result
+        return None
+
+
     async def _recover_blocked_v14_feature_pipeline(
         self,
         snapshot: Mapping[str, Any],
@@ -5658,6 +5751,9 @@ class GraenResearchExecutor:
         v12_to_v13_recovery = await self._recover_exhausted_v12_into_v13(snapshot)
         if v12_to_v13_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v14_dependency_recovery = await self._recover_blocked_v14_runtime_dependency(snapshot)
+        if v14_dependency_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v14_feature_recovery = await self._recover_blocked_v14_feature_pipeline(snapshot)
         if v14_feature_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -5811,6 +5907,7 @@ class GraenResearchExecutor:
                 "v11_to_v12_recovery": v11_to_v12_recovery,
                 "v13_interrupted_stage_recovery": v13_interrupted_stage_recovery,
                 "v12_to_v13_recovery": v12_to_v13_recovery,
+                "v14_dependency_recovery": v14_dependency_recovery,
                 "v14_feature_recovery": v14_feature_recovery,
                 "v14_pagination_recovery": v14_pagination_recovery,
                 "v13_to_v14_recovery": v13_to_v14_recovery,

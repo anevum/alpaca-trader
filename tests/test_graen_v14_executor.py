@@ -202,6 +202,58 @@ def test_blocked_v14_pagination_failure_recovers_at_most_twice():
 
 
 
+
+def test_blocked_v14_sklearn_dependency_failure_recovers_once():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {
+                        "research_stage": service.V14_PREFLIGHT_STAGE,
+                        "v14_campaign_id": service.V14_CAMPAIGN_ID,
+                        "v14_feature_recovery_version": 1,
+                        "v14_pagination_recovery_version": 2,
+                    },
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "started_at": "2026-10-03T20:47:21+00:00",
+                    "methodology_version": service.V14_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "state": "RESEARCH_EXECUTION_BLOCKED",
+                        "decision": "REPAIR_REQUIRED",
+                        "next_action": "RESUME_FROZEN_STAGE_AFTER_REPAIR",
+                        "error": "ImportError: sklearn needs to be installed in order to use this module",
+                        "execution_authority": False,
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        first = await runtime._recover_blocked_v14_runtime_dependency(snapshot)
+        assert first["recovered"] is True
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_PREFLIGHT_STAGE
+        assert runtime.gateway.queued[-1]["metadata"]["v14_dependency_recovery_version"] == 1
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_BTC_V14_R1_RUNTIME_DEPENDENCY_REPAIR"
+        assert artifact["content"]["dependency"] == "scikit-learn==1.9.1"
+        assert artifact["content"]["methodology_changed"] is False
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["problems"][0]["metadata"]["v14_dependency_recovery_version"] = 1
+        second = await runtime._recover_blocked_v14_runtime_dependency(snapshot)
+        assert second is None
+
+    asyncio.run(scenario())
+
+
 def test_blocked_v14_zero_row_feature_failure_recovers_once():
     async def scenario():
         snapshot = {
