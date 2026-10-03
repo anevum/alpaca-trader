@@ -124,7 +124,7 @@ from graen.crypto.btc_queue_imbalance_v14_r2a import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.12.0"
+RUNTIME_VERSION = "graen-research-executor-v1.13.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
