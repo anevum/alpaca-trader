@@ -63,3 +63,76 @@ def test_v12_development_gate_requires_positive_aggregate_and_five_of_seven_fold
 def test_v12_opportunity_rejects_non_btc_symbol():
     spec = v12.candidate_specs()[0]
     assert v12.opportunity_at({}, spec, "ETH/USD", datetime(2026, 10, 3, tzinfo=UTC)) is None
+
+
+
+def test_v12_signal_cache_reuses_raw_decisions_without_carrying_cooldown(monkeypatch):
+    spec = v12.candidate_specs()[0]
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(minutes=30)
+    calls = []
+
+    def fake_opportunity(series, candidate, symbol, stamp):
+        calls.append(stamp)
+        return None
+
+    monkeypatch.setattr(v12, "opportunity_at", fake_opportunity)
+    cache = {}
+    first = v12.collect_opportunities(
+        {},
+        spec,
+        start=start,
+        end=end,
+        signal_cache=cache,
+    )
+    first_call_count = len(calls)
+    second = v12.collect_opportunities(
+        {},
+        spec,
+        start=start + timedelta(minutes=5),
+        end=end,
+        signal_cache=cache,
+    )
+
+    assert first == []
+    assert second == []
+    assert first_call_count == 6
+    assert len(calls) == first_call_count
+    assert len(cache) == 6
+
+
+def test_v12_prepared_series_skips_rebuild(monkeypatch):
+    spec = v12.candidate_specs()[0]
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(minutes=30)
+
+    def fail_build(*args, **kwargs):
+        raise AssertionError("prepared series must be reused")
+
+    monkeypatch.setattr(v12, "build_series", fail_build)
+    monkeypatch.setattr(v12, "collect_opportunities", lambda *args, **kwargs: [])
+    monkeypatch.setattr(v12, "simulate", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        v12,
+        "summarize",
+        lambda *args, **kwargs: {
+            "trade_count": 0,
+            "independent_day_blocks": 0,
+            "trades_per_day": 0.0,
+            "expectancy_per_trade": 0.0,
+            "profit_factor": None,
+        },
+    )
+
+    result = v12.evaluate_candidate(
+        {},
+        spec=spec,
+        start=start,
+        end=end,
+        scenario="high",
+        seed=1,
+        prepared_series={},
+        signal_cache={},
+    )
+    assert result["opportunity_count"] == 0
+    assert result["primary"]["trade_count"] == 0
