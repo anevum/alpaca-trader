@@ -106,6 +106,12 @@ def test_v12_shared_series_matches_standalone_candidate_evaluation():
         end=fold_end + timedelta(hours=4),
         warmup_hours=26,
     )
+    raw = v12.collect_raw_opportunities(
+        shared,
+        spec,
+        start=fold_start,
+        end=fold_end,
+    )
     optimized = v12.evaluate_candidate_from_series(
         shared,
         spec=spec,
@@ -113,6 +119,7 @@ def test_v12_shared_series_matches_standalone_candidate_evaluation():
         end=fold_end,
         scenario="high",
         seed=777,
+        raw_opportunities=raw,
     )
 
     assert optimized == standalone
@@ -126,7 +133,9 @@ def test_v12_development_builds_market_series_once(monkeypatch):
         calls["build"] += 1
         return {"BTC/USD": {}}
 
-    def fake_evaluate(series, *, spec, start, end, scenario, seed):
+    def fake_evaluate(
+        series, *, spec, start, end, scenario, seed, raw_opportunities=None
+    ):
         calls["evaluate"] += 1
         return {
             "candidate": spec.to_dict(),
@@ -141,6 +150,7 @@ def test_v12_development_builds_market_series_once(monkeypatch):
 
     monkeypatch.setattr(v12, "candidate_specs", lambda: (spec,))
     monkeypatch.setattr(v12, "build_series", fake_build)
+    monkeypatch.setattr(v12, "collect_raw_opportunities", lambda *args, **kwargs: [])
     monkeypatch.setattr(v12, "evaluate_candidate_from_series", fake_evaluate)
 
     result = v12.evaluate_development({"BTC/USD": []})
