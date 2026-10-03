@@ -40,6 +40,11 @@ RESEARCH_STAGES = {
 }
 
 
+def _is_native_research_stage(stage: str) -> bool:
+    """Native research code supersedes any unfinished generic code-promotion handoff."""
+    return stage in RESEARCH_STAGES and not stage.startswith("CRYPTO_COMPILED_")
+
+
 def _serialize(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -323,6 +328,8 @@ def _queue_stage(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[st
             metadata = _obj(row[0])
             metadata["research_stage"] = stage
             metadata.update(_obj(body.get("metadata")))
+            if _is_native_research_stage(stage):
+                metadata.pop("code_promotion", None)
             cur.execute(
                 """
                 update graen.problems

@@ -91,7 +91,7 @@ from graen.crypto.btc_mechanisms_v12 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.10.1"
+RUNTIME_VERSION = "graen-research-executor-v1.10.2"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -3889,6 +3889,53 @@ class GraenResearchExecutor:
             return result
         return None
 
+    async def _reconcile_v12_native_stage_precedence(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Clear stale generic code-promotion state from an already-staged v12 problem."""
+        for problem in snapshot.get("problems") or []:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            stage = str(metadata.get("research_stage") or "")
+            promotion = metadata.get("code_promotion")
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+                or stage not in V12_STAGE_KEYS
+                or not isinstance(promotion, Mapping)
+                or promotion.get("phase") == "COMPLETE"
+            ):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=stage,
+                metadata={
+                    "v12_campaign_id": metadata.get("v12_campaign_id") or V12_CAMPAIGN_ID,
+                    "v12_native_stage_precedence_reconciled": True,
+                },
+            )
+            queued_problem = queued.get("problem")
+            queued_metadata = (
+                queued_problem.get("metadata")
+                if isinstance(queued_problem, Mapping)
+                and isinstance(queued_problem.get("metadata"), Mapping)
+                else {}
+            )
+            cleared = not isinstance(queued_metadata.get("code_promotion"), Mapping)
+            result = {
+                "problem_id": problem_id,
+                "research_stage": stage,
+                "stale_code_promotion_phase": promotion.get("phase"),
+                "cleared": cleared,
+                "execution_authority": False,
+            }
+            print("GRAEN_V12_NATIVE_STAGE_PRECEDENCE", result, flush=True)
+            return result
+        return None
+
     def _observe_v12_claimability(
         self,
         snapshot: Mapping[str, Any],
@@ -3983,6 +4030,9 @@ class GraenResearchExecutor:
             snapshot = await self.gateway.snapshot()
         v11_to_v12_recovery = await self._recover_exhausted_v11_into_v12(snapshot)
         if v11_to_v12_recovery is not None:
+            snapshot = await self.gateway.snapshot()
+        v12_native_stage_precedence = await self._reconcile_v12_native_stage_precedence(snapshot)
+        if v12_native_stage_precedence is not None:
             snapshot = await self.gateway.snapshot()
         v12_claim_diagnostic = self._observe_v12_claimability(snapshot)
         reconciliation = await self._reconcile_orphaned_confirmatory_claim(snapshot)
@@ -4089,6 +4139,7 @@ class GraenResearchExecutor:
                 "v10_campaign_seed": v10_campaign_seed,
                 "v10_corpus_recovery": v10_corpus_recovery,
                 "v11_to_v12_recovery": v11_to_v12_recovery,
+                "v12_native_stage_precedence": v12_native_stage_precedence,
                 "v12_claim_diagnostic": v12_claim_diagnostic,
                 "blocked_v10": blocked_v10,
             }

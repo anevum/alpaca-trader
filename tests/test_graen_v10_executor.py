@@ -675,3 +675,62 @@ def test_v12_claim_diagnostic_exposes_claim_predicate_without_mutation():
     }
     assert runtime.gateway.queued_stages == []
     assert runtime.gateway.completions == []
+
+
+
+def test_reconcile_v12_native_stage_precedence_requeues_without_execution_authority():
+    problem_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    snapshot = {
+        "problems": [{
+            "problem_id": problem_id,
+            "status": "WAITING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V12_DEVELOPMENT_STAGE,
+                "v12_campaign_id": service.V12_CAMPAIGN_ID,
+                "code_promotion": {"phase": "FREEZE"},
+            },
+        }],
+        "runs": [],
+    }
+
+    async def scenario():
+        runtime = _runtime()
+        result = await runtime._reconcile_v12_native_stage_precedence(snapshot)
+        assert result == {
+            "problem_id": problem_id,
+            "research_stage": service.V12_DEVELOPMENT_STAGE,
+            "stale_code_promotion_phase": "FREEZE",
+            "cleared": True,
+            "execution_authority": False,
+        }
+        queued = runtime.gateway.queued_stages[-1]
+        assert queued["problem_id"] == problem_id
+        assert queued["stage"] == service.V12_DEVELOPMENT_STAGE
+        assert queued["metadata"]["v12_native_stage_precedence_reconciled"] is True
+
+    asyncio.run(scenario())
+
+
+def test_engineering_promotion_selector_skips_native_v12_stage():
+    from app.graen.research_promotion import engineering_problem_ids
+
+    snapshot = {
+        "problems": [{
+            "problem_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            "status": "WAITING",
+            "metadata": {
+                "research_stage": service.V12_DEVELOPMENT_STAGE,
+                "v12_campaign_id": service.V12_CAMPAIGN_ID,
+                "code_promotion": {"phase": "FREEZE"},
+            },
+        }],
+        "runs": [{
+            "problem_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            "result_summary": {
+                "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+            },
+        }],
+    }
+    assert list(engineering_problem_ids(snapshot)) == []
