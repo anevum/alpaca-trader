@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 from uuid import UUID
 
 import psycopg
@@ -1123,6 +1123,113 @@ def _promotion_save(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict
     return {"revision":revision,"prespec_artifact_id":prespec_id}
 
 
+CRYPTO_EXECUTION_CONTRACT_KEYS = (
+    "strategy_family",
+    "strategy_version_id",
+    "model_version",
+    "calibration_version",
+    "regime_version",
+    "execution_adapter_version",
+)
+
+
+def _crypto_execution_contract(value: Mapping[str, Any] | None) -> dict[str, str]:
+    source = value if isinstance(value, Mapping) else {}
+    return {
+        key: str(source.get(key) or "").strip()
+        for key in CRYPTO_EXECUTION_CONTRACT_KEYS
+    }
+
+
+def crypto_promotion_matches_contract(
+    content: Mapping[str, Any],
+    requested_contract: Mapping[str, Any],
+) -> bool:
+    requested = _crypto_execution_contract(requested_contract)
+    if any(not requested[key] for key in CRYPTO_EXECUTION_CONTRACT_KEYS):
+        return False
+    artifact_contract = _crypto_execution_contract(
+        content.get("execution_contract")
+        if isinstance(content, Mapping)
+        else None
+    )
+    if artifact_contract != requested:
+        return False
+    return bool(
+        content.get("statistical_promotion_ready") is True
+        or content.get("promotion_ready") is True
+        or content.get("passed") is True
+        and str(content.get("stage") or "").upper() == "HOLDOUT"
+    )
+
+
+def _crypto_promotion_status(
+    conn: psycopg.Connection[Any],
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    requested = _crypto_execution_contract(_obj(body.get("execution_contract")))
+    if any(not requested[key] for key in CRYPTO_EXECUTION_CONTRACT_KEYS):
+        return {
+            "status": "GATED",
+            "promotion_ready": False,
+            "reason": "incomplete_execution_contract",
+            "execution_contract": requested,
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select artifact_id,problem_id,run_id,artifact_type,methodology_version,
+                   content,created_at
+            from graen.artifacts
+            where artifact_type like 'CRYPTO_%PROMOTION_READY%'
+            order by created_at desc
+            limit 100
+            """
+        )
+        rows = cur.fetchall()
+
+    for (
+        artifact_id,
+        problem_id,
+        run_id,
+        artifact_type,
+        methodology_version,
+        content,
+        created_at,
+    ) in rows:
+        payload = _obj(content)
+        if not crypto_promotion_matches_contract(payload, requested):
+            continue
+        return {
+            "status": "PROMOTION_READY",
+            "promotion_ready": True,
+            "reason": "matching_protected_research_artifact",
+            "execution_contract": requested,
+            "artifact": {
+                "artifact_id": str(artifact_id),
+                "problem_id": str(problem_id),
+                "run_id": str(run_id) if run_id else None,
+                "artifact_type": artifact_type,
+                "methodology_version": methodology_version,
+                "created_at": created_at.isoformat() if created_at else None,
+            },
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+
+    return {
+        "status": "GATED",
+        "promotion_ready": False,
+        "reason": "no_matching_promotion_artifact",
+        "execution_contract": requested,
+        "execution_authority": False,
+        "live_execution_authorized": False,
+    }
+
+
 def handle_graen_action(
     database_url: str,
     action: str | None,
@@ -1149,6 +1256,7 @@ def handle_graen_action(
             "compiled_stage_evidence":_compiled_evidence,
             "research_promotion_claim":_promotion_claim,
             "research_promotion_save":_promotion_save,
+            "crypto_promotion_status":_crypto_promotion_status,
         }
         handler=handlers.get(str(action or ""))
         if not handler:

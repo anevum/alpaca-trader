@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import uuid4
@@ -44,13 +45,31 @@ class AlpacaClient:
     ) -> Any:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.request(
-                method,
-                f"{self.settings.base_url}{path}",
-                headers=self.headers,
-                **kwargs,
-            )
+
+        method_upper = method.upper()
+        attempts = 3 if method_upper == "GET" else 1
+        transient = (
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+        )
+
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.request(
+                        method,
+                        f"{self.settings.base_url}{path}",
+                        headers=self.headers,
+                        **kwargs,
+                    )
+            except transient:
+                if attempt + 1 >= attempts:
+                    raise
+                await asyncio.sleep(0.25 * (2 ** attempt))
+                continue
+
             if allow_404 and response.status_code == 404:
                 return None
             try:
@@ -64,6 +83,8 @@ class AlpacaClient:
             if response.status_code == 204:
                 return None
             return response.json()
+
+        raise RuntimeError("unreachable broker request retry state")
 
     async def account(self) -> dict[str, Any]:
         raw = await self._request("GET", "/v2/account")

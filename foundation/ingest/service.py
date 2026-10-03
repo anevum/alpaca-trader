@@ -604,6 +604,54 @@ def scheduler_gateway_post(
     }
 
 
+@app.get("/v1/crypto-promotion-status")
+def crypto_promotion_status(
+    strategy_family: str,
+    strategy_version_id: str,
+    model_version: str,
+    calibration_version: str,
+    regime_version: str,
+    execution_adapter_version: str,
+    x_anevum_foundation_token: str | None = Header(
+        default=None,
+        alias="x-anevum-foundation-token",
+    ),
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(
+        x_anevum_foundation_token,
+        x_anevum_ingest_token,
+    )
+    contract = {
+        "strategy_family": strategy_family,
+        "strategy_version_id": strategy_version_id,
+        "model_version": model_version,
+        "calibration_version": calibration_version,
+        "regime_version": regime_version,
+        "execution_adapter_version": execution_adapter_version,
+    }
+    try:
+        result = handle_graen_action(
+            database_url(),
+            "crypto_promotion_status",
+            {"execution_contract": contract},
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"crypto_promotion_status_failed:{type(exc).__name__}",
+        ) from exc
+    return {
+        "ok": True,
+        **result,
+        "execution_authority": False,
+        "live_execution_authorized": False,
+    }
+
+
 @app.get("/v1/graen-gateway")
 def graen_gateway_get(
     x_graen_gateway_token: str | None = Header(

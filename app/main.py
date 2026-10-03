@@ -20,6 +20,7 @@ from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .crypto_execution import CryptoExecutionEngine
+from .crypto_promotion import fetch_crypto_promotion_status
 from .crypto_layer import (
     CryptoMarketDataClient,
     CryptoRollingMomentumStrategy,
@@ -691,6 +692,9 @@ async def crypto_monitor_loop():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
                 runtime_state.begin_crypto_cycle(uuid4().hex)
+                runtime_state.crypto_graen_promotion = (
+                    await fetch_crypto_promotion_status(settings)
+                )
                 result = await crypto_engine.run_once()
                 print(
                     "CRYPTO_EXECUTION_CYCLE",
