@@ -12,6 +12,19 @@ class FakeGateway:
         self.completions = []
         self.queued_stages = []
         self.heartbeats = []
+        self.created_problems = []
+
+    async def create_problem(self, payload):
+        self.created_problems.append(payload)
+        return {
+            "ok": True,
+            "problem": {
+                "problem_id": "55555555-5555-5555-5555-555555555555",
+                "status": "QUEUED",
+                "domain": payload.get("domain"),
+                "metadata": payload.get("metadata") or {},
+            },
+        }
 
     async def record_artifact(self, **kwargs):
         self.artifacts.append(kwargs)
@@ -413,6 +426,41 @@ def test_recover_exhausted_v9_into_v10_is_fail_closed_and_idempotent():
             }],
         }
         assert await runtime._recover_exhausted_v9_into_v10(wrong_terminal) is None
+        assert len(runtime.gateway.queued_stages) == 1
+
+    asyncio.run(scenario())
+
+
+def test_ensure_v10_campaign_seed_creates_one_research_only_problem():
+    async def scenario():
+        runtime = _runtime()
+        result = await runtime._ensure_v10_campaign_seed({"problems": [], "runs": []})
+        assert result == {
+            "seeded": True,
+            "problem_id": "55555555-5555-5555-5555-555555555555",
+            "next_research_stage": service.V10_DEVELOPMENT_STAGE,
+            "campaign_id": service.V10_CAMPAIGN_ID,
+        }
+        assert len(runtime.gateway.created_problems) == 1
+        created = runtime.gateway.created_problems[0]
+        assert created["domain"] == service.PROBLEM_DOMAIN
+        assert created["metadata"]["v10_campaign_id"] == service.V10_CAMPAIGN_ID
+        assert created["constraints"]["execution_authority"] is False
+        assert created["constraints"]["broker_orders_possible"] is False
+        assert created["constraints"]["production_promotion_authority"] is False
+        assert runtime.gateway.queued_stages[-1]["stage"] == service.V10_DEVELOPMENT_STAGE
+
+        existing = {
+            "problems": [{
+                "problem_id": "existing-v10",
+                "status": "WAITING",
+                "domain": service.PROBLEM_DOMAIN,
+                "metadata": {"v10_campaign_id": service.V10_CAMPAIGN_ID},
+            }],
+            "runs": [],
+        }
+        assert await runtime._ensure_v10_campaign_seed(existing) is None
+        assert len(runtime.gateway.created_problems) == 1
         assert len(runtime.gateway.queued_stages) == 1
 
     asyncio.run(scenario())
