@@ -1399,3 +1399,221 @@ def test_v14_r2e_blocked_pagination_recovers_once_without_methodology_change():
         assert runtime.gateway.queued == []
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r2e_failure_advances_once_to_r2f_daily_slow_momentum():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-03T23:06:21+00:00",
+                    "methodology_version": service.V14_R2E_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2E_CAMPAIGN_ID,
+                        "state": "V14_R2E_BROKER_FEASIBILITY_FAIL",
+                        "decision": "V14_R2E_DO_NOT_PROMOTE",
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_v14_r2e_fail_into_r2f(snapshot)
+
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_R2F_STAGE
+        assert result["adaptive_selection_disclosed"] is True
+        assert result["fresh_confirmation_required"] == "FORWARD_SHADOW"
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2F_STAGE
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_V14_R2F_SLOW_MOMENTUM_SELECTION"
+        assert artifact["content"]["adaptive_selection_disclosed"] is True
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["runs"].append(
+            {
+                "run_id": "fefefefe-fefe-fefe-fefe-fefefefefefe",
+                "problem_id": PROBLEM_ID,
+                "status": "WAITING",
+                "methodology_version": service.V14_R2F_METHODOLOGY_VERSION,
+                "result_summary": {
+                    "campaign_id": service.V14_R2F_CAMPAIGN_ID,
+                    "state": "V14_R2F_ADAPTIVE_DISCOVERY_SURVIVES_TO_FORWARD_SHADOW",
+                },
+            }
+        )
+        runtime.gateway.queued.clear()
+        second = await runtime._recover_v14_r2e_fail_into_r2f(snapshot)
+        assert second is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2f_pass_is_adaptive_and_stops_before_live(monkeypatch):
+    async def scenario():
+        runtime = _runtime()
+
+        async def fake_fetch():
+            return {"BTC/USD": []}
+
+        runtime._fetch_v14_r2f_btc_daily = fake_fetch
+
+        def fake_evaluate(_rows):
+            return {
+                "campaign_id": service.V14_R2F_CAMPAIGN_ID,
+                "adaptive_recent_window": {
+                    "scenarios": {
+                        "taker_stress_30bp": {
+                            "bar_count": 638,
+                            "entry_count": 5,
+                            "turnover_units": 10,
+                            "total_return": 0.214,
+                            "sharpe": 0.508,
+                            "max_drawdown": -0.282,
+                            "positive_time_quarter_share": 0.50,
+                        }
+                    }
+                },
+                "broker_feasibility_screen": {
+                    "survives_to_forward_shadow": True
+                },
+            }
+
+        monkeypatch.setattr(
+            service,
+            "evaluate_v14_r2f_slow_momentum",
+            fake_evaluate,
+        )
+        problem = {
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V14_R2F_STAGE,
+                "v14_r2f_campaign_id": service.V14_R2F_CAMPAIGN_ID,
+                "adaptive_selection_disclosed": True,
+            },
+        }
+        result = await runtime._execute_btc_slow_momentum_v14_r2f(
+            problem,
+            {"run_id": V14_RUN_ID},
+        )
+
+        assert (
+            result["state"]
+            == "V14_R2F_ADAPTIVE_DISCOVERY_SURVIVES_TO_FORWARD_SHADOW"
+        )
+        assert result["decision"] == "START_FRESH_FORWARD_SHADOW_REQUIRED"
+        assert (
+            result["next_action"]
+            == "IMPLEMENT_AND_ACTIVATE_V14_R2F_FRESH_FORWARD_SHADOW"
+        )
+        assert result["evidence_role"] == "ADAPTIVE_DISCOVERY_ONLY"
+        assert result["independent_historical_validation"] is False
+        assert result["independent_historical_holdout"] is False
+        assert result["shadow_only"] is True
+        assert result["promotion_eligible"] is False
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["live_execution_authorized"] is False
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2f_fetch_uses_bounded_daily_chunks(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        calls = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, _url, *, headers, params):
+            type(self).calls.append(dict(params))
+            token = params.get("page_token")
+            base = datetime.fromisoformat(
+                str(params["start"]).replace("Z", "+00:00")
+            )
+            offset = 0 if token is None else 1
+            stamp = (base + timedelta(days=offset)).isoformat().replace(
+                "+00:00", "Z"
+            )
+            return FakeResponse(
+                {
+                    "bars": {
+                        "BTC/USD": [
+                            {
+                                "t": stamp,
+                                "o": 100.0,
+                                "h": 101.0,
+                                "l": 99.0,
+                                "c": 100.5,
+                                "v": 1.0,
+                            }
+                        ]
+                    },
+                    "next_page_token": (
+                        "daily-page-2" if token is None else None
+                    ),
+                }
+            )
+
+    async def scenario():
+        runtime = _runtime()
+        runtime.settings = SimpleNamespace(
+            credentials_configured=True,
+            data_base_url="https://example.test",
+            crypto_location="us",
+        )
+        runtime.market_data = SimpleNamespace(headers={"X-Test": "1"})
+        monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+
+        rows = await runtime._fetch_v14_r2f_btc_daily()
+
+        assert len(rows["BTC/USD"]) > 20
+        first_pages = [
+            row for row in FakeAsyncClient.calls if "page_token" not in row
+        ]
+        second_pages = [
+            row
+            for row in FakeAsyncClient.calls
+            if row.get("page_token") == "daily-page-2"
+        ]
+        assert len(first_pages) == len(second_pages)
+        assert len(first_pages) >= 10
+        assert all(
+            row["timeframe"] == "1Day"
+            for row in FakeAsyncClient.calls
+        )
+
+    asyncio.run(scenario())
