@@ -6186,6 +6186,7 @@ class GraenResearchExecutor:
         """Activate fresh-only daily shadow after adaptive R2F broker feasibility."""
         problems = snapshot.get("problems") or []
         runs = snapshot.get("runs") or []
+        artifacts = snapshot.get("artifacts") or []
         for problem in problems:
             if not isinstance(problem, Mapping):
                 continue
@@ -6213,6 +6214,20 @@ class GraenResearchExecutor:
                 continue
 
             problem_id = str(problem.get("problem_id") or "")
+            if any(
+                isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("artifact_type")
+                == "CRYPTO_V14_R2F_FORWARD_SHADOW_ACTIVATION"
+                and (
+                    not isinstance(row.get("content"), Mapping)
+                    or row.get("content", {}).get("candidate_id")
+                    == v14_r2f_candidate_spec().candidate_id
+                )
+                for row in artifacts
+            ):
+                continue
+
             matching = [
                 row
                 for row in runs
