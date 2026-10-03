@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from app.graen import research_executor_service as service
 
@@ -115,6 +116,69 @@ def test_v14_recovery_is_idempotent_after_any_v14_result():
         result = await runtime._recover_v13_into_v14(snapshot)
         assert result is None
         assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+
+
+def test_v14_hourly_fetch_allows_more_than_twelve_pages(monkeypatch):
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, _url, *, headers, params):
+            token = params.get("page_token")
+            index = 0 if token is None else int(str(token).replace("page-", ""))
+            next_token = f"page-{index + 1}" if index < 13 else None
+            stamp = f"2021-01-01T{index:02d}:00:00Z"
+            return FakeResponse(
+                {
+                    "bars": {
+                        "BTC/USD": [
+                            {
+                                "t": stamp,
+                                "o": 100.0 + index,
+                                "h": 101.0 + index,
+                                "l": 99.0 + index,
+                                "c": 100.5 + index,
+                                "v": 1.0,
+                            }
+                        ]
+                    },
+                    "next_page_token": next_token,
+                }
+            )
+
+    async def scenario():
+        runtime = _runtime()
+        runtime.settings = SimpleNamespace(
+            credentials_configured=True,
+            data_base_url="https://example.test",
+            crypto_location="us",
+        )
+        runtime.market_data = SimpleNamespace(headers={"X-Test": "1"})
+        monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+        rows = await runtime._fetch_v14_hourly_btc()
+        assert len(rows) == 14
+        assert rows[0]["t"] == "2021-01-01T00:00:00Z"
+        assert rows[-1]["t"] == "2021-01-01T13:00:00Z"
 
     asyncio.run(scenario())
 
