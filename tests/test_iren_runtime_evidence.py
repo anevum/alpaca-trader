@@ -2,6 +2,12 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from app.iren import codex_github, executor_service
+
 from app.iren.codex_github import inspect_runtime_inventory
 from app.iren.core import reduce_state
 from app.iren.service import POLICY, _executor_root_url, _runtime_evidence
@@ -310,3 +316,193 @@ def test_executor_root_url_accepts_configured_job_accept_endpoint():
     assert _executor_root_url(
         "http://iren-executor.railway.internal:8080"
     ) == "http://iren-executor.railway.internal:8080"
+
+
+def _status(name):
+    spec = codex_github.PINNED_RUNTIME_STATUSES[name]
+    return {
+        "context": spec["context"],
+        "state": "success",
+        "target_url": (
+            f"https://railway.com/project/{spec['project_id']}/service/{spec['service_id']}"
+            f"?id=02f9199d-0684-4365-9e1b-b14e17097c63&environmentId={spec['environment_id']}"
+        ),
+    }
+
+
+def _http_error(code, message="sensitive-provider-body"):
+    request = httpx.Request("GET", "https://api.github.com/secret-url?token=secret-token")
+    response = httpx.Response(code, request=request, json={"message": message})
+    return httpx.HTTPStatusError("secret-exception", request=request, response=response)
+
+
+@pytest.mark.parametrize("failure,reason", [
+    (_http_error(401), "provider_authentication_failed"),
+    (_http_error(403, "Resource not accessible by personal access token"), "provider_forbidden"),
+    (_http_error(404), "provider_not_found_or_inaccessible"),
+    (_http_error(429), "provider_rate_limited"),
+    (_http_error(503), "provider_http_error"),
+    (httpx.ReadTimeout("secret-timeout"), "provider_timeout"),
+    (httpx.ConnectError("secret-connection"), "provider_unavailable"),
+    (ValueError("secret-json"), "provider_invalid_response"),
+])
+def test_one_provider_failure_preserves_other_service_evidence(failure, reason):
+    calls = []
+
+    async def get(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise failure
+        return {"statuses": [_status("CRYPTO_EDGE")]}
+
+    inventory = asyncio.run(inspect_runtime_inventory(get))
+    failed = inventory["services"]["VELUM"]
+    assert inventory["complete"] is False
+    assert failed["verified"] is False
+    assert failed["deployment"] is None
+    assert failed["reason"] == reason
+    assert failed["provider_request"] == (
+        "GET /repos/anevum/alpaca-trader/commits/"
+        "1663c5ab4516df890cdea70929a9d14275bfc7d6/status"
+    )
+    assert inventory["services"]["CRYPTO_EDGE"]["verified"] is True
+    assert len(calls) == 2
+    assert "secret" not in str(inventory)
+    assert "sensitive-provider-body" not in str(inventory)
+
+
+@pytest.mark.parametrize("body", [None, [], {}, {"statuses": None}, {"statuses": {}}, {"statuses": [None]}])
+def test_malformed_provider_response_is_explicitly_unverified(body):
+    async def get(path):
+        return body
+
+    inventory = asyncio.run(inspect_runtime_inventory(get))
+    assert inventory["complete"] is False
+    assert set(inventory["services"]) == {"VELUM", "CRYPTO_EDGE"}
+    for row in inventory["services"].values():
+        assert row["verified"] is False
+        assert row["deployment"] is None
+        assert row["reason"] == "provider_invalid_response"
+
+
+@pytest.mark.parametrize("rows,reason", [
+    ([], "status_missing"),
+    ([_status("VELUM"), _status("VELUM")], "status_ambiguous"),
+    ([{**_status("VELUM"), "state": "failure"}], "status_not_verified"),
+    ([{**_status("VELUM"), "target_url": "https://evil.example/"}], "status_not_verified"),
+])
+def test_unverifiable_status_does_not_discard_valid_sibling(rows, reason):
+    async def get(path):
+        return {"statuses": rows + [_status("CRYPTO_EDGE")]}
+
+    inventory = asyncio.run(inspect_runtime_inventory(get))
+    assert inventory["services"]["VELUM"]["verified"] is False
+    assert inventory["services"]["VELUM"]["reason"] == reason
+    assert inventory["services"]["CRYPTO_EDGE"]["verified"] is True
+
+
+def test_successful_lookup_is_reused_only_within_one_observation():
+    calls = []
+
+    async def get(path):
+        calls.append(path)
+        return {"statuses": [_status("VELUM"), _status("CRYPTO_EDGE")]}
+
+    assert asyncio.run(inspect_runtime_inventory(get))["complete"] is True
+    assert len(calls) == 1
+    assert asyncio.run(inspect_runtime_inventory(get))["complete"] is True
+    assert len(calls) == 2
+
+
+def test_provider_deadline_preserves_second_service(monkeypatch):
+    monkeypatch.setattr(codex_github, "RUNTIME_LOOKUP_TIMEOUT_SECONDS", 0.01)
+    calls = []
+
+    async def get(path):
+        calls.append(path)
+        if len(calls) == 1:
+            await asyncio.Event().wait()
+        return {"statuses": [_status("CRYPTO_EDGE")]}
+
+    inventory = asyncio.run(inspect_runtime_inventory(get))
+    assert inventory["services"]["VELUM"]["reason"] == "provider_timeout"
+    assert inventory["services"]["CRYPTO_EDGE"]["verified"] is True
+
+
+def test_unverified_provider_evidence_cannot_fill_topology_gaps():
+    services = _services()
+    services["VELUM"]["runtime_identity"]["git_commit"] = None
+    services["VELUM"]["runtime_identity"]["deployment_id"] = None
+    observation = _observation(services)
+    observation["provider_inventory"] = {"services": {"VELUM": {
+        "verified": False, "revision": SHA, "deployment": "untrusted-deployment",
+    }}}
+    state, _ = reduce_state({}, observation, POLICY)
+    value = topology(observation, state, _self_identity())
+    assert value["inventory_complete"] is False
+    assert set(value["inventory_gaps"]["VELUM"]) == {"revision", "deployment"}
+    row = next(row for row in value["services"] if row["service_id"] == "VELUM")
+    assert row["deployment"] is None
+
+
+def test_inventory_http_contract_keeps_auth_and_reports_partial_failure(monkeypatch, capsys):
+    monkeypatch.setenv("IREN_EXECUTOR_TOKEN", "t" * 40)
+    monkeypatch.setenv("IREN_GITHUB_TOKEN", "g" * 40)
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "anevum/alpaca-trader")
+    calls = []
+
+    async def github(method, path):
+        assert method == "GET"
+        calls.append(path)
+        if len(calls) == 1:
+            raise _http_error(403, "Resource not accessible by personal access token")
+        return {"statuses": [_status("CRYPTO_EDGE")]}
+
+    monkeypatch.setattr(executor_service.runtime, "_github_json", github)
+    with TestClient(executor_service.app) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/v1/evidence/runtime-inventory").status_code == 401
+        assert calls == []
+        response = client.get("/v1/evidence/runtime-inventory", headers={"x-anevum-scheduler-token": "t" * 40})
+    assert response.status_code == 200
+    inventory = response.json()
+    assert inventory["complete"] is False
+    assert inventory["services"]["VELUM"]["http_status"] == 403
+    assert inventory["services"]["VELUM"]["verified"] is False
+    assert inventory["services"]["CRYPTO_EDGE"]["verified"] is True
+    log = capsys.readouterr().out
+    assert "iren_runtime_inventory_evidence" in log
+    assert '"level": "warning"' in log
+    assert "secret" not in log
+    assert "t" * 40 not in log
+    assert "g" * 40 not in log
+
+
+@pytest.mark.parametrize("repo,token,reason", [
+    ("anevum/alpaca-trader", "", "provider_credentials_missing"),
+    ("other/repo", "g" * 40, "provider_repository_not_allowed"),
+    ("anevum/alpaca-trader", "g" * 40, "provider_forbidden"),
+])
+def test_inventory_http_200_does_not_mean_evidence_is_verified(monkeypatch, repo, token, reason):
+    monkeypatch.setenv("IREN_EXECUTOR_TOKEN", "t" * 40)
+    monkeypatch.setenv("IREN_GITHUB_TOKEN", token)
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", repo)
+    calls = []
+
+    async def github(method, path):
+        calls.append(path)
+        raise _http_error(403)
+
+    monkeypatch.setattr(executor_service.runtime, "_github_json", github)
+    with TestClient(executor_service.app) as client:
+        response = client.get("/v1/evidence/runtime-inventory", headers={"x-anevum-scheduler-token": "t" * 40})
+    assert response.status_code == 200
+    inventory = response.json()
+    assert inventory["complete"] is False
+    assert inventory["read_only"] is True
+    assert inventory["provider_write_authority"] is False
+    for row in inventory["services"].values():
+        assert row["verified"] is False
+        assert row["deployment"] is None
+        assert row["reason"] == reason
+    assert len(calls) == (2 if reason == "provider_forbidden" else 0)
