@@ -5079,6 +5079,9 @@ class GraenResearchExecutor:
         v12_to_v13_recovery = await self._recover_exhausted_v12_into_v13(snapshot)
         if v12_to_v13_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v13_to_director_recovery = await self._recover_v13_into_research_director(snapshot)
+        if v13_to_director_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v12_native_stage_precedence = await self._reconcile_v12_native_stage_precedence(snapshot)
         if v12_native_stage_precedence is not None:
             snapshot = await self.gateway.snapshot()
@@ -5104,6 +5107,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_director = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") == RESEARCH_DIRECTOR_STAGE
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v13 = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -5161,7 +5172,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V13_METHODOLOGY_VERSION
+            RESEARCH_DIRECTOR_METHODOLOGY
+            if staged_director
+            else V13_METHODOLOGY_VERSION
             if staged_v13
             else V12_METHODOLOGY_VERSION
             if staged_v12
@@ -5200,6 +5213,7 @@ class GraenResearchExecutor:
                 "v11_to_v12_recovery": v11_to_v12_recovery,
                 "v13_interrupted_stage_recovery": v13_interrupted_stage_recovery,
                 "v12_to_v13_recovery": v12_to_v13_recovery,
+                "v13_to_director_recovery": v13_to_director_recovery,
                 "v12_native_stage_precedence": v12_native_stage_precedence,
                 "v12_claim_diagnostic": v12_claim_diagnostic,
                 "v13_claim_diagnostic": v13_claim_diagnostic,
@@ -5221,6 +5235,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") == RESEARCH_DIRECTOR_STAGE:
+                return await self._execute_research_director(problem, run)
             if metadata.get("research_stage") in V13_STAGE_KEYS:
                 return await self._execute_btc_hypotheses_v13(problem, run)
             if metadata.get("research_stage") in V12_STAGE_KEYS:
