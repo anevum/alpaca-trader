@@ -30,6 +30,12 @@ from graen.crypto.btc_trend_pullback_v11 import (
     UNIVERSE as V11_UNIVERSE,
     spec_from_dict as v11_spec_from_dict,
 )
+from graen.crypto.btc_mechanisms_v12 import (
+    METHODOLOGY_VERSION as V12_METHODOLOGY_VERSION,
+    UNIVERSE as V12_UNIVERSE,
+    opportunity_at as v12_opportunity_at,
+    spec_from_dict as v12_spec_from_dict,
+)
 
 
 UTC = timezone.utc
@@ -38,6 +44,7 @@ SUPPORTED_CANDIDATE_METHODOLOGIES = {
     V9_METHODOLOGY_VERSION,
     V10_METHODOLOGY_VERSION,
     V11_METHODOLOGY_VERSION,
+    V12_METHODOLOGY_VERSION,
 }
 MIN_READY_TRADES = 30
 MIN_READY_DAYS = 20
@@ -202,6 +209,8 @@ class CandidateForwardShadow:
 
     def _symbols(self) -> tuple[str, ...]:
         methodology = self._candidate_methodology()
+        if methodology == V12_METHODOLOGY_VERSION:
+            return tuple(V12_UNIVERSE)
         if methodology == V11_METHODOLOGY_VERSION:
             return tuple(V11_UNIVERSE)
         if methodology in {V9_METHODOLOGY_VERSION, V10_METHODOLOGY_VERSION}:
@@ -254,6 +263,8 @@ class CandidateForwardShadow:
             v10_spec_from_dict(candidate_spec)
         elif methodology == V11_METHODOLOGY_VERSION:
             v11_spec_from_dict(candidate_spec)
+        elif methodology == V12_METHODOLOGY_VERSION:
+            v12_spec_from_dict(candidate_spec)
 
         activation_id = str(activation.get("activation_id") or "")
         if not activation_id:
@@ -453,6 +464,8 @@ class CandidateForwardShadow:
             return v10_spec_from_dict(self._candidate_spec())
         if methodology == V11_METHODOLOGY_VERSION:
             return v11_spec_from_dict(self._candidate_spec())
+        if methodology == V12_METHODOLOGY_VERSION:
+            return v12_spec_from_dict(self._candidate_spec())
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
@@ -485,6 +498,8 @@ class CandidateForwardShadow:
         methodology = self._candidate_methodology()
         if methodology == V9_METHODOLOGY_VERSION:
             return v9_opportunity_at(series, spec, symbol, stamp)
+        if methodology == V12_METHODOLOGY_VERSION:
+            return v12_opportunity_at(series, spec, symbol, stamp)
         if methodology in {V10_METHODOLOGY_VERSION, V11_METHODOLOGY_VERSION}:
             return v10_opportunity_at(series, spec, symbol, stamp)
         raise RuntimeError(
