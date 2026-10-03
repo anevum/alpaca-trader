@@ -591,6 +591,17 @@ class GraenResearchExecutor:
                 raise
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"[:1000]
+                print(
+                    "GRAEN_RESEARCH_EXECUTOR_LOOP_ERROR",
+                    {
+                        "error": self.last_error,
+                        "active_problem_id": self.active_problem_id,
+                        "runtime_version": RUNTIME_VERSION,
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                    },
+                    flush=True,
+                )
                 try:
                     await self._heartbeat()
                 except Exception:
