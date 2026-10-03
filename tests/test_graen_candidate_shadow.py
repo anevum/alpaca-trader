@@ -10,6 +10,10 @@ from graen.crypto.trend_pullback_v10 import (
     METHODOLOGY_VERSION as V10_METHODOLOGY_VERSION,
     candidate_specs as v10_candidate_specs,
 )
+from graen.crypto.btc_forward_v11 import (
+    METHODOLOGY_VERSION as V11_METHODOLOGY_VERSION,
+    candidate_specs as v11_candidate_specs,
+)
 from graen.crypto.candidate_shadow import CandidateForwardShadow
 
 
@@ -138,3 +142,57 @@ def test_candidate_shadow_accepts_v10_without_execution_authority():
     assert runtime.status()["candidate_id"] == spec["candidate_id"]
     assert runtime.execution_authority is False
     assert runtime.broker_orders_possible is False
+
+
+def test_candidate_shadow_accepts_v11_btc_only_without_execution_authority():
+    spec = v11_candidate_specs()[0].to_dict()
+    payload = {
+        **activation(),
+        "activation_id": "activation-v11-001",
+        "campaign_id": "btc-forward-v11",
+        "candidate_methodology": V11_METHODOLOGY_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+    }
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(payload)
+
+    assert runtime.active is True
+    assert runtime.status()["candidate_methodology"] == V11_METHODOLOGY_VERSION
+    assert runtime.status()["candidate_id"] == spec["candidate_id"]
+    assert runtime._symbols() == ("BTC/USD",)
+    assert runtime.execution_authority is False
+    assert runtime.broker_orders_possible is False
+
+
+def test_candidate_shadow_v11_single_asset_concentration_is_not_a_false_rejection(monkeypatch):
+    spec = v11_candidate_specs()[0].to_dict()
+    payload = {
+        **activation(),
+        "activation_id": "activation-v11-ready-001",
+        "campaign_id": "btc-forward-v11",
+        "candidate_methodology": V11_METHODOLOGY_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+    }
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(payload)
+    monkeypatch.setattr(
+        candidate_shadow,
+        "_moving_block_null_pvalue",
+        lambda values, **kwargs: {"p_value": 0.01},
+    )
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    for index in range(30):
+        runtime.closed.append({
+            "symbol": "BTC/USD",
+            "exit_at": (start + timedelta(days=index)).isoformat(),
+            "stressed_cost_net_return": 0.002 if index % 5 else -0.001,
+        })
+
+    checkpoint = runtime._checkpoint()
+    assert checkpoint["status"] == "READY_FOR_HUMAN_REVIEW"
+    assert checkpoint["symbol_concentration_max_share"] == 1.0
+    assert checkpoint["ready_gate"]["symbol_concentration_max_share"] == 1.0
+    assert checkpoint["promotion_authorized"] is False
+    assert checkpoint["execution_authority"] is False
