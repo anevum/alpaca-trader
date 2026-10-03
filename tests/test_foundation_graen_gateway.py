@@ -1,6 +1,13 @@
 from datetime import datetime, timezone
 
-from foundation.graen_gateway import RESEARCH_STAGES, _hash, _is_native_research_stage, _obj, _status
+from foundation.graen_gateway import (
+    RESEARCH_STAGES,
+    _hash,
+    _is_native_research_stage,
+    _obj,
+    _status,
+    crypto_promotion_matches_contract,
+)
 
 
 def test_hash_is_canonical():
@@ -54,3 +61,30 @@ def test_btc_v13_stages_are_native_claimable_research_stages():
     }
     assert stages <= RESEARCH_STAGES
     assert all(_is_native_research_stage(stage) for stage in stages)
+
+
+def test_crypto_promotion_artifact_requires_exact_execution_contract():
+    contract = {
+        "strategy_family": "replication-test",
+        "strategy_version_id": "CRYPTO-TEST-001",
+        "model_version": "model-v1",
+        "calibration_version": "cal-v1",
+        "regime_version": "regime-v1",
+        "execution_adapter_version": "alpaca-v1",
+    }
+    content = {
+        "statistical_promotion_ready": True,
+        "execution_contract": dict(contract),
+        "live_execution_authorized": False,
+    }
+    assert crypto_promotion_matches_contract(content, contract) is True
+
+    wrong = dict(contract)
+    wrong["strategy_version_id"] = "CRYPTO-OTHER"
+    assert crypto_promotion_matches_contract(content, wrong) is False
+
+    missing_contract = {
+        "statistical_promotion_ready": True,
+        "live_execution_authorized": False,
+    }
+    assert crypto_promotion_matches_contract(missing_contract, contract) is False
