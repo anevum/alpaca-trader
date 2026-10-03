@@ -91,7 +91,7 @@ from graen.crypto.btc_mechanisms_v12 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.10.0"
+RUNTIME_VERSION = "graen-research-executor-v1.10.1"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -322,6 +322,7 @@ class GraenResearchExecutor:
         self.last_error: str | None = None
         self.last_result: dict[str, Any] | None = None
         self.last_observed_blocked_run_id: str | None = None
+        self.last_v12_claim_diagnostic_signature: tuple[Any, ...] | None = None
         self.active_methodology_version = V7_METHODOLOGY_VERSION
 
     @property
@@ -3888,6 +3889,92 @@ class GraenResearchExecutor:
             return result
         return None
 
+    def _observe_v12_claimability(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Log the exact fail-closed claim predicate for the canonical v12 problem."""
+        runs = snapshot.get("runs") or []
+        for problem in snapshot.get("problems") or []:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            stage = str(metadata.get("research_stage") or "")
+            if metadata.get("v12_campaign_id") != V12_CAMPAIGN_ID and stage not in V12_STAGE_KEYS:
+                continue
+
+            problem_id = str(problem.get("problem_id") or "")
+            latest_run: Mapping[str, Any] | None = None
+            for run in runs:
+                if isinstance(run, Mapping) and str(run.get("problem_id") or "") == problem_id:
+                    latest_run = run
+                    break
+            latest_summary = (
+                latest_run.get("result_summary")
+                if isinstance(latest_run, Mapping)
+                and isinstance(latest_run.get("result_summary"), Mapping)
+                else {}
+            )
+            code_promotion = (
+                metadata.get("code_promotion")
+                if isinstance(metadata.get("code_promotion"), Mapping)
+                else None
+            )
+            code_promotion_phase = (
+                str(code_promotion.get("phase") or "")
+                if isinstance(code_promotion, Mapping)
+                else None
+            )
+            status_waiting = problem.get("status") == "WAITING"
+            domain_match = problem.get("domain") == PROBLEM_DOMAIN
+            stage_recognized = stage in V12_STAGE_KEYS
+            code_promotion_allows = (
+                code_promotion is None or code_promotion_phase == "COMPLETE"
+            )
+            diagnostic = {
+                "problem_id": problem_id,
+                "status": problem.get("status"),
+                "priority": problem.get("priority"),
+                "domain": problem.get("domain"),
+                "research_stage": stage or None,
+                "v12_campaign_id": metadata.get("v12_campaign_id"),
+                "code_promotion_phase": code_promotion_phase,
+                "latest_run_status": latest_run.get("status") if isinstance(latest_run, Mapping) else None,
+                "latest_run_methodology_version": (
+                    latest_run.get("methodology_version")
+                    if isinstance(latest_run, Mapping)
+                    else None
+                ),
+                "latest_run_state": latest_summary.get("state"),
+                "claim_predicate": {
+                    "status_waiting": status_waiting,
+                    "domain_match": domain_match,
+                    "stage_recognized": stage_recognized,
+                    "code_promotion_allows": code_promotion_allows,
+                    "eligible": bool(
+                        status_waiting
+                        and domain_match
+                        and stage_recognized
+                        and code_promotion_allows
+                    ),
+                },
+                "execution_authority": False,
+            }
+            signature = (
+                problem_id,
+                problem.get("status"),
+                stage,
+                code_promotion_phase,
+                diagnostic["latest_run_status"],
+                diagnostic["latest_run_methodology_version"],
+                diagnostic["latest_run_state"],
+            )
+            if signature != self.last_v12_claim_diagnostic_signature:
+                self.last_v12_claim_diagnostic_signature = signature
+                print("GRAEN_V12_CLAIM_DIAGNOSTIC", diagnostic, flush=True)
+            return diagnostic
+        return None
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
         blocked_v10 = self._observe_blocked_v10(snapshot)
@@ -3897,6 +3984,7 @@ class GraenResearchExecutor:
         v11_to_v12_recovery = await self._recover_exhausted_v11_into_v12(snapshot)
         if v11_to_v12_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v12_claim_diagnostic = self._observe_v12_claimability(snapshot)
         reconciliation = await self._reconcile_orphaned_confirmatory_claim(snapshot)
         if reconciliation is not None:
             snapshot = await self.gateway.snapshot()
@@ -4001,6 +4089,7 @@ class GraenResearchExecutor:
                 "v10_campaign_seed": v10_campaign_seed,
                 "v10_corpus_recovery": v10_corpus_recovery,
                 "v11_to_v12_recovery": v11_to_v12_recovery,
+                "v12_claim_diagnostic": v12_claim_diagnostic,
                 "blocked_v10": blocked_v10,
             }
 
