@@ -1,5 +1,8 @@
 """Bounded, GET-only GitHub evidence using the executor's existing connection."""
+import asyncio
 import re
+
+import httpx
 from urllib.parse import parse_qs, quote, urlparse
 
 from .codex_handoff import REQUIRED_CHECKS, REPOSITORY
@@ -60,29 +63,95 @@ def _railway_status_evidence(row, spec):
     }
 
 
-async def inspect_runtime_inventory(get):
+# Two serial lookups must finish inside the controller's 12-second read timeout.
+RUNTIME_LOOKUP_TIMEOUT_SECONDS = 4.0
+
+
+def _provider_failure(exc):
+    """Bounded diagnostics: never return exception URLs, response bodies or credentials."""
+    detail = {"reason": "provider_unavailable", "error_type": type(exc).__name__}
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        detail["reason"] = "provider_timeout"
+    elif isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        detail["http_status"] = response.status_code
+        detail["reason"] = {
+            401: "provider_authentication_failed",
+            403: "provider_forbidden",
+            404: "provider_not_found_or_inaccessible",
+            429: "provider_rate_limited",
+        }.get(response.status_code, "provider_http_error")
+        if response.headers.get("x-ratelimit-remaining") == "0":
+            detail["reason"] = "provider_rate_limited"
+        # Exact known GitHub messages are useful for permission diagnosis. Arbitrary
+        # provider text is deliberately excluded from both the API and runtime logs.
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        message = body.get("message") if isinstance(body, dict) else None
+        if message in (
+            "Bad credentials", "Not Found",
+            "Resource not accessible by personal access token",
+            "Resource not accessible by integration",
+        ):
+            detail["provider_message"] = message
+    elif isinstance(exc, ValueError):
+        detail["reason"] = "provider_invalid_response"
+    return detail
+
+
+async def inspect_runtime_inventory(get, *, unavailable_reason=None):
     observed_at = datetime.now(timezone.utc).isoformat()
     services = {}
+    # Reuse only successful responses within this observation, never stale evidence.
+    responses = {}
     for name, spec in PINNED_RUNTIME_STATUSES.items():
-        body = await get(f"commits/{spec['revision']}/status")
-        rows = [
-            row for row in (body.get("statuses") or [])
-            if row.get("context") == spec["context"]
-        ]
-        evidence = _railway_status_evidence(rows[0], spec) if len(rows) == 1 else None
-        services[name] = evidence or {
+        path = f"commits/{spec['revision']}/status"
+        evidence = {
             "verified": False,
             "revision": spec["revision"],
             "deployment": None,
             "service_name": spec["service_name"],
             "status_context": spec["context"],
             "evidence_source": "github_railway_deployment_status",
+            "provider_request": f"GET /repos/{REPOSITORY}/{path}",
         }
+        services[name] = evidence
+        if unavailable_reason:
+            evidence["reason"] = unavailable_reason
+            continue
+        try:
+            if path not in responses:
+                async with asyncio.timeout(RUNTIME_LOOKUP_TIMEOUT_SECONDS):
+                    body = await get(path)
+                if not isinstance(body, dict) or not isinstance(body.get("statuses"), list):
+                    raise ValueError("invalid_status_envelope")
+                if not all(isinstance(row, dict) for row in body["statuses"]):
+                    raise ValueError("invalid_status_row")
+                responses[path] = body
+            rows = [
+                row for row in responses[path]["statuses"]
+                if row.get("context") == spec["context"]
+            ]
+            if not rows:
+                evidence["reason"] = "status_missing"
+            elif len(rows) != 1:
+                evidence["reason"] = "status_ambiguous"
+            else:
+                verified = _railway_status_evidence(rows[0], spec)
+                if verified:
+                    evidence.update(verified, reason="verified")
+                else:
+                    evidence["reason"] = "status_not_verified"
+        except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            evidence.update(_provider_failure(exc))
     return {
         "schema_version": "iren_provider_inventory.v1",
         "observed_at": observed_at,
         "read_only": True,
         "provider_write_authority": False,
+        "complete": all(row["verified"] is True for row in services.values()),
         "services": services,
     }
 

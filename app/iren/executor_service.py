@@ -738,14 +738,25 @@ async def runtime_inventory(
 ):
     _require_token(x_anevum_scheduler_token)
     from .codex_github import inspect_runtime_inventory
-    if runtime.github_repo != "anevum/alpaca-trader" or len(runtime.github_token) < 20:
-        raise HTTPException(status_code=503, detail="github_evidence_unavailable")
+    unavailable_reason = None
+    if runtime.github_repo != "anevum/alpaca-trader":
+        unavailable_reason = "provider_repository_not_allowed"
+    elif len(runtime.github_token) < 20:
+        unavailable_reason = "provider_credentials_missing"
+
     async def get(path):
         return await runtime._github_json("GET", path)
-    try:
-        return await inspect_runtime_inventory(get)
-    except (httpx.HTTPError, ValueError, KeyError):
-        raise HTTPException(status_code=503, detail="runtime_inventory_evidence_unavailable")
+
+    inventory = await inspect_runtime_inventory(get, unavailable_reason=unavailable_reason)
+    # HTTP 200 describes a usable inventory envelope, not healthy provider evidence.
+    # Emit the same bounded records returned to the authenticated controller.
+    print(json.dumps({
+        "event": "iren_runtime_inventory_evidence",
+        "level": "info" if inventory["complete"] else "warning",
+        **inventory,
+    }), flush=True)
+    return inventory
+
 
 
 @app.get("/v1/codex/github")
