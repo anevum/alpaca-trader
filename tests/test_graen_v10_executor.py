@@ -504,3 +504,71 @@ def test_observe_blocked_v10_surfaces_stored_error_once():
     }
     assert runtime._observe_blocked_v10(snapshot) is None
 
+
+
+def test_terminal_v10_corpus_failure_routes_to_v11_without_execution_authority():
+    problem_id = "77777777-7777-7777-7777-777777777777"
+    run_id = "88888888-8888-8888-8888-888888888888"
+    candidate = candidate_specs()[0].to_dict()
+    snapshot = {
+        "problems": [{
+            "problem_id": problem_id,
+            "status": "BLOCKED",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V10_VALIDATION_STAGE,
+                "v10_campaign_id": service.V10_CAMPAIGN_ID,
+                "v10_epoch_index": 1,
+                "v10_candidate_spec": candidate,
+            },
+        }],
+        "runs": [{
+            "run_id": run_id,
+            "problem_id": problem_id,
+            "status": "BLOCKED",
+            "result_summary": {
+                "state": "RESEARCH_EXECUTION_BLOCKED",
+                "decision": "REPAIR_REQUIRED",
+                "next_action": "RESUME_FROZEN_STAGE_AFTER_REPAIR",
+                "error": "ValueError: v9_stage_corpus_incomplete:SOL/USD",
+            },
+        }],
+    }
+
+    async def scenario():
+        runtime = _runtime()
+        recovered = await runtime._recover_blocked_v10_corpus_into_v11(snapshot)
+
+        assert recovered["recovered"] is True
+        assert recovered["state"] == "V10_CAMPAIGN_EXHAUSTED_CORPUS"
+        assert recovered["next_research_stage"] == service.V11_DEVELOPMENT_STAGE
+        assert recovered["execution_authority"] is False
+
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_TREND_PULLBACK_V10_CORPUS_EXHAUSTION"
+        assert artifact["content"]["validation_strategy_evaluation_performed"] is False
+        assert artifact["content"]["validation_window_burned"] is True
+        assert artifact["content"]["historical_promotion_eligible"] is False
+        assert artifact["content"]["execution_authority"] is False
+        assert artifact["content"]["broker_orders_possible"] is False
+        assert artifact["content"]["production_promotion_authority"] is False
+
+        queued = runtime.gateway.queued_stages[-1]
+        assert queued["stage"] == service.V11_DEVELOPMENT_STAGE
+        assert queued["metadata"]["v11_campaign_id"] == service.V11_CAMPAIGN_ID
+        assert queued["metadata"]["v11_origin"] == "v10_terminal_corpus_exhaustion"
+
+        already_v11 = {
+            **snapshot,
+            "problems": [{
+                **snapshot["problems"][0],
+                "metadata": {
+                    **snapshot["problems"][0]["metadata"],
+                    "v11_campaign_id": service.V11_CAMPAIGN_ID,
+                },
+            }],
+        }
+        assert await runtime._recover_blocked_v10_corpus_into_v11(already_v11) is None
+        assert len(runtime.gateway.queued_stages) == 1
+
+    asyncio.run(scenario())
