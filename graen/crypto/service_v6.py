@@ -780,7 +780,13 @@ class CandidateShadowActivationRequest(BaseModel):
 def require_shadow_token(
     x_graen_shadow_token: str | None,
 ) -> None:
-    expected = os.getenv("GRAEN_SHADOW_TOKEN", "").strip()
+    # Match the research executor contract: a dedicated shadow token may
+    # override the gateway token, but the existing gateway token is the
+    # canonical no-new-secret fallback for internal GRAEN shadow activation.
+    expected = (
+        os.getenv("GRAEN_SHADOW_TOKEN", "")
+        or os.getenv("GRAEN_GATEWAY_TOKEN", "")
+    ).strip()
     if len(expected) < 32:
         raise HTTPException(
             status_code=503,
