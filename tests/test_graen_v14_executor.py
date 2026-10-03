@@ -780,3 +780,108 @@ def test_v14_r2a_pass_still_stops_at_live_l2_shadow(monkeypatch):
         assert runtime.gateway.queued == []
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r2a_failure_advances_once_to_r2b_passive_scalping():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-03T21:12:54+00:00",
+                    "methodology_version": service.V14_R2A_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2A_CAMPAIGN_ID,
+                        "state": "V14_R2A_BROKER_FEASIBILITY_FAIL",
+                        "decision": "V14_R2A_DO_NOT_PROMOTE",
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_v14_r2a_fail_into_r2b(snapshot)
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_R2B_STAGE
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2B_STAGE
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_BTC_V14_R2B_PASSIVE_SCALPING_SELECTION"
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["runs"].append({
+            "run_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            "problem_id": PROBLEM_ID,
+            "status": "WAITING",
+            "methodology_version": service.V14_R2B_METHODOLOGY_VERSION,
+            "result_summary": {
+                "campaign_id": service.V14_R2B_CAMPAIGN_ID,
+                "state": "V14_R2B_BROKER_FEASIBILITY_FAIL",
+            },
+        })
+        runtime.gateway.queued.clear()
+        second = await runtime._recover_v14_r2a_fail_into_r2b(snapshot)
+        assert second is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2b_pass_still_stops_at_shadow(monkeypatch):
+    async def scenario():
+        runtime = _runtime()
+
+        async def fake_fetch():
+            return [{"t": "2026-09-01T00:00:00Z", "o": 100, "h": 101, "l": 99, "c": 100}]
+
+        runtime._fetch_v14_r2b_minute_btc = fake_fetch
+
+        def fake_evaluate(_rows):
+            return {
+                "campaign_id": service.V14_R2B_CAMPAIGN_ID,
+                "oos": {
+                    "config": {"config_id": "scalp-10m-20bp-10m"},
+                    "scenarios": {
+                        "taker_stress_50bp": {
+                            "trade_count": 25,
+                            "sharpe": 0.5,
+                            "total_return": 0.04,
+                        }
+                    },
+                    "taker_stress_50bp_positive_quarter_share": 0.75,
+                },
+                "broker_feasibility_gate": {"survives_to_shadow": True},
+            }
+
+        monkeypatch.setattr(service, "evaluate_v14_r2b_passive_scalping", fake_evaluate)
+        problem = {
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V14_R2B_STAGE,
+                "v14_r2b_campaign_id": service.V14_R2B_CAMPAIGN_ID,
+            },
+        }
+        result = await runtime._execute_btc_passive_scalping_v14_r2b(
+            problem,
+            {"run_id": V14_RUN_ID},
+        )
+        assert result["state"] == "V14_R2B_SURVIVES_TO_PASSIVE_SCALPING_SHADOW"
+        assert result["next_action"] == "START_V14_R2B_PASSIVE_SCALPING_SHADOW"
+        assert result["shadow_only"] is True
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["crypto_execution_enabled"] is False
+        assert result["live_execution_authorized"] is False
+
+    asyncio.run(scenario())
