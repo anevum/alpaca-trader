@@ -1617,3 +1617,105 @@ def test_v14_r2f_fetch_uses_bounded_daily_chunks(monkeypatch):
         )
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r2f_pass_activates_fresh_forward_shadow_once():
+    async def scenario():
+        candidate = service.v14_r2f_candidate_spec().to_dict()
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-03T23:15:23+00:00",
+                    "methodology_version": service.V14_R2F_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2F_CAMPAIGN_ID,
+                        "candidate_id": candidate["candidate_id"],
+                        "candidate_spec": candidate,
+                        "state": (
+                            "V14_R2F_ADAPTIVE_DISCOVERY_"
+                            "SURVIVES_TO_FORWARD_SHADOW"
+                        ),
+                        "decision": "START_FRESH_FORWARD_SHADOW_REQUIRED",
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        runtime.shadow_base_url = "https://shadow.example.test"
+        runtime.shadow_token = "s" * 40
+        activations = []
+
+        async def fake_activate(**kwargs):
+            activations.append(kwargs)
+            return {
+                "activation": {
+                    "activation_id": "activation-r2f-fresh-001",
+                    "candidate_id": candidate["candidate_id"],
+                    "candidate_methodology": (
+                        service.V14_R2F_METHODOLOGY_VERSION
+                    ),
+                    "activated_at": "2026-10-03T23:20:00+00:00",
+                    "evidence_phase": "FORWARD_SHADOW",
+                },
+                "duplicate": False,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "promotion_authorized": False,
+            }
+
+        runtime._activate_forward_shadow = fake_activate
+        result = await runtime._recover_v14_r2f_pass_into_forward_shadow(
+            snapshot
+        )
+
+        assert result["recovered"] is True
+        assert result["candidate_id"] == candidate["candidate_id"]
+        assert result["evidence_role"] == "FRESH_FORWARD_SHADOW_ONLY"
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["live_execution_authorized"] is False
+        assert len(activations) == 1
+        assert activations[0]["evidence_phase"] == "FORWARD_SHADOW"
+        assert activations[0]["velum_artifact_id"] == ""
+        assert (
+            activations[0]["candidate_methodology"]
+            == service.V14_R2F_METHODOLOGY_VERSION
+        )
+        artifact = runtime.gateway.artifacts[-1]
+        assert (
+            artifact["artifact_type"]
+            == "CRYPTO_V14_R2F_FORWARD_SHADOW_ACTIVATION"
+        )
+        assert (
+            artifact["content"][
+                "historical_adaptive_evidence_counts_as_fresh"
+            ]
+            is False
+        )
+        assert artifact["content"]["promotion_authorized"] is False
+
+        snapshot["problems"][0]["metadata"]["forward_shadow"] = {
+            "candidate_id": candidate["candidate_id"],
+            "status": "COLLECTING",
+        }
+        runtime.gateway.artifacts.clear()
+        second = await runtime._recover_v14_r2f_pass_into_forward_shadow(
+            snapshot
+        )
+        assert second is None
+        assert len(activations) == 1
+        assert runtime.gateway.artifacts == []
+
+    asyncio.run(scenario())
