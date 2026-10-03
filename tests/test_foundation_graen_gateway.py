@@ -43,3 +43,14 @@ def test_native_research_stage_precedence_excludes_compiled_stages():
     assert _is_native_research_stage("CRYPTO_BTC_MECHANISMS_V12_VELUM_REPLAY") is True
     assert _is_native_research_stage("CRYPTO_COMPILED_DEVELOPMENT") is False
     assert _is_native_research_stage("RESEARCH_IMPLEMENTATION_REQUIRED") is False
+
+
+def test_btc_v13_stages_are_native_claimable_research_stages():
+    stages = {
+        "CRYPTO_BTC_HYPOTHESES_V13_DEVELOPMENT",
+        "CRYPTO_BTC_HYPOTHESES_V13_VELUM_REPLAY",
+        "CRYPTO_BTC_HYPOTHESES_V13_VALIDATION",
+        "CRYPTO_BTC_HYPOTHESES_V13_HOLDOUT",
+    }
+    assert stages <= RESEARCH_STAGES
+    assert all(_is_native_research_stage(stage) for stage in stages)
