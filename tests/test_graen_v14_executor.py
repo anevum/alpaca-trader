@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from app.graen import research_executor_service as service
 
@@ -115,6 +116,126 @@ def test_v14_recovery_is_idempotent_after_any_v14_result():
         result = await runtime._recover_v13_into_v14(snapshot)
         assert result is None
         assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+
+
+def test_blocked_v14_pagination_failure_recovers_once():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {
+                        "research_stage": service.V14_PREFLIGHT_STAGE,
+                        "v14_campaign_id": service.V14_CAMPAIGN_ID,
+                    },
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "started_at": "2026-10-03T20:08:54+00:00",
+                    "methodology_version": service.V14_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "state": "RESEARCH_EXECUTION_BLOCKED",
+                        "decision": "REPAIR_REQUIRED",
+                        "next_action": "RESUME_FROZEN_STAGE_AFTER_REPAIR",
+                        "error": (
+                            "RuntimeError: "
+                            "v14_hourly_btc_pagination_exceeded_safety_limit"
+                        ),
+                        "execution_authority": False,
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_blocked_v14_pagination(snapshot)
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_PREFLIGHT_STAGE
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_PREFLIGHT_STAGE
+        assert (
+            runtime.gateway.queued[-1]["metadata"]["v14_pagination_recovery_version"]
+            == 1
+        )
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_BTC_V14_R1_INFRA_REPAIR"
+        assert artifact["content"]["pagination_max_pages"] == 128
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["problems"][0]["metadata"]["v14_pagination_recovery_version"] = 1
+        second = await runtime._recover_blocked_v14_pagination(snapshot)
+        assert second is None
+
+    asyncio.run(scenario())
+
+
+def test_v14_hourly_fetch_allows_more_than_twelve_pages(monkeypatch):
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, _url, *, headers, params):
+            token = params.get("page_token")
+            index = 0 if token is None else int(str(token).replace("page-", ""))
+            next_token = f"page-{index + 1}" if index < 13 else None
+            stamp = f"2021-01-01T{index:02d}:00:00Z"
+            return FakeResponse(
+                {
+                    "bars": {
+                        "BTC/USD": [
+                            {
+                                "t": stamp,
+                                "o": 100.0 + index,
+                                "h": 101.0 + index,
+                                "l": 99.0 + index,
+                                "c": 100.5 + index,
+                                "v": 1.0,
+                            }
+                        ]
+                    },
+                    "next_page_token": next_token,
+                }
+            )
+
+    async def scenario():
+        runtime = _runtime()
+        runtime.settings = SimpleNamespace(
+            credentials_configured=True,
+            data_base_url="https://example.test",
+            crypto_location="us",
+        )
+        runtime.market_data = SimpleNamespace(headers={"X-Test": "1"})
+        monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+        rows = await runtime._fetch_v14_hourly_btc()
+        assert len(rows) == 14
+        assert rows[0]["t"] == "2021-01-01T00:00:00Z"
+        assert rows[-1]["t"] == "2021-01-01T13:00:00Z"
 
     asyncio.run(scenario())
 
