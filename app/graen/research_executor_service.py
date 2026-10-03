@@ -326,6 +326,10 @@ class GraenResearchExecutor:
         )
         self.research_promotion = ResearchPromotion(self.gateway)
         self.research_director = ResearchDirectorClient()
+        self.research_director_autorun = _truthy(
+            "GRAEN_RESEARCH_DIRECTOR_AUTORUN",
+            False,
+        )
         self.callback_base_url = os.getenv("IREN_CALLBACK_BASE_URL", "").strip().rstrip("/")
         self.callback_token = os.getenv("IREN_CALLBACK_TOKEN", "").strip()
         self.velum_base_url = os.getenv("VELUM_SERVICE_URL", "").strip().rstrip("/")
@@ -403,6 +407,7 @@ class GraenResearchExecutor:
             "research_code_promotion_enabled": True,
             "runtime_github_authorization_configured": self.research_promotion.repository.configured,
             "research_director_configured": self.research_director.configured,
+            "research_director_autorun": self.research_director_autorun,
             "iren_callback_configured": self.callback_configured,
             "velum_candidate_replay_configured": self.velum_configured,
             "forward_shadow_configured": self.shadow_configured,
@@ -600,6 +605,7 @@ class GraenResearchExecutor:
         summary: dict[str, Any],
         next_stage: str | None = None,
         next_metadata: dict[str, Any] | None = None,
+        model_usage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         problem_id = str(problem.get("problem_id"))
         run_id = str(run.get("run_id"))
@@ -614,7 +620,7 @@ class GraenResearchExecutor:
             worker_id=self.worker_id,
             status=status,
             result_summary=summary,
-            model_usage={"invoked": False},
+            model_usage=model_usage or {"invoked": False},
         )
 
         if (
