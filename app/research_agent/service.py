@@ -19,6 +19,7 @@ from .gateway import ResearchGateway, ResearchGatewayError
 from .models import AgentRunStatus
 from .runner import ResearchAgentRunner
 from .theory import public_theory_projection, theory_status
+from .director import OpenAIResearchDirector, ResearchDirectorError
 from .semantic import (
     OpenAISemanticReviewer,
     RUNTIME_VERSION,
@@ -46,6 +47,11 @@ class ReviewRequest(BaseModel):
     invoke_model: bool = False
     persist: bool = True
     expected_session: date | None = None
+
+
+class ResearchDirectorRequest(BaseModel):
+    objective: str
+    canonical_evidence: dict
 
 
 def _truthy(name: str, default: bool = False) -> bool:
@@ -95,6 +101,17 @@ def _require_operator(token: str | None) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
+def _require_research_director(token: str | None) -> None:
+    expected = os.environ.get("GRAEN_RESEARCH_DIRECTOR_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="research director token is not configured",
+        )
+    if not token or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
 def _health() -> dict:
     violations = _isolation_violations()
     gateway = _gateway()
@@ -124,6 +141,32 @@ def _health() -> dict:
                 "RHEN_RESEARCH_REASONING_EFFORT", "high"
             ),
             "credentials_configured": key_present,
+        },
+        "research_director": {
+            "enabled": model_enabled,
+            "provider": "openai" if model_enabled else None,
+            "model": os.environ.get(
+                "RHEN_RESEARCH_DIRECTOR_MODEL",
+                os.environ.get("RHEN_RESEARCH_MODEL", "gpt-5.6-terra"),
+            ),
+            "reasoning_effort": os.environ.get(
+                "RHEN_RESEARCH_DIRECTOR_REASONING_EFFORT",
+                os.environ.get("RHEN_RESEARCH_REASONING_EFFORT", "high"),
+            ),
+            "web_search_enabled": True,
+            "max_tool_calls": max(
+                1,
+                min(
+                    int(os.environ.get("GRAEN_RESEARCH_DIRECTOR_MAX_TOOL_CALLS", "8")),
+                    12,
+                ),
+            ),
+            "credentials_configured": key_present,
+            "internal_auth_configured": bool(
+                os.environ.get("GRAEN_RESEARCH_DIRECTOR_TOKEN", "").strip()
+            ),
+            "execution_authority": False,
+            "broker_calls": False,
         },
         "authority": {
             "live_strategy_mutation": False,
@@ -281,6 +324,61 @@ async def public_theory():
     if not state["ok"]:
         raise HTTPException(status_code=503, detail={"state": "UNAVAILABLE"})
     return public_theory_projection()
+
+
+@app.post("/v1/director/research")
+async def research_director(
+    request: ResearchDirectorRequest,
+    x_graen_research_director_token: str | None = Header(
+        default=None,
+        alias="x-graen-research-director-token",
+    ),
+):
+    _require_research_director(x_graen_research_director_token)
+    state = _health()
+    if not state["ok"]:
+        raise HTTPException(status_code=503, detail=state)
+    if not _truthy("RHEN_RESEARCH_MODEL_ENABLED"):
+        raise HTTPException(status_code=409, detail="semantic model is not enabled")
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=409, detail="OPENAI_API_KEY is not configured")
+    if len(json.dumps(request.canonical_evidence, default=str)) > 250000:
+        raise HTTPException(status_code=413, detail="canonical evidence packet is too large")
+
+    director = OpenAIResearchDirector(
+        api_key,
+        model=os.environ.get(
+            "RHEN_RESEARCH_DIRECTOR_MODEL",
+            os.environ.get("RHEN_RESEARCH_MODEL", "gpt-5.6-terra"),
+        ),
+        reasoning_effort=os.environ.get(
+            "RHEN_RESEARCH_DIRECTOR_REASONING_EFFORT",
+            os.environ.get("RHEN_RESEARCH_REASONING_EFFORT", "high"),
+        ),
+        max_tool_calls=max(
+            1,
+            min(
+                int(os.environ.get("GRAEN_RESEARCH_DIRECTOR_MAX_TOOL_CALLS", "8")),
+                12,
+            ),
+        ),
+    )
+    try:
+        result, usage = await director.research(
+            objective=request.objective,
+            canonical_evidence=request.canonical_evidence,
+        )
+    except ResearchDirectorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        **result,
+        "usage": usage,
+        "research_only": True,
+        "execution_authority": False,
+        "live_execution_authorized": False,
+    }
 
 
 @app.get("/v1/status")
