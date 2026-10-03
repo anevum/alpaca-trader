@@ -687,7 +687,7 @@ class GraenResearchExecutor:
             symbol: [] for symbol in V14_R2E_UNIVERSE
         }
         chunk_days = 60
-        max_pages_per_chunk = 8
+        max_pages_per_chunk = 16
         max_rate_limit_retries = 6
         chunk_count = 0
         page_count = 0
@@ -5501,7 +5501,7 @@ class GraenResearchExecutor:
                     "blocked_error": blocked_error,
                     "repair": "bounded_60_day_4h_chunks_with_local_pagination",
                     "chunk_days": 60,
-                    "max_pages_per_chunk": 8,
+                    "max_pages_per_chunk": 16,
                     "rate_limit_retry_cap": 6,
                     "methodology_changed": False,
                     "strategy_parameters_changed": False,
