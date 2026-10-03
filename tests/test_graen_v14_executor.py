@@ -885,3 +885,108 @@ def test_v14_r2b_pass_still_stops_at_shadow(monkeypatch):
         assert result["live_execution_authorized"] is False
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r2b_failure_advances_once_to_r2c_cross_sectional_momentum():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-03T21:17:03+00:00",
+                    "methodology_version": service.V14_R2B_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2B_CAMPAIGN_ID,
+                        "state": "V14_R2B_BROKER_FEASIBILITY_FAIL",
+                        "decision": "V14_R2B_DO_NOT_PROMOTE",
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_v14_r2b_fail_into_r2c(snapshot)
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_R2C_STAGE
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2C_STAGE
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_V14_R2C_CROSS_SECTIONAL_MOMENTUM_SELECTION"
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["runs"].append({
+            "run_id": "abababab-abab-abab-abab-abababababab",
+            "problem_id": PROBLEM_ID,
+            "status": "WAITING",
+            "methodology_version": service.V14_R2C_METHODOLOGY_VERSION,
+            "result_summary": {
+                "campaign_id": service.V14_R2C_CAMPAIGN_ID,
+                "state": "V14_R2C_BROKER_FEASIBILITY_FAIL",
+            },
+        })
+        runtime.gateway.queued.clear()
+        second = await runtime._recover_v14_r2b_fail_into_r2c(snapshot)
+        assert second is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2c_pass_still_stops_at_shadow(monkeypatch):
+    async def scenario():
+        runtime = _runtime()
+
+        async def fake_fetch():
+            return {symbol: [] for symbol in service.V14_R2C_UNIVERSE}
+
+        runtime._fetch_v14_r2c_daily_crypto = fake_fetch
+
+        def fake_evaluate(_rows):
+            return {
+                "campaign_id": service.V14_R2C_CAMPAIGN_ID,
+                "oos": {
+                    "scenarios": {
+                        "taker_switch_50bp": {
+                            "day_count": 160,
+                            "switch_count": 12,
+                            "sharpe": 0.7,
+                            "total_return": 0.09,
+                        }
+                    },
+                    "taker_switch_50bp_positive_quarter_share": 0.75,
+                },
+                "broker_feasibility_gate": {"survives_to_shadow": True},
+            }
+
+        monkeypatch.setattr(service, "evaluate_v14_r2c_momentum", fake_evaluate)
+        problem = {
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V14_R2C_STAGE,
+                "v14_r2c_campaign_id": service.V14_R2C_CAMPAIGN_ID,
+            },
+        }
+        result = await runtime._execute_cross_sectional_momentum_v14_r2c(
+            problem,
+            {"run_id": V14_RUN_ID},
+        )
+        assert result["state"] == "V14_R2C_SURVIVES_TO_CROSS_SECTIONAL_MOMENTUM_SHADOW"
+        assert result["next_action"] == "START_V14_R2C_CROSS_SECTIONAL_MOMENTUM_SHADOW"
+        assert result["shadow_only"] is True
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["crypto_execution_enabled"] is False
+        assert result["live_execution_authorized"] is False
+
+    asyncio.run(scenario())
