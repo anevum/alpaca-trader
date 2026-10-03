@@ -2,6 +2,7 @@ import asyncio
 
 from app.graen import research_executor_service as service
 from graen.crypto.trend_pullback_v10 import candidate_specs
+from graen.crypto.btc_forward_v11 import candidate_specs as v11_candidate_specs
 
 
 class FakeGateway:
@@ -504,3 +505,96 @@ def test_observe_blocked_v10_surfaces_stored_error_once():
     }
     assert runtime._observe_blocked_v10(snapshot) is None
 
+
+
+def test_blocked_v10_sol_corpus_transitions_once_to_v11_without_performance_rejection():
+    problem_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    run_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    candidate = candidate_specs()[1].to_dict()
+    snapshot = {
+        "problems": [{
+            "problem_id": problem_id,
+            "status": "BLOCKED",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V10_VALIDATION_STAGE,
+                "v10_epoch_index": 1,
+                "v10_candidate_spec": candidate,
+            },
+        }],
+        "runs": [{
+            "run_id": run_id,
+            "problem_id": problem_id,
+            "status": "BLOCKED",
+            "result_summary": {
+                "state": "RESEARCH_EXECUTION_BLOCKED",
+                "next_action": "RESUME_FROZEN_STAGE_AFTER_REPAIR",
+                "error": "ValueError: v9_stage_corpus_incomplete:SOL/USD",
+            },
+        }],
+    }
+
+    async def scenario():
+        runtime = _runtime()
+        result = await runtime._transition_blocked_v10_corpus_to_v11(snapshot)
+        assert result["transitioned"] is True
+        assert result["from"] == service.V10_VALIDATION_STAGE
+        assert result["to"] == service.V11_DEVELOPMENT_STAGE
+        assert result["reason"] == "SOL/USD_CORPUS_INCOMPLETE"
+        assert result["execution_authority"] is False
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_TREND_PULLBACK_V10_CORPUS_EXHAUSTION"
+        assert artifact["content"]["validation_result"] == "NOT_RUN"
+        assert artifact["content"]["candidate_rejected_for_performance"] is False
+        assert artifact["content"]["holdout_opened"] is False
+        queued = runtime.gateway.queued_stages[-1]
+        assert queued["stage"] == service.V11_DEVELOPMENT_STAGE
+        assert queued["metadata"]["v11_campaign_id"] == service.V11_CAMPAIGN_ID
+
+    asyncio.run(scenario())
+
+
+def test_v11_development_survivor_routes_to_velum_only(monkeypatch):
+    selected = v11_candidate_specs()[0].to_dict()
+
+    async def fake_fetch(symbols, *, start, end, warmup_hours=169):
+        assert tuple(symbols) == ("BTC/USD",)
+        return {"BTC/USD": []}
+
+    monkeypatch.setattr(
+        service,
+        "verify_v11_stage_corpus",
+        lambda *args, **kwargs: {"passed": True, "symbol": "BTC/USD"},
+    )
+    monkeypatch.setattr(
+        service,
+        "evaluate_v11_walk_forward",
+        lambda bars: {
+            "selected_candidate_id": selected["candidate_id"],
+            "selected_candidate_spec": selected,
+            "survivors": [selected["candidate_id"]],
+            "independent_confirmatory_evidence": False,
+            "historical_promotion_authority": False,
+        },
+    )
+
+    async def scenario():
+        runtime = _runtime()
+        runtime._fetch_stage = fake_fetch
+        result = await runtime._execute_btc_forward_v11(
+            {
+                **PROBLEM,
+                "metadata": {
+                    "research_stage": service.V11_DEVELOPMENT_STAGE,
+                    "v11_campaign_id": service.V11_CAMPAIGN_ID,
+                },
+            },
+            RUN,
+        )
+        assert result["state"] == "V11_CANDIDATE_FROZEN_FOR_ENGINEERING_REPLAY"
+        assert result["candidate_id"] == selected["candidate_id"]
+        assert result["independent_confirmatory_evidence"] is False
+        assert runtime.gateway.queued_stages[-1]["stage"] == service.V11_VELUM_STAGE
+        assert runtime.gateway.completions[-1]["status"] == "WAITING"
+
+    asyncio.run(scenario())
