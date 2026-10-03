@@ -121,10 +121,20 @@ from graen.crypto.btc_queue_imbalance_v14_r2a import (
     campaign_manifest as v14_r2a_campaign_manifest,
     evaluate_queue_imbalance_preflight as evaluate_v14_r2a_queue_imbalance,
 )
+from graen.crypto.btc_passive_scalping_v14_r2b import (
+    BAR_SCREEN_END as V14_R2B_BAR_SCREEN_END,
+    BAR_SCREEN_START as V14_R2B_BAR_SCREEN_START,
+    CAMPAIGN_ID as V14_R2B_CAMPAIGN_ID,
+    FAMILY as V14_R2B_FAMILY,
+    METHODOLOGY_VERSION as V14_R2B_METHODOLOGY_VERSION,
+    UNIVERSE as V14_R2B_UNIVERSE,
+    campaign_manifest as v14_r2b_campaign_manifest,
+    evaluate_passive_scalping_preflight as evaluate_v14_r2b_passive_scalping,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.13.0"
+RUNTIME_VERSION = "graen-research-executor-v1.14.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -236,7 +246,8 @@ V13_STAGE_KEYS = {
 
 V14_PREFLIGHT_STAGE = "CRYPTO_BTC_XGB_V14_R1_BROKER_PREFLIGHT"
 V14_R2A_STAGE = "CRYPTO_BTC_QUEUE_IMBALANCE_V14_R2A_PREFLIGHT"
-V14_STAGE_KEYS = {V14_PREFLIGHT_STAGE, V14_R2A_STAGE}
+V14_R2B_STAGE = "CRYPTO_BTC_PASSIVE_SCALPING_V14_R2B_PREFLIGHT"
+V14_STAGE_KEYS = {V14_PREFLIGHT_STAGE, V14_R2A_STAGE, V14_R2B_STAGE}
 
 RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
 RESEARCH_DIRECTOR_METHODOLOGY = "graen-research-director-v1"
@@ -620,6 +631,70 @@ class GraenResearchExecutor:
                     rows.append(bar)
             clean[symbol] = rows
         return clean
+
+
+    async def _fetch_v14_r2b_minute_btc(self) -> list[dict[str, Any]]:
+        """Fetch the frozen Alpaca BTC/USD 1-minute corpus for V14-R2B."""
+        if not self.settings.credentials_configured:
+            raise RuntimeError("market-data credentials are not configured")
+        params: dict[str, Any] = {
+            "symbols": ",".join(V14_R2B_UNIVERSE),
+            "timeframe": "1Min",
+            "start": V14_R2B_BAR_SCREEN_START.isoformat(),
+            "end": V14_R2B_BAR_SCREEN_END.isoformat(),
+            "limit": 10000,
+            "sort": "asc",
+        }
+        rows: list[dict[str, Any]] = []
+        page_token: str | None = None
+        seen_page_tokens: set[str] = set()
+        page_count = 0
+        max_pages = 256
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            for page_index in range(max_pages):
+                request_params = dict(params)
+                if page_token:
+                    if page_token in seen_page_tokens:
+                        raise RuntimeError("v14_r2b_bar_pagination_token_cycle")
+                    seen_page_tokens.add(page_token)
+                    request_params["page_token"] = page_token
+                response = await client.get(
+                    f"{self.settings.data_base_url}/v1beta3/crypto/"
+                    f"{self.settings.crypto_location}/bars",
+                    headers=self.market_data.headers,
+                    params=request_params,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                rows.extend((payload.get("bars") or {}).get("BTC/USD", []) or [])
+                page_count = page_index + 1
+                page_token = payload.get("next_page_token")
+                if page_count % 25 == 0:
+                    print(
+                        "GRAEN_V14_R2B_DATA_FETCH_PROGRESS",
+                        {
+                            "pages": page_count,
+                            "raw_rows": len(rows),
+                            "max_pages": max_pages,
+                            "execution_authority": False,
+                        },
+                        flush=True,
+                    )
+                if not page_token:
+                    break
+            else:
+                raise RuntimeError("v14_r2b_bar_pagination_exceeded_safety_limit")
+        print(
+            "GRAEN_V14_R2B_DATA_FETCH",
+            {
+                "pages": page_count,
+                "raw_rows": len(rows),
+                "max_pages": max_pages,
+                "execution_authority": False,
+            },
+            flush=True,
+        )
+        return rows
 
 
     async def _fetch_v14_r2a_quotes(self) -> list[dict[str, Any]]:
@@ -5333,6 +5408,172 @@ class GraenResearchExecutor:
             },
         )
 
+    async def _recover_v14_r2a_fail_into_r2b(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Advance terminal R2A rejection into Alpaca passive scalping R2B."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if problem.get("status") != "WAITING" or problem.get("domain") != PROBLEM_DOMAIN:
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            problem_runs = [
+                row for row in runs
+                if isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+            ]
+            if any(
+                row.get("methodology_version") == V14_R2B_METHODOLOGY_VERSION
+                or (
+                    isinstance(row.get("result_summary"), Mapping)
+                    and row.get("result_summary", {}).get("campaign_id") == V14_R2B_CAMPAIGN_ID
+                )
+                for row in problem_runs
+            ):
+                continue
+            matching = [
+                row for row in problem_runs
+                if row.get("methodology_version") == V14_R2A_METHODOLOGY_VERSION
+                and isinstance(row.get("result_summary"), Mapping)
+                and row.get("result_summary", {}).get("state") == "V14_R2A_BROKER_FEASIBILITY_FAIL"
+                and row.get("result_summary", {}).get("decision") == "V14_R2A_DO_NOT_PROMOTE"
+            ]
+            if not matching:
+                continue
+            origin = max(matching, key=lambda row: str(row.get("started_at") or ""))
+            origin_run_id = str(origin.get("run_id") or "")
+            artifact_response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=origin_run_id or None,
+                artifact_type="CRYPTO_BTC_V14_R2B_PASSIVE_SCALPING_SELECTION",
+                methodology_version=V14_R2B_METHODOLOGY_VERSION,
+                content={
+                    **v14_r2b_campaign_manifest(),
+                    "origin_campaign_id": V14_R2A_CAMPAIGN_ID,
+                    "origin_run_id": origin_run_id or None,
+                    "selection_basis": (
+                        "R2A top-of-book imbalance failed; advance to the official "
+                        "Alpaca passive range-scalping family with conservative "
+                        "chronological fill simulation"
+                    ),
+                    "frozen_before_bar_corpus_access": True,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            artifact = artifact_response.get("artifact") if isinstance(artifact_response.get("artifact"), Mapping) else {}
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V14_R2B_STAGE,
+                metadata={
+                    "v14_r2b_campaign_id": V14_R2B_CAMPAIGN_ID,
+                    "v14_r2b_origin_run_id": origin_run_id or None,
+                    "v14_r2b_selection_artifact_id": artifact.get("artifact_id"),
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v14_r2b_stage_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "next_research_stage": V14_R2B_STAGE,
+                "v14_r2b_campaign_id": V14_R2B_CAMPAIGN_ID,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            print("GRAEN_V14_R2A_TO_R2B", result, flush=True)
+            return result
+        return None
+
+
+    async def _execute_btc_passive_scalping_v14_r2b(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        stage = str(metadata.get("research_stage") or V14_R2B_STAGE)
+        if stage != V14_R2B_STAGE:
+            raise RuntimeError(f"unsupported_v14_r2b_research_stage:{stage}")
+        self.active_methodology_version = V14_R2B_METHODOLOGY_VERSION
+
+        prespec_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_BTC_V14_R2B_PASSIVE_SCALPING_PRESPEC",
+            methodology_version=V14_R2B_METHODOLOGY_VERSION,
+            content={
+                **v14_r2b_campaign_manifest(),
+                "frozen_before_bar_corpus_access": True,
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        prespec_artifact = prespec_response.get("artifact") if isinstance(prespec_response.get("artifact"), Mapping) else {}
+        rows = await self._fetch_v14_r2b_minute_btc()
+        result = await asyncio.to_thread(evaluate_v14_r2b_passive_scalping, rows)
+        result_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_BTC_V14_R2B_PASSIVE_SCALPING_RESULT",
+            methodology_version=V14_R2B_METHODOLOGY_VERSION,
+            content={
+                **result,
+                "prespec_artifact_id": prespec_artifact.get("artifact_id"),
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        artifact = result_response.get("artifact") if isinstance(result_response.get("artifact"), Mapping) else {}
+        gate = result.get("broker_feasibility_gate") if isinstance(result.get("broker_feasibility_gate"), Mapping) else {}
+        oos = result.get("oos") if isinstance(result.get("oos"), Mapping) else {}
+        scenarios = oos.get("scenarios") if isinstance(oos.get("scenarios"), Mapping) else {}
+        decisive = scenarios.get("taker_stress_50bp") if isinstance(scenarios.get("taker_stress_50bp"), Mapping) else {}
+        survived = bool(gate.get("survives_to_shadow"))
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary={
+                "state": (
+                    "V14_R2B_SURVIVES_TO_PASSIVE_SCALPING_SHADOW"
+                    if survived else "V14_R2B_BROKER_FEASIBILITY_FAIL"
+                ),
+                "status": (
+                    "PASSIVE_SCALPING_PREFLIGHT_PASS"
+                    if survived else "PASSIVE_SCALPING_PREFLIGHT_REJECTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if survived else "V14_R2B_DO_NOT_PROMOTE",
+                "campaign_id": V14_R2B_CAMPAIGN_ID,
+                "candidate_family": V14_R2B_FAMILY,
+                "result_artifact_id": artifact.get("artifact_id"),
+                "selected_config": oos.get("config") if isinstance(oos.get("config"), Mapping) else None,
+                "taker_stress_50bp_trade_count": decisive.get("trade_count"),
+                "taker_stress_50bp_sharpe": decisive.get("sharpe"),
+                "taker_stress_50bp_total_return": decisive.get("total_return"),
+                "positive_quarter_share": oos.get("taker_stress_50bp_positive_quarter_share"),
+                "next_action": (
+                    "START_V14_R2B_PASSIVE_SCALPING_SHADOW"
+                    if survived else "ADVANCE_TO_V14_R2C_CROSS_SECTIONAL_MOMENTUM"
+                ),
+                "shadow_only": survived,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "crypto_execution_enabled": False,
+                "live_execution_authorized": False,
+            },
+        )
+
+
     async def _recover_v14_r1_fail_into_r2a(
         self,
         snapshot: Mapping[str, Any],
@@ -6073,6 +6314,9 @@ class GraenResearchExecutor:
         v13_to_v14_recovery = await self._recover_v13_into_v14(snapshot)
         if v13_to_v14_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v14_r2a_to_r2b_recovery = await self._recover_v14_r2a_fail_into_r2b(snapshot)
+        if v14_r2a_to_r2b_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v14_r1_to_r2a_recovery = await self._recover_v14_r1_fail_into_r2a(snapshot)
         if v14_r1_to_r2a_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -6104,6 +6348,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_v14_r2b = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") == V14_R2B_STAGE
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v14_r2a = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -6185,7 +6437,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V14_R2A_METHODOLOGY_VERSION
+            V14_R2B_METHODOLOGY_VERSION
+            if staged_v14_r2b
+            else V14_R2A_METHODOLOGY_VERSION
             if staged_v14_r2a
             else V14_METHODOLOGY_VERSION
             if staged_v14
@@ -6234,6 +6488,7 @@ class GraenResearchExecutor:
                 "v14_feature_recovery": v14_feature_recovery,
                 "v14_pagination_recovery": v14_pagination_recovery,
                 "v13_to_v14_recovery": v13_to_v14_recovery,
+                "v14_r2a_to_r2b_recovery": v14_r2a_to_r2b_recovery,
                 "v14_r1_to_r2a_recovery": v14_r1_to_r2a_recovery,
                 "v13_to_director_recovery": v13_to_director_recovery,
                 "v12_native_stage_precedence": v12_native_stage_precedence,
@@ -6257,6 +6512,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") == V14_R2B_STAGE:
+                return await self._execute_btc_passive_scalping_v14_r2b(problem, run)
             if metadata.get("research_stage") == V14_R2A_STAGE:
                 return await self._execute_btc_queue_imbalance_v14_r2a(problem, run)
             if metadata.get("research_stage") == V14_PREFLIGHT_STAGE:
