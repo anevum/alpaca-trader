@@ -66,6 +66,13 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _research_settings(settings: Settings) -> Settings:
     return settings.model_copy(
         update={
@@ -84,6 +91,14 @@ class GraenCryptoV6Runtime:
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.shadow_task: asyncio.Task | None = None
+        self.legacy_v6_research_enabled = _env_bool(
+            "GRAEN_LEGACY_V6_RESEARCH_ENABLED",
+            False,
+        )
+        self.legacy_v6_shadow_enabled = _env_bool(
+            "GRAEN_LEGACY_V6_SHADOW_ENABLED",
+            False,
+        )
         self.interval_seconds = _env_int("GRAEN_CRYPTO_V6_INTERVAL_SECONDS", 86400, minimum=3600)
         self.shadow_interval_seconds = _env_int(
             "GRAEN_CRYPTO_V6_SHADOW_INTERVAL_SECONDS",
@@ -106,7 +121,7 @@ class GraenCryptoV6Runtime:
         return {
             "ok": self.last_error is None,
             "system": "GRAEN",
-            "program": "Crypto Native Research v6",
+            "program": "Crypto Research Gateway",
             "methodology_version": METHODOLOGY_VERSION,
             "strategy_version_id": STRATEGY_VERSION_ID,
             "running": self.task is not None and not self.task.done(),
@@ -114,7 +129,7 @@ class GraenCryptoV6Runtime:
             "broker_orders_possible": False,
             "crypto_execution_enabled": False,
             "runtime_provenance": {
-                "system_version": "graen-crypto-native-v6",
+                "system_version": "graen-crypto-research-gateway-v1",
                 "git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA") or None,
                 "deployment_id": os.getenv("RAILWAY_DEPLOYMENT_ID") or None,
                 "runtime_started_at": self.started_at.isoformat(),
@@ -127,15 +142,19 @@ class GraenCryptoV6Runtime:
             },
             "last_error": self.last_error,
             "last_result_summary": self.last_result_summary,
+            "legacy_v6": {
+                "research_enabled": self.legacy_v6_research_enabled,
+                "shadow_enabled": self.legacy_v6_shadow_enabled,
+            },
             "shadow": self.shadow.status(),
             "candidate_shadow": self.candidate_shadow.status(),
         }
 
     async def start(self) -> None:
         await self._restore_candidate_shadow()
-        if self.task is None:
+        if self.legacy_v6_research_enabled and self.task is None:
             self.task = asyncio.create_task(self._run(), name="graen-crypto-native-v6")
-        if self.shadow_task is None:
+        if self.legacy_v6_shadow_enabled and self.shadow_task is None:
             self.shadow_task = asyncio.create_task(
                 self._run_shadow(),
                 name="graen-crypto-native-v6-shadow",
@@ -787,7 +806,7 @@ async def lifespan(_: FastAPI):
         await runtime.stop()
 
 
-app = FastAPI(title="ANEVUM GRAEN Crypto Native Research v6", lifespan=lifespan)
+app = FastAPI(title="ANEVUM GRAEN Crypto Research Gateway", lifespan=lifespan)
 
 
 @app.get("/health")
