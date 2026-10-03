@@ -69,7 +69,7 @@ from graen.crypto.trend_pullback_v10 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.8.1"
+RUNTIME_VERSION = "graen-research-executor-v1.8.2"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -578,6 +578,21 @@ class GraenResearchExecutor:
         self.last_completion_at = datetime.now(UTC)
         self.last_result = summary
         self.last_error = None
+        print(
+            "GRAEN_RESEARCH_RESULT",
+            {
+                key: summary.get(key)
+                for key in (
+                    "state", "status", "decision", "campaign_id", "epoch",
+                    "epoch_index", "candidate_id", "candidate_family",
+                    "validation_opened", "holdout_opened", "holdout_passed",
+                    "next_action", "next_research_stage", "continuation_queued",
+                    "execution_authority", "broker_orders_possible",
+                )
+                if key in summary
+            },
+            flush=True,
+        )
         await self._heartbeat()
         return {"claimed": True, "problem_id": problem_id, **summary}
 
@@ -3021,6 +3036,76 @@ class GraenResearchExecutor:
                 }
         return None
 
+    async def _ensure_v10_campaign_seed(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Create exactly one canonical v10 research problem when the campaign is absent."""
+        problems = snapshot.get("problems") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            if metadata.get("v10_campaign_id") == V10_CAMPAIGN_ID:
+                return None
+            if metadata.get("research_stage") in V10_STAGE_KEYS:
+                return None
+
+        created = await self.gateway.create_problem({
+            "title": "GRAEN Crypto Trend Pullback v10",
+            "statement": (
+                "Execute the frozen crypto trend-pullback v10 campaign through "
+                "development, validation, untouched holdout, VELUM replay, and native "
+                "forward shadow. Research only; no broker or production execution authority."
+            ),
+            "domain": PROBLEM_DOMAIN,
+            "priority": 95,
+            "source": "GRAEN_RESEARCH_EXECUTOR",
+            "requested_by": "ANEVUM",
+            "constraints": {
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_promotion_authority": False,
+            },
+            "success_criteria": {
+                "frozen_stage_order": [
+                    "DEVELOPMENT", "VALIDATION", "HOLDOUT", "VELUM_REPLAY", "FORWARD_SHADOW"
+                ],
+                "promotion_requires_all_gates": True,
+            },
+            "metadata": {
+                "v10_campaign_id": V10_CAMPAIGN_ID,
+                "v10_bootstrap_version": 1,
+                "v10_generation": 1,
+            },
+        })
+        problem = created.get("problem")
+        if not isinstance(problem, Mapping) or not problem.get("problem_id"):
+            raise RuntimeError("v10_campaign_bootstrap_problem_unavailable")
+        problem_id = str(problem["problem_id"])
+        queued = await self.gateway.queue_research_stage(
+            problem_id=problem_id,
+            stage=V10_DEVELOPMENT_STAGE,
+            metadata={
+                "v10_campaign_id": V10_CAMPAIGN_ID,
+                "v10_epoch_index": 0,
+                "v10_generation": 1,
+                "v10_transition_source": "canonical_bootstrap",
+                "v10_bootstrap_version": 1,
+            },
+        )
+        if not queued.get("problem"):
+            raise RuntimeError("v10_campaign_bootstrap_queue_failed")
+        result = {
+            "seeded": True,
+            "problem_id": problem_id,
+            "next_research_stage": V10_DEVELOPMENT_STAGE,
+            "campaign_id": V10_CAMPAIGN_ID,
+        }
+        print("GRAEN_V10_BOOTSTRAP", result, flush=True)
+        return result
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
         reconciliation = await self._reconcile_orphaned_confirmatory_claim(snapshot)
@@ -3028,6 +3113,9 @@ class GraenResearchExecutor:
             snapshot = await self.gateway.snapshot()
         v10_transition_recovery = await self._recover_exhausted_v9_into_v10(snapshot)
         if v10_transition_recovery is not None:
+            snapshot = await self.gateway.snapshot()
+        v10_campaign_seed = await self._ensure_v10_campaign_seed(snapshot)
+        if v10_campaign_seed is not None:
             snapshot = await self.gateway.snapshot()
         # Research-code promotion is an explicit bounded step in the same
         # deterministic executor loop. Process eligible handoffs without
@@ -3101,6 +3189,7 @@ class GraenResearchExecutor:
                 "research_promotion": promotion_results,
                 "reconciliation": reconciliation,
                 "v10_transition_recovery": v10_transition_recovery,
+                "v10_campaign_seed": v10_campaign_seed,
             }
 
         problem_id = str(problem.get("problem_id"))
