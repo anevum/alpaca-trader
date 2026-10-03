@@ -42,7 +42,7 @@ def test_v14_walk_forward_contract_is_temporal_and_frozen():
     assert folds[0].validation_end == datetime(2022, 4, 1, tzinfo=UTC)
     assert folds[0].test_end == datetime(2022, 7, 1, tzinfo=UTC)
     assert folds[-1].test_end == datetime(2026, 10, 1, tzinfo=UTC)
-    for left, right in zip(folds, folds[1:], strict=True):
+    for left, right in zip(folds[:-1], folds[1:], strict=True):
         assert left.train_start < left.train_end < left.validation_end < left.test_end
         assert right.train_start > left.train_start
         assert right.test_end > left.test_end
