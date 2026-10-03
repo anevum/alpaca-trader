@@ -30,3 +30,8 @@ def test_runtime_contract_versionless_and_execution_neutral():
 def test_btc_v11_stages_are_claimable_research_stages():
     assert "CRYPTO_BTC_TREND_PULLBACK_V11_DEVELOPMENT" in RESEARCH_STAGES
     assert "CRYPTO_BTC_TREND_PULLBACK_V11_VELUM_REPLAY" in RESEARCH_STAGES
+
+
+def test_btc_v12_stages_are_claimable_research_stages():
+    assert "CRYPTO_BTC_MECHANISMS_V12_DEVELOPMENT" in RESEARCH_STAGES
+    assert "CRYPTO_BTC_MECHANISMS_V12_VELUM_REPLAY" in RESEARCH_STAGES
