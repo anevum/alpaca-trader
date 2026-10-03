@@ -164,7 +164,7 @@ from graen.crypto.btc_4h_trend_v14_r2e import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.17.0"
+RUNTIME_VERSION = "graen-research-executor-v1.17.1"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -674,93 +674,125 @@ class GraenResearchExecutor:
 
 
     async def _fetch_v14_r2e_btc_4h(self) -> dict[str, list[dict[str, Any]]]:
-        """Fetch the frozen Alpaca BTC/USD 4-hour corpus for R2E."""
+        """Fetch the frozen Alpaca BTC/USD 4-hour corpus for R2E.
+
+        Alpaca's crypto bar endpoint can paginate far below the requested
+        10,000-row limit. Keep each request window bounded so pagination is
+        local to a small corpus slice instead of accumulating across 5+ years.
+        """
         if not self.settings.credentials_configured:
             raise RuntimeError("market-data credentials are not configured")
-        params: dict[str, Any] = {
-            "symbols": ",".join(V14_R2E_UNIVERSE),
-            "timeframe": "4Hour",
-            "start": V14_R2E_BAR_SCREEN_START.isoformat(),
-            "end": V14_R2E_BAR_SCREEN_END.isoformat(),
-            "limit": 10000,
-            "sort": "asc",
-        }
+
         rows: dict[str, list[dict[str, Any]]] = {
             symbol: [] for symbol in V14_R2E_UNIVERSE
         }
-        page_token: str | None = None
-        seen_page_tokens: set[str] = set()
-        page_count = 0
-        # Alpaca can paginate this multi-year 4h corpus at substantially
-        # smaller effective page sizes than the requested limit. Keep the
-        # request bounded, but allow enough pages for the frozen 2021-2026
-        # screen while retaining cycle detection.
-        max_pages = 256
+        chunk_days = 60
+        max_pages_per_chunk = 8
         max_rate_limit_retries = 6
+        chunk_count = 0
+        page_count = 0
+        chunk_start = V14_R2E_BAR_SCREEN_START
+
         async with httpx.AsyncClient(timeout=45.0) as client:
-            for page_index in range(max_pages):
-                request_params = dict(params)
-                if page_token:
-                    if page_token in seen_page_tokens:
-                        raise RuntimeError("v14_r2e_bar_pagination_token_cycle")
-                    seen_page_tokens.add(page_token)
-                    request_params["page_token"] = page_token
-                response = None
-                for retry_index in range(max_rate_limit_retries + 1):
-                    response = await client.get(
-                        f"{self.settings.data_base_url}/v1beta3/crypto/"
-                        f"{self.settings.crypto_location}/bars",
-                        headers=self.market_data.headers,
-                        params=request_params,
-                    )
-                    if response.status_code != 429:
+            while chunk_start < V14_R2E_BAR_SCREEN_END:
+                chunk_end = min(
+                    chunk_start + timedelta(days=chunk_days),
+                    V14_R2E_BAR_SCREEN_END,
+                )
+                params: dict[str, Any] = {
+                    "symbols": ",".join(V14_R2E_UNIVERSE),
+                    "timeframe": "4Hour",
+                    "start": chunk_start.isoformat(),
+                    # Alpaca end timestamps may be inclusive. Keep adjacent
+                    # chunks non-overlapping without moving the frozen boundary.
+                    "end": (chunk_end - timedelta(microseconds=1)).isoformat(),
+                    "limit": 10000,
+                    "sort": "asc",
+                }
+                page_token: str | None = None
+                seen_page_tokens: set[str] = set()
+
+                for _ in range(max_pages_per_chunk):
+                    request_params = dict(params)
+                    if page_token:
+                        if page_token in seen_page_tokens:
+                            raise RuntimeError(
+                                "v14_r2e_chunk_pagination_token_cycle"
+                            )
+                        seen_page_tokens.add(page_token)
+                        request_params["page_token"] = page_token
+
+                    response = None
+                    for retry_index in range(max_rate_limit_retries + 1):
+                        response = await client.get(
+                            f"{self.settings.data_base_url}/v1beta3/crypto/"
+                            f"{self.settings.crypto_location}/bars",
+                            headers=self.market_data.headers,
+                            params=request_params,
+                        )
+                        if response.status_code != 429:
+                            break
+                        if retry_index >= max_rate_limit_retries:
+                            raise RuntimeError(
+                                "v14_r2e_bar_rate_limit_retries_exhausted"
+                            )
+                        retry_after_raw = response.headers.get("Retry-After")
+                        try:
+                            retry_after = (
+                                float(retry_after_raw) if retry_after_raw else 0.0
+                            )
+                        except (TypeError, ValueError):
+                            retry_after = 0.0
+                        await asyncio.sleep(
+                            min(max(retry_after, 0.5 * (2 ** retry_index)), 8.0)
+                        )
+
+                    if response is None:
+                        raise RuntimeError("v14_r2e_bar_response_missing")
+                    response.raise_for_status()
+                    payload = response.json()
+                    payload_bars = payload.get("bars") or {}
+                    for symbol in V14_R2E_UNIVERSE:
+                        rows[symbol].extend(payload_bars.get(symbol, []) or [])
+                    page_count += 1
+                    page_token = payload.get("next_page_token")
+                    if not page_token:
                         break
-                    if retry_index >= max_rate_limit_retries:
-                        raise RuntimeError("v14_r2e_bar_rate_limit_retries_exhausted")
-                    retry_after_raw = response.headers.get("Retry-After")
-                    try:
-                        retry_after = float(retry_after_raw) if retry_after_raw else 0.0
-                    except (TypeError, ValueError):
-                        retry_after = 0.0
-                    await asyncio.sleep(min(max(retry_after, 0.5 * (2 ** retry_index)), 8.0))
-                if response is None:
-                    raise RuntimeError("v14_r2e_bar_response_missing")
-                response.raise_for_status()
-                payload = response.json()
-                payload_bars = payload.get("bars") or {}
-                for symbol in V14_R2E_UNIVERSE:
-                    rows[symbol].extend(payload_bars.get(symbol, []) or [])
-                page_count = page_index + 1
-                page_token = payload.get("next_page_token")
-                if page_count % 25 == 0:
-                    print(
-                        "GRAEN_V14_R2E_DATA_FETCH_PROGRESS",
-                        {
-                            "pages": page_count,
-                            "raw_rows": {
-                                symbol: len(values)
-                                for symbol, values in rows.items()
-                            },
-                            "max_pages": max_pages,
-                            "execution_authority": False,
-                        },
-                        flush=True,
+                else:
+                    raise RuntimeError(
+                        "v14_r2e_chunk_pagination_exceeded_safety_limit"
                     )
-                if not page_token:
-                    break
-            else:
-                raise RuntimeError("v14_r2e_bar_pagination_exceeded_safety_limit")
+
+                chunk_count += 1
+                chunk_start = chunk_end
+
+        # Defensive de-duplication protects against provider boundary semantics
+        # while preserving the frozen chronological corpus.
+        clean: dict[str, list[dict[str, Any]]] = {}
+        for symbol in V14_R2E_UNIVERSE:
+            by_stamp: dict[str, dict[str, Any]] = {}
+            for row in rows.get(symbol, []):
+                stamp = str(row.get("t") or row.get("timestamp") or "")
+                if stamp:
+                    by_stamp[stamp] = row
+            clean[symbol] = [
+                by_stamp[key]
+                for key in sorted(by_stamp)
+            ]
+
         print(
             "GRAEN_V14_R2E_DATA_FETCH",
             {
+                "chunks": chunk_count,
                 "pages": page_count,
                 "raw_rows": {symbol: len(values) for symbol, values in rows.items()},
+                "clean_rows": {symbol: len(values) for symbol, values in clean.items()},
                 "timeframe": "4Hour",
                 "execution_authority": False,
             },
             flush=True,
         )
-        return rows
+        return clean
 
 
     async def _fetch_v14_r2d_quotes(self) -> dict[str, list[dict[str, Any]]]:
@@ -5411,9 +5443,13 @@ class GraenResearchExecutor:
         self,
         snapshot: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        """Retry the R2E frozen corpus once after the bounded page-cap repair."""
+        """Resume the frozen R2E stage after replacing global deep pagination."""
         problems = snapshot.get("problems") or []
         runs = snapshot.get("runs") or []
+        recoverable_errors = {
+            "RuntimeError: v14_r2e_bar_pagination_exceeded_safety_limit",
+            "RuntimeError: v14_r2e_chunk_pagination_exceeded_safety_limit",
+        }
         for problem in problems:
             if not isinstance(problem, Mapping):
                 continue
@@ -5426,11 +5462,11 @@ class GraenResearchExecutor:
                 problem.get("status") != "BLOCKED"
                 or problem.get("domain") != PROBLEM_DOMAIN
                 or metadata.get("research_stage") != V14_R2E_STAGE
+                or metadata.get("v14_r2e_campaign_id") != V14_R2E_CAMPAIGN_ID
+                or int(metadata.get("v14_r2e_pagination_recovery_version") or 0) >= 1
             ):
                 continue
-            retry_count = int(metadata.get("v14_r2e_pagination_retry_count") or 0)
-            if retry_count >= 1:
-                continue
+
             problem_id = str(problem.get("problem_id") or "")
             matching_runs = [
                 run
@@ -5441,31 +5477,35 @@ class GraenResearchExecutor:
                 and run.get("methodology_version") == V14_R2E_METHODOLOGY_VERSION
                 and isinstance(run.get("result_summary"), Mapping)
                 and str(run.get("result_summary", {}).get("error") or "")
-                == "RuntimeError: v14_r2e_bar_pagination_exceeded_safety_limit"
+                in recoverable_errors
             ]
             if not matching_runs:
                 continue
+
             blocked_run = max(
                 matching_runs,
                 key=lambda row: str(row.get("started_at") or ""),
             )
             blocked_run_id = str(blocked_run.get("run_id") or "")
+            blocked_error = str(
+                blocked_run.get("result_summary", {}).get("error") or ""
+            )
             artifact_response = await self.gateway.record_artifact(
                 problem_id=problem_id,
                 run_id=blocked_run_id or None,
-                artifact_type="CRYPTO_V14_R2E_PAGINATION_REPAIR",
+                artifact_type="CRYPTO_V14_R2E_CORPUS_FETCH_REPAIR",
                 methodology_version=V14_R2E_METHODOLOGY_VERSION,
                 content={
                     "campaign_id": V14_R2E_CAMPAIGN_ID,
                     "blocked_run_id": blocked_run_id or None,
-                    "blocked_error": (
-                        blocked_run.get("result_summary", {}).get("error")
-                    ),
-                    "repair": "expand_bounded_4h_pagination_64_to_256",
-                    "pagination_max_pages": 256,
-                    "pagination_cycle_detection": True,
+                    "blocked_error": blocked_error,
+                    "repair": "bounded_60_day_4h_chunks_with_local_pagination",
+                    "chunk_days": 60,
+                    "max_pages_per_chunk": 8,
                     "rate_limit_retry_cap": 6,
-                    "retry_count": retry_count + 1,
+                    "methodology_changed": False,
+                    "strategy_parameters_changed": False,
+                    "oos_boundary_changed": False,
                     "research_only": True,
                     "execution_authority": False,
                     "broker_orders_possible": False,
@@ -5485,285 +5525,29 @@ class GraenResearchExecutor:
                 stage=V14_R2E_STAGE,
                 metadata={
                     "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
-                    "v14_r2e_pagination_retry_count": retry_count + 1,
+                    "v14_r2e_pagination_recovery_version": 1,
                     "v14_r2e_recovered_blocked_run_id": blocked_run_id or None,
-                    "v14_r2e_pagination_repair_artifact_id": (
-                        repair_artifact.get("artifact_id")
+                    "v14_r2e_fetch_repair_artifact_id": repair_artifact.get(
+                        "artifact_id"
                     ),
                 },
             )
             if not queued.get("problem"):
                 raise RuntimeError("v14_r2e_pagination_recovery_queue_failed")
+
             result = {
                 "recovered": True,
                 "problem_id": problem_id,
                 "blocked_run_id": blocked_run_id or None,
+                "blocked_error": blocked_error,
                 "next_research_stage": V14_R2E_STAGE,
                 "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
-                "retry_count": retry_count + 1,
                 "execution_authority": False,
                 "broker_orders_possible": False,
             }
             print("GRAEN_V14_R2E_PAGINATION_RECOVERY", result, flush=True)
             return result
         return None
-
-
-    async def _recover_v13_into_v14(
-        self,
-        snapshot: Mapping[str, Any],
-    ) -> dict[str, Any] | None:
-        """Advance the terminal V13 result into the external V14-R1 preflight."""
-        problems = snapshot.get("problems") or []
-        runs = snapshot.get("runs") or []
-
-        for problem in problems:
-            if not isinstance(problem, Mapping):
-                continue
-            metadata = (
-                problem.get("metadata")
-                if isinstance(problem.get("metadata"), Mapping)
-                else {}
-            )
-            if metadata.get("v14_campaign_id") == V14_CAMPAIGN_ID:
-                return None
-            if metadata.get("research_stage") in V14_STAGE_KEYS:
-                return None
-
-        for run in runs:
-            if not isinstance(run, Mapping):
-                continue
-            summary = (
-                run.get("result_summary")
-                if isinstance(run.get("result_summary"), Mapping)
-                else {}
-            )
-            if summary.get("campaign_id") == V14_CAMPAIGN_ID:
-                return None
-
-        for problem in problems:
-            if not isinstance(problem, Mapping):
-                continue
-            if (
-                problem.get("status") != "WAITING"
-                or problem.get("domain") != PROBLEM_DOMAIN
-            ):
-                continue
-            metadata = (
-                problem.get("metadata")
-                if isinstance(problem.get("metadata"), Mapping)
-                else {}
-            )
-            if metadata.get("research_stage"):
-                continue
-            problem_id = str(problem.get("problem_id") or "")
-            terminal_run: Mapping[str, Any] | None = None
-            for run in runs:
-                if not isinstance(run, Mapping):
-                    continue
-                if str(run.get("problem_id") or "") != problem_id:
-                    continue
-                summary = (
-                    run.get("result_summary")
-                    if isinstance(run.get("result_summary"), Mapping)
-                    else {}
-                )
-                if (
-                    summary.get("campaign_id") == V13_CAMPAIGN_ID
-                    and summary.get("state") == "V13_NO_DEVELOPMENT_SURVIVOR"
-                    and summary.get("decision") == "V13_HYPOTHESES_FALSIFIED"
-                ):
-                    terminal_run = run
-                    break
-            if terminal_run is None:
-                continue
-
-            origin_run_id = str(terminal_run.get("run_id") or "")
-            selection = await self.gateway.record_artifact(
-                problem_id=problem_id,
-                run_id=origin_run_id or None,
-                artifact_type="CRYPTO_BTC_V14_EXTERNAL_REPLICATION_SELECTION",
-                methodology_version=V14_METHODOLOGY_VERSION,
-                content={
-                    "campaign_id": V14_CAMPAIGN_ID,
-                    "selected_method": "cost_aware_xgboost_btc",
-                    "selection_basis": (
-                        "deep evidence review prioritized chronological walk-forward "
-                        "BTC XGBoost with transaction-cost-aware switching before any "
-                        "new proprietary hypothesis family"
-                    ),
-                    "manifest": v14_campaign_manifest(),
-                    "source_commit": _source_commit(),
-                    "deployment_id": _deployment_id(),
-                    "research_only": True,
-                    "execution_authority": False,
-                    "broker_orders_possible": False,
-                    "production_promotion_authority": False,
-                    "crypto_execution_enabled": False,
-                    "live_execution_authorized": False,
-                },
-            )
-            artifact = (
-                selection.get("artifact")
-                if isinstance(selection.get("artifact"), Mapping)
-                else {}
-            )
-            queued = await self.gateway.queue_research_stage(
-                problem_id=problem_id,
-                stage=V14_PREFLIGHT_STAGE,
-                metadata={
-                    "v14_campaign_id": V14_CAMPAIGN_ID,
-                    "v14_origin": "v13_no_development_survivor_external_replication",
-                    "v13_terminal_run_id": origin_run_id or None,
-                    "v14_selection_artifact_id": artifact.get("artifact_id"),
-                },
-            )
-            if not queued.get("problem"):
-                raise RuntimeError("v14_preflight_stage_queue_failed")
-            result = {
-                "recovered": True,
-                "problem_id": problem_id,
-                "next_research_stage": V14_PREFLIGHT_STAGE,
-                "v14_campaign_id": V14_CAMPAIGN_ID,
-                "execution_authority": False,
-                "broker_orders_possible": False,
-            }
-            print("GRAEN_V13_TO_V14_R1", result, flush=True)
-            return result
-        return None
-
-    async def _execute_btc_xgb_v14(
-        self,
-        problem: Mapping[str, Any],
-        run: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        problem_id = str(problem.get("problem_id"))
-        run_id = str(run.get("run_id"))
-        metadata = (
-            problem.get("metadata")
-            if isinstance(problem.get("metadata"), Mapping)
-            else {}
-        )
-        stage = str(metadata.get("research_stage") or V14_PREFLIGHT_STAGE)
-        if stage != V14_PREFLIGHT_STAGE:
-            raise RuntimeError(f"unsupported_v14_research_stage:{stage}")
-        self.active_methodology_version = V14_METHODOLOGY_VERSION
-
-        prespec_response = await self.gateway.record_artifact(
-            problem_id=problem_id,
-            run_id=run_id,
-            artifact_type="CRYPTO_BTC_V14_R1_PREFLIGHT_PRESPEC",
-            methodology_version=V14_METHODOLOGY_VERSION,
-            content={
-                **v14_campaign_manifest(),
-                "frozen_before_alpaca_corpus_access": True,
-                "source_commit": _source_commit(),
-                "deployment_id": _deployment_id(),
-            },
-        )
-        prespec_artifact = (
-            prespec_response.get("artifact")
-            if isinstance(prespec_response.get("artifact"), Mapping)
-            else {}
-        )
-
-        rows = await self._fetch_v14_hourly_btc()
-        result = await asyncio.to_thread(
-            evaluate_v14_alpaca_transfer_screen,
-            rows,
-        )
-        result_response = await self.gateway.record_artifact(
-            problem_id=problem_id,
-            run_id=run_id,
-            artifact_type="CRYPTO_BTC_V14_R1_BROKER_PREFLIGHT_RESULT",
-            methodology_version=V14_METHODOLOGY_VERSION,
-            content={
-                **result,
-                "prespec_artifact_id": prespec_artifact.get("artifact_id"),
-                "source_commit": _source_commit(),
-                "deployment_id": _deployment_id(),
-            },
-        )
-        result_artifact = (
-            result_response.get("artifact")
-            if isinstance(result_response.get("artifact"), Mapping)
-            else {}
-        )
-        gate = (
-            result.get("broker_feasibility_gate")
-            if isinstance(result.get("broker_feasibility_gate"), Mapping)
-            else {}
-        )
-        survived = bool(gate.get("worth_full_original_replication"))
-        aggregate = (
-            result.get("aggregate")
-            if isinstance(result.get("aggregate"), Mapping)
-            else {}
-        )
-        paper = (
-            aggregate.get("paper_10bp")
-            if isinstance(aggregate.get("paper_10bp"), Mapping)
-            else {}
-        )
-        alpaca = (
-            aggregate.get("alpaca_base_30bp")
-            if isinstance(aggregate.get("alpaca_base_30bp"), Mapping)
-            else {}
-        )
-        if not survived:
-            return await self._finalize(
-                problem=problem,
-                run=run,
-                status="WAITING",
-                summary={
-                    "state": "V14_R1_BROKER_FEASIBILITY_FAIL",
-                    "status": "EXTERNAL_METHOD_PREFLIGHT_REJECTED",
-                    "decision": "V14_R1_DO_NOT_REPLICATE_FURTHER",
-                    "campaign_id": V14_CAMPAIGN_ID,
-                    "candidate_family": V14_FAMILY,
-                    "result_artifact_id": result_artifact.get("artifact_id"),
-                    "paper_10bp_sharpe": paper.get("sharpe"),
-                    "alpaca_base_30bp_sharpe": alpaca.get("sharpe"),
-                    "alpaca_base_30bp_total_return": alpaca.get("total_return"),
-                    "positive_fold_share": gate.get("alpaca_base_positive_fold_share"),
-                    "original_replication_complete": False,
-                    "development_opened": False,
-                    "validation_opened": False,
-                    "holdout_opened": False,
-                    "next_action": "ADVANCE_TO_V14_R2_QUEUE_IMBALANCE_RESEARCH",
-                    "execution_authority": False,
-                    "broker_orders_possible": False,
-                    "crypto_execution_enabled": False,
-                    "live_execution_authorized": False,
-                },
-            )
-
-        return await self._finalize(
-            problem=problem,
-            run=run,
-            status="WAITING",
-            summary={
-                "state": "V14_R1_BROKER_FEASIBILITY_SURVIVES",
-                "status": "EXTERNAL_METHOD_PREFLIGHT_PASS",
-                "decision": "CONTINUE_RESEARCH",
-                "campaign_id": V14_CAMPAIGN_ID,
-                "candidate_family": V14_FAMILY,
-                "result_artifact_id": result_artifact.get("artifact_id"),
-                "paper_10bp_sharpe": paper.get("sharpe"),
-                "alpaca_base_30bp_sharpe": alpaca.get("sharpe"),
-                "alpaca_base_30bp_total_return": alpaca.get("total_return"),
-                "positive_fold_share": gate.get("alpaca_base_positive_fold_share"),
-                "original_replication_complete": False,
-                "development_opened": False,
-                "validation_opened": False,
-                "holdout_opened": False,
-                "next_action": "VERIFY_SOURCE_AND_RUN_V14_R1_ORIGINAL_REPLICATION",
-                "execution_authority": False,
-                "broker_orders_possible": False,
-                "crypto_execution_enabled": False,
-                "live_execution_authorized": False,
-            },
-        )
 
 
     async def _recover_v14_r2d_fail_into_r2e(
