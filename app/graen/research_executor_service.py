@@ -151,10 +151,20 @@ from graen.crypto.triangular_arbitrage_v14_r2d import (
     campaign_manifest as v14_r2d_campaign_manifest,
     evaluate_triangular_arbitrage_preflight as evaluate_v14_r2d_triangular_arbitrage,
 )
+from graen.crypto.btc_4h_trend_v14_r2e import (
+    BAR_SCREEN_END as V14_R2E_BAR_SCREEN_END,
+    BAR_SCREEN_START as V14_R2E_BAR_SCREEN_START,
+    CAMPAIGN_ID as V14_R2E_CAMPAIGN_ID,
+    FAMILY as V14_R2E_FAMILY,
+    METHODOLOGY_VERSION as V14_R2E_METHODOLOGY_VERSION,
+    UNIVERSE as V14_R2E_UNIVERSE,
+    campaign_manifest as v14_r2e_campaign_manifest,
+    evaluate_btc_4h_trend_preflight as evaluate_v14_r2e_btc_4h_trend,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.16.0"
+RUNTIME_VERSION = "graen-research-executor-v1.17.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -269,12 +279,14 @@ V14_R2A_STAGE = "CRYPTO_BTC_QUEUE_IMBALANCE_V14_R2A_PREFLIGHT"
 V14_R2B_STAGE = "CRYPTO_BTC_PASSIVE_SCALPING_V14_R2B_PREFLIGHT"
 V14_R2C_STAGE = "CRYPTO_CROSS_SECTIONAL_MOMENTUM_V14_R2C_PREFLIGHT"
 V14_R2D_STAGE = "CRYPTO_TRIANGULAR_ARBITRAGE_V14_R2D_PREFLIGHT"
+V14_R2E_STAGE = "CRYPTO_BTC_4H_TREND_V14_R2E_PREFLIGHT"
 V14_STAGE_KEYS = {
     V14_PREFLIGHT_STAGE,
     V14_R2A_STAGE,
     V14_R2B_STAGE,
     V14_R2C_STAGE,
     V14_R2D_STAGE,
+    V14_R2E_STAGE,
 }
 
 RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
@@ -659,6 +671,78 @@ class GraenResearchExecutor:
                     rows.append(bar)
             clean[symbol] = rows
         return clean
+
+
+    async def _fetch_v14_r2e_btc_4h(self) -> dict[str, list[dict[str, Any]]]:
+        """Fetch the frozen Alpaca BTC/USD 4-hour corpus for R2E."""
+        if not self.settings.credentials_configured:
+            raise RuntimeError("market-data credentials are not configured")
+        params: dict[str, Any] = {
+            "symbols": ",".join(V14_R2E_UNIVERSE),
+            "timeframe": "4Hour",
+            "start": V14_R2E_BAR_SCREEN_START.isoformat(),
+            "end": V14_R2E_BAR_SCREEN_END.isoformat(),
+            "limit": 10000,
+            "sort": "asc",
+        }
+        rows: dict[str, list[dict[str, Any]]] = {
+            symbol: [] for symbol in V14_R2E_UNIVERSE
+        }
+        page_token: str | None = None
+        seen_page_tokens: set[str] = set()
+        page_count = 0
+        max_pages = 64
+        max_rate_limit_retries = 6
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            for page_index in range(max_pages):
+                request_params = dict(params)
+                if page_token:
+                    if page_token in seen_page_tokens:
+                        raise RuntimeError("v14_r2e_bar_pagination_token_cycle")
+                    seen_page_tokens.add(page_token)
+                    request_params["page_token"] = page_token
+                response = None
+                for retry_index in range(max_rate_limit_retries + 1):
+                    response = await client.get(
+                        f"{self.settings.data_base_url}/v1beta3/crypto/"
+                        f"{self.settings.crypto_location}/bars",
+                        headers=self.market_data.headers,
+                        params=request_params,
+                    )
+                    if response.status_code != 429:
+                        break
+                    if retry_index >= max_rate_limit_retries:
+                        raise RuntimeError("v14_r2e_bar_rate_limit_retries_exhausted")
+                    retry_after_raw = response.headers.get("Retry-After")
+                    try:
+                        retry_after = float(retry_after_raw) if retry_after_raw else 0.0
+                    except (TypeError, ValueError):
+                        retry_after = 0.0
+                    await asyncio.sleep(min(max(retry_after, 0.5 * (2 ** retry_index)), 8.0))
+                if response is None:
+                    raise RuntimeError("v14_r2e_bar_response_missing")
+                response.raise_for_status()
+                payload = response.json()
+                payload_bars = payload.get("bars") or {}
+                for symbol in V14_R2E_UNIVERSE:
+                    rows[symbol].extend(payload_bars.get(symbol, []) or [])
+                page_count = page_index + 1
+                page_token = payload.get("next_page_token")
+                if not page_token:
+                    break
+            else:
+                raise RuntimeError("v14_r2e_bar_pagination_exceeded_safety_limit")
+        print(
+            "GRAEN_V14_R2E_DATA_FETCH",
+            {
+                "pages": page_count,
+                "raw_rows": {symbol: len(values) for symbol, values in rows.items()},
+                "timeframe": "4Hour",
+                "execution_authority": False,
+            },
+            flush=True,
+        )
+        return rows
 
 
     async def _fetch_v14_r2d_quotes(self) -> dict[str, list[dict[str, Any]]]:
@@ -5560,6 +5644,179 @@ class GraenResearchExecutor:
             },
         )
 
+
+    async def _recover_v14_r2d_fail_into_r2e(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Advance terminal R2D rejection into the low-turnover BTC 4h trend screen."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if problem.get("status") != "WAITING" or problem.get("domain") != PROBLEM_DOMAIN:
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            problem_runs = [
+                row for row in runs
+                if isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+            ]
+            if any(
+                row.get("methodology_version") == V14_R2E_METHODOLOGY_VERSION
+                or (
+                    isinstance(row.get("result_summary"), Mapping)
+                    and row.get("result_summary", {}).get("campaign_id") == V14_R2E_CAMPAIGN_ID
+                )
+                for row in problem_runs
+            ):
+                continue
+            matching = [
+                row for row in problem_runs
+                if row.get("methodology_version") == V14_R2D_METHODOLOGY_VERSION
+                and isinstance(row.get("result_summary"), Mapping)
+                and row.get("result_summary", {}).get("state") == "V14_R2D_BROKER_FEASIBILITY_FAIL"
+                and row.get("result_summary", {}).get("decision") == "V14_R2D_DO_NOT_PROMOTE"
+            ]
+            if not matching:
+                continue
+            origin = max(matching, key=lambda row: str(row.get("started_at") or ""))
+            origin_run_id = str(origin.get("run_id") or "")
+            artifact_response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=origin_run_id or None,
+                artifact_type="CRYPTO_V14_R2E_BTC_4H_TREND_SELECTION",
+                methodology_version=V14_R2E_METHODOLOGY_VERSION,
+                content={
+                    **v14_r2e_campaign_manifest(),
+                    "origin_campaign_id": V14_R2D_CAMPAIGN_ID,
+                    "origin_run_id": origin_run_id or None,
+                    "selection_basis": (
+                        "V14 high-turnover and microstructure families failed broker economics; "
+                        "advance to a public leakage-controlled 4h BTC long/flat trend family "
+                        "whose edge is explicitly low turnover and crash avoidance."
+                    ),
+                    "frozen_before_bar_corpus_access": True,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            artifact = artifact_response.get("artifact") if isinstance(artifact_response.get("artifact"), Mapping) else {}
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V14_R2E_STAGE,
+                metadata={
+                    "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
+                    "v14_r2e_origin_run_id": origin_run_id or None,
+                    "v14_r2e_selection_artifact_id": artifact.get("artifact_id"),
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v14_r2e_stage_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "next_research_stage": V14_R2E_STAGE,
+                "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            print("GRAEN_V14_R2D_TO_R2E", result, flush=True)
+            return result
+        return None
+
+
+    async def _execute_btc_4h_trend_v14_r2e(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        stage = str(metadata.get("research_stage") or V14_R2E_STAGE)
+        if stage != V14_R2E_STAGE:
+            raise RuntimeError(f"unsupported_v14_r2e_research_stage:{stage}")
+        self.active_methodology_version = V14_R2E_METHODOLOGY_VERSION
+
+        prespec_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V14_R2E_BTC_4H_TREND_PRESPEC",
+            methodology_version=V14_R2E_METHODOLOGY_VERSION,
+            content={
+                **v14_r2e_campaign_manifest(),
+                "frozen_before_bar_corpus_access": True,
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        prespec_artifact = prespec_response.get("artifact") if isinstance(prespec_response.get("artifact"), Mapping) else {}
+        rows = await self._fetch_v14_r2e_btc_4h()
+        result = await asyncio.to_thread(evaluate_v14_r2e_btc_4h_trend, rows)
+        result_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V14_R2E_BTC_4H_TREND_RESULT",
+            methodology_version=V14_R2E_METHODOLOGY_VERSION,
+            content={
+                **result,
+                "prespec_artifact_id": prespec_artifact.get("artifact_id"),
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        artifact = result_response.get("artifact") if isinstance(result_response.get("artifact"), Mapping) else {}
+        gate = result.get("broker_feasibility_gate") if isinstance(result.get("broker_feasibility_gate"), Mapping) else {}
+        development = result.get("development") if isinstance(result.get("development"), Mapping) else {}
+        oos = result.get("oos") if isinstance(result.get("oos"), Mapping) else {}
+        scenarios = oos.get("scenarios") if isinstance(oos.get("scenarios"), Mapping) else {}
+        decisive = scenarios.get("taker_stress_30bp") if isinstance(scenarios.get("taker_stress_30bp"), Mapping) else {}
+        buy_hold = oos.get("buy_hold") if isinstance(oos.get("buy_hold"), Mapping) else {}
+        survived = bool(gate.get("survives_to_shadow"))
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary={
+                "state": (
+                    "V14_R2E_SURVIVES_TO_BTC_4H_TREND_SHADOW"
+                    if survived else "V14_R2E_BROKER_FEASIBILITY_FAIL"
+                ),
+                "status": (
+                    "BTC_4H_TREND_PREFLIGHT_PASS"
+                    if survived else "BTC_4H_TREND_PREFLIGHT_REJECTED"
+                ),
+                "decision": "CONTINUE_RESEARCH" if survived else "V14_R2E_DO_NOT_PROMOTE",
+                "campaign_id": V14_R2E_CAMPAIGN_ID,
+                "candidate_family": V14_R2E_FAMILY,
+                "result_artifact_id": artifact.get("artifact_id"),
+                "selected_sma_window": development.get("selected_window"),
+                "taker_stress_30bp_bar_count": decisive.get("bar_count"),
+                "taker_stress_30bp_entry_count": decisive.get("entry_count"),
+                "taker_stress_30bp_total_return": decisive.get("total_return"),
+                "taker_stress_30bp_sharpe": decisive.get("sharpe"),
+                "taker_stress_30bp_max_drawdown": decisive.get("max_drawdown"),
+                "taker_stress_30bp_positive_time_quarter_share": decisive.get("positive_time_quarter_share"),
+                "oos_buy_hold_sharpe": buy_hold.get("sharpe"),
+                "oos_buy_hold_total_return": buy_hold.get("total_return"),
+                "next_action": (
+                    "START_V14_R2E_BTC_4H_TREND_FORWARD_SHADOW"
+                    if survived else "ADVANCE_TO_V14_R2F_WEEKLY_WALK_FORWARD_ENSEMBLE_RESEARCH"
+                ),
+                "shadow_only": survived,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "crypto_execution_enabled": False,
+                "live_execution_authorized": False,
+            },
+        )
+
+
     async def _recover_v14_r2c_fail_into_r2d(
         self,
         snapshot: Mapping[str, Any],
@@ -6794,6 +7051,9 @@ class GraenResearchExecutor:
         v13_to_v14_recovery = await self._recover_v13_into_v14(snapshot)
         if v13_to_v14_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v14_r2d_to_r2e_recovery = await self._recover_v14_r2d_fail_into_r2e(snapshot)
+        if v14_r2d_to_r2e_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v14_r2c_to_r2d_recovery = await self._recover_v14_r2c_fail_into_r2d(snapshot)
         if v14_r2c_to_r2d_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -6834,6 +7094,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_v14_r2e = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") == V14_R2E_STAGE
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v14_r2d = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -6939,7 +7207,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V14_R2D_METHODOLOGY_VERSION
+            V14_R2E_METHODOLOGY_VERSION
+            if staged_v14_r2e
+            else V14_R2D_METHODOLOGY_VERSION
             if staged_v14_r2d
             else V14_R2C_METHODOLOGY_VERSION
             if staged_v14_r2c
@@ -6994,6 +7264,7 @@ class GraenResearchExecutor:
                 "v14_feature_recovery": v14_feature_recovery,
                 "v14_pagination_recovery": v14_pagination_recovery,
                 "v13_to_v14_recovery": v13_to_v14_recovery,
+                "v14_r2d_to_r2e_recovery": v14_r2d_to_r2e_recovery,
                 "v14_r2c_to_r2d_recovery": v14_r2c_to_r2d_recovery,
                 "v14_r2b_to_r2c_recovery": v14_r2b_to_r2c_recovery,
                 "v14_r2a_to_r2b_recovery": v14_r2a_to_r2b_recovery,
@@ -7020,6 +7291,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") == V14_R2E_STAGE:
+                return await self._execute_btc_4h_trend_v14_r2e(problem, run)
             if metadata.get("research_stage") == V14_R2D_STAGE:
                 return await self._execute_triangular_arbitrage_v14_r2d(problem, run)
             if metadata.get("research_stage") == V14_R2C_STAGE:
