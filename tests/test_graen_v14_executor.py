@@ -1386,6 +1386,7 @@ def test_v14_r2e_blocked_pagination_recovers_once_without_methodology_change():
         artifact = runtime.gateway.artifacts[-1]
         assert artifact["artifact_type"] == "CRYPTO_V14_R2E_CORPUS_FETCH_REPAIR"
         assert artifact["content"]["methodology_changed"] is False
+        assert artifact["content"]["max_pages_per_chunk"] == 16
         assert artifact["content"]["strategy_parameters_changed"] is False
         assert artifact["content"]["live_execution_authorized"] is False
 
