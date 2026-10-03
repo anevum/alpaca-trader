@@ -422,12 +422,16 @@ class GraenCryptoV6Runtime:
         velum_artifact_id = str(
             request.get("velum_artifact_id") or ""
         )
+        evidence_phase = str(request.get("evidence_phase") or "FORWARD_SHADOW").strip().upper()
+        if evidence_phase not in {"FORWARD_SHADOW", "VALIDATION", "HOLDOUT"}:
+            raise ValueError("invalid_candidate_shadow_evidence_phase")
         activation_key = ":".join(
             [
                 problem_id,
                 candidate_methodology,
                 candidate_id,
                 velum_artifact_id,
+                evidence_phase,
             ]
         )
         activation_id = hashlib.sha256(
@@ -445,6 +449,7 @@ class GraenCryptoV6Runtime:
             "candidate_id": candidate_id,
             "candidate_spec": dict(candidate_spec),
             "velum_artifact_id": velum_artifact_id,
+            "evidence_phase": evidence_phase,
             "activated_at": datetime.now(timezone.utc).isoformat(),
             "research_only": True,
             "promotion_authorized": False,
@@ -750,6 +755,7 @@ class CandidateShadowActivationRequest(BaseModel):
     candidate_methodology: str
     candidate_spec: dict[str, Any]
     velum_artifact_id: str
+    evidence_phase: str = "FORWARD_SHADOW"
 
 
 def require_shadow_token(
