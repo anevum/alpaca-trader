@@ -354,8 +354,8 @@ def collect_opportunities(
     return rows
 
 
-def evaluate_candidate(
-    bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+def evaluate_candidate_from_series(
+    series: Mapping[str, Mapping[datetime, Mapping[str, Any]]],
     *,
     spec: BtcMechanismSpec,
     start: datetime,
@@ -363,13 +363,6 @@ def evaluate_candidate(
     scenario: str = "high",
     seed: int,
 ) -> dict[str, Any]:
-    warmup_hours = max(spec.slow_minutes // 60 + 2, 26)
-    series = build_series(
-        bars_by_symbol,
-        start=start,
-        end=end,
-        warmup_hours=warmup_hours,
-    )
     opportunities = collect_opportunities(series, spec, start=start, end=end)
     primary = simulate(
         series,
@@ -399,6 +392,32 @@ def evaluate_candidate(
         "one_bar_delay": summarize(delayed, start=start, end=end, seed=seed + 1),
         "opportunity_sample": [row.to_dict() for row in opportunities[:5]],
     }
+
+
+def evaluate_candidate(
+    bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    spec: BtcMechanismSpec,
+    start: datetime,
+    end: datetime,
+    scenario: str = "high",
+    seed: int,
+) -> dict[str, Any]:
+    warmup_hours = max(spec.slow_minutes // 60 + 2, 26)
+    series = build_series(
+        bars_by_symbol,
+        start=start,
+        end=end,
+        warmup_hours=warmup_hours,
+    )
+    return evaluate_candidate_from_series(
+        series,
+        spec=spec,
+        start=start,
+        end=end,
+        scenario=scenario,
+        seed=seed,
+    )
 
 
 def _fold_pass(result: Mapping[str, Any]) -> bool:
@@ -444,9 +463,20 @@ def evaluate_development(
 ) -> dict[str, Any]:
     results: dict[str, Any] = {}
     survivors: list[dict[str, Any]] = []
-    for index, spec in enumerate(candidate_specs()):
-        aggregate = evaluate_candidate(
-            bars_by_symbol,
+    specs = candidate_specs()
+    shared_warmup_hours = max(
+        26,
+        max(spec.slow_minutes for spec in specs) // 60 + 2,
+    )
+    shared_series = build_series(
+        bars_by_symbol,
+        start=DEVELOPMENT_START,
+        end=DEVELOPMENT_END,
+        warmup_hours=shared_warmup_hours,
+    )
+    for index, spec in enumerate(specs):
+        aggregate = evaluate_candidate_from_series(
+            shared_series,
             spec=spec,
             start=DEVELOPMENT_START,
             end=DEVELOPMENT_END,
@@ -455,8 +485,8 @@ def evaluate_development(
         )
         folds: list[dict[str, Any]] = []
         for fold_index, (label, start, end) in enumerate(DEVELOPMENT_FOLDS):
-            result = evaluate_candidate(
-                bars_by_symbol,
+            result = evaluate_candidate_from_series(
+                shared_series,
                 spec=spec,
                 start=start,
                 end=end,
@@ -512,8 +542,8 @@ def evaluate_development(
         "methodology_version": METHODOLOGY_VERSION,
         "family": FAMILY,
         "symbol": "BTC/USD",
-        "candidate_count": len(candidate_specs()),
-        "mechanisms": sorted({spec.mechanism for spec in candidate_specs()}),
+        "candidate_count": len(specs),
+        "mechanisms": sorted({spec.mechanism for spec in specs}),
         "fold_count": len(DEVELOPMENT_FOLDS),
         "results": results,
         "survivors": [row["candidate_id"] for row in survivors],
