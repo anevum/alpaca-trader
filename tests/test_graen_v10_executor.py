@@ -639,3 +639,39 @@ def test_v11_no_survivor_routes_to_v12_once_without_execution_authority():
         assert len(runtime.gateway.queued_stages) == 1
 
     asyncio.run(scenario())
+
+
+def test_v12_claim_diagnostic_exposes_claim_predicate_without_mutation():
+    runtime = _runtime()
+    snapshot = {
+        "problems": [{
+            "problem_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "status": "WAITING",
+            "domain": service.PROBLEM_DOMAIN,
+            "priority": 95,
+            "metadata": {
+                "research_stage": service.V12_DEVELOPMENT_STAGE,
+                "v12_campaign_id": service.V12_CAMPAIGN_ID,
+                "code_promotion": {"phase": "PENDING"},
+            },
+        }],
+        "runs": [{
+            "run_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            "problem_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "status": "WAITING",
+            "methodology_version": service.V11_METHODOLOGY_VERSION,
+            "result_summary": {"state": "V11_NO_DEVELOPMENT_SURVIVOR"},
+        }],
+    }
+    result = runtime._observe_v12_claimability(snapshot)
+    assert result["research_stage"] == service.V12_DEVELOPMENT_STAGE
+    assert result["code_promotion_phase"] == "PENDING"
+    assert result["claim_predicate"] == {
+        "status_waiting": True,
+        "domain_match": True,
+        "stage_recognized": True,
+        "code_promotion_allows": False,
+        "eligible": False,
+    }
+    assert runtime.gateway.queued_stages == []
+    assert runtime.gateway.completions == []
