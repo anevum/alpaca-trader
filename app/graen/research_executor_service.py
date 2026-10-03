@@ -378,7 +378,16 @@ class GraenResearchExecutor:
             "service": "graen-research-executor",
             "runtime_version": RUNTIME_VERSION,
             "methodology_version": self.active_methodology_version,
-            "supported_methodologies": [V7_METHODOLOGY_VERSION, LEADLAG_METHODOLOGY_VERSION, AUTONOMOUS_METHODOLOGY_PREFIX, V9_METHODOLOGY_VERSION, V10_METHODOLOGY_VERSION],
+            "supported_methodologies": [
+                V7_METHODOLOGY_VERSION,
+                LEADLAG_METHODOLOGY_VERSION,
+                AUTONOMOUS_METHODOLOGY_PREFIX,
+                V9_METHODOLOGY_VERSION,
+                V10_METHODOLOGY_VERSION,
+                V11_METHODOLOGY_VERSION,
+                V12_METHODOLOGY_VERSION,
+                V13_METHODOLOGY_VERSION,
+            ],
             "running": running,
             "autorun": self.autorun,
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
@@ -4353,6 +4362,96 @@ class GraenResearchExecutor:
             return result
         return None
 
+    async def _recover_orphaned_v13_nonconfirmatory_claim(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Requeue interrupted V13 DEVELOPMENT/VELUM work without opening sealed evidence."""
+        problems = {
+            str(row.get("problem_id")): row
+            for row in (snapshot.get("problems") or [])
+            if isinstance(row, Mapping) and row.get("problem_id")
+        }
+        runtime_state = snapshot.get("runtime_state")
+        runtime_metadata = (
+            runtime_state.get("metadata")
+            if isinstance(runtime_state, Mapping)
+            and isinstance(runtime_state.get("metadata"), Mapping)
+            else {}
+        )
+        executor_state = (
+            runtime_metadata.get("research_executor")
+            if isinstance(runtime_metadata.get("research_executor"), Mapping)
+            else {}
+        )
+        active_problem_id = str(executor_state.get("active_problem_id") or "")
+        minimum_age = timedelta(seconds=max(180, self.interval_seconds * 4))
+        now = datetime.now(UTC)
+
+        for run in (snapshot.get("runs") or []):
+            if not isinstance(run, Mapping) or run.get("status") != "RUNNING":
+                continue
+            problem_id = str(run.get("problem_id") or "")
+            run_id = str(run.get("run_id") or "")
+            problem = problems.get(problem_id)
+            if not problem or problem.get("status") != "RUNNING":
+                continue
+            if active_problem_id == problem_id:
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            stage = str(metadata.get("research_stage") or "")
+            if stage not in {V13_DEVELOPMENT_STAGE, V13_VELUM_STAGE}:
+                continue
+            try:
+                started_at = datetime.fromisoformat(
+                    str(run.get("started_at")).replace("Z", "+00:00")
+                )
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=UTC)
+                started_at = started_at.astimezone(UTC)
+            except (TypeError, ValueError):
+                continue
+            if now - started_at < minimum_age:
+                continue
+
+            await self.gateway.block_research_claim(
+                problem_id=problem_id,
+                run_id=run_id,
+                worker_id=self.worker_id,
+                error="v13_nonconfirmatory_stage_interrupted:" + stage,
+            )
+            preserved = {
+                key: value
+                for key, value in metadata.items()
+                if key != "research_stage"
+            }
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=stage,
+                metadata={
+                    **preserved,
+                    "v13_recovered_interrupted_run_id": run_id,
+                    "v13_recovered_interrupted_stage": stage,
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v13_interrupted_stage_requeue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "invalidated_run_id": run_id,
+                "requeued_stage": stage,
+                "sealed_evidence_opened": False,
+                "execution_authority": False,
+            }
+            print("GRAEN_V13_INTERRUPTED_STAGE_RECOVERY", result, flush=True)
+            return result
+        return None
+
     async def _recover_exhausted_v12_into_v13(
         self,
         snapshot: Mapping[str, Any],
@@ -4583,6 +4682,9 @@ class GraenResearchExecutor:
         v11_to_v12_recovery = await self._recover_exhausted_v11_into_v12(snapshot)
         if v11_to_v12_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v13_interrupted_stage_recovery = await self._recover_orphaned_v13_nonconfirmatory_claim(snapshot)
+        if v13_interrupted_stage_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v12_to_v13_recovery = await self._recover_exhausted_v12_into_v13(snapshot)
         if v12_to_v13_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -4704,6 +4806,7 @@ class GraenResearchExecutor:
                 "v10_campaign_seed": v10_campaign_seed,
                 "v10_corpus_recovery": v10_corpus_recovery,
                 "v11_to_v12_recovery": v11_to_v12_recovery,
+                "v13_interrupted_stage_recovery": v13_interrupted_stage_recovery,
                 "v12_to_v13_recovery": v12_to_v13_recovery,
                 "v12_native_stage_precedence": v12_native_stage_precedence,
                 "v12_claim_diagnostic": v12_claim_diagnostic,
