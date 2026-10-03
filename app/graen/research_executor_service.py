@@ -625,10 +625,16 @@ class GraenResearchExecutor:
         }
         rows: list[dict[str, Any]] = []
         page_token: str | None = None
+        seen_page_tokens: set[str] = set()
+        page_count = 0
+        max_pages = 128
         async with httpx.AsyncClient(timeout=45.0) as client:
-            for _ in range(12):
+            for page_index in range(max_pages):
                 request_params = dict(params)
                 if page_token:
+                    if page_token in seen_page_tokens:
+                        raise RuntimeError("v14_hourly_btc_pagination_token_cycle")
+                    seen_page_tokens.add(page_token)
                     request_params["page_token"] = page_token
                 response = await client.get(
                     f"{self.settings.data_base_url}/v1beta3/crypto/"
@@ -639,11 +645,22 @@ class GraenResearchExecutor:
                 response.raise_for_status()
                 payload = response.json()
                 rows.extend((payload.get("bars") or {}).get("BTC/USD", []) or [])
+                page_count = page_index + 1
                 page_token = payload.get("next_page_token")
                 if not page_token:
                     break
             else:
                 raise RuntimeError("v14_hourly_btc_pagination_exceeded_safety_limit")
+        print(
+            "GRAEN_V14_DATA_FETCH",
+            {
+                "pages": page_count,
+                "raw_rows": len(rows),
+                "max_pages": max_pages,
+                "execution_authority": False,
+            },
+            flush=True,
+        )
 
         unique: dict[str, dict[str, Any]] = {}
         for row in rows:
