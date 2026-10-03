@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from foundation.graen_gateway import _hash, _obj, _status
+from foundation.graen_gateway import RESEARCH_STAGES, _hash, _obj, _status
 
 
 def test_hash_is_canonical():
@@ -25,3 +25,8 @@ def test_runtime_contract_versionless_and_execution_neutral():
     }
     assert sample["execution_authority"] is False
     assert sample["broker_orders_possible"] is False
+
+
+def test_btc_v11_stages_are_claimable_research_stages():
+    assert "CRYPTO_BTC_TREND_PULLBACK_V11_DEVELOPMENT" in RESEARCH_STAGES
+    assert "CRYPTO_BTC_TREND_PULLBACK_V11_VELUM_REPLAY" in RESEARCH_STAGES
