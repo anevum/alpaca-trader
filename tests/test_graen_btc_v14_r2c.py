@@ -59,13 +59,14 @@ def test_v14_r2c_long_history_universe_excludes_short_history_pairs():
     }
 
 
-def test_v14_r2c_persistent_winner_can_survive_to_shadow_only():
+def test_v14_r2c_persistent_winner_is_profitable_but_fails_switch_count_gate():
     result = evaluate_cross_sectional_momentum_preflight(_bars())
     decisive = result["oos"]["scenarios"]["taker_switch_50bp"]
     assert decisive["day_count"] >= 120
     assert decisive["total_return"] > 0.0
-    assert result["broker_feasibility_gate"]["survives_to_shadow"] is True
-    assert result["shadow_only"] is True
+    assert decisive["switch_count"] < 4
+    assert result["broker_feasibility_gate"]["survives_to_shadow"] is False
+    assert result["shadow_only"] is False
     assert result["execution_authority"] is False
     assert result["broker_orders_possible"] is False
     assert result["live_execution_authorized"] is False
