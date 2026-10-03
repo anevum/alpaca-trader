@@ -69,7 +69,7 @@ from graen.crypto.trend_pullback_v10 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.8.0"
+RUNTIME_VERSION = "graen-research-executor-v1.8.1"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -2958,10 +2958,76 @@ class GraenResearchExecutor:
             }
         return None
 
+    async def _recover_exhausted_v9_into_v10(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Repair the one-time v9 -> v10 handoff without opening execution authority."""
+        problems = snapshot.get("problems") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            if metadata.get("v10_campaign_id") == V10_CAMPAIGN_ID:
+                return None
+            if metadata.get("research_stage") in V10_STAGE_KEYS:
+                return None
+
+        latest_by_problem: dict[str, Mapping[str, Any]] = {}
+        for run in snapshot.get("runs") or []:
+            if not isinstance(run, Mapping):
+                continue
+            problem_id = str(run.get("problem_id") or "")
+            if problem_id and problem_id not in latest_by_problem:
+                latest_by_problem[problem_id] = run
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if problem.get("status") != "WAITING" or problem.get("domain") != PROBLEM_DOMAIN:
+                continue
+            metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            run = latest_by_problem.get(problem_id)
+            if not isinstance(run, Mapping):
+                continue
+            summary = run.get("result_summary") if isinstance(run.get("result_summary"), Mapping) else {}
+            if not (
+                summary.get("campaign_id") == V9_CAMPAIGN_ID
+                and summary.get("state") == "V9_CAMPAIGN_EXHAUSTED"
+                and summary.get("decision") == "NEEDS_NEW_HYPOTHESIS_ENGINE"
+                and summary.get("next_action") == "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+            ):
+                continue
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V10_DEVELOPMENT_STAGE,
+                metadata={
+                    "v10_campaign_id": V10_CAMPAIGN_ID,
+                    "v10_epoch_index": 0,
+                    "v10_generation": 1,
+                    "v10_transition_source": "v9_campaign_exhausted",
+                    "v9_terminal_run_id": str(run.get("run_id") or "") or None,
+                },
+            )
+            if queued.get("problem"):
+                return {
+                    "recovered": True,
+                    "problem_id": problem_id,
+                    "next_research_stage": V10_DEVELOPMENT_STAGE,
+                    "source": "V9_CAMPAIGN_EXHAUSTED",
+                }
+        return None
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
         reconciliation = await self._reconcile_orphaned_confirmatory_claim(snapshot)
         if reconciliation is not None:
+            snapshot = await self.gateway.snapshot()
+        v10_transition_recovery = await self._recover_exhausted_v9_into_v10(snapshot)
+        if v10_transition_recovery is not None:
             snapshot = await self.gateway.snapshot()
         # Research-code promotion is an explicit bounded step in the same
         # deterministic executor loop. Process eligible handoffs without
@@ -3034,6 +3100,7 @@ class GraenResearchExecutor:
                 "claimed": False,
                 "research_promotion": promotion_results,
                 "reconciliation": reconciliation,
+                "v10_transition_recovery": v10_transition_recovery,
             }
 
         problem_id = str(problem.get("problem_id"))
