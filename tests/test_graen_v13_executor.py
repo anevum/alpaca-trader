@@ -412,3 +412,35 @@ def test_v13_interrupted_development_requeues_without_opening_sealed_evidence():
         assert queued["metadata"]["v13_recovered_interrupted_run_id"] == RUN_ID
 
     asyncio.run(scenario())
+
+
+def test_v13_claim_diagnostic_reports_exact_native_stage_predicate():
+    runtime = _runtime()
+    snapshot = {
+        "problems": [{
+            "problem_id": PROBLEM_ID,
+            "status": "WAITING",
+            "priority": 95,
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V13_DEVELOPMENT_STAGE,
+                "v13_campaign_id": service.V13_CAMPAIGN_ID,
+            },
+        }],
+        "runs": [{
+            "run_id": RUN_ID,
+            "problem_id": PROBLEM_ID,
+            "status": "BLOCKED",
+            "methodology_version": service.V13_METHODOLOGY_VERSION,
+            "result_summary": {"state": "RESEARCH_EXECUTION_BLOCKED"},
+        }],
+    }
+    diagnostic = runtime._observe_v13_claimability(snapshot)
+    assert diagnostic["claim_predicate"] == {
+        "status_waiting": True,
+        "domain_match": True,
+        "stage_recognized": True,
+        "code_promotion_allows": True,
+        "eligible": True,
+    }
+    assert diagnostic["execution_authority"] is False
