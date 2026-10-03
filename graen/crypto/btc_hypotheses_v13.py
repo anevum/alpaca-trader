@@ -642,8 +642,9 @@ def _summarize(
     }
 
 
-def evaluate_candidate_from_series(
+def evaluate_candidate_from_opportunities(
     series: Mapping[str, Mapping[datetime, Mapping[str, Any]]],
+    opportunities: Sequence[Opportunity],
     *,
     spec: BtcHypothesisSpec,
     start: datetime,
@@ -651,17 +652,23 @@ def evaluate_candidate_from_series(
     scenario: str = "high",
     seed: int,
 ) -> dict[str, Any]:
-    opportunities = collect_opportunities(series, spec, start=start, end=end)
+    # Signals are causal and scenario-independent. Reusing the frozen signal
+    # stream across cost scenarios and temporal folds changes no evidence;
+    # it only avoids recomputing identical historical features.
+    scoped = [
+        row for row in opportunities
+        if start <= row.opportunity_at < end
+    ]
     primary = _simulate(
         series,
-        opportunities,
+        scoped,
         start=start,
         end=end,
         scenario=scenario,
     )
     delayed = _simulate(
         series,
-        opportunities,
+        scoped,
         start=start,
         end=end,
         scenario=scenario,
@@ -679,11 +686,32 @@ def evaluate_candidate_from_series(
             "spread_bps": COSTS_BPS["BTC/USD"]["spread"][scenario],
             "slippage_bps_per_side": COSTS_BPS["BTC/USD"]["slippage"][scenario],
         },
-        "opportunity_count": len(opportunities),
+        "opportunity_count": len(scoped),
         "primary": _summarize(primary, start=start, end=end, seed=seed),
         "one_bar_delay": _summarize(delayed, start=start, end=end, seed=seed + 1),
-        "opportunity_sample": [row.to_dict() for row in opportunities[:5]],
+        "opportunity_sample": [row.to_dict() for row in scoped[:5]],
     }
+
+
+def evaluate_candidate_from_series(
+    series: Mapping[str, Mapping[datetime, Mapping[str, Any]]],
+    *,
+    spec: BtcHypothesisSpec,
+    start: datetime,
+    end: datetime,
+    scenario: str = "high",
+    seed: int,
+) -> dict[str, Any]:
+    opportunities = collect_opportunities(series, spec, start=start, end=end)
+    return evaluate_candidate_from_opportunities(
+        series,
+        opportunities,
+        spec=spec,
+        start=start,
+        end=end,
+        scenario=scenario,
+        seed=seed,
+    )
 
 
 def evaluate_candidate(
@@ -764,16 +792,24 @@ def evaluate_development(
     specs = candidate_specs()
 
     for index, spec in enumerate(specs):
-        high = evaluate_candidate_from_series(
+        opportunities = collect_opportunities(
             series,
+            spec,
+            start=DEVELOPMENT_START,
+            end=DEVELOPMENT_END,
+        )
+        high = evaluate_candidate_from_opportunities(
+            series,
+            opportunities,
             spec=spec,
             start=DEVELOPMENT_START,
             end=DEVELOPMENT_END,
             scenario="high",
             seed=131000 + index * 100,
         )
-        base = evaluate_candidate_from_series(
+        base = evaluate_candidate_from_opportunities(
             series,
+            opportunities,
             spec=spec,
             start=DEVELOPMENT_START,
             end=DEVELOPMENT_END,
@@ -782,8 +818,9 @@ def evaluate_development(
         )
         folds: list[dict[str, Any]] = []
         for fold_index, (label, start, end) in enumerate(DEVELOPMENT_FOLDS):
-            result = evaluate_candidate_from_series(
+            result = evaluate_candidate_from_opportunities(
                 series,
+                opportunities,
                 spec=spec,
                 start=start,
                 end=end,
