@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import graen.crypto.btc_hypotheses_v13 as v13
+
 from graen.crypto.btc_hypotheses_v13 import (
     CAMPAIGN_ID,
     FAMILY,
@@ -127,3 +129,25 @@ def test_v13_candidate_reproduction_is_deterministic_on_same_corpus_and_seed():
     assert left["cost_scenario"] == "high"
     assert left["cost_assumptions"]["spread_bps"] > 0
     assert left["cost_assumptions"]["slippage_bps_per_side"] > 0
+
+
+def test_v13_development_collects_each_frozen_signal_stream_once(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(v13, "build_series", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        v13,
+        "collect_opportunities",
+        lambda series, spec, *, start, end: calls.append(spec.candidate_id) or [],
+    )
+    monkeypatch.setattr(
+        v13,
+        "_moving_block_null_pvalue",
+        lambda values, **kwargs: {"p_value": 1.0},
+    )
+
+    result = v13.evaluate_development({"BTC/USD": []})
+
+    assert calls == [spec.candidate_id for spec in v13.candidate_specs()]
+    assert result["candidate_count"] == len(v13.candidate_specs())
+    assert result["survivors"] == []

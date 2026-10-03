@@ -12,6 +12,7 @@ class FakeGateway:
         self.completions = []
         self.queued_stages = []
         self.heartbeats = []
+        self.blocked_claims = []
 
     async def record_artifact(self, **kwargs):
         self.artifacts.append(kwargs)
@@ -41,6 +42,10 @@ class FakeGateway:
 
     async def executor_heartbeat(self, **kwargs):
         self.heartbeats.append(kwargs)
+        return {"ok": True}
+
+    async def block_research_claim(self, **kwargs):
+        self.blocked_claims.append(kwargs)
         return {"ok": True}
 
 
@@ -364,5 +369,46 @@ def test_v12_no_survivor_recovers_once_into_v13():
             }],
         }
         assert await runtime._recover_exhausted_v12_into_v13(already) is None
+
+    asyncio.run(scenario())
+
+
+def test_v13_interrupted_development_requeues_without_opening_sealed_evidence():
+    from datetime import datetime, timedelta, timezone
+
+    started = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    snapshot = {
+        "runtime_state": {
+            "metadata": {
+                "research_executor": {"active_problem_id": None},
+            },
+        },
+        "problems": [{
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V13_DEVELOPMENT_STAGE,
+                "v13_campaign_id": service.V13_CAMPAIGN_ID,
+            },
+        }],
+        "runs": [{
+            "run_id": RUN_ID,
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "started_at": started,
+        }],
+    }
+
+    async def scenario():
+        runtime = _runtime()
+        result = await runtime._recover_orphaned_v13_nonconfirmatory_claim(snapshot)
+        assert result["recovered"] is True
+        assert result["requeued_stage"] == service.V13_DEVELOPMENT_STAGE
+        assert result["sealed_evidence_opened"] is False
+        assert runtime.gateway.blocked_claims[-1]["run_id"] == RUN_ID
+        queued = runtime.gateway.queued_stages[-1]
+        assert queued["stage"] == service.V13_DEVELOPMENT_STAGE
+        assert queued["metadata"]["v13_recovered_interrupted_run_id"] == RUN_ID
 
     asyncio.run(scenario())
