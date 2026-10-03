@@ -122,6 +122,63 @@ def test_v14_recovery_is_idempotent_after_any_v14_result():
 
 
 
+def test_blocked_v14_pagination_failure_recovers_once():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {
+                        "research_stage": service.V14_PREFLIGHT_STAGE,
+                        "v14_campaign_id": service.V14_CAMPAIGN_ID,
+                    },
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "started_at": "2026-10-03T20:08:54+00:00",
+                    "methodology_version": service.V14_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "state": "RESEARCH_EXECUTION_BLOCKED",
+                        "decision": "REPAIR_REQUIRED",
+                        "next_action": "RESUME_FROZEN_STAGE_AFTER_REPAIR",
+                        "error": (
+                            "RuntimeError: "
+                            "v14_hourly_btc_pagination_exceeded_safety_limit"
+                        ),
+                        "execution_authority": False,
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_blocked_v14_pagination(snapshot)
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_PREFLIGHT_STAGE
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_PREFLIGHT_STAGE
+        assert (
+            runtime.gateway.queued[-1]["metadata"]["v14_pagination_recovery_version"]
+            == 1
+        )
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_BTC_V14_R1_INFRA_REPAIR"
+        assert artifact["content"]["pagination_max_pages"] == 128
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["problems"][0]["metadata"]["v14_pagination_recovery_version"] = 1
+        second = await runtime._recover_blocked_v14_pagination(snapshot)
+        assert second is None
+
+    asyncio.run(scenario())
+
+
 def test_v14_hourly_fetch_allows_more_than_twelve_pages(monkeypatch):
     class FakeResponse:
         def __init__(self, payload):
