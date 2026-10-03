@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 from uuid import UUID
 
 import psycopg
