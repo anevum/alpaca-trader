@@ -1706,10 +1706,18 @@ def test_v14_r2f_pass_activates_fresh_forward_shadow_once():
         )
         assert artifact["content"]["promotion_authorized"] is False
 
-        snapshot["problems"][0]["metadata"]["forward_shadow"] = {
-            "candidate_id": candidate["candidate_id"],
-            "status": "COLLECTING",
-        }
+        snapshot["artifacts"] = [
+            {
+                "problem_id": PROBLEM_ID,
+                "artifact_type": "CRYPTO_V14_R2F_FORWARD_SHADOW_ACTIVATION",
+                "content": {
+                    "candidate_id": candidate["candidate_id"],
+                    "activation": {
+                        "activation_id": "activation-r2f-fresh-001",
+                    },
+                },
+            }
+        ]
         runtime.gateway.artifacts.clear()
         second = await runtime._recover_v14_r2f_pass_into_forward_shadow(
             snapshot
