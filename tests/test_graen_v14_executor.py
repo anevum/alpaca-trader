@@ -1260,8 +1260,88 @@ def test_v14_r2e_pass_still_stops_at_shadow(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_v14_r2e_fetch_uses_bounded_chunks_with_local_pagination(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {}
 
-def test_v14_r2e_pagination_block_retries_once_after_cap_repair():
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        calls = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, _url, *, headers, params):
+            type(self).calls.append(dict(params))
+            token = params.get("page_token")
+            base = datetime.fromisoformat(
+                str(params["start"]).replace("Z", "+00:00")
+            )
+            offset = 0 if token is None else 4
+            stamp = (base + timedelta(hours=offset)).isoformat().replace(
+                "+00:00", "Z"
+            )
+            return FakeResponse(
+                {
+                    "bars": {
+                        "BTC/USD": [
+                            {
+                                "t": stamp,
+                                "o": 100.0,
+                                "h": 101.0,
+                                "l": 99.0,
+                                "c": 100.5,
+                                "v": 1.0,
+                            }
+                        ]
+                    },
+                    "next_page_token": "local-page-2" if token is None else None,
+                }
+            )
+
+    async def scenario():
+        runtime = _runtime()
+        runtime.settings = SimpleNamespace(
+            credentials_configured=True,
+            data_base_url="https://example.test",
+            crypto_location="us",
+        )
+        runtime.market_data = SimpleNamespace(headers={"X-Test": "1"})
+        monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+
+        rows = await runtime._fetch_v14_r2e_btc_4h()
+
+        assert len(rows["BTC/USD"]) > 60
+        assert len(FakeAsyncClient.calls) % 2 == 0
+        first_pages = [
+            row for row in FakeAsyncClient.calls if "page_token" not in row
+        ]
+        second_pages = [
+            row for row in FakeAsyncClient.calls if row.get("page_token") == "local-page-2"
+        ]
+        assert len(first_pages) == len(second_pages)
+        assert len(first_pages) >= 30
+        assert all(row["timeframe"] == "4Hour" for row in FakeAsyncClient.calls)
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2e_blocked_pagination_recovers_once_without_methodology_change():
     async def scenario():
         error = "RuntimeError: v14_r2e_bar_pagination_exceeded_safety_limit"
         snapshot = {
@@ -1281,10 +1361,9 @@ def test_v14_r2e_pagination_block_retries_once_after_cap_repair():
                     "run_id": V14_RUN_ID,
                     "problem_id": PROBLEM_ID,
                     "status": "BLOCKED",
-                    "started_at": "2026-10-03T22:53:16+00:00",
+                    "started_at": "2026-10-03T22:53:04+00:00",
                     "methodology_version": service.V14_R2E_METHODOLOGY_VERSION,
                     "result_summary": {
-                        "campaign_id": service.V14_R2E_CAMPAIGN_ID,
                         "state": "RESEARCH_EXECUTION_BLOCKED",
                         "error": error,
                     },
@@ -1293,17 +1372,26 @@ def test_v14_r2e_pagination_block_retries_once_after_cap_repair():
         }
         runtime = _runtime(snapshot)
         result = await runtime._recover_blocked_v14_r2e_pagination(snapshot)
+
         assert result["recovered"] is True
-        assert result["retry_count"] == 1
+        assert result["blocked_error"] == error
         assert result["next_research_stage"] == service.V14_R2E_STAGE
         assert runtime.gateway.queued[-1]["stage"] == service.V14_R2E_STAGE
-        assert runtime.gateway.queued[-1]["metadata"]["v14_r2e_pagination_retry_count"] == 1
+        assert (
+            runtime.gateway.queued[-1]["metadata"][
+                "v14_r2e_pagination_recovery_version"
+            ]
+            == 1
+        )
         artifact = runtime.gateway.artifacts[-1]
-        assert artifact["artifact_type"] == "CRYPTO_V14_R2E_PAGINATION_REPAIR"
-        assert artifact["content"]["pagination_max_pages"] == 256
+        assert artifact["artifact_type"] == "CRYPTO_V14_R2E_CORPUS_FETCH_REPAIR"
+        assert artifact["content"]["methodology_changed"] is False
+        assert artifact["content"]["strategy_parameters_changed"] is False
         assert artifact["content"]["live_execution_authorized"] is False
 
-        snapshot["problems"][0]["metadata"]["v14_r2e_pagination_retry_count"] = 1
+        snapshot["problems"][0]["metadata"][
+            "v14_r2e_pagination_recovery_version"
+        ] = 1
         runtime.gateway.queued.clear()
         second = await runtime._recover_blocked_v14_r2e_pagination(snapshot)
         assert second is None
