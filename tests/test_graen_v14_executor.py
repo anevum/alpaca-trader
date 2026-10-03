@@ -1151,6 +1151,58 @@ def test_v14_r2d_failure_advances_once_to_r2e_btc_4h_trend():
     asyncio.run(scenario())
 
 
+
+def test_v14_r2d_unusable_quote_corpus_advances_to_r2e_without_false_strategy_fail():
+    async def scenario():
+        error = "ValueError: v14_r2d_matched_quote_corpus_too_small:0"
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {"research_stage": service.V14_R2D_STAGE},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "started_at": "2026-10-03T22:39:35+00:00",
+                    "methodology_version": service.V14_R2D_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2D_CAMPAIGN_ID,
+                        "state": "RESEARCH_EXECUTION_BLOCKED",
+                        "error": error,
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_v14_r2d_fail_into_r2e(snapshot)
+        assert result["recovered"] is True
+        assert result["origin_state"] == "RESEARCH_EXECUTION_BLOCKED"
+        assert result["origin_error"] == error
+        assert result["next_research_stage"] == service.V14_R2E_STAGE
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2E_STAGE
+
+        corpus = next(
+            row for row in runtime.gateway.artifacts
+            if row["artifact_type"] == "CRYPTO_V14_R2D_CORPUS_INFEASIBLE"
+        )
+        assert corpus["content"]["state"] == "V14_R2D_CORPUS_UNAVAILABLE"
+        assert corpus["content"]["strategy_evaluation_performed"] is False
+        assert corpus["content"]["corpus_error"] == error
+
+        selection = runtime.gateway.artifacts[-1]
+        assert selection["artifact_type"] == "CRYPTO_V14_R2E_BTC_4H_TREND_SELECTION"
+        assert selection["content"]["origin_r2d_error"] == error
+        assert selection["content"]["live_execution_authorized"] is False
+
+    asyncio.run(scenario())
+
+
 def test_v14_r2e_pass_still_stops_at_shadow(monkeypatch):
     async def scenario():
         runtime = _runtime()

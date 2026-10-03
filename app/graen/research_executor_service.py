@@ -5649,17 +5649,22 @@ class GraenResearchExecutor:
         self,
         snapshot: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        """Advance terminal R2D rejection into the low-turnover BTC 4h trend screen."""
+        """Advance terminal R2D rejection or unusable quote corpus into R2E."""
         problems = snapshot.get("problems") or []
         runs = snapshot.get("runs") or []
         for problem in problems:
             if not isinstance(problem, Mapping):
                 continue
-            if problem.get("status") != "WAITING" or problem.get("domain") != PROBLEM_DOMAIN:
+            if problem.get("domain") != PROBLEM_DOMAIN:
                 continue
             metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
-            if metadata.get("research_stage"):
+            status = str(problem.get("status") or "")
+            stage = str(metadata.get("research_stage") or "")
+            ordinary_terminal = status == "WAITING" and not stage
+            blocked_r2d = status == "BLOCKED" and stage == V14_R2D_STAGE
+            if not ordinary_terminal and not blocked_r2d:
                 continue
+
             problem_id = str(problem.get("problem_id") or "")
             problem_runs = [
                 row for row in runs
@@ -5675,17 +5680,73 @@ class GraenResearchExecutor:
                 for row in problem_runs
             ):
                 continue
-            matching = [
+
+            terminal_failures = [
                 row for row in problem_runs
                 if row.get("methodology_version") == V14_R2D_METHODOLOGY_VERSION
                 and isinstance(row.get("result_summary"), Mapping)
                 and row.get("result_summary", {}).get("state") == "V14_R2D_BROKER_FEASIBILITY_FAIL"
                 and row.get("result_summary", {}).get("decision") == "V14_R2D_DO_NOT_PROMOTE"
             ]
+            blocked_corpus = []
+            for row in problem_runs:
+                if (
+                    row.get("methodology_version") != V14_R2D_METHODOLOGY_VERSION
+                    or row.get("status") != "BLOCKED"
+                    or not isinstance(row.get("result_summary"), Mapping)
+                ):
+                    continue
+                summary = row.get("result_summary") or {}
+                error = str(summary.get("error") or "")
+                if (
+                    summary.get("state") == "RESEARCH_EXECUTION_BLOCKED"
+                    and error.startswith("ValueError: v14_r2d_matched_quote_corpus_too_small:")
+                ):
+                    blocked_corpus.append(row)
+
+            matching = terminal_failures or blocked_corpus
             if not matching:
                 continue
             origin = max(matching, key=lambda row: str(row.get("started_at") or ""))
             origin_run_id = str(origin.get("run_id") or "")
+            origin_summary = (
+                origin.get("result_summary")
+                if isinstance(origin.get("result_summary"), Mapping)
+                else {}
+            )
+            origin_error = str(origin_summary.get("error") or "")
+            origin_state = str(origin_summary.get("state") or "")
+            corpus_terminal_artifact_id = None
+
+            if blocked_corpus:
+                corpus_response = await self.gateway.record_artifact(
+                    problem_id=problem_id,
+                    run_id=origin_run_id or None,
+                    artifact_type="CRYPTO_V14_R2D_CORPUS_INFEASIBLE",
+                    methodology_version=V14_R2D_METHODOLOGY_VERSION,
+                    content={
+                        "campaign_id": V14_R2D_CAMPAIGN_ID,
+                        "state": "V14_R2D_CORPUS_UNAVAILABLE",
+                        "blocked_stage": V14_R2D_STAGE,
+                        "corpus_error": origin_error,
+                        "strategy_evaluation_performed": False,
+                        "broker_feasibility_evaluation_performed": False,
+                        "historical_promotion_eligible": False,
+                        "next_action": "ADVANCE_TO_V14_R2E_BTC_4H_TREND_PREFLIGHT",
+                        "source_commit": _source_commit(),
+                        "deployment_id": _deployment_id(),
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                        "live_execution_authorized": False,
+                    },
+                )
+                corpus_artifact = (
+                    corpus_response.get("artifact")
+                    if isinstance(corpus_response.get("artifact"), Mapping)
+                    else {}
+                )
+                corpus_terminal_artifact_id = corpus_artifact.get("artifact_id")
+
             artifact_response = await self.gateway.record_artifact(
                 problem_id=problem_id,
                 run_id=origin_run_id or None,
@@ -5695,8 +5756,11 @@ class GraenResearchExecutor:
                     **v14_r2e_campaign_manifest(),
                     "origin_campaign_id": V14_R2D_CAMPAIGN_ID,
                     "origin_run_id": origin_run_id or None,
+                    "origin_r2d_state": origin_state,
+                    "origin_r2d_error": origin_error or None,
+                    "origin_r2d_corpus_terminal_artifact_id": corpus_terminal_artifact_id,
                     "selection_basis": (
-                        "V14 high-turnover and microstructure families failed broker economics; "
+                        "R2D could not establish a promotable Alpaca triangular-arbitrage edge; "
                         "advance to a public leakage-controlled 4h BTC long/flat trend family "
                         "whose edge is explicitly low turnover and crash avoidance."
                     ),
@@ -5713,6 +5777,7 @@ class GraenResearchExecutor:
                     "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
                     "v14_r2e_origin_run_id": origin_run_id or None,
                     "v14_r2e_selection_artifact_id": artifact.get("artifact_id"),
+                    "v14_r2d_corpus_terminal_artifact_id": corpus_terminal_artifact_id,
                 },
             )
             if not queued.get("problem"):
@@ -5720,6 +5785,8 @@ class GraenResearchExecutor:
             result = {
                 "recovered": True,
                 "problem_id": problem_id,
+                "origin_state": origin_state,
+                "origin_error": origin_error or None,
                 "next_research_stage": V14_R2E_STAGE,
                 "v14_r2e_campaign_id": V14_R2E_CAMPAIGN_ID,
                 "execution_authority": False,
@@ -5728,7 +5795,6 @@ class GraenResearchExecutor:
             print("GRAEN_V14_R2D_TO_R2E", result, flush=True)
             return result
         return None
-
 
     async def _execute_btc_4h_trend_v14_r2e(
         self,
