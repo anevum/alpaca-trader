@@ -339,6 +339,11 @@ def _drift_training_state(
     }
 
 
+def _configure_low_memory_read(cur: psycopg.Cursor[Any]) -> None:
+    cur.execute("set local max_parallel_workers_per_gather = 0")
+    cur.execute("set local work_mem = '4MB'")
+
+
 def read_nostra_work(
     database_url: str,
     *,
@@ -355,6 +360,12 @@ def read_nostra_work(
 
     with psycopg.connect(database_url, connect_timeout=5) as conn:
         with conn.cursor() as cur:
+            # Foundation Postgres runs in a small shared-memory container.
+            # NOSTRA's evidence joins can otherwise trigger parallel workers
+            # that request dynamic shared-memory segments and fail the entire
+            # read with "No space left on device". Keep this read path
+            # deterministic and bounded without changing its evidence window.
+            _configure_low_memory_read(cur)
             raw_candidates = _decision_candidates(
                 cur,
                 start=forecast_start,

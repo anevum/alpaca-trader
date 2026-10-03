@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 from foundation.nostra_gateway import (
     _baseline_evaluation,
+    _configure_low_memory_read,
     _drift_training_state,
     _point_in_time_candidate,
 )
@@ -298,3 +299,18 @@ def test_nostra_drift_training_uses_only_prior_independent_cycles():
     assert cur.args[-1] == cutoff
     assert result["research_only"] is True
     assert result["execution_authority"] is False
+
+
+def test_nostra_read_session_disables_parallel_workers_and_bounds_work_mem():
+    calls = []
+
+    class Cursor:
+        def execute(self, query, args=None):
+            calls.append((str(query), args))
+
+    _configure_low_memory_read(Cursor())
+
+    assert calls == [
+        ("set local max_parallel_workers_per_gather = 0", None),
+        ("set local work_mem = '4MB'", None),
+    ]
