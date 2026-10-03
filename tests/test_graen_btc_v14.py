@@ -66,8 +66,9 @@ def test_paper_and_alpaca_cost_scenarios_are_not_conflated():
 
 
 def test_v14_rolling_mean_does_not_poison_all_future_windows_after_warmup_nan():
-    import numpy as np
+    import pytest
 
+    np = pytest.importorskip("numpy")
     values = np.asarray([np.nan, 1.0, 2.0, 3.0, 4.0], dtype=float)
     result = _rolling_mean(values, 3)
     assert np.isnan(result[0])
