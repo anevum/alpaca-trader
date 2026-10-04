@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.config import Settings
@@ -379,7 +379,7 @@ def test_velum_dispatches_v13_exact_candidate_without_execution_authority(monkey
 def test_velum_r2h_fetch_contract_includes_slow_signal_warmup():
     start = datetime(2026, 4, 4, tzinfo=timezone.utc)
     end = datetime(2026, 10, 1, tzinfo=timezone.utc)
-    symbols, fetch_start, fetch_end = velum_graen.replay_fetch_contract(
+    symbols, fetch_start, fetch_end, timeframe = velum_graen.replay_fetch_contract(
         V14_R2H_METHODOLOGY_VERSION,
         start=start,
         end=end,
@@ -388,6 +388,7 @@ def test_velum_r2h_fetch_contract_includes_slow_signal_warmup():
     assert fetch_start < start
     assert (start - fetch_start).days == 260
     assert fetch_end == end
+    assert timeframe == "4Hour"
 
 
 def test_velum_dispatches_r2h_slow_candidate_without_legacy_trade_gate(monkeypatch):
@@ -439,3 +440,17 @@ def test_velum_dispatches_r2h_slow_candidate_without_legacy_trade_gate(monkeypat
     assert result["execution_authority"] is False
     assert result["broker_orders_possible"] is False
     assert result["promotion_authorized"] is False
+
+
+def test_velum_legacy_fetch_contract_keeps_service_default_timeframe():
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    symbols, fetch_start, fetch_end, timeframe = velum_graen.replay_fetch_contract(
+        V13_METHODOLOGY_VERSION,
+        start=start,
+        end=end,
+    )
+    assert tuple(symbols) == tuple(velum_graen.GRAEN_CONTEXT_UNIVERSE)
+    assert fetch_start == start - timedelta(hours=8)
+    assert fetch_end == end + timedelta(hours=3)
+    assert timeframe is None

@@ -736,13 +736,18 @@ async def graen_candidate_replay(
     if end - start > timedelta(days=180):
         raise HTTPException(status_code=422, detail="replay range exceeds 180 days")
 
-    replay_symbols, fetch_start, fetch_end = replay_fetch_contract(
+    replay_symbols, fetch_start, fetch_end, fetch_timeframe = replay_fetch_contract(
         request.candidate_methodology,
         start=start,
         end=end,
     )
+    replay_market_data = velum.market_data
+    if fetch_timeframe is not None:
+        replay_market_data = MarketDataClient(
+            velum.settings.model_copy(update={"bar_timeframe": fetch_timeframe})
+        )
     async with velum.run_lock:
-        bars = await velum.market_data.historical_crypto_bars_many(
+        bars = await replay_market_data.historical_crypto_bars_many(
             list(replay_symbols),
             start=fetch_start,
             end=fetch_end,
@@ -770,6 +775,7 @@ async def graen_candidate_replay(
             },
             "replay_fetch_start": fetch_start.isoformat(),
             "replay_fetch_end": fetch_end.isoformat(),
+            "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
             "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         })
         emitted = await velum._emit(

@@ -57,13 +57,19 @@ def replay_fetch_contract(
     *,
     start: datetime,
     end: datetime,
-) -> tuple[tuple[str, ...], datetime, datetime]:
+) -> tuple[tuple[str, ...], datetime, datetime, str | None]:
     if candidate_methodology == V14_R2H_METHODOLOGY_VERSION:
         # R2H needs the frozen 250-day SMA and 180-day momentum warmup before
         # the bounded replay window. This warmup is input-only and is never
-        # scored as replay evidence.
-        return ("BTC/USD",), start - timedelta(days=260), end
-    return tuple(GRAEN_CONTEXT_UNIVERSE), start - timedelta(hours=8), end + timedelta(hours=3)
+        # scored as replay evidence. The frozen candidate is defined on 4-hour
+        # bars, so VELUM must not inherit its generic high-frequency timeframe.
+        return ("BTC/USD",), start - timedelta(days=260), end, "4Hour"
+    return (
+        tuple(GRAEN_CONTEXT_UNIVERSE),
+        start - timedelta(hours=8),
+        end + timedelta(hours=3),
+        None,
+    )
 
 
 def engineering_gate(
