@@ -182,6 +182,9 @@ class Settings(BaseSettings):
     btc_canary_max_spread_pct: Decimal = Field(
         default=Decimal("0.003"), alias="BTC_CANARY_MAX_SPREAD_PCT"
     )
+    btc_canary_max_slippage_pct: Decimal = Field(
+        default=Decimal("0.005"), alias="BTC_CANARY_MAX_SLIPPAGE_PCT"
+    )
     btc_canary_stop_pct: Decimal = Field(
         default=Decimal("0.05"), alias="BTC_CANARY_STOP_PCT"
     )
@@ -706,6 +709,8 @@ class Settings(BaseSettings):
             raise ValueError("BTC_CANARY_MAX_ENTRIES_24H must be between 0 and 4")
         if not Decimal("0") < self.btc_canary_max_spread_pct < Decimal("0.02"):
             raise ValueError("BTC_CANARY_MAX_SPREAD_PCT must be between 0 and 0.02")
+        if not Decimal("0") < self.btc_canary_max_slippage_pct < Decimal("0.02"):
+            raise ValueError("BTC_CANARY_MAX_SLIPPAGE_PCT must be between 0 and 0.02")
         if not Decimal("0") < self.btc_canary_stop_pct < Decimal("0.20"):
             raise ValueError("BTC_CANARY_STOP_PCT must be between 0 and 0.20")
         if not 251 <= self.btc_canary_history_days <= 400:
