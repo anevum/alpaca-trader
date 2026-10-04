@@ -160,6 +160,37 @@ class Settings(BaseSettings):
     crypto_execution_enabled: bool = Field(
         default=False, alias="CRYPTO_EXECUTION_ENABLED"
     )
+    crypto_execution_mode: str = Field(
+        default="validated", alias="CRYPTO_EXECUTION_MODE"
+    )
+    btc_canary_enabled: bool = Field(default=False, alias="BTC_CANARY_ENABLED")
+    btc_canary_acknowledge: str = Field(
+        default="NO", alias="I_ACKNOWLEDGE_BTC_CANARY_EXPERIMENT"
+    )
+    btc_canary_order_notional: Decimal = Field(
+        default=Decimal("1.00"), alias="BTC_CANARY_ORDER_NOTIONAL"
+    )
+    btc_canary_max_order_notional: Decimal = Field(
+        default=Decimal("1.00"), alias="BTC_CANARY_MAX_ORDER_NOTIONAL"
+    )
+    btc_canary_max_total_position_notional: Decimal = Field(
+        default=Decimal("1.00"), alias="BTC_CANARY_MAX_TOTAL_POSITION_NOTIONAL"
+    )
+    btc_canary_max_entries_24h: int = Field(
+        default=1, alias="BTC_CANARY_MAX_ENTRIES_24H"
+    )
+    btc_canary_max_spread_pct: Decimal = Field(
+        default=Decimal("0.003"), alias="BTC_CANARY_MAX_SPREAD_PCT"
+    )
+    btc_canary_max_slippage_pct: Decimal = Field(
+        default=Decimal("0.005"), alias="BTC_CANARY_MAX_SLIPPAGE_PCT"
+    )
+    btc_canary_stop_pct: Decimal = Field(
+        default=Decimal("0.05"), alias="BTC_CANARY_STOP_PCT"
+    )
+    btc_canary_history_days: int = Field(
+        default=270, alias="BTC_CANARY_HISTORY_DAYS"
+    )
     crypto_location: str = Field(default="us", alias="CRYPTO_LOCATION")
     crypto_universe_size: int = Field(default=12, alias="CRYPTO_UNIVERSE_SIZE")
     crypto_universe_refresh_seconds: int = Field(
@@ -492,6 +523,16 @@ class Settings(BaseSettings):
         )
 
     @property
+    def btc_canary_execution_authorized(self) -> bool:
+        return (
+            self.crypto_execution_mode == "experimental_canary"
+            and self.crypto_lane_enabled
+            and self.btc_canary_enabled
+            and self.btc_canary_acknowledge == "YES"
+            and self.paper_execution_authorized
+        )
+
+    @property
     def execution_authorized(self) -> bool:
         return self.paper_execution_authorized or self.live_execution_authorized
 
@@ -635,6 +676,45 @@ class Settings(BaseSettings):
             )
         if not 15 <= self.crypto_poll_seconds <= 300:
             raise ValueError("CRYPTO_POLL_SECONDS must be between 15 and 300")
+        if self.crypto_execution_mode not in {"validated", "experimental_canary"}:
+            raise ValueError(
+                "CRYPTO_EXECUTION_MODE must be validated or experimental_canary"
+            )
+        if (
+            self.crypto_execution_mode == "experimental_canary"
+            and self.crypto_execution_enabled
+        ):
+            raise ValueError(
+                "CRYPTO_EXECUTION_ENABLED must remain false in experimental_canary mode"
+            )
+        if self.btc_canary_enabled and self.crypto_execution_mode != "experimental_canary":
+            raise ValueError(
+                "BTC_CANARY_ENABLED requires CRYPTO_EXECUTION_MODE=experimental_canary"
+            )
+        if self.btc_canary_order_notional <= 0:
+            raise ValueError("BTC_CANARY_ORDER_NOTIONAL must be positive")
+        if self.btc_canary_order_notional > self.btc_canary_max_order_notional:
+            raise ValueError(
+                "BTC_CANARY_ORDER_NOTIONAL cannot exceed BTC_CANARY_MAX_ORDER_NOTIONAL"
+            )
+        if (
+            self.btc_canary_max_total_position_notional
+            < self.btc_canary_order_notional
+        ):
+            raise ValueError(
+                "BTC_CANARY_MAX_TOTAL_POSITION_NOTIONAL cannot be below "
+                "BTC_CANARY_ORDER_NOTIONAL"
+            )
+        if not 0 <= self.btc_canary_max_entries_24h <= 4:
+            raise ValueError("BTC_CANARY_MAX_ENTRIES_24H must be between 0 and 4")
+        if not Decimal("0") < self.btc_canary_max_spread_pct < Decimal("0.02"):
+            raise ValueError("BTC_CANARY_MAX_SPREAD_PCT must be between 0 and 0.02")
+        if not Decimal("0") < self.btc_canary_max_slippage_pct < Decimal("0.02"):
+            raise ValueError("BTC_CANARY_MAX_SLIPPAGE_PCT must be between 0 and 0.02")
+        if not Decimal("0") < self.btc_canary_stop_pct < Decimal("0.20"):
+            raise ValueError("BTC_CANARY_STOP_PCT must be between 0 and 0.20")
+        if not 251 <= self.btc_canary_history_days <= 400:
+            raise ValueError("BTC_CANARY_HISTORY_DAYS must be between 251 and 400")
         if not 60 <= self.crypto_lookback_minutes <= 1440:
             raise ValueError("CRYPTO_LOOKBACK_MINUTES must be between 60 and 1440")
         if self.crypto_lane_enabled and not self.crypto_quote_currencies:
