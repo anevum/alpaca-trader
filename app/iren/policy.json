@@ -1,5 +1,5 @@
 {
-  "version": "iren-control-v2.0.0",
+  "version": "iren-control-v2.1.0",
   "tick_seconds": 60,
   "stale_after_seconds": 180,
   "failure_observations": 2,
@@ -18,7 +18,10 @@
     "create_jobs",
     "gate_protected_actions",
     "route_subsystem_work",
-    "verify_runtime_inventory"
+    "verify_runtime_inventory",
+    "monitor_research_productivity",
+    "restart_stalled_research",
+    "route_manual_engineering_requirements"
   ],
   "protected_actions": [
     "broker_orders",
@@ -79,5 +82,6 @@
       "default_url": "https://nostra-staging.up.railway.app/health",
       "inventory_only": true
     }
-  ]
+  ],
+  "research_productivity_stale_seconds": 1800
 }
