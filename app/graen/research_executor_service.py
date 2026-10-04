@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.26.0"
+RUNTIME_VERSION = "graen-research-executor-v1.27.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -5348,7 +5348,7 @@ class GraenResearchExecutor:
                 or metadata.get("research_stage") != V14_R2H_VELUM_STAGE
                 or int(
                     metadata.get("v14_r2h_velum_transport_recovery_version") or 0
-                ) >= 2
+                ) >= 3
             ):
                 continue
             problem_id = str(problem.get("problem_id") or "")
@@ -5370,8 +5370,15 @@ class GraenResearchExecutor:
             )
             if recovery_version == 1 and ".internal" not in self.velum_base_url:
                 continue
-            # Version 1 was the original deployment-race retry. Version 2 is
-            # reserved for the verified Railway private-network repair only.
+            if recovery_version == 2 and not (
+                ".internal" in self.velum_base_url
+                and self.velum_base_url.endswith(":8080")
+            ):
+                continue
+            # Version 1 was the original deployment-race retry. Version 2
+            # followed the private-domain repair. Version 3 is reserved for
+            # the verified VELUM :8080 port repair and is the final automatic
+            # transport retry.
             # v14_r2h_velum_transport_recovery_version. Do not couple the
             # retry to VELUM's global periodic-replay health: the original
             # failure was transport availability during deployment. If the
@@ -5397,6 +5404,8 @@ class GraenResearchExecutor:
                     "repair": (
                         "retry_after_railway_private_network_repair"
                         if recovery_version == 1
+                        else "retry_after_velum_port_8080_repair"
+                        if recovery_version == 2
                         else "retry_after_velum_transport_recovered"
                     ),
                     "retry_count": recovery_version + 1,
