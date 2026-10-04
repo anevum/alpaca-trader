@@ -454,3 +454,46 @@ def test_runtime_evidence_verifier_retries_until_inventory_complete():
     source = inspect.getsource(IrenWorkEngine._execute_jobs)
     assert '"SUCCEEDED" if inventory_complete else "QUEUED"' in source
     assert "retrying=not inventory_complete" in source
+
+
+def test_productivity_incident_routes_to_autonomous_graen_research():
+    data = {"objectives": [], "jobs": []}
+    control = {
+        "state": "DEGRADED",
+        "incidents": {
+            "productivity.GRAEN": {
+                "status": "OPEN",
+                "severity": "warning",
+                "reason": "autonomous_research_not_making_progress",
+            }
+        },
+    }
+    action = choose_next_action(data, control)
+    assert action["job_type"] == "GRAEN_RESEARCH_PROBLEM"
+    assert action["owner_system"] == "GRAEN"
+    assert action["protected_action"] is False
+    assert "do not repeat terminal hypotheses" in action["description"]
+
+
+def test_autopilot_may_restart_safe_graen_research():
+    data = {
+        "objectives": [],
+        "jobs": [],
+        "settings": {
+            "autopilot_enabled": True,
+            "autopilot_max_jobs_per_day": 3,
+        },
+    }
+    control = {
+        "state": "DEGRADED",
+        "incidents": {
+            "productivity.GRAEN": {
+                "status": "OPEN",
+                "severity": "warning",
+                "reason": "autonomous_research_not_making_progress",
+            }
+        },
+    }
+    decision = autopilot_decision(data, control)
+    assert decision["should_create"] is True
+    assert decision["action"]["job_type"] == "GRAEN_RESEARCH_PROBLEM"
