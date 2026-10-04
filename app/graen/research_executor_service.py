@@ -14,6 +14,16 @@ from app.market_data import MarketDataClient
 from app.graen.service import GraenGateway
 from app.graen.research_promotion import ResearchPromotion, engineering_problem_ids
 from app.graen.research_director_client import ResearchDirectorClient
+from app.research_agent.autonomy import build_engineering_requirement
+from app.research_agent.hypothesis_planner import plan_next as plan_next_hypothesis
+from app.research_agent.strategy_grammar import manifest_from_dict
+from app.research_agent.strategy_runner import (
+    RUNNER_VERSION as STRATEGY_RUNNER_VERSION,
+    compile_candidate as compile_strategy_candidate,
+    evaluate_development as evaluate_strategy_development,
+    evaluate_holdout as evaluate_strategy_holdout,
+    evaluate_validation as evaluate_strategy_validation,
+)
 from graen.crypto.research_v7 import (
     CONTEXT_UNIVERSE,
     METHODOLOGY_VERSION as V7_METHODOLOGY_VERSION,
@@ -331,6 +341,21 @@ RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
 RESEARCH_DIRECTOR_METHODOLOGY = "graen-research-director-v1"
 RESEARCH_DIRECTOR_STAGE_KEYS = {RESEARCH_DIRECTOR_STAGE}
 
+HYPOTHESIS_PLANNER_STAGE = "CRYPTO_HYPOTHESIS_PLANNER_V1"
+STRATEGY_DEVELOPMENT_STAGE = "CRYPTO_STRATEGY_MANIFEST_DEVELOPMENT"
+STRATEGY_VALIDATION_STAGE = "CRYPTO_STRATEGY_MANIFEST_VALIDATION"
+STRATEGY_HOLDOUT_STAGE = "CRYPTO_STRATEGY_MANIFEST_HOLDOUT"
+STRATEGY_VELUM_STAGE = "CRYPTO_STRATEGY_MANIFEST_VELUM"
+WAITING_CORPUS_STAGE = "CRYPTO_WAITING_FOR_UNINSPECTED_CORPUS"
+ENGINEERING_REQUIRED_STAGE = "CRYPTO_ENGINEERING_REQUIRED"
+STRATEGY_STAGE_KEYS = {
+    HYPOTHESIS_PLANNER_STAGE,
+    STRATEGY_DEVELOPMENT_STAGE,
+    STRATEGY_VALIDATION_STAGE,
+    STRATEGY_HOLDOUT_STAGE,
+    STRATEGY_VELUM_STAGE,
+}
+
 
 def _v10_epoch_contract(epoch_index: int) -> dict[str, Any]:
     if epoch_index < 0 or epoch_index >= len(V10_EPOCHS):
@@ -466,6 +491,7 @@ class GraenResearchExecutor:
         self.last_completion_at: datetime | None = None
         self.active_problem_id: str | None = None
         self.last_error: str | None = None
+        self.waiting_dependency_until: datetime | None = None
         self.last_result: dict[str, Any] | None = None
         self.last_observed_blocked_run_id: str | None = None
         self.last_v12_claim_diagnostic_signature: tuple[Any, ...] | None = None
@@ -523,7 +549,14 @@ class GraenResearchExecutor:
             "current_activity": (
                 "Research problem " + self.active_problem_id
                 if self.active_problem_id
+                else "Waiting for uninspected research corpus"
+                if self.waiting_dependency_until
+                and self.waiting_dependency_until > datetime.now(UTC)
                 else "Awaiting next autonomous research problem"
+            ),
+            "waiting_dependency_until": (
+                self.waiting_dependency_until.isoformat()
+                if self.waiting_dependency_until else None
             ),
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
             "gateway_configured": self.gateway.configured,
