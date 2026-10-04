@@ -871,20 +871,32 @@ class TradingEventSink:
                         )
                     ),
                     "model_version": (
-                        getattr(self.settings, "crypto_model_version", None)
-                        if is_crypto else candidate_strategy_version_id
+                        metadata.get("model_version")
+                        or (
+                            getattr(self.settings, "crypto_model_version", None)
+                            if is_crypto else candidate_strategy_version_id
+                        )
                     ),
                     "calibration_version": (
-                        getattr(self.settings, "crypto_calibration_version", None)
-                        if is_crypto else None
+                        metadata.get("calibration_version")
+                        or (
+                            getattr(self.settings, "crypto_calibration_version", None)
+                            if is_crypto else None
+                        )
                     ),
                     "regime_version": (
-                        getattr(self.settings, "crypto_regime_version", None)
-                        if is_crypto else None
+                        metadata.get("regime_version")
+                        or (
+                            getattr(self.settings, "crypto_regime_version", None)
+                            if is_crypto else None
+                        )
                     ),
                     "execution_adapter_version": (
-                        getattr(self.settings, "crypto_execution_adapter_version", None)
-                        if is_crypto else "alpaca-equity-execution-v1"
+                        metadata.get("execution_adapter_version")
+                        or (
+                            getattr(self.settings, "crypto_execution_adapter_version", None)
+                            if is_crypto else "alpaca-equity-execution-v1"
+                        )
                     ),
                     "data_source": "alpaca",
                     "data_feed": candidate_data_feed,
@@ -976,25 +988,45 @@ class TradingEventSink:
                     )
                 ),
                 "model_version": (
-                    execution_context.get("strategy_version_id")
+                    execution_context.get("model_version")
                     if isinstance(execution_context, dict)
-                    and execution_context.get("strategy_version_id")
+                    and execution_context.get("model_version")
                     else (
-                        getattr(self.settings, "crypto_model_version", None)
-                        if cycle_is_crypto else getattr(self.settings, "strategy_version_id", None)
+                        execution_context.get("strategy_version_id")
+                        if isinstance(execution_context, dict)
+                        and execution_context.get("strategy_version_id")
+                        else (
+                            getattr(self.settings, "crypto_model_version", None)
+                            if cycle_is_crypto else getattr(self.settings, "strategy_version_id", None)
+                        )
                     )
                 ),
                 "calibration_version": (
-                    getattr(self.settings, "crypto_calibration_version", None)
-                    if cycle_is_crypto else None
+                    execution_context.get("calibration_version")
+                    if isinstance(execution_context, dict)
+                    and execution_context.get("calibration_version")
+                    else (
+                        getattr(self.settings, "crypto_calibration_version", None)
+                        if cycle_is_crypto else None
+                    )
                 ),
                 "regime_version": (
-                    getattr(self.settings, "crypto_regime_version", None)
-                    if cycle_is_crypto else None
+                    execution_context.get("regime_version")
+                    if isinstance(execution_context, dict)
+                    and execution_context.get("regime_version")
+                    else (
+                        getattr(self.settings, "crypto_regime_version", None)
+                        if cycle_is_crypto else None
+                    )
                 ),
                 "execution_adapter_version": (
-                    getattr(self.settings, "crypto_execution_adapter_version", None)
-                    if cycle_is_crypto else "alpaca-equity-execution-v1"
+                    execution_context.get("execution_adapter_version")
+                    if isinstance(execution_context, dict)
+                    and execution_context.get("execution_adapter_version")
+                    else (
+                        getattr(self.settings, "crypto_execution_adapter_version", None)
+                        if cycle_is_crypto else "alpaca-equity-execution-v1"
+                    )
                 ),
                 "candidate_count": len(candidates),
                 "qualified_count": qualified_count,
