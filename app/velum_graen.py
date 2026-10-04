@@ -49,6 +49,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 METHODOLOGY_VERSION = "velum-graen-candidate-replay-v6"
+R2H_FETCH_VERSION = "r2h-4hour-fetch-v1"
 GRAEN_CONTEXT_UNIVERSE = CONTEXT_UNIVERSE
 
 
