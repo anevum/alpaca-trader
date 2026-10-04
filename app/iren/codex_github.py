@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 PINNED_RUNTIME_STATUSES = {
     "VELUM": {
-        "revision": "1663c5ab4516df890cdea70929a9d14275bfc7d6",
+        "revision": "6f22220557934839152aeddaf49ac367982defad",
         "context": "RHEN - rhen-velum",
         "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
         "service_id": "55a298e1-ea60-4342-a10f-a736a2d71f8c",
@@ -20,7 +20,7 @@ PINNED_RUNTIME_STATUSES = {
         "service_name": "rhen-velum",
     },
     "CRYPTO_EDGE": {
-        "revision": "1663c5ab4516df890cdea70929a9d14275bfc7d6",
+        "revision": "9628c08f0b7a065c580bd8779168f3ba526cb885",
         "context": "RHEN - rhen-crypto-edge-discovery",
         "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
         "service_id": "4ed9d192-102c-4b66-8ed7-b9a650a064c5",

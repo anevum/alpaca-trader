@@ -187,37 +187,38 @@ def test_runtime_evidence_never_invents_completion_from_absent_topology():
 
 def test_provider_status_supplies_exact_pinned_runtime_identity():
     async def get(path):
-        assert path == "commits/1663c5ab4516df890cdea70929a9d14275bfc7d6/status"
-        return {
-            "statuses": [
-                {
+        if path == "commits/6f22220557934839152aeddaf49ac367982defad/status":
+            return {
+                "statuses": [{
                     "context": "RHEN - rhen-velum",
                     "state": "success",
                     "target_url": (
                         "https://railway.com/project/808098a9-937e-4ca4-ac98-dd2dcfef5d0c/"
                         "service/55a298e1-ea60-4342-a10f-a736a2d71f8c"
-                        "?id=02f9199d-0684-4365-9e1b-b14e17097c63"
+                        "?id=0941f71e-fa4c-41d2-80ed-c9fa8297bb47"
                         "&environmentId=63a64723-574d-497b-b01b-a9fef7ea78ab"
                     ),
-                },
-                {
-                    "context": "RHEN - rhen-crypto-edge-discovery",
-                    "state": "success",
-                    "target_url": (
-                        "https://railway.com/project/808098a9-937e-4ca4-ac98-dd2dcfef5d0c/"
-                        "service/4ed9d192-102c-4b66-8ed7-b9a650a064c5"
-                        "?id=184a4dad-5ae3-4a06-9b17-b7da9a76c868"
-                        "&environmentId=63a64723-574d-497b-b01b-a9fef7ea78ab"
-                    ),
-                },
-            ]
+                }]
+            }
+        assert path == "commits/9628c08f0b7a065c580bd8779168f3ba526cb885/status"
+        return {
+            "statuses": [{
+                "context": "RHEN - rhen-crypto-edge-discovery",
+                "state": "success",
+                "target_url": (
+                    "https://railway.com/project/808098a9-937e-4ca4-ac98-dd2dcfef5d0c/"
+                    "service/4ed9d192-102c-4b66-8ed7-b9a650a064c5"
+                    "?id=541e2e56-c282-44f6-a7b1-f1eda6ed01bb"
+                    "&environmentId=63a64723-574d-497b-b01b-a9fef7ea78ab"
+                ),
+            }]
         }
 
     value = asyncio.run(inspect_runtime_inventory(get))
     assert value["read_only"] is True
     assert value["provider_write_authority"] is False
-    assert value["services"]["VELUM"]["deployment"] == "02f9199d-0684-4365-9e1b-b14e17097c63"
-    assert value["services"]["CRYPTO_EDGE"]["deployment"] == "184a4dad-5ae3-4a06-9b17-b7da9a76c868"
+    assert value["services"]["VELUM"]["deployment"] == "0941f71e-fa4c-41d2-80ed-c9fa8297bb47"
+    assert value["services"]["CRYPTO_EDGE"]["deployment"] == "541e2e56-c282-44f6-a7b1-f1eda6ed01bb"
 
 
 def test_provider_status_fails_closed_on_wrong_service_or_environment():
@@ -363,7 +364,7 @@ def test_one_provider_failure_preserves_other_service_evidence(failure, reason):
     assert failed["reason"] == reason
     assert failed["provider_request"] == (
         "GET /repos/anevum/alpaca-trader/commits/"
-        "1663c5ab4516df890cdea70929a9d14275bfc7d6/status"
+        "6f22220557934839152aeddaf49ac367982defad/status"
     )
     assert inventory["services"]["CRYPTO_EDGE"]["verified"] is True
     assert len(calls) == 2
@@ -409,9 +410,9 @@ def test_successful_lookup_is_reused_only_within_one_observation():
         return {"statuses": [_status("VELUM"), _status("CRYPTO_EDGE")]}
 
     assert asyncio.run(inspect_runtime_inventory(get))["complete"] is True
-    assert len(calls) == 1
-    assert asyncio.run(inspect_runtime_inventory(get))["complete"] is True
     assert len(calls) == 2
+    assert asyncio.run(inspect_runtime_inventory(get))["complete"] is True
+    assert len(calls) == 4
 
 
 def test_provider_deadline_preserves_second_service(monkeypatch):
