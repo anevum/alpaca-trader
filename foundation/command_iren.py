@@ -325,6 +325,36 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             if runtime_row else None
         )
 
+        cur.execute(
+            """
+            select occurred_at,event_type,correlation_id,payload
+            from rhen.events
+            where event_type in (
+                'graen_candidate_shadow_activated',
+                'graen_candidate_shadow_queued',
+                'graen_candidate_shadow_event',
+                'graen_candidate_shadow_terminal_checkpoint',
+                'graen_paper_candidate_activated',
+                'graen_paper_entry_intent',
+                'graen_paper_entry_rejected_market_quality',
+                'graen_paper_exit_intent',
+                'graen_paper_round_trip_closed',
+                'graen_paper_terminal_checkpoint'
+            )
+            order by occurred_at desc,event_id desc
+            limit 240
+            """
+        )
+        evidence_rows = [
+            {
+                "occurred_at": row[0],
+                "event_type": str(row[1] or ""),
+                "correlation_id": str(row[2] or ""),
+                "payload": dict(row[3] or {}),
+            }
+            for row in cur.fetchall()
+        ]
+
     graph = build_hypothesis_graph({
         "problems": raw_problems,
         "runs": raw_runs,
@@ -414,6 +444,84 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         if isinstance(node, dict) and node.get("state") == "BLOCKED"
     ]
 
+    def evidence_activation_id(row: dict[str, Any]) -> str:
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        activation = (
+            payload.get("activation")
+            if isinstance(payload.get("activation"), dict)
+            else {}
+        )
+        return str(
+            payload.get("activation_id")
+            or activation.get("activation_id")
+            or row.get("correlation_id")
+            or ""
+        )
+
+    shadow_latest: dict[str, dict[str, Any]] = {}
+    paper_latest: dict[str, dict[str, Any]] = {}
+    recent_evidence: list[dict[str, Any]] = []
+    for row in evidence_rows:
+        event_type = str(row.get("event_type") or "")
+        activation_id = evidence_activation_id(row)
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        checkpoint = (
+            payload.get("checkpoint")
+            if isinstance(payload.get("checkpoint"), dict)
+            else {}
+        )
+        occurred = row.get("occurred_at")
+        projection = {
+            "activation_id": activation_id or None,
+            "event_type": event_type,
+            "occurred_at": stamp(occurred),
+            "candidate_id": (
+                checkpoint.get("candidate_id")
+                or payload.get("candidate_id")
+                or (
+                    (payload.get("activation") or {}).get("candidate_id")
+                    if isinstance(payload.get("activation"), dict)
+                    else None
+                )
+            ),
+            "status": None,
+        }
+        if event_type.startswith("graen_candidate_shadow_"):
+            if "terminal_checkpoint" in event_type:
+                projection["status"] = checkpoint.get("status") or "TERMINAL"
+            elif event_type.endswith("_queued"):
+                projection["status"] = "QUEUED"
+            else:
+                projection["status"] = "ACTIVE"
+            if activation_id and activation_id not in shadow_latest:
+                shadow_latest[activation_id] = projection
+        elif event_type.startswith("graen_paper_"):
+            if "terminal_checkpoint" in event_type:
+                projection["status"] = checkpoint.get("status") or "TERMINAL"
+            else:
+                projection["status"] = "ACTIVE"
+            if activation_id and activation_id not in paper_latest:
+                paper_latest[activation_id] = projection
+        if len(recent_evidence) < 40:
+            recent_evidence.append(projection)
+
+    shadow_active = [
+        row for row in shadow_latest.values()
+        if row.get("status") == "ACTIVE"
+    ]
+    shadow_queued = [
+        row for row in shadow_latest.values()
+        if row.get("status") == "QUEUED"
+    ]
+    paper_active = [
+        row for row in paper_latest.values()
+        if row.get("status") == "ACTIVE"
+    ]
+    paper_passed = [
+        row for row in paper_latest.values()
+        if row.get("status") == "PAPER_PASSED"
+    ]
+
     progress_stamps: list[datetime] = []
     for row in raw_runs:
         for key in ("completed_at", "started_at", "created_at"):
@@ -431,16 +539,27 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
                     value if value.tzinfo else value.replace(tzinfo=UTC)
                 )
                 break
+    for row in evidence_rows:
+        value = row.get("occurred_at")
+        if isinstance(value, datetime):
+            progress_stamps.append(
+                value if value.tzinfo else value.replace(tzinfo=UTC)
+            )
 
     latest_progress = max(progress_stamps).astimezone(UTC) if progress_stamps else None
     age_seconds = (
         max(0.0, (datetime.now(UTC) - latest_progress).total_seconds())
         if latest_progress else None
     )
+    active_forward_evidence = bool(shadow_active or paper_active)
     if engineering_requirements:
         condition = "ENGINEERING_REQUIRED"
-        productivity = "WAITING_FOR_MANUAL_SOFTWARE"
-    elif active_nodes or running_runs:
+        productivity = (
+            "PRODUCTIVE_WITH_MANUAL_SOFTWARE"
+            if active_nodes or running_runs or active_forward_evidence
+            else "WAITING_FOR_MANUAL_SOFTWARE"
+        )
+    elif active_nodes or running_runs or active_forward_evidence:
         condition = "RESEARCHING"
         productivity = (
             "PRODUCTIVE"
@@ -474,6 +593,10 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             "hypotheses_falsified": int((graph.get("state_counts") or {}).get("FALSIFIED", 0)),
             "validation_candidates": int((graph.get("state_counts") or {}).get("VALIDATING", 0)),
             "holdout_candidates": int((graph.get("state_counts") or {}).get("HOLDOUT", 0)),
+            "shadow_candidates_active": len(shadow_active),
+            "shadow_candidates_queued": len(shadow_queued),
+            "paper_candidates_active": len(paper_active),
+            "paper_candidates_passed": len(paper_passed),
             "engineering_required": len(engineering_requirements),
             "blocked_hypotheses": len(blocked_nodes),
             "latest_progress_at": latest_progress.isoformat() if latest_progress else None,
@@ -509,6 +632,19 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             }
             for row in velum_replays
         ],
+        "forward_evidence": {
+            "shadow": {
+                "active": list(shadow_active)[:12],
+                "queued": list(shadow_queued)[:12],
+                "recent": list(shadow_latest.values())[:30],
+            },
+            "paper": {
+                "active": list(paper_active)[:4],
+                "passed": list(paper_passed)[:8],
+                "recent": list(paper_latest.values())[:20],
+            },
+            "recent_events": recent_evidence,
+        },
         "graen_runtime": runtime_projection,
     }
 
