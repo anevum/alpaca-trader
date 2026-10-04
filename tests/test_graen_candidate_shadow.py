@@ -4,6 +4,11 @@ import asyncio
 import pytest
 
 from app.config import Settings
+from app.research_agent.strategy_grammar import build_manifest
+from app.research_agent.strategy_runner import (
+    RUNNER_VERSION as STRATEGY_RUNNER_VERSION,
+    compile_candidate as compile_strategy_candidate,
+)
 import graen.crypto.candidate_shadow as candidate_shadow
 from graen.crypto.activity_shock_v9 import (
     METHODOLOGY_VERSION as V9_METHODOLOGY_VERSION,
@@ -250,6 +255,55 @@ def test_candidate_shadow_accepts_v13_btc_phase_without_execution_authority():
     )
     assert isinstance(series, dict)
 
+
+
+def test_candidate_shadow_accepts_strategy_grammar_candidate_without_execution_authority():
+    manifest = build_manifest(
+        hypothesis_id="AUTO-LL-SHADOW-01",
+        family="cross_asset_diffusion",
+        mechanism="BTC information diffusion into liquid crypto followers.",
+        information_source="cross_asset_returns",
+        feature="lead_lag_gap",
+        transformation="residualize_btc",
+        regime="dispersion_bucket",
+        trigger="threshold",
+        entry="market_next_bar",
+        exit="time_60m",
+        parameters={
+            "hold_minutes": 60,
+            "scan_minutes": 10,
+            "lookback_minutes": 30,
+            "concentration_limit": 0.70,
+            "leader_symbol": "BTC/USD",
+            "leader_threshold": 0.0035,
+            "lag_gap_threshold": 0.0015,
+            "min_target_return": -0.005,
+            "max_target_return": 0.0035,
+            "min_breadth_positive": 3,
+            "require_btc_nonnegative": False,
+        },
+        symbols=("BTC/USD", "ETH/USD", "SOL/USD"),
+        timeframe="5m",
+        falsification_statement="Reject if stressed-cost forward expectancy is nonpositive.",
+    )
+    spec = compile_strategy_candidate(manifest).to_dict()
+    payload = {
+        **activation(),
+        "activation_id": "activation-strategy-runner-001",
+        "campaign_id": "strategy-manifest-autonomous-v1",
+        "candidate_methodology": STRATEGY_RUNNER_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+    }
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(payload)
+
+    assert runtime.status()["candidate_methodology"] == STRATEGY_RUNNER_VERSION
+    assert runtime._active_spec().candidate_id == spec["candidate_id"]
+    assert "BTC/USD" in runtime._symbols()
+    assert runtime.execution_authority is False
+    assert runtime.broker_orders_possible is False
+    assert runtime.status()["crypto_execution_enabled"] is False
 
 
 def r2f_activation(*, activated_at: datetime | None = None) -> dict:
