@@ -346,6 +346,8 @@ STRATEGY_DEVELOPMENT_STAGE = "CRYPTO_STRATEGY_MANIFEST_DEVELOPMENT"
 STRATEGY_VALIDATION_STAGE = "CRYPTO_STRATEGY_MANIFEST_VALIDATION"
 STRATEGY_HOLDOUT_STAGE = "CRYPTO_STRATEGY_MANIFEST_HOLDOUT"
 STRATEGY_VELUM_STAGE = "CRYPTO_STRATEGY_MANIFEST_VELUM"
+STRATEGY_SHADOW_STAGE = "CRYPTO_STRATEGY_MANIFEST_FORWARD_SHADOW"
+STRATEGY_PAPER_STAGE = "CRYPTO_STRATEGY_MANIFEST_PAPER"
 WAITING_CORPUS_STAGE = "CRYPTO_WAITING_FOR_UNINSPECTED_CORPUS"
 ENGINEERING_REQUIRED_STAGE = "CRYPTO_ENGINEERING_REQUIRED"
 STRATEGY_STAGE_KEYS = {
@@ -354,6 +356,8 @@ STRATEGY_STAGE_KEYS = {
     STRATEGY_VALIDATION_STAGE,
     STRATEGY_HOLDOUT_STAGE,
     STRATEGY_VELUM_STAGE,
+    STRATEGY_SHADOW_STAGE,
+    STRATEGY_PAPER_STAGE,
 }
 
 
@@ -2667,6 +2671,14 @@ class GraenResearchExecutor:
                     run=run,
                     status="WAITING",
                     summary=summary,
+                    next_stage=STRATEGY_SHADOW_STAGE,
+                    next_metadata={
+                        **continuation_metadata,
+                        "strategy_shadow_activation": dict(
+                            shadow.get("activation") or {}
+                        ),
+                        "strategy_shadow_velum_artifact_id": artifact_id,
+                    },
                 )
 
             summary = {
@@ -2687,6 +2699,129 @@ class GraenResearchExecutor:
                 summary=summary,
                 next_stage=HYPOTHESIS_PLANNER_STAGE,
                 next_metadata={"autonomous_continuation": True},
+            )
+
+        if stage == STRATEGY_SHADOW_STAGE:
+            activation = metadata.get("strategy_shadow_activation")
+            if not isinstance(activation, Mapping):
+                raise RuntimeError("strategy_shadow_requires_activation")
+            status = await self._forward_shadow_status()
+            if str(status.get("candidate_id") or "") != manifest.hypothesis_id:
+                raise RuntimeError("forward_shadow_candidate_identity_mismatch")
+            checkpoint = status.get("checkpoint")
+            checkpoint = dict(checkpoint) if isinstance(checkpoint, Mapping) else {}
+            checkpoint_status = str(
+                status.get("checkpoint_status")
+                or checkpoint.get("status")
+                or "COLLECTING"
+            ).upper()
+
+            await record(
+                "CRYPTO_STRATEGY_FORWARD_SHADOW_CHECKPOINT",
+                {
+                    "shadow_status": status,
+                    "checkpoint": checkpoint,
+                    "checkpoint_status": checkpoint_status,
+                },
+            )
+
+            if checkpoint_status == "SHADOW_REJECTED":
+                summary = {
+                    "state": "STRATEGY_REJECTED_FORWARD_SHADOW",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "SHADOW_FAIL",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "checkpoint": checkpoint,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                    "next_action": "GENERATE_NEXT_HYPOTHESIS",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=HYPOTHESIS_PLANNER_STAGE,
+                    next_metadata={"autonomous_continuation": True},
+                )
+
+            if checkpoint_status == "READY_FOR_PAPER":
+                summary = {
+                    "state": "STRATEGY_READY_FOR_PAPER",
+                    "decision": "CONTINUE_TO_PAPER",
+                    "status": "SHADOW_PASS",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "checkpoint": checkpoint,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                    "live_promotion_authorized": False,
+                    "next_action": "START_PAPER_CANARY",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=STRATEGY_PAPER_STAGE,
+                    next_metadata={
+                        **continuation_metadata,
+                        "strategy_shadow_activation": dict(activation),
+                        "strategy_shadow_checkpoint": checkpoint,
+                    },
+                )
+
+            if checkpoint_status not in {"COLLECTING", ""}:
+                raise RuntimeError(
+                    "unsupported_forward_shadow_checkpoint:"
+                    + checkpoint_status
+                )
+
+            summary = {
+                "state": "FORWARD_SHADOW_RUNNING",
+                "decision": "COLLECT_FORWARD_EVIDENCE",
+                "status": "SHADOW_COLLECTING",
+                "candidate_id": manifest.hypothesis_id,
+                "candidate_family": manifest.family,
+                "checkpoint": checkpoint,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_state_changed": False,
+                "next_action": "AWAIT_NATIVE_SHADOW_CHECKPOINT",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=STRATEGY_SHADOW_STAGE,
+                next_metadata=continuation_metadata,
+            )
+
+        if stage == STRATEGY_PAPER_STAGE:
+            # The paper adapter is a separate paper-account deployment. Runtime
+            # research services may activate it once configured, but they may
+            # not create infrastructure, credentials, or spend on their own.
+            summary = {
+                "state": "PAPER_ADAPTER_REQUIRED",
+                "decision": "ENGINEERING_REQUIRED",
+                "status": "PAPER_NOT_CONFIGURED",
+                "candidate_id": manifest.hypothesis_id,
+                "candidate_family": manifest.family,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_promotion_authorized": False,
+                "production_state_changed": False,
+                "next_action": "CONFIGURE_GENERIC_PAPER_CANARY_ADAPTER",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
             )
 
         raise RuntimeError(f"unsupported_strategy_manifest_stage:{stage}")
@@ -5195,6 +5330,21 @@ class GraenResearchExecutor:
             "broker_orders_possible": False,
             "promotion_authorized": False,
         }
+
+
+    async def _forward_shadow_status(self) -> dict[str, Any]:
+        if not self.shadow_configured:
+            raise RuntimeError("forward shadow service is not configured")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{self.shadow_base_url}/v1/candidate-shadow/status",
+                headers={"x-graen-shadow-token": self.shadow_token},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("forward shadow status is malformed")
+        return dict(payload)
 
     async def _velum_health_snapshot(self) -> dict[str, Any] | None:
         if not self.velum_configured:
