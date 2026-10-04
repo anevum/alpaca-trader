@@ -2802,7 +2802,7 @@ class GraenResearchExecutor:
                     },
                 )
 
-            if checkpoint_status not in {"COLLECTING", ""}:
+            if checkpoint_status not in {"COLLECTING", "QUEUED", ""}:
                 raise RuntimeError(
                     "unsupported_forward_shadow_checkpoint:"
                     + checkpoint_status
@@ -2851,9 +2851,10 @@ class GraenResearchExecutor:
                         "the isolated paper-only adapter is not configured."
                     ),
                     capability_required=(
-                        "Deploy app.graen.paper_canary_service with Alpaca paper "
-                        "credentials, durable state, Foundation telemetry, and the "
-                        "shared GRAEN paper activation token."
+                        "Configure the canonical app.graen.paper_host in a dedicated "
+                        "Alpaca paper-mode RHEN deployment with durable state, "
+                        "Foundation telemetry, bounded paper risk, and the shared "
+                        "GRAEN paper activation token."
                     ),
                     affected_components=[
                         "GRAEN paper canary",
@@ -2870,9 +2871,9 @@ class GraenResearchExecutor:
                         "GRAEN can poll PAPER_PASSED or PAPER_REJECTED.",
                     ],
                     suggested_paths=[
-                        "app/graen/paper_canary_service.py",
-                        "Dockerfile.graen-paper",
-                        "tests/test_graen_paper_canary_service.py",
+                        "app/graen/paper_host.py",
+                        "app/main.py",
+                        "tests/test_graen_paper_host.py",
                     ],
                     continuation_policy=(
                         "Continue all independent research and shadow candidates "
@@ -2910,6 +2911,7 @@ class GraenResearchExecutor:
                 activation = await self._activate_paper_canary(
                     problem_id=problem_id,
                     graen_run_id=run_id,
+                    campaign_id="strategy-manifest-autonomous-v1",
                     candidate_methodology=STRATEGY_RUNNER_VERSION,
                     candidate_spec=candidate_spec,
                     shadow_activation_id=str(
@@ -2917,6 +2919,91 @@ class GraenResearchExecutor:
                     ),
                     shadow_checkpoint=shadow_checkpoint,
                 )
+                if activation.get("busy") is True:
+                    summary = {
+                        "state": "PAPER_CANARY_WAITING_FOR_SLOT",
+                        "decision": "COLLECT_PAPER_EVIDENCE",
+                        "status": "PAPER_WAITING",
+                        "candidate_id": manifest.hypothesis_id,
+                        "candidate_family": manifest.family,
+                        "paper_adapter": activation,
+                        "execution_authority": "PAPER_ONLY",
+                        "live_execution_authority": False,
+                        "live_promotion_authorized": False,
+                        "next_action": "WAIT_FOR_PAPER_CANARY_SLOT",
+                    }
+                    return await self._finalize(
+                        problem=problem,
+                        run=run,
+                        status="WAITING",
+                        summary=summary,
+                        next_stage=STRATEGY_PAPER_STAGE,
+                        next_metadata=continuation_metadata,
+                    )
+                if activation.get("not_authorized") is True:
+                    requirement = build_engineering_requirement(
+                        requirement_id="ENG-PAPER-CONFIG-V1",
+                        requested_by="GRAEN",
+                        title="Authorize isolated GRAEN paper-canary runtime",
+                        reason=(
+                            "The canonical paper adapter is reachable but its "
+                            "paper-only execution charter is not fully configured."
+                        ),
+                        capability_required=(
+                            "Configure the dedicated paper service with Alpaca paper "
+                            "credentials plus GRAEN_PAPER_ENABLED=true, "
+                            "I_ACKNOWLEDGE_GRAEN_AUTONOMOUS_PAPER=YES, bounded paper "
+                            "risk variables, execution enabled, bot armed, live false, "
+                            "and crypto live execution disabled."
+                        ),
+                        affected_components=[
+                            "GRAEN paper canary",
+                            "Railway paper-only service",
+                            "Alpaca paper account",
+                            "IREN Command",
+                        ],
+                        blocked_research=[problem_id, manifest.hypothesis_id],
+                        acceptance_tests=[
+                            "Paper host reports paper_execution_authorized=true.",
+                            "Paper host reports live_execution_authorized=false.",
+                            "Dedicated crypto paper account is clean at activation.",
+                            "Exact READY_FOR_PAPER candidate activates idempotently.",
+                            "No live credential or live-risk authority is introduced.",
+                        ],
+                        suggested_paths=[
+                            "app/graen/paper_host.py",
+                            "app/main.py",
+                            "tests/test_graen_paper_host.py",
+                        ],
+                        continuation_policy=(
+                            "Continue independent research and shadow candidates "
+                            "while paper authorization is configured."
+                        ),
+                        risk="LOW",
+                    )
+                    summary = {
+                        "condition": "ENGINEERING_REQUIRED",
+                        "state": "PAPER_AUTHORIZATION_REQUIRED",
+                        "decision": "ENGINEERING_REQUIRED",
+                        "status": "PAPER_NOT_AUTHORIZED",
+                        "candidate_id": manifest.hypothesis_id,
+                        "candidate_family": manifest.family,
+                        "engineering_requirement": requirement,
+                        "manual_chatgpt_workspace_required": True,
+                        "independent_research_continues": True,
+                        "execution_authority": False,
+                        "live_execution_authority": False,
+                        "live_promotion_authorized": False,
+                        "next_action": "CONFIGURE_PAPER_ONLY_RUNTIME",
+                    }
+                    return await self._finalize(
+                        problem=problem,
+                        run=run,
+                        status="WAITING",
+                        summary=summary,
+                        next_stage=STRATEGY_PAPER_STAGE,
+                        next_metadata=continuation_metadata,
+                    )
                 paper_activation = dict(activation.get("activation") or {})
                 summary = {
                     "state": "PAPER_CANARY_QUEUED",
@@ -2945,7 +3032,7 @@ class GraenResearchExecutor:
                 )
 
             paper_activation_id = str(
-                paper_activation.get("paper_activation_id") or ""
+                paper_activation.get("activation_id") or ""
             )
             paper_status = await self._paper_canary_status(
                 paper_activation_id
@@ -3024,7 +3111,7 @@ class GraenResearchExecutor:
                     summary=summary,
                 )
 
-            if checkpoint_status not in {"QUEUED", "ACTIVE"}:
+            if checkpoint_status not in {"PAPER_COLLECTING", "QUEUED", "ACTIVE"}:
                 raise RuntimeError(
                     "unsupported_paper_checkpoint:" + checkpoint_status
                 )
@@ -5563,6 +5650,7 @@ class GraenResearchExecutor:
         *,
         problem_id: str,
         graen_run_id: str,
+        campaign_id: str,
         candidate_methodology: str,
         candidate_spec: Mapping[str, Any],
         shadow_activation_id: str,
@@ -5572,17 +5660,40 @@ class GraenResearchExecutor:
             raise RuntimeError("paper canary service is not configured")
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{self.paper_base_url}/v1/paper-canary/activate",
+                f"{self.paper_base_url}/v1/graen-paper/activate",
                 headers={"x-graen-paper-token": self.paper_token},
                 json={
                     "problem_id": problem_id,
                     "graen_run_id": graen_run_id,
+                    "campaign_id": campaign_id,
                     "candidate_methodology": candidate_methodology,
                     "candidate_spec": dict(candidate_spec),
                     "shadow_activation_id": shadow_activation_id,
                     "shadow_checkpoint": dict(shadow_checkpoint),
                 },
             )
+            if response.status_code == 422:
+                try:
+                    detail = str((response.json() or {}).get("detail") or "")
+                except Exception:
+                    detail = response.text
+                normalized = detail.casefold()
+                if "already owns another candidate" in normalized:
+                    return {
+                        "busy": True,
+                        "reason": "paper_canary_slot_busy",
+                        "detail": detail[:1000],
+                        "execution_authority": "PAPER_ONLY",
+                        "live_execution_authority": False,
+                    }
+                if "paper adapter is not authorized" in normalized:
+                    return {
+                        "not_authorized": True,
+                        "reason": "paper_canary_configuration_required",
+                        "detail": detail[:1000],
+                        "execution_authority": False,
+                        "live_execution_authority": False,
+                    }
             response.raise_for_status()
             payload = response.json()
         activation = payload.get("activation")
@@ -5611,7 +5722,7 @@ class GraenResearchExecutor:
             raise RuntimeError("paper canary activation id is required")
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                f"{self.paper_base_url}/v1/paper-canary/checkpoint/{activation_id}",
+                f"{self.paper_base_url}/v1/graen-paper/checkpoint/{activation_id}",
                 headers={"x-graen-paper-token": self.paper_token},
             )
             response.raise_for_status()
