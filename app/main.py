@@ -891,6 +891,26 @@ async def lifespan(app: FastAPI):
     await event_sink.start()
     await slack_notifier.start()
 
+    persistence_status = event_sink.status()
+    foundation_status = dict(persistence_status.get("foundation") or {})
+    print(
+        "PERSISTENCE_STATUS",
+        {
+            "enabled": bool(persistence_status.get("enabled")),
+            "queued": persistence_status.get("queued"),
+            "sent_count": persistence_status.get("sent_count"),
+            "dropped_count": persistence_status.get("dropped_count"),
+            "last_error": persistence_status.get("last_error"),
+            "run_id": persistence_status.get("run_id"),
+            "strategy_version_id": persistence_status.get("strategy_version_id"),
+            "run_started_at": persistence_status.get("run_started_at"),
+            "foundation_enabled": bool(foundation_status.get("enabled")),
+            "foundation_delivered_count": foundation_status.get("delivered_count"),
+            "foundation_last_error": foundation_status.get("last_error"),
+        },
+        flush=True,
+    )
+
     runtime_provenance = capture_runtime_provenance()
     runtime_start_payload = {
         "trading_mode": settings.trading_mode,
