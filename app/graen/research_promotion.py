@@ -151,6 +151,7 @@ class ResearchPromotion:
 
         revision = claim["revision"]
         state = dict(claim.get("state") or {})
+        previous_phase = str(state.get("phase") or "FREEZE")
         try:
             spec = claim.get("prespec")
             if not isinstance(spec, dict):
@@ -196,7 +197,9 @@ class ResearchPromotion:
             state["blocked_reason"] = str(exc)
 
         await self.store.save(problem_id, owner, revision, state)
-        return state
+        result = dict(state)
+        result["transitioned"] = previous_phase != str(state.get("phase") or "")
+        return result
 
 
 def engineering_problem_ids(snapshot):
