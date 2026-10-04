@@ -85,19 +85,39 @@ def _one_exact(matches: list[Any], action: str) -> Any:
     return matches[0]
 
 
-def _has_explicit_action_record(
+def _explicit_override(
     decisions: Iterable[Mapping[str, Any]],
     *,
     authorized_action: str,
+    identity: Mapping[str, Any],
 ) -> bool:
-    """A final explicit authorization/revocation always outranks the standing charter."""
+    """Return true only for a relevant explicit override.
+
+    A final revocation with no identity fields is intentionally global. Otherwise
+    an operator decision outranks the standing charter only when every identity
+    field it supplies matches the current proposal/experiment. This prevents an
+    old authorization for experiment A from disabling autonomous experiment B.
+    """
+    identity_keys = set(identity)
     for decision in decisions:
         if str(decision.get("status", "")).strip().casefold() != "final":
             continue
         if str(decision.get("decision_type", "")).strip().casefold() != "research_authorization":
             continue
         evidence = decision.get("evidence")
-        if isinstance(evidence, Mapping) and evidence.get("authorized_action") == authorized_action:
+        if not isinstance(evidence, Mapping):
+            continue
+        if evidence.get("authorized_action") != authorized_action:
+            continue
+
+        supplied = {
+            key: evidence.get(key)
+            for key in identity_keys
+            if evidence.get(key) not in (None, "")
+        }
+        if not supplied:
+            return evidence.get("revoked") is True
+        if all(str(supplied[key]) == str(identity.get(key)) for key in supplied):
             return True
     return False
 
@@ -139,8 +159,14 @@ def authorize_freeze(
             matches.append(authorization)
     if matches:
         return _one_exact(matches, "freeze_methodology")
-    if allow_standing_charter and not _has_explicit_action_record(
-        decision_rows, authorized_action="freeze_methodology"
+    if allow_standing_charter and not _explicit_override(
+        decision_rows,
+        authorized_action="freeze_methodology",
+        identity={
+            "proposal_id": proposal_id,
+            "proposal_revision": proposal_revision,
+            "proposal_hash": proposal_hash,
+        },
     ):
         payload = standing_freeze_authorization(
             proposal_id=proposal_id,
@@ -199,8 +225,16 @@ def authorize_stage(
             matches.append(authorization)
     if matches:
         return _one_exact(matches, f"open_stage:{expected_stage}")
-    if allow_standing_charter and not _has_explicit_action_record(
-        decision_rows, authorized_action="open_stage"
+    if allow_standing_charter and not _explicit_override(
+        decision_rows,
+        authorized_action="open_stage",
+        identity={
+            "experiment_id": experiment_id,
+            "experiment_key": experiment_key,
+            "stage": expected_stage,
+            "manifest_hash": manifest_hash,
+            "source_commit": source_commit,
+        },
     ):
         payload = standing_stage_authorization(
             experiment_id=experiment_id,
