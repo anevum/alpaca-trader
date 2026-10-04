@@ -881,7 +881,12 @@ class TradingEventSink:
                     ),
                     "data_source": "alpaca",
                     "data_feed": candidate_data_feed,
-                    "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                    "bar_interval": (
+                    execution_context.get("bar_timeframe")
+                    if isinstance(execution_context, dict)
+                    and execution_context.get("bar_timeframe")
+                    else getattr(self.settings, "bar_timeframe", None)
+                ),
                     "confirmation_state": {
                         "passes": metadata.get("confirmation_passes"),
                         "confirmations": metadata.get("confirmations") or {},
@@ -915,9 +920,10 @@ class TradingEventSink:
             str((item.get("metadata") or {}).get("market") or "").lower() == "crypto"
             for item in scan.values()
         )
+        execution_context = comparison_context or embedded_comparison_context
         replay_context = {
             "configuration": self._comparison_configuration(),
-            "execution_context": comparison_context or embedded_comparison_context,
+            "execution_context": execution_context,
             "execution_result": execution_result or {},
         }
         self.emit(
@@ -950,13 +956,23 @@ class TradingEventSink:
                 "methodology_version": "live-decision-v1",
                 "market_lane": "crypto" if cycle_is_crypto else "us_equity",
                 "strategy_family": (
-                    getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
-                    if cycle_is_crypto
-                    else getattr(self.settings, "strategy_name", None)
+                    execution_context.get("strategy_family")
+                    if isinstance(execution_context, dict)
+                    and execution_context.get("strategy_family")
+                    else (
+                        getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
+                        if cycle_is_crypto
+                        else getattr(self.settings, "strategy_name", None)
+                    )
                 ),
                 "model_version": (
-                    getattr(self.settings, "crypto_model_version", None)
-                    if cycle_is_crypto else getattr(self.settings, "strategy_version_id", None)
+                    execution_context.get("strategy_version_id")
+                    if isinstance(execution_context, dict)
+                    and execution_context.get("strategy_version_id")
+                    else (
+                        getattr(self.settings, "crypto_model_version", None)
+                        if cycle_is_crypto else getattr(self.settings, "strategy_version_id", None)
+                    )
                 ),
                 "calibration_version": (
                     getattr(self.settings, "crypto_calibration_version", None)
