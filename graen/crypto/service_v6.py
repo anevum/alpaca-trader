@@ -30,6 +30,10 @@ from .btc_consensus_trend_v14_r2g import (
     METHODOLOGY_VERSION as V14_R2G_METHODOLOGY_VERSION,
     candidate_spec as v14_r2g_candidate_spec,
 )
+from .btc_4h_consensus_v14_r2h import (
+    METHODOLOGY_VERSION as V14_R2H_METHODOLOGY_VERSION,
+    candidate_spec as v14_r2h_candidate_spec,
+)
 
 
 DEVELOPMENT_START = datetime(2025, 9, 1, tzinfo=timezone.utc)
@@ -115,8 +119,10 @@ class GraenCryptoV6Runtime:
         self.shadow = CryptoResidualReclaimShadow(self.settings)
         self.candidate_shadow = CandidateForwardShadow(self.settings)
         self.comparison_shadow = CandidateForwardShadow(self.settings)
+        self.fast_shadow = CandidateForwardShadow(self.settings)
         self.candidate_shadow_task: asyncio.Task | None = None
         self.comparison_shadow_task: asyncio.Task | None = None
+        self.fast_shadow_task: asyncio.Task | None = None
         self.candidate_shadow_interval_seconds = _env_int(
             "GRAEN_CANDIDATE_SHADOW_INTERVAL_SECONDS",
             30,
@@ -158,6 +164,7 @@ class GraenCryptoV6Runtime:
             "shadow": self.shadow.status(),
             "candidate_shadow": self.candidate_shadow.status(),
             "candidate_shadow_comparison": self.comparison_shadow.status(),
+            "candidate_shadow_fast": self.fast_shadow.status(),
         }
 
     async def start(self) -> None:
@@ -168,6 +175,10 @@ class GraenCryptoV6Runtime:
         await self._restore_candidate_shadow(
             self.comparison_shadow,
             candidate_id=v14_r2g_candidate_spec().candidate_id,
+        )
+        await self._restore_candidate_shadow(
+            self.fast_shadow,
+            candidate_id=v14_r2h_candidate_spec().candidate_id,
         )
         if self.legacy_v6_research_enabled and self.task is None:
             self.task = asyncio.create_task(self._run(), name="graen-crypto-native-v6")
@@ -192,6 +203,14 @@ class GraenCryptoV6Runtime:
                 ),
                 name="graen-candidate-forward-shadow-comparison",
             )
+        if self.fast_shadow_task is None:
+            self.fast_shadow_task = asyncio.create_task(
+                self._run_candidate_shadow(
+                    self.fast_shadow,
+                    role="fast-4h",
+                ),
+                name="graen-candidate-forward-shadow-fast-4h",
+            )
 
     async def stop(self) -> None:
         self.stop_event.set()
@@ -202,6 +221,7 @@ class GraenCryptoV6Runtime:
                 self.shadow_task,
                 self.candidate_shadow_task,
                 self.comparison_shadow_task,
+                self.fast_shadow_task,
             )
             if task is not None
         ]
@@ -213,6 +233,7 @@ class GraenCryptoV6Runtime:
         self.shadow_task = None
         self.candidate_shadow_task = None
         self.comparison_shadow_task = None
+        self.fast_shadow_task = None
 
     async def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -489,6 +510,8 @@ class GraenCryptoV6Runtime:
         target_shadow = (
             self.comparison_shadow
             if candidate_methodology == V14_R2G_METHODOLOGY_VERSION
+            else self.fast_shadow
+            if candidate_methodology == V14_R2H_METHODOLOGY_VERSION
             else self.candidate_shadow
         )
         velum_artifact_id = str(
