@@ -422,7 +422,10 @@ class GraenCryptoV6Runtime:
     ) -> bool:
         target = shadow or self.candidate_shadow
         url = os.getenv("GRAEN_GATEWAY_URL", "").strip()
-        token = os.getenv("GRAEN_GATEWAY_TOKEN", "").strip()
+        token = (
+            os.getenv("GRAEN_GATEWAY_TOKEN", "").strip()
+            or str(self.settings.trading_ingest_token or "").strip()
+        )
         if not url or len(token) < 32:
             return False
         async with httpx.AsyncClient(timeout=15.0) as http:
