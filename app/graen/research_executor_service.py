@@ -487,6 +487,14 @@ class GraenResearchExecutor:
             os.getenv("GRAEN_SHADOW_TOKEN", "")
             or os.getenv("GRAEN_GATEWAY_TOKEN", "")
         ).strip()
+        self.paper_base_url = os.getenv(
+            "GRAEN_PAPER_SERVICE_URL",
+            "",
+        ).strip().rstrip("/")
+        self.paper_token = (
+            os.getenv("GRAEN_PAPER_TOKEN", "")
+            or os.getenv("GRAEN_GATEWAY_TOKEN", "")
+        ).strip()
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.started_at = datetime.now(UTC)
@@ -516,6 +524,13 @@ class GraenResearchExecutor:
         return bool(
             self.shadow_base_url.startswith("http")
             and len(self.shadow_token) >= 32
+        )
+
+    @property
+    def paper_configured(self) -> bool:
+        return bool(
+            self.paper_base_url.startswith("http")
+            and len(self.paper_token) >= 32
         )
 
     def health(self) -> dict[str, Any]:
@@ -575,6 +590,7 @@ class GraenResearchExecutor:
             "iren_callback_configured": self.callback_configured,
             "velum_candidate_replay_configured": self.velum_configured,
             "forward_shadow_configured": self.shadow_configured,
+            "paper_canary_configured": self.paper_configured,
             "execution_authority": False,
             "broker_orders_possible": False,
             "risk_or_sizing_authority": False,
@@ -2814,26 +2830,223 @@ class GraenResearchExecutor:
             )
 
         if stage == STRATEGY_PAPER_STAGE:
-            # The paper adapter is a separate paper-account deployment. Runtime
-            # research services may activate it once configured, but they may
-            # not create infrastructure, credentials, or spend on their own.
+            shadow_activation = metadata.get("strategy_shadow_activation")
+            shadow_checkpoint = metadata.get("strategy_shadow_checkpoint")
+            if not isinstance(shadow_activation, Mapping):
+                raise RuntimeError("strategy_paper_requires_shadow_activation")
+            if not isinstance(shadow_checkpoint, Mapping):
+                raise RuntimeError("strategy_paper_requires_shadow_checkpoint")
+            candidate_spec = compile_strategy_candidate(manifest).to_dict()
+
+            if not self.paper_configured:
+                requirement = build_engineering_requirement(
+                    requirement_id=(
+                        "ENG-PAPER-"
+                        + manifest.hypothesis_id.replace("_", "-").upper()[:48]
+                    ),
+                    requested_by="GRAEN",
+                    title="Deploy generic GRAEN paper-canary adapter",
+                    reason=(
+                        "A strategy-manifest candidate passed forward shadow, but "
+                        "the isolated paper-only adapter is not configured."
+                    ),
+                    capability_required=(
+                        "Deploy app.graen.paper_canary_service with Alpaca paper "
+                        "credentials, durable state, Foundation telemetry, and the "
+                        "shared GRAEN paper activation token."
+                    ),
+                    affected_components=[
+                        "GRAEN paper canary",
+                        "Railway paper-only service",
+                        "Foundation telemetry",
+                        "IREN Command",
+                    ],
+                    blocked_research=[problem_id, manifest.hypothesis_id],
+                    acceptance_tests=[
+                        "Service hard-gates itself to Alpaca paper endpoint.",
+                        "No live execution authority exists.",
+                        "Exact strategy-runner candidate activates idempotently.",
+                        "Paper checkpoint survives restart.",
+                        "GRAEN can poll PAPER_PASSED or PAPER_REJECTED.",
+                    ],
+                    suggested_paths=[
+                        "app/graen/paper_canary_service.py",
+                        "Dockerfile.graen-paper",
+                        "tests/test_graen_paper_canary_service.py",
+                    ],
+                    continuation_policy=(
+                        "Continue all independent research and shadow candidates "
+                        "while this candidate waits for paper-adapter deployment."
+                    ),
+                    risk="LOW",
+                )
+                summary = {
+                    "condition": "ENGINEERING_REQUIRED",
+                    "state": "PAPER_ADAPTER_REQUIRED",
+                    "decision": "ENGINEERING_REQUIRED",
+                    "status": "PAPER_NOT_CONFIGURED",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "engineering_requirement": requirement,
+                    "manual_chatgpt_workspace_required": True,
+                    "independent_research_continues": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "live_promotion_authorized": False,
+                    "production_state_changed": False,
+                    "next_action": "DEPLOY_GENERIC_PAPER_CANARY_ADAPTER",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=STRATEGY_PAPER_STAGE,
+                    next_metadata=continuation_metadata,
+                )
+
+            paper_activation = metadata.get("strategy_paper_activation")
+            if not isinstance(paper_activation, Mapping):
+                activation = await self._activate_paper_canary(
+                    problem_id=problem_id,
+                    graen_run_id=run_id,
+                    candidate_methodology=STRATEGY_RUNNER_VERSION,
+                    candidate_spec=candidate_spec,
+                    shadow_activation_id=str(
+                        shadow_activation.get("activation_id") or ""
+                    ),
+                    shadow_checkpoint=shadow_checkpoint,
+                )
+                paper_activation = dict(activation.get("activation") or {})
+                summary = {
+                    "state": "PAPER_CANARY_QUEUED",
+                    "decision": "COLLECT_PAPER_EVIDENCE",
+                    "status": "PAPER_ACTIVE",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "paper_activation": activation,
+                    "execution_authority": "PAPER_ONLY",
+                    "live_execution_authority": False,
+                    "live_promotion_authorized": False,
+                    "next_action": "AWAIT_PAPER_CANARY_CHECKPOINT",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=STRATEGY_PAPER_STAGE,
+                    next_metadata={
+                        **continuation_metadata,
+                        "strategy_shadow_activation": dict(shadow_activation),
+                        "strategy_shadow_checkpoint": dict(shadow_checkpoint),
+                        "strategy_paper_activation": paper_activation,
+                    },
+                )
+
+            paper_activation_id = str(
+                paper_activation.get("paper_activation_id") or ""
+            )
+            paper_status = await self._paper_canary_status(
+                paper_activation_id
+            )
+            checkpoint = paper_status.get("checkpoint")
+            checkpoint = (
+                dict(checkpoint)
+                if isinstance(checkpoint, Mapping)
+                else {}
+            )
+            checkpoint_status = str(
+                checkpoint.get("status") or "QUEUED"
+            ).upper()
+            await record(
+                "CRYPTO_STRATEGY_PAPER_CHECKPOINT",
+                {
+                    "paper_status": paper_status,
+                    "checkpoint": checkpoint,
+                    "checkpoint_status": checkpoint_status,
+                },
+            )
+
+            if checkpoint_status == "PAPER_REJECTED":
+                summary = {
+                    "state": "STRATEGY_REJECTED_PAPER",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "PAPER_FAIL",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "checkpoint": checkpoint,
+                    "execution_authority": "PAPER_ONLY",
+                    "live_execution_authority": False,
+                    "live_promotion_authorized": False,
+                    "next_action": "GENERATE_NEXT_HYPOTHESIS",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=HYPOTHESIS_PLANNER_STAGE,
+                    next_metadata={"autonomous_continuation": True},
+                )
+
+            if checkpoint_status == "PAPER_PASSED":
+                summary = {
+                    "condition": "HUMAN_DECISION_REQUIRED",
+                    "state": "STRATEGY_PAPER_VALIDATED",
+                    "decision": "HUMAN_DECISION_REQUIRED",
+                    "status": "PAPER_PASS",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "checkpoint": checkpoint,
+                    "paper_activation": dict(paper_activation),
+                    "execution_authority": "PAPER_ONLY",
+                    "live_execution_authority": False,
+                    "live_promotion_authorized": False,
+                    "protected_decision": {
+                        "decision_type": "LIVE_RISK_CHARTER",
+                        "requested_action": (
+                            "Authorize, reject, or archive real-money canary "
+                            "promotion for this exact validated candidate."
+                        ),
+                        "candidate_id": manifest.hypothesis_id,
+                        "strategy_manifest_hash": metadata.get(
+                            "strategy_manifest_hash"
+                        ),
+                        "risk_increase_authorized": False,
+                    },
+                    "next_action": "REVIEW_LIVE_RISK_CHARTER",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="SUCCEEDED",
+                    summary=summary,
+                )
+
+            if checkpoint_status not in {"QUEUED", "ACTIVE"}:
+                raise RuntimeError(
+                    "unsupported_paper_checkpoint:" + checkpoint_status
+                )
             summary = {
-                "state": "PAPER_ADAPTER_REQUIRED",
-                "decision": "ENGINEERING_REQUIRED",
-                "status": "PAPER_NOT_CONFIGURED",
+                "state": "PAPER_CANARY_RUNNING",
+                "decision": "COLLECT_PAPER_EVIDENCE",
+                "status": checkpoint_status,
                 "candidate_id": manifest.hypothesis_id,
                 "candidate_family": manifest.family,
-                "execution_authority": False,
-                "broker_orders_possible": False,
+                "checkpoint": checkpoint,
+                "execution_authority": "PAPER_ONLY",
+                "live_execution_authority": False,
                 "live_promotion_authorized": False,
-                "production_state_changed": False,
-                "next_action": "CONFIGURE_GENERIC_PAPER_CANARY_ADAPTER",
+                "next_action": "AWAIT_PAPER_CANARY_CHECKPOINT",
             }
             return await self._finalize(
                 problem=problem,
                 run=run,
                 status="WAITING",
                 summary=summary,
+                next_stage=STRATEGY_PAPER_STAGE,
+                next_metadata=continuation_metadata,
             )
 
         raise RuntimeError(f"unsupported_strategy_manifest_stage:{stage}")
@@ -5343,6 +5556,69 @@ class GraenResearchExecutor:
             "promotion_authorized": False,
         }
 
+
+
+    async def _activate_paper_canary(
+        self,
+        *,
+        problem_id: str,
+        graen_run_id: str,
+        candidate_methodology: str,
+        candidate_spec: Mapping[str, Any],
+        shadow_activation_id: str,
+        shadow_checkpoint: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not self.paper_configured:
+            raise RuntimeError("paper canary service is not configured")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self.paper_base_url}/v1/paper-canary/activate",
+                headers={"x-graen-paper-token": self.paper_token},
+                json={
+                    "problem_id": problem_id,
+                    "graen_run_id": graen_run_id,
+                    "candidate_methodology": candidate_methodology,
+                    "candidate_spec": dict(candidate_spec),
+                    "shadow_activation_id": shadow_activation_id,
+                    "shadow_checkpoint": dict(shadow_checkpoint),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        activation = payload.get("activation")
+        if not isinstance(activation, Mapping):
+            raise RuntimeError("paper canary activation returned no activation")
+        return {
+            "activation": dict(activation),
+            "duplicate": bool(payload.get("duplicate")),
+            "checkpoint": (
+                dict(payload.get("checkpoint"))
+                if isinstance(payload.get("checkpoint"), Mapping)
+                else {}
+            ),
+            "execution_authority": "PAPER_ONLY",
+            "live_execution_authority": False,
+        }
+
+    async def _paper_canary_status(
+        self,
+        activation_id: str,
+    ) -> dict[str, Any]:
+        if not self.paper_configured:
+            raise RuntimeError("paper canary service is not configured")
+        activation_id = str(activation_id or "").strip()
+        if not activation_id:
+            raise RuntimeError("paper canary activation id is required")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{self.paper_base_url}/v1/paper-canary/checkpoint/{activation_id}",
+                headers={"x-graen-paper-token": self.paper_token},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("paper canary checkpoint is malformed")
+        return dict(payload)
 
     async def _forward_shadow_status(
         self,
