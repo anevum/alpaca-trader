@@ -51,8 +51,8 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: pip install pytest==8.3.5
-      - run: python -m py_compile graen/crypto/trend_pullback_v10.py graen/crypto/candidate_shadow.py graen/crypto/service_v6.py app/graen/shadow_host.py
-      - run: python -m pytest -q tests/test_graen_candidate_shadow.py tests/test_graen_shadow_host.py tests/test_graen_crypto_service.py
+      - run: python -m py_compile graen/crypto/trend_pullback_v10.py graen/crypto/candidate_shadow.py graen/crypto/service_v6.py app/graen/shadow_host.py app/graen/paper_host.py
+      - run: python -m pytest -q tests/test_graen_candidate_shadow.py tests/test_graen_shadow_host.py tests/test_graen_paper_host.py tests/test_graen_crypto_service.py
 
   graen-v14-ml:
     runs-on: ubuntu-latest
