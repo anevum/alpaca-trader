@@ -77,6 +77,44 @@ def test_no_handoff_expands_scope_or_authority():
         package(o)
 
 
+def test_manual_research_engineering_scope_is_bounded_but_actionable():
+    o = objective()
+    o["objective_key"] = "engineering.eng-1"
+    o["title"] = "Implement frozen GRAEN hypothesis"
+    o["success_criteria"] = {
+        "manual_software_handoff": True,
+        "protected_authority": False,
+    }
+    o["metadata"] = {
+        "job_type": "SOFTWARE_BUILD",
+        "manual_software_required": True,
+        "engineering_requirement": {
+            "requirement_id": "ENG-1",
+            "condition": "ENGINEERING_REQUIRED",
+        },
+        "codex_scope": {
+            "allowed_paths": [
+                "graen/crypto/generated/example.py",
+                "research/crypto/prespecs/example.json",
+                "tests/test_generated_example.py",
+            ],
+            "expected_services": ["GRAEN", "GRAEN_EXECUTOR"],
+            "verification_checks": {},
+        },
+    }
+    p = package(o)
+    assert p["research_engineering"] is True
+    assert p["manual_software_required"] is True
+    assert p["paid_model_execution"] is False
+    assert p["auto_merge"] is False
+    assert "graen/crypto/generated/example.py" in p["allowed_paths"]
+
+    unsafe = deepcopy(o)
+    unsafe["metadata"]["codex_scope"]["allowed_paths"].append("app/risk.py")
+    with pytest.raises(ValueError, match="scope"):
+        package(unsafe)
+
+
 def test_sha_required_and_deterministic_objective_rejected():
     with pytest.raises(ValueError, match="sha"):
         package_for(objective(), handoff_id=ID, command_id=None, main_sha="", control=control())
