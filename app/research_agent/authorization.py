@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 
+from .autonomy import standing_freeze_authorization, standing_stage_authorization
+
 
 class AuthorizationError(ValueError):
     pass
@@ -83,16 +85,35 @@ def _one_exact(matches: list[Any], action: str) -> Any:
     return matches[0]
 
 
+def _has_explicit_action_record(
+    decisions: Iterable[Mapping[str, Any]],
+    *,
+    authorized_action: str,
+) -> bool:
+    """A final explicit authorization/revocation always outranks the standing charter."""
+    for decision in decisions:
+        if str(decision.get("status", "")).strip().casefold() != "final":
+            continue
+        if str(decision.get("decision_type", "")).strip().casefold() != "research_authorization":
+            continue
+        evidence = decision.get("evidence")
+        if isinstance(evidence, Mapping) and evidence.get("authorized_action") == authorized_action:
+            return True
+    return False
+
+
 def authorize_freeze(
     decisions: Iterable[Mapping[str, Any]],
     *,
     proposal_id: str,
     proposal_revision: int,
     proposal_hash: str,
+    allow_standing_charter: bool = False,
 ) -> FreezeAuthorization:
+    decision_rows = tuple(decisions)
     matches: list[FreezeAuthorization] = []
     for reference, payload in _eligible_decisions(
-        decisions, authorized_action="freeze_methodology"
+        decision_rows, authorized_action="freeze_methodology"
     ):
         try:
             revision = payload.get("proposal_revision")
@@ -116,6 +137,24 @@ def authorize_freeze(
             and authorization.proposal_hash == proposal_hash
         ):
             matches.append(authorization)
+    if matches:
+        return _one_exact(matches, "freeze_methodology")
+    if allow_standing_charter and not _has_explicit_action_record(
+        decision_rows, authorized_action="freeze_methodology"
+    ):
+        payload = standing_freeze_authorization(
+            proposal_id=proposal_id,
+            proposal_revision=proposal_revision,
+            proposal_hash=proposal_hash,
+        )
+        return FreezeAuthorization(
+            decision_reference=str(payload["decision_reference"]),
+            proposal_id=str(payload["proposal_id"]),
+            proposal_revision=int(payload["proposal_revision"]),
+            proposal_hash=str(payload["proposal_hash"]),
+            authorized_by=str(payload["authorized_by"]),
+            authorized_at=str(payload["authorized_at"]),
+        )
     return _one_exact(matches, "freeze_methodology")
 
 
@@ -127,13 +166,15 @@ def authorize_stage(
     stage: str,
     manifest_hash: str,
     source_commit: str,
+    allow_standing_charter: bool = False,
 ) -> StageAuthorization:
     expected_stage = stage.strip().casefold()
     if expected_stage not in {"development", "validation", "holdout"}:
         raise AuthorizationError(f"unsupported protected stage: {stage}")
+    decision_rows = tuple(decisions)
     matches: list[StageAuthorization] = []
     for reference, payload in _eligible_decisions(
-        decisions, authorized_action="open_stage"
+        decision_rows, authorized_action="open_stage"
     ):
         try:
             authorization = StageAuthorization(
@@ -156,6 +197,28 @@ def authorize_stage(
             and authorization.source_commit == source_commit
         ):
             matches.append(authorization)
+    if matches:
+        return _one_exact(matches, f"open_stage:{expected_stage}")
+    if allow_standing_charter and not _has_explicit_action_record(
+        decision_rows, authorized_action="open_stage"
+    ):
+        payload = standing_stage_authorization(
+            experiment_id=experiment_id,
+            experiment_key=experiment_key,
+            stage=expected_stage,
+            manifest_hash=manifest_hash,
+            source_commit=source_commit,
+        )
+        return StageAuthorization(
+            decision_reference=str(payload["decision_reference"]),
+            experiment_id=str(payload["experiment_id"]),
+            experiment_key=str(payload["experiment_key"]),
+            stage=str(payload["stage"]),
+            manifest_hash=str(payload["manifest_hash"]),
+            source_commit=str(payload["source_commit"]),
+            authorized_by=str(payload["authorized_by"]),
+            authorized_at=str(payload["authorized_at"]),
+        )
     return _one_exact(matches, f"open_stage:{expected_stage}")
 
 
