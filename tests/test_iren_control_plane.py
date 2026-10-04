@@ -284,3 +284,34 @@ def test_private_sql_revision_fence_and_bounded_notification_retries():
     assert sql.count("enable row level security") == 2
     assert "attempts < 3" in gateway and "skip locked" in gateway
     assert "owner_uuid" in gateway and "owner=%s" in gateway
+
+
+def test_graen_idle_productivity_is_control_plane_degradation():
+    obs = observation()
+    obs["services"]["GRAEN_EXECUTOR"] = {
+        "ok": True,
+        "activity_active": False,
+        "last_claim_at": "2026-09-30T09:00:00+00:00",
+        "last_completion_at": "2026-09-30T09:00:00+00:00",
+        "runtime_identity": {"runtime_started_at": "2026-09-30T09:00:00+00:00"},
+        "runtime_source_mutation_authorized": False,
+    }
+    state, _ = reduce_state({}, obs, POLICY)
+    assert state["state"] == "DEGRADED"
+    assert state["incidents"]["productivity.GRAEN"]["reason"] == "autonomous_research_not_making_progress"
+
+
+def test_graen_runtime_source_mutation_authority_is_critical():
+    obs = observation()
+    obs["services"]["GRAEN_EXECUTOR"] = {
+        "ok": True,
+        "activity_active": True,
+        "runtime_source_mutation_authorized": True,
+    }
+    state, events = reduce_state({}, obs, POLICY)
+    assert state["state"] == "ATTENTION_REQUIRED"
+    assert any(
+        event["key"] == "safety.GRAEN_SOURCE_MUTATION"
+        and event["transition"] == "OPEN"
+        for event in events
+    )
