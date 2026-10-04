@@ -257,49 +257,52 @@ def _operator_projection(
     }
 
 def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
-    """Private, sanitized research/replay trace for the Command terminal."""
+    """Private research trace plus autonomy/productivity state for Command."""
+    from app.research_agent.autonomy import charter_snapshot
+    from app.research_agent.hypothesis_graph import build_hypothesis_graph
+
     with conn.cursor() as cur:
         cur.execute(
             """
             select
-                problem_id,title,status,metadata->>'research_stage' as research_stage,
-                updated_at,started_at,completed_at
+                problem_id,problem_key,title,statement,domain,status,priority,
+                metadata,created_at,updated_at,started_at,completed_at
             from graen.problems
             order by
               case status when 'RUNNING' then 0 when 'QUEUED' then 1
                           when 'WAITING' then 2 when 'BLOCKED' then 3 else 4 end,
               updated_at desc
-            limit 50
+            limit 200
             """
         )
-        graen_problems = _rows([
-            dict(zip([column.name for column in cur.description], row))
+        problem_columns = [column.name for column in cur.description]
+        raw_problems = [
+            dict(zip(problem_columns, row))
             for row in cur.fetchall()
-        ])
+        ]
 
         cur.execute(
             """
             select
-                run_id,problem_id,status,methodology_version,
-                result_summary->>'state' as result_state,
-                result_summary->>'error' as error,
-                started_at,completed_at,created_at
+                run_id,problem_id,status,methodology_version,input_snapshot,
+                result_summary,model_usage,started_at,completed_at,created_at
             from graen.runs
             order by started_at desc
-            limit 80
+            limit 200
             """
         )
-        graen_runs = _rows([
-            dict(zip([column.name for column in cur.description], row))
+        run_columns = [column.name for column in cur.description]
+        raw_runs = [
+            dict(zip(run_columns, row))
             for row in cur.fetchall()
-        ])
+        ]
 
         cur.execute(
             """
             select status,started_at,completed_at
             from velum.replays
             order by coalesce(completed_at,started_at) desc nulls last
-            limit 40
+            limit 80
             """
         )
         velum_replays = _rows([
@@ -307,21 +310,207 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             for row in cur.fetchall()
         ])
 
-    def serialized(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            {
-                key: value.isoformat() if isinstance(value, datetime) else str(value) if hasattr(value, "hex") else value
-                for key, value in row.items()
-            }
-            for row in rows
-        ]
+        cur.execute(
+            """
+            select singleton,worker_id,runtime_version,source_commit,deployment_id,
+                   heartbeat_at,last_claim_at,last_completion_at,active_problem_id,
+                   queue_depth,last_error,updated_at
+            from graen.runtime_state
+            where singleton
+            """
+        )
+        runtime_row = cur.fetchone()
+        runtime_state = (
+            dict(zip([column.name for column in cur.description], runtime_row))
+            if runtime_row else None
+        )
+
+    graph = build_hypothesis_graph({
+        "problems": raw_problems,
+        "runs": raw_runs,
+        "artifacts": [],
+    })
+
+    def stamp(value: Any) -> str | None:
+        return value.isoformat() if isinstance(value, datetime) else (
+            str(value) if value not in (None, "") else None
+        )
+
+    graen_problems: list[dict[str, Any]] = []
+    for row in raw_problems[:80]:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        promotion = (
+            metadata.get("code_promotion")
+            if isinstance(metadata.get("code_promotion"), dict)
+            else {}
+        )
+        requirement = (
+            promotion.get("engineering_requirement")
+            if isinstance(promotion.get("engineering_requirement"), dict)
+            else None
+        )
+        graen_problems.append({
+            "problem_id": str(row.get("problem_id") or ""),
+            "title": row.get("title"),
+            "status": row.get("status"),
+            "research_stage": metadata.get("research_stage"),
+            "candidate_id": metadata.get("candidate_id") or metadata.get("hypothesis_id"),
+            "hypothesis": metadata.get("hypothesis"),
+            "family": metadata.get("family") or metadata.get("candidate_family"),
+            "mechanism": metadata.get("mechanism"),
+            "campaign_id": metadata.get("campaign_id"),
+            "engineering_requirement_id": (
+                requirement.get("requirement_id") if requirement else None
+            ),
+            "updated_at": stamp(row.get("updated_at")),
+            "started_at": stamp(row.get("started_at")),
+            "completed_at": stamp(row.get("completed_at")),
+        })
+
+    graen_runs: list[dict[str, Any]] = []
+    for row in raw_runs[:120]:
+        summary = (
+            row.get("result_summary")
+            if isinstance(row.get("result_summary"), dict)
+            else {}
+        )
+        graen_runs.append({
+            "run_id": str(row.get("run_id") or ""),
+            "problem_id": str(row.get("problem_id") or ""),
+            "status": row.get("status"),
+            "methodology_version": row.get("methodology_version"),
+            "result_state": summary.get("state") or summary.get("status"),
+            "decision": summary.get("decision"),
+            "next_action": summary.get("next_action"),
+            "candidate_id": summary.get("candidate_id"),
+            "error": summary.get("error"),
+            "started_at": stamp(row.get("started_at")),
+            "completed_at": stamp(row.get("completed_at")),
+            "created_at": stamp(row.get("created_at")),
+        })
+
+    engineering_requirements = [
+        {
+            "hypothesis_id": node.get("hypothesis_id"),
+            "problem_id": node.get("problem_id"),
+            **dict(node["engineering_requirement"]),
+        }
+        for node in graph.get("nodes") or []
+        if isinstance(node, dict)
+        and isinstance(node.get("engineering_requirement"), dict)
+    ]
+
+    active_states = {"ACTIVE", "VALIDATING", "HOLDOUT"}
+    active_nodes = [
+        node for node in graph.get("nodes") or []
+        if isinstance(node, dict) and node.get("state") in active_states
+    ]
+    running_runs = [
+        row for row in raw_runs
+        if str(row.get("status") or "").upper() == "RUNNING"
+    ]
+    blocked_nodes = [
+        node for node in graph.get("nodes") or []
+        if isinstance(node, dict) and node.get("state") == "BLOCKED"
+    ]
+
+    progress_stamps: list[datetime] = []
+    for row in raw_runs:
+        for key in ("completed_at", "started_at", "created_at"):
+            value = row.get(key)
+            if isinstance(value, datetime):
+                progress_stamps.append(
+                    value if value.tzinfo else value.replace(tzinfo=UTC)
+                )
+                break
+    for row in velum_replays:
+        for key in ("completed_at", "started_at"):
+            value = row.get(key)
+            if isinstance(value, datetime):
+                progress_stamps.append(
+                    value if value.tzinfo else value.replace(tzinfo=UTC)
+                )
+                break
+
+    latest_progress = max(progress_stamps).astimezone(UTC) if progress_stamps else None
+    age_seconds = (
+        max(0.0, (datetime.now(UTC) - latest_progress).total_seconds())
+        if latest_progress else None
+    )
+    if engineering_requirements:
+        condition = "ENGINEERING_REQUIRED"
+        productivity = "WAITING_FOR_MANUAL_SOFTWARE"
+    elif active_nodes or running_runs:
+        condition = "RESEARCHING"
+        productivity = (
+            "PRODUCTIVE"
+            if age_seconds is not None and age_seconds <= 1800
+            else "STALLED"
+        )
+    elif blocked_nodes:
+        condition = "BLOCKED"
+        productivity = "BLOCKED"
+    else:
+        condition = "IDLE"
+        productivity = "IDLE"
+
+    runtime_projection = None
+    if runtime_state:
+        runtime_projection = {
+            key: stamp(value) if key.endswith("_at") else (
+                str(value) if key == "active_problem_id" and value is not None else value
+            )
+            for key, value in runtime_state.items()
+        }
 
     return {
-        "graen_problems": serialized(graen_problems),
-        "graen_runs": serialized(graen_runs),
-        "velum_replays": serialized(velum_replays),
+        "operating_summary": {
+            "objective": "Discover a reproducible, cost-aware crypto trading edge.",
+            "condition": condition,
+            "productivity": productivity,
+            "productivity_is_health": True,
+            "active_hypotheses": len(active_nodes),
+            "experiments_running": len(running_runs),
+            "hypotheses_falsified": int((graph.get("state_counts") or {}).get("FALSIFIED", 0)),
+            "validation_candidates": int((graph.get("state_counts") or {}).get("VALIDATING", 0)),
+            "holdout_candidates": int((graph.get("state_counts") or {}).get("HOLDOUT", 0)),
+            "engineering_required": len(engineering_requirements),
+            "blocked_hypotheses": len(blocked_nodes),
+            "latest_progress_at": latest_progress.isoformat() if latest_progress else None,
+            "latest_progress_age_seconds": age_seconds,
+            "next_autonomous_action": (
+                "Continue independent research and wait for manual software implementation."
+                if engineering_requirements
+                else "Continue highest-information research experiment."
+                if condition == "RESEARCHING"
+                else "IREN must derive and queue the next research objective."
+                if condition == "IDLE"
+                else "Resolve research evidence blocker."
+            ),
+            "service_health_alone_is_insufficient": True,
+        },
+        "autonomy_charter": charter_snapshot(),
+        "engineering_requirements": engineering_requirements,
+        "hypothesis_graph": {
+            "schema_version": graph.get("schema_version"),
+            "node_count": graph.get("node_count"),
+            "state_counts": graph.get("state_counts"),
+            "family_counts": graph.get("family_counts"),
+            "failure_reason_counts": graph.get("failure_reason_counts"),
+            "graph_hash": graph.get("graph_hash"),
+            "recent_nodes": (graph.get("nodes") or [])[:30],
+        },
+        "graen_problems": graen_problems,
+        "graen_runs": graen_runs,
+        "velum_replays": [
+            {
+                key: stamp(value) if key in {"started_at", "completed_at"} else value
+                for key, value in row.items()
+            }
+            for row in velum_replays
+        ],
+        "graen_runtime": runtime_projection,
     }
-
 
 def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     """Compact private BTC canary state for the fast Command observation poll."""
