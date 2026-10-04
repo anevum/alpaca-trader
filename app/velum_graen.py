@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from graen.crypto.autonomous_campaign import candidate_from_dict
@@ -39,10 +39,31 @@ from graen.crypto.btc_hypotheses_v13 import (
     evaluate_candidate as evaluate_v13_candidate,
     spec_from_dict as v13_spec_from_dict,
 )
+from graen.crypto.btc_4h_consensus_v14_r2h import (
+    FAMILY as V14_R2H_FAMILY,
+    METHODOLOGY_VERSION as V14_R2H_METHODOLOGY_VERSION,
+    candidate_spec as v14_r2h_candidate_spec,
+    evaluate_btc_4h_consensus_replay as evaluate_v14_r2h_replay,
+    spec_from_dict as v14_r2h_spec_from_dict,
+)
 
 
-METHODOLOGY_VERSION = "velum-graen-candidate-replay-v5"
+METHODOLOGY_VERSION = "velum-graen-candidate-replay-v6"
 GRAEN_CONTEXT_UNIVERSE = CONTEXT_UNIVERSE
+
+
+def replay_fetch_contract(
+    candidate_methodology: str,
+    *,
+    start: datetime,
+    end: datetime,
+) -> tuple[tuple[str, ...], datetime, datetime]:
+    if candidate_methodology == V14_R2H_METHODOLOGY_VERSION:
+        # R2H needs the frozen 250-day SMA and 180-day momentum warmup before
+        # the bounded replay window. This warmup is input-only and is never
+        # scored as replay evidence.
+        return ("BTC/USD",), start - timedelta(days=260), end
+    return tuple(GRAEN_CONTEXT_UNIVERSE), start - timedelta(hours=8), end + timedelta(hours=3)
 
 
 def engineering_gate(
@@ -90,6 +111,37 @@ def replay_candidate(
     end: datetime,
     seed: int = 91000,
 ) -> dict[str, Any]:
+    if candidate_methodology == V14_R2H_METHODOLOGY_VERSION:
+        spec = v14_r2h_spec_from_dict(candidate_spec)
+        canonical_spec = v14_r2h_candidate_spec()
+        if spec.to_dict() != canonical_spec.to_dict():
+            raise ValueError("r2h_velum_candidate_spec_not_frozen")
+        replay = evaluate_v14_r2h_replay(
+            bars_by_symbol,
+            start=start,
+            end=end,
+        )
+        return {
+            "methodology_version": METHODOLOGY_VERSION,
+            "candidate_methodology": candidate_methodology,
+            "candidate_id": spec.candidate_id,
+            "candidate_family": V14_R2H_FAMILY,
+            "candidate_spec": spec.to_dict(),
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "scenarios": replay["scenarios"],
+            "one_bar_execution_delay": replay["one_bar_execution_delay"],
+            "engineering_gate": replay["engineering_gate"],
+            "evidence_role": "POST_TRANSFER_ENGINEERING_REPLAY_ONLY",
+            "independent_confirmatory_evidence": False,
+            "statistical_promotion_authority": False,
+            "research_only": True,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "risk_or_sizing_authority": False,
+            "live_configuration_changed": False,
+            "promotion_authorized": False,
+        }
     if candidate_methodology == V13_METHODOLOGY_VERSION:
         spec = v13_spec_from_dict(candidate_spec)
         scenarios = {

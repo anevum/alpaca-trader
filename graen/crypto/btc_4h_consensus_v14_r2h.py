@@ -405,3 +405,114 @@ def evaluate_btc_4h_consensus_transfer(
         "crypto_execution_enabled": False,
         "live_execution_authorized": False,
     }
+
+
+VELUM_MIN_REPLAY_BARS = 720
+VELUM_MAX_REPLAY_DRAWDOWN = -0.35
+
+
+def evaluate_btc_4h_consensus_replay(
+    bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """Engineering replay for the frozen R2H candidate.
+
+    This is deliberately not a new validation or holdout. VELUM replays the
+    already-frozen candidate over a bounded recent window with enough prior
+    history to compute the 250-day SMA and 180-day momentum signal.
+    """
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("v14_r2h_velum_range_must_be_timezone_aware")
+    start = start.astimezone(UTC)
+    end = end.astimezone(UTC)
+    if not start < end:
+        raise ValueError("v14_r2h_velum_invalid_range")
+
+    bars = normalize_bars(bars_by_symbol.get("BTC/USD", []))
+    minimum_history = max(MOMENTUM_LOOKBACK_BARS, SMA_WINDOW_BARS)
+    if len(bars) < minimum_history + VELUM_MIN_REPLAY_BARS:
+        raise ValueError(f"v14_r2h_velum_corpus_too_small:{len(bars)}")
+
+    eligible_before_start = sum(
+        1
+        for row in bars
+        if isinstance(row.get("timestamp"), datetime)
+        and row["timestamp"] < start
+    )
+    if eligible_before_start < minimum_history + 1:
+        raise ValueError(
+            f"v14_r2h_velum_warmup_incomplete:{eligible_before_start}"
+        )
+
+    scenarios = {
+        name: _simulate(
+            bars,
+            momentum_bars=MOMENTUM_LOOKBACK_BARS,
+            sma_bars=SMA_WINDOW_BARS,
+            cost_per_turnover=cost,
+            start=start,
+            end=end,
+        )
+        for name, cost in COST_SCENARIOS.items()
+    }
+    delayed = _simulate(
+        bars,
+        momentum_bars=MOMENTUM_LOOKBACK_BARS,
+        sma_bars=SMA_WINDOW_BARS,
+        cost_per_turnover=COST_SCENARIOS["taker_stress_30bp"],
+        start=start,
+        end=end,
+        signal_delay_bars=1,
+    )
+    decisive = scenarios["taker_stress_30bp"]
+    severe = scenarios["severe_stress_50bp"]
+
+    reasons: list[str] = []
+    if int(decisive["bar_count"]) < VELUM_MIN_REPLAY_BARS:
+        reasons.append("replay_bar_count_below_720")
+    if float(decisive["total_return"]) <= 0.0:
+        reasons.append("replay_stressed_return_nonpositive")
+    if float(decisive["sharpe"]) <= 0.0:
+        reasons.append("replay_stressed_sharpe_nonpositive")
+    if float(decisive["max_drawdown"]) <= VELUM_MAX_REPLAY_DRAWDOWN:
+        reasons.append("replay_drawdown_below_minus_35pct")
+    if float(severe["total_return"]) <= 0.0:
+        reasons.append("replay_severe_stress_return_nonpositive")
+    if float(delayed["total_return"]) <= 0.0:
+        reasons.append("replay_one_bar_delay_return_nonpositive")
+
+    return {
+        "schema_version": "graen.v14-r2h.velum-replay.v1",
+        "methodology_version": METHODOLOGY_VERSION,
+        "campaign_id": CAMPAIGN_ID,
+        "candidate_id": candidate_spec().candidate_id,
+        "candidate_family": FAMILY,
+        "candidate_spec": candidate_spec().to_dict(),
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "scenarios": scenarios,
+        "one_bar_execution_delay": delayed,
+        "engineering_gate": {
+            "passed": not reasons,
+            "reasons": reasons,
+            "requirements": {
+                "min_replay_bars": VELUM_MIN_REPLAY_BARS,
+                "stressed_30bp_total_return_gt": 0.0,
+                "stressed_30bp_sharpe_gt": 0.0,
+                "max_drawdown_gt": VELUM_MAX_REPLAY_DRAWDOWN,
+                "severe_50bp_total_return_gt": 0.0,
+                "one_bar_delay_total_return_gt": 0.0,
+            },
+        },
+        "evidence_role": "POST_TRANSFER_ENGINEERING_REPLAY_ONLY",
+        "independent_confirmatory_evidence": False,
+        "statistical_promotion_authority": False,
+        "research_only": True,
+        "execution_authority": False,
+        "broker_orders_possible": False,
+        "risk_or_sizing_authority": False,
+        "live_configuration_changed": False,
+        "promotion_authorized": False,
+    }

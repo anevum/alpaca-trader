@@ -76,6 +76,12 @@ def test_btc_v14_r2h_faststart_is_native_claimable_research_only_stage():
     assert _is_native_research_stage(stage) is True
 
 
+def test_btc_v14_r2h_velum_is_native_claimable_research_only_stage():
+    stage = "CRYPTO_BTC_4H_CONSENSUS_V14_R2H_VELUM_REPLAY"
+    assert stage in RESEARCH_STAGES
+    assert _is_native_research_stage(stage) is True
+
+
 def test_crypto_promotion_artifact_requires_exact_execution_contract():
     contract = {
         "strategy_family": "replication-test",
