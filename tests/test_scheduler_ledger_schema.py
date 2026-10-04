@@ -43,7 +43,16 @@ def test_registry_contains_one_owner_for_required_workflows():
     }
     assert required.issubset(ids)
     nostra = [row for row in registry["workflows"] if row["subsystem"] == "NOSTRA"]
-    assert nostra and all(row["enabled"] is False for row in nostra)
+    assert nostra == []
+    independent = {
+        row["subsystem"]: row
+        for row in registry.get("independent_runtimes", [])
+    }
+    assert independent["NOSTRA"]["mode"] == "independent_autorun"
+    assert independent["NOSTRA"]["scheduler_owned"] is False
+    assert independent["NOSTRA"]["health_owner"] == "IREN"
+    assert independent["NOSTRA"]["research_only"] is True
+    assert independent["NOSTRA"]["execution_authority"] is False
 
 
 def test_scheduler_registry_is_packaged_by_production_image():
