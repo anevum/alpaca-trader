@@ -255,11 +255,79 @@ def _operator_projection(
         },
     }
 
+def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
+    """Private, sanitized research/replay trace for the Command terminal."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                problem_id,title,status,metadata->>'research_stage' as research_stage,
+                updated_at,started_at,completed_at
+            from graen.problems
+            order by
+              case status when 'RUNNING' then 0 when 'QUEUED' then 1
+                          when 'WAITING' then 2 when 'BLOCKED' then 3 else 4 end,
+              updated_at desc
+            limit 50
+            """
+        )
+        graen_problems = _rows([
+            dict(zip([column.name for column in cur.description], row))
+            for row in cur.fetchall()
+        ])
+
+        cur.execute(
+            """
+            select
+                run_id,problem_id,status,methodology_version,
+                result_summary->>'state' as result_state,
+                result_summary->>'error' as error,
+                started_at,completed_at,created_at
+            from graen.runs
+            order by started_at desc
+            limit 80
+            """
+        )
+        graen_runs = _rows([
+            dict(zip([column.name for column in cur.description], row))
+            for row in cur.fetchall()
+        ])
+
+        cur.execute(
+            """
+            select status,started_at,completed_at
+            from velum.replays
+            order by coalesce(completed_at,started_at) desc nulls last
+            limit 40
+            """
+        )
+        velum_replays = _rows([
+            dict(zip([column.name for column in cur.description], row))
+            for row in cur.fetchall()
+        ])
+
+    def serialized(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                key: value.isoformat() if isinstance(value, datetime) else str(value) if hasattr(value, "hex") else value
+                for key, value in row.items()
+            }
+            for row in rows
+        ]
+
+    return {
+        "graen_problems": serialized(graen_problems),
+        "graen_runs": serialized(graen_runs),
+        "velum_replays": serialized(velum_replays),
+    }
+
+
 def read_command_snapshot(database_url: str) -> dict[str, Any]:
     with psycopg.connect(database_url, connect_timeout=5) as conn:
         return {
             "control": iren_read(conn),
             "work": snapshot(conn),
+            "research": _research_activity(conn),
         }
 
 
@@ -298,6 +366,11 @@ def project_command(
     work = (
         dict(snapshot_value.get("work"))
         if isinstance(snapshot_value.get("work"), dict)
+        else {}
+    )
+    research = (
+        dict(snapshot_value.get("research"))
+        if isinstance(snapshot_value.get("research"), dict)
         else {}
     )
     raw_state = (
@@ -380,6 +453,7 @@ def project_command(
         "topology": topology,
         "incidents": incidents,
         "scheduler": state.get("scheduler"),
+        "research": research,
         "action_required": stale or current_state != "HEALTHY" or bool(incidents),
         "configuration_identity": baseline.get("fingerprint"),
         "operator": operator,
