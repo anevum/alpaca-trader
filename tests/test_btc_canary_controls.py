@@ -161,6 +161,60 @@ class PaperBroker:
         return None
 
 
+class DurableLedger:
+    def __init__(self, *, enabled=True):
+        self.enabled = enabled
+        self.entry_intents = []
+        self.broker_orders = []
+        self.cycles = []
+        self.position_metrics = []
+
+    async def persist_entry_intent(self, **kwargs):
+        self.entry_intents.append(kwargs)
+        return {
+            "signal_id": "signal-1",
+            "intent_id": "intent-1",
+            "position_id": "position-1",
+            "client_order_id": kwargs["client_order_id"],
+        }
+
+    def record_broker_order(self, order, **kwargs):
+        self.broker_orders.append((order, kwargs))
+
+    def record_decision_cycle(self, **kwargs):
+        self.cycles.append(kwargs)
+
+    def record_position_metrics(self, **kwargs):
+        self.position_metrics.append(kwargs)
+
+
+class ProtectedPositionBroker(PaperBroker):
+    async def positions(self):
+        return [
+            {
+                "asset_class": "crypto",
+                "symbol": "BTC/USD",
+                "qty": "0.00001",
+                "market_value": "1.00",
+                "avg_entry_price": "90.00",
+                "current_price": "100.00",
+            }
+        ]
+
+    async def open_orders(self):
+        return [
+            {
+                "asset_class": "crypto",
+                "symbol": "BTC/USD",
+                "id": "paper-canary-stop-1",
+                "client_order_id": "anevum-crypto-btc-usd-hardstop-existing",
+                "side": "sell",
+                "status": "new",
+                "qty": "0.00001",
+            }
+        ]
+
+
 class CanaryMarketData:
     async def historical_bars_many(self, symbols, *, start, end, timeframe="1Min"):
         assert timeframe == "4Hour"
@@ -188,9 +242,10 @@ class CanaryMarketData:
         }
 
 
-def test_canary_engine_submits_only_paper_btc_order():
+def test_canary_engine_submits_only_paper_btc_order_after_durable_intent():
     settings = _settings()
     broker = PaperBroker()
+    ledger = DurableLedger()
     state = RuntimeState()
     state.begin_crypto_cycle("btc-canary-test")
     engine = BtcCanaryExecutionEngine(
@@ -198,16 +253,59 @@ def test_canary_engine_submits_only_paper_btc_order():
         broker,
         CanaryMarketData(),
         state,
-        ledger=None,
+        ledger=ledger,
     )
 
     result = asyncio.run(engine.run_once())
 
     assert result["action"] == "submitted"
     assert result["symbol"] == "BTC/USD"
+    assert len(ledger.entry_intents) == 1
     assert len(broker.buy_calls) == 1
     assert broker.buy_calls[0][0] == "BTC/USD"
     assert state.crypto_last_execution_context["execution_class"] == "EXPERIMENTAL_PAPER"
+
+
+def test_canary_blocks_new_entry_when_durable_persistence_is_not_configured():
+    settings = _settings()
+    broker = PaperBroker()
+    state = RuntimeState()
+    state.begin_crypto_cycle("btc-canary-persistence-block-test")
+    engine = BtcCanaryExecutionEngine(
+        settings,
+        broker,
+        CanaryMarketData(),
+        state,
+        ledger=DurableLedger(enabled=False),
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "blocked"
+    assert "persistence is not configured" in result["reason"]
+    assert broker.buy_calls == []
+
+
+def test_canary_protects_existing_position_even_when_entry_persistence_is_disabled():
+    settings = _settings()
+    broker = ProtectedPositionBroker()
+    state = RuntimeState()
+    state.begin_crypto_cycle("btc-canary-existing-position-test")
+    engine = BtcCanaryExecutionEngine(
+        settings,
+        broker,
+        CanaryMarketData(),
+        state,
+        ledger=DurableLedger(enabled=False),
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "hold"
+    assert result["symbol"] == "BTC/USD"
+    assert "position protected" in result["reason"]
+    assert result["protection"]["action"] == "protected"
+    assert broker.buy_calls == []
 
 
 def test_canary_engine_hard_blocks_live_mode_before_order_submission():
@@ -252,7 +350,7 @@ def test_canary_opens_circuit_when_paper_fill_slippage_exceeds_threshold():
         broker,
         CanaryMarketData(),
         state,
-        ledger=None,
+        ledger=DurableLedger(),
     )
 
     result = asyncio.run(engine.run_once())
