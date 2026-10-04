@@ -20,6 +20,7 @@ from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .graen.shadow_host import CandidateShadowHost, create_shadow_router
+from .graen.paper_host import GraenPaperCanaryHost, create_paper_router
 from .crypto_execution import CryptoExecutionEngine
 from .crypto_promotion import fetch_crypto_promotion_status
 from .crypto_layer import (
@@ -76,6 +77,11 @@ else:
     )
 event_sink = TradingEventSink(settings)
 candidate_shadow_host = CandidateShadowHost(settings, event_sink)
+graen_paper_host = GraenPaperCanaryHost(
+    settings,
+    client,
+    event_sink,
+)
 universe = DynamicUniverse(settings, client, market_data, runtime_state)
 engine = ExecutionEngine(
     settings,
@@ -863,6 +869,7 @@ async def lifespan(app: FastAPI):
     )
     await event_sink.start()
     await candidate_shadow_host.start()
+    await graen_paper_host.start()
     await slack_notifier.start()
 
     runtime_provenance = capture_runtime_provenance()
@@ -966,6 +973,7 @@ async def lifespan(app: FastAPI):
     await crypto_task
     await slack_market_task
     await research_reports.stop()
+    await graen_paper_host.stop()
     await candidate_shadow_host.stop()
     event_sink.emit(
         event_type="runtime_stop",
@@ -982,6 +990,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="RHEN", version=RHEN_VERSION, lifespan=lifespan)
 app.include_router(create_shadow_router(candidate_shadow_host))
+app.include_router(create_paper_router(graen_paper_host))
 
 
 @app.get("/health")
@@ -1021,6 +1030,18 @@ async def health():
         "last_error": runtime_state.last_error,
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
+        "graen_paper": {
+            "running": graen_paper_host.running,
+            "enabled": graen_paper_host.enabled,
+            "paper_execution_authorized": (
+                graen_paper_host.paper_execution_authorized
+            ),
+            "live_execution_authorized": False,
+            "active": graen_paper_host.activation is not None,
+            "candidate_id": graen_paper_host.status().get("candidate_id"),
+            "checkpoint_status": graen_paper_host.checkpoint().get("status"),
+            "last_error": graen_paper_host.last_error,
+        },
         "forward_shadow": {
             "running": candidate_shadow_host.running,
             "auth_configured": candidate_shadow_host.auth_configured,
