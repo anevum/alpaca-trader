@@ -49,6 +49,18 @@ from graen.crypto.btc_slow_momentum_v14_r2f import (
     UNIVERSE as V14_R2F_UNIVERSE,
     spec_from_dict as v14_r2f_spec_from_dict,
 )
+from app.research_agent.strategy_runner import (
+    RUNNER_VERSION as STRATEGY_RUNNER_VERSION,
+)
+from graen.crypto.research_v7 import (
+    CONTEXT_UNIVERSE as STRATEGY_RUNNER_UNIVERSE,
+    CandidateSpec as StrategyCandidateSpec,
+    _fills as strategy_fills,
+    _open as strategy_open,
+    _opportunities_at as strategy_opportunities_at,
+    build_series as build_strategy_series,
+)
+
 from graen.crypto.btc_consensus_trend_v14_r2g import (
     COST_SCENARIOS as V14_R2G_COST_SCENARIOS,
     METHODOLOGY_VERSION as V14_R2G_METHODOLOGY_VERSION,
@@ -69,6 +81,7 @@ SUPPORTED_CANDIDATE_METHODOLOGIES = {
     V13_METHODOLOGY_VERSION,
     V14_R2F_METHODOLOGY_VERSION,
     V14_R2G_METHODOLOGY_VERSION,
+    STRATEGY_RUNNER_VERSION,
 }
 MIN_READY_TRADES = 30
 MIN_READY_DAYS = 20
@@ -342,6 +355,8 @@ class CandidateForwardShadow:
             return tuple(V14_R2F_UNIVERSE)
         if methodology == V14_R2G_METHODOLOGY_VERSION:
             return tuple(V14_R2G_UNIVERSE)
+        if methodology == STRATEGY_RUNNER_VERSION:
+            return tuple(STRATEGY_RUNNER_UNIVERSE)
         if methodology == V13_METHODOLOGY_VERSION:
             return tuple(V13_UNIVERSE)
         if methodology == V12_METHODOLOGY_VERSION:
@@ -420,6 +435,12 @@ class CandidateForwardShadow:
             v14_r2f_spec_from_dict(candidate_spec)
         elif methodology == V14_R2G_METHODOLOGY_VERSION:
             v14_r2g_spec_from_dict(candidate_spec)
+        elif methodology == STRATEGY_RUNNER_VERSION:
+            fields = dict(candidate_spec)
+            fields["targets"] = tuple(
+                str(value) for value in fields.get("targets") or ()
+            )
+            StrategyCandidateSpec(**fields)
 
         activation_id = str(activation.get("activation_id") or "")
         if not activation_id:
@@ -860,6 +881,12 @@ class CandidateForwardShadow:
             return v14_r2f_spec_from_dict(self._candidate_spec())
         if methodology == V14_R2G_METHODOLOGY_VERSION:
             return v14_r2g_spec_from_dict(self._candidate_spec())
+        if methodology == STRATEGY_RUNNER_VERSION:
+            fields = dict(self._candidate_spec())
+            fields["targets"] = tuple(
+                str(value) for value in fields.get("targets") or ()
+            )
+            return StrategyCandidateSpec(**fields)
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
@@ -879,6 +906,15 @@ class CandidateForwardShadow:
             (max(slow_minutes, fast_minutes) + 59) // 60 + 2,
             26,
         )
+        if self._candidate_methodology() == STRATEGY_RUNNER_VERSION:
+            return (
+                spec,
+                build_strategy_series(
+                    bars,
+                    start=latest_end - timedelta(hours=warmup_hours),
+                    end=latest_end + timedelta(minutes=spec.hold_minutes + 10),
+                ),
+            )
         return (
             spec,
             build_v9_series(
@@ -905,6 +941,17 @@ class CandidateForwardShadow:
             return v12_opportunity_at(series, spec, symbol, stamp)
         if methodology in {V10_METHODOLOGY_VERSION, V11_METHODOLOGY_VERSION}:
             return v10_opportunity_at(series, spec, symbol, stamp)
+        if methodology == STRATEGY_RUNNER_VERSION:
+            return next(
+                (
+                    opportunity
+                    for opportunity in strategy_opportunities_at(
+                        series, spec, stamp
+                    )
+                    if opportunity.symbol == symbol
+                ),
+                None,
+            )
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
@@ -1226,6 +1273,26 @@ class CandidateForwardShadow:
         return events
 
 
+    def _reference_open(
+        self,
+        series: Mapping[str, Mapping[datetime, Mapping[str, Any]]],
+        symbol: str,
+        end: datetime,
+    ) -> float | None:
+        if self._candidate_methodology() == STRATEGY_RUNNER_VERSION:
+            return strategy_open(series, symbol, end)
+        return v9_open(series, symbol, end)
+
+    def _stressed_fills(
+        self,
+        symbol: str,
+        entry: float,
+        exit: float,
+    ) -> tuple[float, float]:
+        if self._candidate_methodology() == STRATEGY_RUNNER_VERSION:
+            return strategy_fills(symbol, entry, exit, "high")
+        return v9_fills(symbol, entry, exit, "high")
+
     async def cycle(
         self,
         *,
@@ -1275,18 +1342,17 @@ class CandidateForwardShadow:
         for symbol, position in list(self.positions.items()):
             if latest_end < position.exit_bar_end:
                 continue
-            exit_reference = v9_open(
+            exit_reference = self._reference_open(
                 series,
                 symbol,
                 position.exit_bar_end,
             )
             if exit_reference is None:
                 continue
-            entry_fill, exit_fill = v9_fills(
+            entry_fill, exit_fill = self._stressed_fills(
                 symbol,
                 position.entry_reference,
                 exit_reference,
-                "high",
             )
             net_return = exit_fill / entry_fill - 1.0
             closed = {
@@ -1319,7 +1385,7 @@ class CandidateForwardShadow:
         for symbol, pending in list(self.pending.items()):
             if latest_end < pending.entry_bar_end:
                 continue
-            entry_reference = v9_open(
+            entry_reference = self._reference_open(
                 series,
                 symbol,
                 pending.entry_bar_end,
@@ -1382,9 +1448,12 @@ class CandidateForwardShadow:
                 signal=dict(opportunity.signal),
             )
             self.pending[symbol] = pending
+            cooldown_minutes = int(
+                getattr(spec, "cooldown_minutes", spec.hold_minutes)
+            )
             self.suppressed_until[symbol] = (
                 opportunity.opportunity_at
-                + timedelta(minutes=spec.cooldown_minutes)
+                + timedelta(minutes=cooldown_minutes)
             )
             self.opportunity_count += 1
             events.append({
