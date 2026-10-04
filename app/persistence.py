@@ -1688,6 +1688,32 @@ class TradingEventSink:
             self.last_error = None
             return result
 
+    async def fetch_btc_canary_report(self) -> dict[str, Any]:
+        """Read the canonical Foundation evidence summary for this paper canary."""
+        if not self.enabled:
+            raise RuntimeError("canonical trading persistence is not configured")
+        run_id = str(self.settings.trading_run_id or "").strip()
+        if not run_id.startswith("BTC-CANARY-"):
+            raise RuntimeError("BTC canary run identity is not configured")
+        base = self.settings.trading_ingest_url.rsplit("/", 1)[0]
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.get(
+                f"{base}/trading-report-read",
+                headers={
+                    "x-anevum-ingest-token": self.settings.trading_ingest_token,
+                },
+                params={"canary_run_id": run_id},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("ok") is not True
+            or not isinstance(payload.get("evidence"), dict)
+        ):
+            raise RuntimeError("canonical BTC canary report is unavailable")
+        return payload
+
     async def resolve_intent_not_found(
         self,
         *,
