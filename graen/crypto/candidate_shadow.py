@@ -633,8 +633,13 @@ class CandidateForwardShadow:
         review_limit_reached = (
             len(marks) >= R2F_MAX_REVIEW_DAILY_MARKS
         )
+        ready_status = (
+            "READY_FOR_PAPER"
+            if self._candidate_methodology() == STRATEGY_RUNNER_VERSION
+            else "READY_FOR_HUMAN_REVIEW"
+        )
         status = (
-            "READY_FOR_HUMAN_REVIEW"
+            ready_status
             if ready
             else "SHADOW_REJECTED"
             if review_limit_reached
