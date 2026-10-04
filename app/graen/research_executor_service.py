@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.24.0"
+RUNTIME_VERSION = "graen-research-executor-v1.25.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -5365,15 +5365,12 @@ class GraenResearchExecutor:
             ]
             if not matching:
                 continue
-            if not await self._velum_health_ready():
-                return {
-                    "recovered": False,
-                    "problem_id": problem_id,
-                    "state": "WAITING_FOR_VELUM_HEALTH",
-                    "next_research_stage": V14_R2H_VELUM_STAGE,
-                    "execution_authority": False,
-                    "broker_orders_possible": False,
-                }
+            # This recovery is already bounded to exactly one retry by
+            # v14_r2h_velum_transport_recovery_version. Do not couple the
+            # retry to VELUM's global periodic-replay health: the original
+            # failure was transport availability during deployment. If the
+            # transport is still unavailable, this exact retry blocks again
+            # and no further automatic retry is permitted.
             blocked_run = max(
                 matching,
                 key=lambda row: str(row.get("started_at") or ""),
