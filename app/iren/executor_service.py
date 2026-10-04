@@ -118,7 +118,9 @@ class ExecutorRuntime:
 
     @property
     def model_execution_authorized(self) -> bool:
-        return _enabled("IREN_MODEL_EXECUTION_AUTHORIZED", False)
+        # Software mutation is deliberately outside autonomous runtime authority.
+        # ChatGPT/Codex work is performed manually by the operator.
+        return False
 
     @property
     def token(self) -> str:
@@ -187,15 +189,7 @@ class ExecutorRuntime:
 
     @property
     def software_backend_configured(self) -> bool:
-        return (
-            self.model_execution_authorized
-            and self.openai_key.startswith("sk-")
-            and len(self.github_token) >= 20
-            and self.github_repo == "anevum/alpaca-trader"
-            and self.daily_budget_usd > 0
-            and self.job_budget_usd > 0
-            and self.job_budget_usd <= self.daily_budget_usd
-        )
+        return False
 
     def estimate_cost(self, usage: ModelUsage) -> float:
         return (
@@ -224,11 +218,9 @@ class ExecutorRuntime:
             "service_enabled": self.service_enabled,
             "model_execution_authorized": self.model_execution_authorized,
             "model_invoked": False,
-            "spending_authority": bool(
-                self.model_execution_authorized
-                and self.daily_budget_usd > 0
-                and self.job_budget_usd > 0
-            ),
+            "spending_authority": False,
+            "runtime_source_mutation_authorized": False,
+            "manual_software_handoff_required": True,
             "supported_job_types": sorted(self.supported_job_types),
             "graen_configured": self.graen_configured,
             "software_backend_configured": self.software_backend_configured,
@@ -249,11 +241,7 @@ class ExecutorRuntime:
                 "allowed_write_prefixes": list(self.software_write_prefixes),
             },
             "execution_backends": {
-                "software_build": (
-                    "openai_github_draft_pr"
-                    if self.software_backend_configured
-                    else "configuration_required"
-                ),
+                "software_build": "manual_chatgpt_codex_handoff",
                 "graen_research_problem": (
                     "graen_problem_api" if self.graen_configured else "not_configured"
                 ),
@@ -289,44 +277,15 @@ class ExecutorRuntime:
                 "model_invoked": False,
             }
         if job_type == "SOFTWARE_BUILD":
-            if not self.model_execution_authorized:
-                return {
-                    "accepted": True,
-                    "job_id": job.job_id,
-                    "status": "NEEDS_APPROVAL",
-                    "reason": "model_execution_not_authorized",
-                    "required_authority": "model_api_spending_and_software_execution",
-                    "model_invoked": False,
-                }
-            if not self.software_backend_configured:
-                missing = []
-                if not self.openai_key.startswith("sk-"):
-                    missing.append("OPENAI_API_KEY")
-                if len(self.github_token) < 20:
-                    missing.append("IREN_GITHUB_TOKEN")
-                if self.daily_budget_usd <= 0:
-                    missing.append("IREN_MODEL_DAILY_BUDGET_USD")
-                if self.job_budget_usd <= 0:
-                    missing.append("IREN_MODEL_JOB_BUDGET_USD")
-                if (
-                    self.daily_budget_usd > 0
-                    and self.job_budget_usd > self.daily_budget_usd
-                ):
-                    missing.append("IREN_MODEL_JOB_BUDGET_USD<=IREN_MODEL_DAILY_BUDGET_USD")
-                return {
-                    "accepted": True,
-                    "job_id": job.job_id,
-                    "status": "WAITING",
-                    "reason": "software_worker_configuration_required",
-                    "missing_configuration": missing,
-                    "model_invoked": False,
-                }
             return {
                 "accepted": True,
                 "job_id": job.job_id,
-                "status": "RUNNING",
-                "reason": "software_worker_ready",
+                "status": "NEEDS_APPROVAL",
+                "reason": "manual_chatgpt_codex_handoff_required",
+                "required_authority": "operator_software_engineering",
+                "handoff_ready": True,
                 "model_invoked": False,
+                "runtime_source_mutation_authorized": False,
             }
         if job_type == "GRAEN_RESEARCH_PROBLEM":
             return {
@@ -726,8 +685,8 @@ async def accept_job(
     _require_token(x_anevum_scheduler_token)
     accepted = runtime.accept(job)
     job_type = job.job_type.strip().upper()
-    if job_type == "SOFTWARE_BUILD" and accepted.get("status") == "RUNNING":
-        return await runtime.run_software_build(job)
+    if job_type == "SOFTWARE_BUILD":
+        return accepted
     if job_type == "GRAEN_RESEARCH_PROBLEM" and accepted.get("accepted"):
         return await runtime.submit_graen(job)
     return accepted
