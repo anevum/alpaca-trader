@@ -1,0 +1,7 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.crypto-validation"
+
+[deploy]
+startCommand = "python -m scripts.staging_check"
+restartPolicyType = "NEVER"
