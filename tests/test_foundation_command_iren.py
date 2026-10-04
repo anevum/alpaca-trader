@@ -139,3 +139,45 @@ def test_operator_projection_routes_evidence_incident_to_foundation():
     guidance = projected["operator"]["guidance"]
     assert guidance[0]["target"] == "Foundation evidence"
     assert "spool" in guidance[0]["action"]
+
+
+
+def test_command_projection_preserves_durable_job_events():
+    snapshot = {
+        "control": {
+            "revision": 11,
+            "state": {
+                "state": "HEALTHY",
+                "observed_at": "2026-10-04T15:40:00+00:00",
+                "topology": {"services": [], "dependencies": {}},
+                "incidents": {},
+                "configuration_baseline": {"fingerprint": "sha256:test"},
+            },
+        },
+        "work": {
+            "objectives": [],
+            "jobs": [],
+            "commands": [],
+            "job_events": [{
+                "event_id": 41,
+                "job_id": "00000000-0000-0000-0000-000000000041",
+                "event_type": "RUNNING",
+                "event": {"stage": "R2H"},
+                "created_at": "2026-10-04T15:39:45+00:00",
+                "owner_system": "VELUM",
+                "objective_key": "btc-r2h",
+                "title": "Replay frozen R2H candidate",
+                "job_type": "REPLAY",
+            }],
+        },
+    }
+
+    projected = project_command(
+        snapshot,
+        now=datetime(2026, 10, 4, 15, 40, 30, tzinfo=timezone.utc),
+    )
+
+    events = projected["work"]["job_events"]
+    assert events[0]["event_type"] == "RUNNING"
+    assert events[0]["owner_system"] == "VELUM"
+    assert events[0]["event"]["stage"] == "R2H"
