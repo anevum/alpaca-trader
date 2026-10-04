@@ -472,3 +472,95 @@ def test_r2h_transport_recovery_version_three_is_terminal():
         assert runtime.gateway.queued == []
 
     asyncio.run(scenario())
+
+
+def _r2h_ipv6_blocked_snapshot(*, version: int = 3):
+    return {
+        "problems": [{
+            "problem_id": PROBLEM_ID,
+            "status": "BLOCKED",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V14_R2H_VELUM_STAGE,
+                "v14_r2h_candidate_spec": service.v14_r2h_candidate_spec().to_dict(),
+                "v14_r2h_velum_transport_recovery_version": version,
+            },
+        }],
+        "runs": [{
+            "run_id": "blocked-run-ipv6",
+            "problem_id": PROBLEM_ID,
+            "status": "BLOCKED",
+            "started_at": "2026-10-04T16:27:45+00:00",
+            "result_summary": {
+                "state": "RESEARCH_EXECUTION_BLOCKED",
+                "error": (
+                    "HTTPStatusError: Server error '500 Internal Server Error' "
+                    "for url 'http://rhen-velum.railway.internal:8080/"
+                    "v1/graen/candidate-replay'"
+                ),
+            },
+        }],
+    }
+
+
+def test_r2h_ipv6_repair_requires_private_health_before_version_four():
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+        runtime.velum_base_url = "http://rhen-velum.railway.internal:8080"
+        runtime._velum_health_ready = AsyncMock(return_value=True)
+
+        result = await runtime._recover_blocked_r2h_velum_transport(
+            _r2h_ipv6_blocked_snapshot()
+        )
+
+        assert result["recovered"] is True
+        assert result["retry_count"] == 4
+        runtime._velum_health_ready.assert_awaited_once()
+        metadata = runtime.gateway.queued[-1]["metadata"]
+        assert metadata["v14_r2h_velum_transport_recovery_version"] == 4
+        assert runtime.gateway.artifacts[-1]["content"]["repair"] == (
+            "retry_after_velum_ipv6_bind_repair"
+        )
+        assert runtime.gateway.artifacts[-1]["content"]["private_health_verified"] is True
+
+    asyncio.run(scenario())
+
+
+def test_r2h_ipv6_repair_does_not_consume_retry_when_private_health_fails():
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+        runtime.velum_base_url = "http://rhen-velum.railway.internal:8080"
+        runtime._velum_health_ready = AsyncMock(return_value=False)
+
+        result = await runtime._recover_blocked_r2h_velum_transport(
+            _r2h_ipv6_blocked_snapshot()
+        )
+
+        assert result["recovered"] is False
+        assert result["state"] == "WAITING_FOR_VELUM_PRIVATE_HEALTH"
+        assert result["retry_count"] == 3
+        assert runtime.gateway.queued == []
+        assert runtime.gateway.artifacts == []
+
+    asyncio.run(scenario())
+
+
+def test_r2h_transport_recovery_version_four_is_terminal():
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+        runtime.velum_base_url = "http://rhen-velum.railway.internal:8080"
+        runtime._velum_health_ready = AsyncMock(return_value=True)
+
+        result = await runtime._recover_blocked_r2h_velum_transport(
+            _r2h_ipv6_blocked_snapshot(version=4)
+        )
+
+        assert result is None
+        runtime._velum_health_ready.assert_not_awaited()
+        assert runtime.gateway.queued == []
+        assert runtime.gateway.artifacts == []
+
+    asyncio.run(scenario())
