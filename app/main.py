@@ -20,6 +20,13 @@ from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .crypto_execution import CryptoExecutionEngine
+from .crypto_canary import (
+    BTC_CANARY_FAMILY,
+    BTC_CANARY_SOURCE_CANDIDATE_ID,
+    BTC_CANARY_STRATEGY_VERSION_ID,
+    BTC_CANARY_SYMBOL,
+    BTC_CANARY_TIMEFRAME,
+)
 from .crypto_canary_execution import BtcCanaryExecutionEngine
 from .crypto_promotion import fetch_crypto_promotion_status
 from .crypto_layer import (
@@ -1070,6 +1077,29 @@ async def health():
         "crypto": {
             "enabled": settings.crypto_lane_enabled,
             "execution_enabled": settings.crypto_execution_enabled,
+            "execution_mode": settings.crypto_execution_mode,
+            "experimental_canary": {
+                "enabled": settings.btc_canary_enabled,
+                "authorized": settings.btc_canary_execution_authorized,
+                "paper_only": True,
+                "symbol": BTC_CANARY_SYMBOL,
+                "strategy_family": BTC_CANARY_FAMILY,
+                "strategy_version_id": BTC_CANARY_STRATEGY_VERSION_ID,
+                "source_candidate_id": BTC_CANARY_SOURCE_CANDIDATE_ID,
+                "timeframe": BTC_CANARY_TIMEFRAME,
+                "order_notional": str(settings.btc_canary_order_notional),
+                "max_order_notional": str(settings.btc_canary_max_order_notional),
+                "max_total_position_notional": str(
+                    settings.btc_canary_max_total_position_notional
+                ),
+                "max_entries_24h": settings.btc_canary_max_entries_24h,
+                "max_spread_pct": str(settings.btc_canary_max_spread_pct),
+                "max_slippage_pct": str(settings.btc_canary_max_slippage_pct),
+                "catastrophe_stop_pct": str(settings.btc_canary_stop_pct),
+                "history_days": settings.btc_canary_history_days,
+                "durable_entry_persistence_required": True,
+                "durable_entry_persistence_ready": event_sink.enabled,
+            },
             "session_model": "24x7",
             "market_lane": "crypto",
             "strategy_family": settings.crypto_strategy_family,
