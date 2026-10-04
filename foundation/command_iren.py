@@ -349,6 +349,7 @@ def project_command(
 
     objectives = _rows(work.get("objectives"))
     jobs = _rows(work.get("jobs"))
+    job_events = _rows(work.get("job_events"))
     commands = _rows(work.get("commands"))
     current_state = str(state.get("state") or "UNKNOWN")
 
@@ -389,6 +390,7 @@ def project_command(
             "handoffs": [r.get("result") | {"handoff_id": r.get("job_id"), "objective_key": r.get("objective_key")} for r in jobs if r.get("job_type") == "CODEX_HANDOFF" and isinstance(r.get("result"), dict)],
             "objectives": objectives,
             "jobs": jobs,
+            "job_events": job_events,
             "commands": commands,
         },
     }
