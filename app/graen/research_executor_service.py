@@ -9086,12 +9086,59 @@ class GraenResearchExecutor:
         # starving unrelated staged research.
         promotion_results: list[dict[str, Any]] = []
         for promotion_problem_id in list(engineering_problem_ids(snapshot))[:4]:
+            promotion_problem = next(
+                (
+                    row
+                    for row in (snapshot.get("problems") or [])
+                    if str(row.get("problem_id")) == str(promotion_problem_id)
+                ),
+                {},
+            )
             promotion_state = await self.research_promotion.tick(promotion_problem_id)
             promotion_results.append({
                 "problem_id": promotion_problem_id,
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+            if promotion_state.get("transitioned") is True:
+                linked_job_id = (
+                    str(promotion_problem.get("linked_iren_job_id"))
+                    if promotion_problem.get("linked_iren_job_id")
+                    else None
+                )
+                requirement = promotion_state.get("engineering_requirement")
+                if (
+                    promotion_state.get("phase") == "ENGINEERING_REQUIRED"
+                    and isinstance(requirement, Mapping)
+                ):
+                    await self._callback_iren(
+                        linked_job_id,
+                        status="WAITING",
+                        result={
+                            "condition": "ENGINEERING_REQUIRED",
+                            "graen_problem_id": str(promotion_problem_id),
+                            "engineering_requirement": dict(requirement),
+                            "manual_chatgpt_workspace_required": True,
+                            "independent_research_continues": True,
+                            "execution_authority": False,
+                            "runtime_code_mutation_authorized": False,
+                        },
+                    )
+                elif promotion_state.get("phase") == "COMPLETE":
+                    await self._callback_iren(
+                        linked_job_id,
+                        status="SUCCEEDED",
+                        result={
+                            "condition": "RESEARCHING",
+                            "graen_problem_id": str(promotion_problem_id),
+                            "engineering_requirement_resolved": True,
+                            "resume_stage": promotion_state.get("resume_stage"),
+                            "manual_resolution": promotion_state.get(
+                                "manual_resolution"
+                            ),
+                            "execution_authority": False,
+                        },
+                    )
         staged_v14_r2h = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
