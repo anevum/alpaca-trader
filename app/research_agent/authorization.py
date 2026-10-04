@@ -235,3 +235,94 @@ def transition_authorization(authorization: StageAuthorization) -> Any:
         authorized_by=authorization.authorized_by,
         authorized_at=authorization.authorized_at,
     )
+
+
+def authorize_freeze_with_charter(
+    decisions: Iterable[Mapping[str, Any]],
+    *,
+    proposal_id: str,
+    proposal_revision: int,
+    proposal_hash: str,
+    allow_standing_charter: bool = False,
+) -> FreezeAuthorization:
+    """Resolve exact operator authorization, or the standing research charter.
+
+    Ambiguous/revoked explicit authorizations never fall back to the charter.
+    The charter grants research-stage authority only; it has no production,
+    broker, spending, credential, or source-code authority.
+    """
+    try:
+        return authorize_freeze(
+            decisions,
+            proposal_id=proposal_id,
+            proposal_revision=proposal_revision,
+            proposal_hash=proposal_hash,
+        )
+    except AuthorizationError as exc:
+        if not allow_standing_charter or not str(exc).startswith(
+            "no exact final authorization"
+        ):
+            raise
+
+    from .autonomy import standing_freeze_authorization
+
+    payload = standing_freeze_authorization(
+        proposal_id=proposal_id,
+        proposal_revision=proposal_revision,
+        proposal_hash=proposal_hash,
+    )
+    return FreezeAuthorization(
+        decision_reference=str(payload["decision_reference"]),
+        proposal_id=str(payload["proposal_id"]),
+        proposal_revision=int(payload["proposal_revision"]),
+        proposal_hash=str(payload["proposal_hash"]),
+        authorized_by=str(payload["authorized_by"]),
+        authorized_at=str(payload["authorized_at"]),
+    )
+
+
+def authorize_stage_with_charter(
+    decisions: Iterable[Mapping[str, Any]],
+    *,
+    experiment_id: str,
+    experiment_key: str,
+    stage: str,
+    manifest_hash: str,
+    source_commit: str,
+    allow_standing_charter: bool = False,
+) -> StageAuthorization:
+    """Resolve exact stage authorization without weakening deterministic gates."""
+    try:
+        return authorize_stage(
+            decisions,
+            experiment_id=experiment_id,
+            experiment_key=experiment_key,
+            stage=stage,
+            manifest_hash=manifest_hash,
+            source_commit=source_commit,
+        )
+    except AuthorizationError as exc:
+        if not allow_standing_charter or not str(exc).startswith(
+            "no exact final authorization"
+        ):
+            raise
+
+    from .autonomy import standing_stage_authorization
+
+    payload = standing_stage_authorization(
+        experiment_id=experiment_id,
+        experiment_key=experiment_key,
+        stage=stage,
+        manifest_hash=manifest_hash,
+        source_commit=source_commit,
+    )
+    return StageAuthorization(
+        decision_reference=str(payload["decision_reference"]),
+        experiment_id=str(payload["experiment_id"]),
+        experiment_key=str(payload["experiment_key"]),
+        stage=str(payload["stage"]),
+        manifest_hash=str(payload["manifest_hash"]),
+        source_commit=str(payload["source_commit"]),
+        authorized_by=str(payload["authorized_by"]),
+        authorized_at=str(payload["authorized_at"]),
+    )
