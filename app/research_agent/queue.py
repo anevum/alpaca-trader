@@ -107,6 +107,12 @@ def _priority_inputs(
             values.get("estimated_compute_cost"), 3
         ),
         "estimated_llm_cost": _bounded(values.get("estimated_llm_cost"), 3),
+        "novelty": _bounded(values.get("novelty"), 3),
+        "falsifiability": _bounded(values.get("falsifiability"), 3),
+        "decision_value": _bounded(values.get("decision_value"), 3),
+        "branch_elimination_value": _bounded(values.get("branch_elimination_value"), 3),
+        "data_cost": _bounded(values.get("data_cost"), 3),
+        "statistical_search_cost": _bounded(values.get("statistical_search_cost"), 3),
     }
 
 
