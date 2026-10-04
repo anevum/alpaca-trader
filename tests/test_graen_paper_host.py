@@ -281,3 +281,14 @@ def test_terminal_paper_failure_releases_slot_for_next_candidate(
         assert host.activation["activation_id"] != activation_id
 
     asyncio.run(scenario())
+
+
+
+def test_paper_activation_identity_ignores_transient_run_id():
+    first = activation_payload()
+    second = activation_payload()
+    second["graen_run_id"] = "55555555-5555-5555-5555-555555555555"
+    assert (
+        GraenPaperCanaryHost._activation_id(first)
+        == GraenPaperCanaryHost._activation_id(second)
+    )
