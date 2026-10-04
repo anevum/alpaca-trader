@@ -389,6 +389,7 @@ def test_velum_r2h_fetch_contract_includes_slow_signal_warmup():
     assert (start - fetch_start).days == 260
     assert fetch_end == end
     assert timeframe == "4Hour"
+    assert velum_graen.R2H_FETCH_VERSION == "r2h-4hour-fetch-v1"
 
 
 def test_velum_dispatches_r2h_slow_candidate_without_legacy_trade_gate(monkeypatch):
