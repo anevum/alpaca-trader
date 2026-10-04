@@ -97,6 +97,34 @@ def test_explicit_final_revocation_outranks_standing_charter():
         )
 
 
+
+def test_unrelated_explicit_authorization_does_not_disable_charter():
+    unrelated = {
+        "decision_key": "OTHER",
+        "status": "final",
+        "decision_type": "research_authorization",
+        "evidence": {
+            "authorized_action": "open_stage",
+            "experiment_id": "OTHER",
+            "experiment_key": "OTHER",
+            "stage": "development",
+            "manifest_hash": "other",
+            "source_commit": "other",
+            "authorized_by": "operator",
+            "authorized_at": "2026-10-04T20:00:00+00:00",
+        },
+    }
+    result = authorize_stage(
+        [unrelated],
+        experiment_id="E-2",
+        experiment_key="K-2",
+        stage="development",
+        manifest_hash="m2",
+        source_commit="s2",
+        allow_standing_charter=True,
+    )
+    assert result.authorized_by == DEFAULT_CHARTER.charter_id
+
 def test_engineering_requirement_is_a_manual_handoff_not_runtime_permission():
     req = build_engineering_requirement(
         requirement_id="ENG-1",
