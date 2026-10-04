@@ -214,6 +214,19 @@ class ProtectedPositionBroker(PaperBroker):
             }
         ]
 
+    async def recent_orders(self, limit=100):
+        return [
+            {
+                "asset_class": "crypto",
+                "symbol": "BTC/USD",
+                "id": "paper-canary-buy-existing",
+                "client_order_id": "anevum-crypto-btc-usd-canary-buy-existing",
+                "side": "buy",
+                "status": "filled",
+                "qty": "0.00001",
+            }
+        ]
+
 
 class CanaryMarketData:
     async def historical_bars_many(self, symbols, *, start, end, timeframe="1Min"):
