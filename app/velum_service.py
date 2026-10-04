@@ -27,7 +27,12 @@ from .velum_manifest import (
     dataset_fingerprint,
     evidence_fingerprint,
 )
-from .velum_graen import GRAEN_CONTEXT_UNIVERSE, replay_candidate, replay_fetch_contract
+from .velum_graen import (
+    GRAEN_CONTEXT_UNIVERSE,
+    METHODOLOGY_VERSION as VELUM_GRAEN_METHODOLOGY_VERSION,
+    replay_candidate,
+    replay_fetch_contract,
+)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -707,6 +712,7 @@ async def health():
         "system": "VELUM",
         "mode": current["mode"],
         "running": current["running"],
+        "graen_replay_methodology_version": VELUM_GRAEN_METHODOLOGY_VERSION,
         "broker_orders_possible": False,
         "last_error": current["last_error"],
         "runtime_provenance": current["runtime_provenance"],
@@ -736,7 +742,12 @@ async def graen_candidate_replay(
     if end - start > timedelta(days=180):
         raise HTTPException(status_code=422, detail="replay range exceeds 180 days")
 
-    replay_symbols, fetch_start, fetch_end = replay_fetch_contract(
+    (
+        replay_symbols,
+        fetch_start,
+        fetch_end,
+        replay_timeframe,
+    ) = replay_fetch_contract(
         request.candidate_methodology,
         start=start,
         end=end,
@@ -746,6 +757,7 @@ async def graen_candidate_replay(
             list(replay_symbols),
             start=fetch_start,
             end=fetch_end,
+            timeframe=replay_timeframe,
         )
         result = await _run_blocking(
             replay_candidate,
@@ -770,6 +782,7 @@ async def graen_candidate_replay(
             },
             "replay_fetch_start": fetch_start.isoformat(),
             "replay_fetch_end": fetch_end.isoformat(),
+            "replay_bar_timeframe": replay_timeframe or velum.settings.bar_timeframe,
             "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         })
         emitted = await velum._emit(
