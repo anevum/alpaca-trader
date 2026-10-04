@@ -33,25 +33,6 @@ class BtcCanaryExecutionEngine(CryptoExecutionEngine):
         self._circuit_open_reason: str | None = None
 
     @staticmethod
-    def _normalize_broker_positions(
-        positions: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Normalize Alpaca's legacy crypto position symbols for canary ownership."""
-        normalized: list[dict[str, Any]] = []
-        for position in positions:
-            item = dict(position)
-            compact = (
-                str(item.get("symbol", ""))
-                .upper()
-                .replace("/", "")
-                .replace("-", "")
-            )
-            if compact == "BTCUSD":
-                item["symbol"] = BTC_CANARY_SYMBOL
-            normalized.append(item)
-        return normalized
-
-    @staticmethod
     def _quote_quality(
         quote: dict[str, Any],
         *,
@@ -244,7 +225,6 @@ class BtcCanaryExecutionEngine(CryptoExecutionEngine):
             self.client.open_orders(),
             self.client.recent_orders(limit=100),
         )
-        positions = self._normalize_broker_positions(positions)
         crypto_positions = self._crypto_positions(positions)
         owned_symbols = self._owned_symbols(positions, recent_orders)
         self.state.crypto_active_positions = len(crypto_positions)
