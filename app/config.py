@@ -526,7 +526,7 @@ class Settings(BaseSettings):
             and self.crypto_lane_enabled
             and self.btc_canary_enabled
             and self.btc_canary_acknowledge == "YES"
-            and self.live_execution_authorized
+            and self.paper_execution_authorized
         )
 
     @property
