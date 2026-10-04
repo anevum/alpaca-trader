@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.25.0"
+RUNTIME_VERSION = "graen-research-executor-v1.26.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -5348,7 +5348,7 @@ class GraenResearchExecutor:
                 or metadata.get("research_stage") != V14_R2H_VELUM_STAGE
                 or int(
                     metadata.get("v14_r2h_velum_transport_recovery_version") or 0
-                ) >= 1
+                ) >= 2
             ):
                 continue
             problem_id = str(problem.get("problem_id") or "")
@@ -5365,7 +5365,13 @@ class GraenResearchExecutor:
             ]
             if not matching:
                 continue
-            # This recovery is already bounded to exactly one retry by
+            recovery_version = int(
+                metadata.get("v14_r2h_velum_transport_recovery_version") or 0
+            )
+            if recovery_version == 1 and ".internal" not in self.velum_base_url:
+                continue
+            # Version 1 was the original deployment-race retry. Version 2 is
+            # reserved for the verified Railway private-network repair only.
             # v14_r2h_velum_transport_recovery_version. Do not couple the
             # retry to VELUM's global periodic-replay health: the original
             # failure was transport availability during deployment. If the
@@ -5388,8 +5394,12 @@ class GraenResearchExecutor:
                     "blocked_error": blocked_run.get("result_summary", {}).get(
                         "error"
                     ),
-                    "repair": "retry_after_velum_health_recovered",
-                    "retry_count": 1,
+                    "repair": (
+                        "retry_after_railway_private_network_repair"
+                        if recovery_version == 1
+                        else "retry_after_velum_transport_recovered"
+                    ),
+                    "retry_count": recovery_version + 1,
                     "methodology_changed": False,
                     "research_only": True,
                     "execution_authority": False,
@@ -5419,7 +5429,7 @@ class GraenResearchExecutor:
                     "v14_r2h_transfer_artifact_id": metadata.get(
                         "v14_r2h_transfer_artifact_id"
                     ),
-                    "v14_r2h_velum_transport_recovery_version": 1,
+                    "v14_r2h_velum_transport_recovery_version": recovery_version + 1,
                     "v14_r2h_recovered_blocked_run_id": blocked_run_id or None,
                     "v14_r2h_transport_recovery_artifact_id": artifact.get(
                         "artifact_id"
@@ -5435,7 +5445,7 @@ class GraenResearchExecutor:
                 "problem_id": problem_id,
                 "blocked_run_id": blocked_run_id or None,
                 "next_research_stage": V14_R2H_VELUM_STAGE,
-                "retry_count": 1,
+                "retry_count": recovery_version + 1,
                 "execution_authority": False,
                 "broker_orders_possible": False,
             }
