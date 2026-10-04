@@ -744,15 +744,22 @@ class SchedulerRuntime:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-        nostra = {
-            row["workflow_id"]: {
-                "enabled": bool(row.get("enabled")),
-                "version": row.get("version"),
-                "schedule_expression": row.get("schedule_expression"),
-            }
-            for row in self.workflows
-            if row.get("subsystem") == "NOSTRA"
-        }
+        nostra = next(
+            (
+                dict(row)
+                for row in self.registry.get("independent_runtimes", [])
+                if row.get("subsystem") == "NOSTRA"
+            ),
+            {
+                "subsystem": "NOSTRA",
+                "mode": "independent_autorun",
+                "scheduler_owned": False,
+                "health_owner": "IREN",
+                "research_only": True,
+                "execution_authority": False,
+                "status": "UNKNOWN",
+            },
+        )
         return {
             "scheduler_version": self.scheduler_version,
             "dependency_health": dependencies,
