@@ -6,7 +6,11 @@ from decimal import Decimal
 from typing import Any
 
 from .crypto_canary import (
+    BTC_CANARY_FAMILY,
+    BTC_CANARY_SOURCE_CANDIDATE_ID,
+    BTC_CANARY_STRATEGY_VERSION_ID,
     BTC_CANARY_SYMBOL,
+    BTC_CANARY_TIMEFRAME,
     evaluate_btc_canary_state,
     signal_from_canary_state,
 )
@@ -196,10 +200,10 @@ class BtcCanaryExecutionEngine(CryptoExecutionEngine):
                 },
                 comparison_context={
                     "market": "crypto",
-                    "strategy_version_id": "BTC-CANARY-001",
-                    "source_candidate_id": (
-                        "V14-R2H-BTC-4H-CONSENSUS-1080-1500"
-                    ),
+                    "strategy_family": BTC_CANARY_FAMILY,
+                    "strategy_version_id": BTC_CANARY_STRATEGY_VERSION_ID,
+                    "source_candidate_id": BTC_CANARY_SOURCE_CANDIDATE_ID,
+                    "bar_timeframe": BTC_CANARY_TIMEFRAME,
                 },
                 execution_result=result,
             )
