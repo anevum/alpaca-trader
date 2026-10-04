@@ -9,6 +9,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
     MOMENTUM_LOOKBACK_BARS,
     SMA_WINDOW_BARS,
     campaign_manifest,
+    evaluate_btc_4h_consensus_replay,
     evaluate_btc_4h_consensus_transfer,
 )
 
@@ -76,6 +77,22 @@ def test_r2h_trending_synthetic_history_survives_only_to_velum_and_shadow():
     assert result["live_execution_authorized"] is False
 
 
+def test_r2h_velum_replay_uses_bounded_recent_window_and_remains_research_only():
+    result = evaluate_btc_4h_consensus_replay(
+        _bars(),
+        start=datetime(2026, 4, 4, tzinfo=UTC),
+        end=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    assert result["engineering_gate"]["passed"] is True
+    assert result["scenarios"]["taker_stress_30bp"]["bar_count"] >= 720
+    assert result["scenarios"]["taker_stress_30bp"]["total_return"] > 0
+    assert result["scenarios"]["severe_stress_50bp"]["total_return"] > 0
+    assert result["one_bar_execution_delay"]["total_return"] > 0
+    assert result["independent_confirmatory_evidence"] is False
+    assert result["promotion_authorized"] is False
+    assert result["execution_authority"] is False
+
+
 class FakeGateway:
     configured = True
 
@@ -126,6 +143,55 @@ def test_r2g_pass_queues_r2h_faststart_without_execution_authority():
         assert result["broker_orders_possible"] is False
         assert runtime.gateway.queued[-1]["stage"] == service.V14_R2H_STAGE
         metadata = runtime.gateway.queued[-1]["metadata"]
+        assert metadata["r2f_forward_shadow_preserved"] is True
+        assert metadata["r2g_forward_shadow_preserved"] is True
+
+    asyncio.run(scenario())
+
+
+def test_r2h_transfer_pass_queues_velum_once_without_execution_authority():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-04T15:32:10+00:00",
+                    "methodology_version": service.V14_R2H_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2H_CAMPAIGN_ID,
+                        "state": (
+                            "V14_R2H_4H_TRANSFER_SURVIVES_TO_"
+                            "VELUM_AND_FORWARD_SHADOW"
+                        ),
+                        "decision": "ADVANCE_TO_VELUM_AND_4H_SHADOW",
+                        "candidate_spec": service.v14_r2h_candidate_spec().to_dict(),
+                        "result_artifact_id": "artifact-r2h-transfer",
+                    },
+                }
+            ],
+            "artifacts": [],
+        }
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+
+        result = await runtime._recover_v14_r2h_pass_into_velum(snapshot)
+
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_R2H_VELUM_STAGE
+        assert result["execution_authority"] is False
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2H_VELUM_STAGE
+        metadata = runtime.gateway.queued[-1]["metadata"]
+        assert metadata["v14_r2h_transfer_artifact_id"] == "artifact-r2h-transfer"
         assert metadata["r2f_forward_shadow_preserved"] is True
         assert metadata["r2g_forward_shadow_preserved"] is True
 
