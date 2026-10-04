@@ -27,7 +27,7 @@ from .velum_manifest import (
     dataset_fingerprint,
     evidence_fingerprint,
 )
-from .velum_graen import GRAEN_CONTEXT_UNIVERSE, replay_candidate
+from .velum_graen import GRAEN_CONTEXT_UNIVERSE, replay_candidate, replay_fetch_contract
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -736,11 +736,14 @@ async def graen_candidate_replay(
     if end - start > timedelta(days=180):
         raise HTTPException(status_code=422, detail="replay range exceeds 180 days")
 
-    fetch_start = start - timedelta(hours=8)
-    fetch_end = end + timedelta(hours=3)
+    replay_symbols, fetch_start, fetch_end = replay_fetch_contract(
+        request.candidate_methodology,
+        start=start,
+        end=end,
+    )
     async with velum.run_lock:
         bars = await velum.market_data.historical_crypto_bars_many(
-            list(GRAEN_CONTEXT_UNIVERSE),
+            list(replay_symbols),
             start=fetch_start,
             end=fetch_end,
         )
@@ -763,8 +766,10 @@ async def graen_candidate_replay(
             "generation": request.generation,
             "bar_coverage": {
                 symbol: len(bars.get(symbol, []))
-                for symbol in GRAEN_CONTEXT_UNIVERSE
+                for symbol in replay_symbols
             },
+            "replay_fetch_start": fetch_start.isoformat(),
+            "replay_fetch_end": fetch_end.isoformat(),
             "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         })
         emitted = await velum._emit(
