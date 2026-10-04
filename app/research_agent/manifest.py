@@ -140,7 +140,7 @@ def freeze_preview(
         feasibility_payload: Mapping[str, Any] | None = feasibility_artifact(feasibility)
     else:
         feasibility_payload = None
-    authorization = authorize_freeze(
+    authorization = authorize_freeze_with_charter(
         decisions,
         proposal_id=proposal.proposal_id,
         proposal_revision=proposal.revision,
