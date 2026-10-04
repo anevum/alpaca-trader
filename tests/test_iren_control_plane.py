@@ -13,6 +13,7 @@ import httpx
 from app.iren.core import fresh, reduce_state
 from app.iren.service import (
     IrenController,
+    _engineering_objective_from_result,
     _runtime_identity_complete,
     app,
     controller,
@@ -38,6 +39,35 @@ def observation(seconds=0):
         "scheduler": {"configured": True, "last_error": False, "last_success_at": stamp},
         "runs": [],
     }
+
+
+def test_graen_engineering_requirement_becomes_manual_software_objective():
+    requirement = {
+        "requirement_id": "ENG-ABC123",
+        "title": "Add causal research primitive",
+        "reason": "The trusted runtime lacks the primitive.",
+        "handoff_prompt": "Implement the frozen research primitive.",
+        "suggested_paths": [
+            "graen/crypto/generated/example.py",
+            "research/crypto/prespecs/example.json",
+            "tests/test_generated_example.py",
+        ],
+    }
+    objective = _engineering_objective_from_result({
+        "condition": "ENGINEERING_REQUIRED",
+        "graen_problem_id": "problem-1",
+        "engineering_requirement": requirement,
+    })
+    assert objective is not None
+    assert objective["objective_key"] == "engineering.eng-abc123"
+    assert objective["metadata"]["job_type"] == "SOFTWARE_BUILD"
+    assert objective["metadata"]["manual_software_required"] is True
+    assert objective["protected_action"] is False
+    assert objective["success_criteria"] == {
+        "manual_software_handoff": True,
+        "protected_authority": False,
+    }
+    assert objective["metadata"]["codex_scope"]["allowed_paths"] == requirement["suggested_paths"]
 
 
 def test_runtime_identity_complete_requires_revision_and_deployment():
