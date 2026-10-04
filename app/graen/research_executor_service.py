@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.22.0"
+RUNTIME_VERSION = "graen-research-executor-v1.23.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -4535,6 +4535,19 @@ class GraenResearchExecutor:
             "promotion_authorized": False,
         }
 
+    async def _velum_health_ready(self) -> bool:
+        if not self.velum_configured:
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.get(f"{self.velum_base_url}/health")
+                response.raise_for_status()
+                payload = response.json()
+            return isinstance(payload, Mapping) and payload.get("ok") is True
+        except Exception:
+            return False
+
+
     async def _replay_in_velum(
         self,
         *,
@@ -5308,6 +5321,126 @@ class GraenResearchExecutor:
                 "crypto_execution_enabled": False,
             },
         }
+
+
+    async def _recover_blocked_r2h_velum_transport(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Retry one R2H VELUM claim only after a transient transport outage clears."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if (
+                problem.get("status") != "BLOCKED"
+                or problem.get("domain") != PROBLEM_DOMAIN
+                or metadata.get("research_stage") != V14_R2H_VELUM_STAGE
+                or int(
+                    metadata.get("v14_r2h_velum_transport_recovery_version") or 0
+                ) >= 1
+            ):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            matching = [
+                run
+                for run in runs
+                if isinstance(run, Mapping)
+                and str(run.get("problem_id") or "") == problem_id
+                and run.get("status") == "BLOCKED"
+                and isinstance(run.get("result_summary"), Mapping)
+                and str(run.get("result_summary", {}).get("error") or "").startswith(
+                    "ConnectError:"
+                )
+            ]
+            if not matching:
+                continue
+            if not await self._velum_health_ready():
+                return {
+                    "recovered": False,
+                    "problem_id": problem_id,
+                    "state": "WAITING_FOR_VELUM_HEALTH",
+                    "next_research_stage": V14_R2H_VELUM_STAGE,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                }
+            blocked_run = max(
+                matching,
+                key=lambda row: str(row.get("started_at") or ""),
+            )
+            blocked_run_id = str(blocked_run.get("run_id") or "")
+            artifact_response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=blocked_run_id or None,
+                artifact_type="CRYPTO_V14_R2H_VELUM_TRANSPORT_RECOVERY",
+                methodology_version=V14_R2H_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V14_R2H_CAMPAIGN_ID,
+                    "candidate_id": v14_r2h_candidate_spec().candidate_id,
+                    "blocked_run_id": blocked_run_id or None,
+                    "blocked_error": blocked_run.get("result_summary", {}).get(
+                        "error"
+                    ),
+                    "repair": "retry_after_velum_health_recovered",
+                    "retry_count": 1,
+                    "methodology_changed": False,
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "promotion_authorized": False,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            artifact = (
+                artifact_response.get("artifact")
+                if isinstance(artifact_response.get("artifact"), Mapping)
+                else {}
+            )
+            candidate_spec = metadata.get("v14_r2h_candidate_spec")
+            if not isinstance(candidate_spec, Mapping):
+                candidate_spec = v14_r2h_candidate_spec().to_dict()
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V14_R2H_VELUM_STAGE,
+                metadata={
+                    "v14_r2h_campaign_id": V14_R2H_CAMPAIGN_ID,
+                    "v14_r2h_candidate_spec": dict(candidate_spec),
+                    "v14_r2h_origin_run_id": metadata.get(
+                        "v14_r2h_origin_run_id"
+                    ),
+                    "v14_r2h_transfer_artifact_id": metadata.get(
+                        "v14_r2h_transfer_artifact_id"
+                    ),
+                    "v14_r2h_velum_transport_recovery_version": 1,
+                    "v14_r2h_recovered_blocked_run_id": blocked_run_id or None,
+                    "v14_r2h_transport_recovery_artifact_id": artifact.get(
+                        "artifact_id"
+                    ),
+                    "r2f_forward_shadow_preserved": True,
+                    "r2g_forward_shadow_preserved": True,
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v14_r2h_velum_transport_requeue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "blocked_run_id": blocked_run_id or None,
+                "next_research_stage": V14_R2H_VELUM_STAGE,
+                "retry_count": 1,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            print("GRAEN_V14_R2H_VELUM_TRANSPORT_RECOVERY", result, flush=True)
+            return result
+        return None
 
 
     async def _recover_blocked_v14_runtime_dependency(
@@ -8720,6 +8853,14 @@ class GraenResearchExecutor:
 
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+        r2h_velum_transport_recovery = (
+            await self._recover_blocked_r2h_velum_transport(snapshot)
+        )
+        if (
+            r2h_velum_transport_recovery is not None
+            and r2h_velum_transport_recovery.get("recovered")
+        ):
+            snapshot = await self.gateway.snapshot()
         blocked_v10 = self._observe_blocked_v10(snapshot)
         v10_corpus_recovery = await self._recover_blocked_v10_corpus_into_v11(snapshot)
         if v10_corpus_recovery is not None:
@@ -9027,6 +9168,7 @@ class GraenResearchExecutor:
                 "v14_r2f_to_r2g_recovery": v14_r2f_to_r2g_recovery,
                 "v14_r2h_faststart_recovery": v14_r2h_faststart_recovery,
                 "v14_r2h_velum_recovery": v14_r2h_velum_recovery,
+                "r2h_velum_transport_recovery": r2h_velum_transport_recovery,
                 "v14_r2d_to_r2e_recovery": v14_r2d_to_r2e_recovery,
                 "v14_r2c_to_r2d_recovery": v14_r2c_to_r2d_recovery,
                 "v14_r2b_to_r2c_recovery": v14_r2b_to_r2c_recovery,
