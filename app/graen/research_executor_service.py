@@ -2637,23 +2637,35 @@ class GraenResearchExecutor:
             gate = velum.get("engineering_gate")
             passed = isinstance(gate, Mapping) and gate.get("passed") is True
             if passed:
+                shadow = await self._activate_forward_shadow(
+                    problem_id=problem_id,
+                    graen_run_id=run_id,
+                    campaign_id="strategy-manifest-autonomous-v1",
+                    epoch_index=search_generation,
+                    generation=search_generation,
+                    candidate_methodology=STRATEGY_RUNNER_VERSION,
+                    candidate_spec=candidate_spec,
+                    velum_artifact_id=artifact_id,
+                )
                 summary = {
-                    "state": "CANDIDATE_READY_FOR_FORWARD_SHADOW",
-                    "decision": "FORWARD_SHADOW_REQUIRED",
-                    "status": "VELUM_PASS",
+                    "state": "FORWARD_SHADOW_RUNNING",
+                    "decision": "COLLECT_FORWARD_EVIDENCE",
+                    "status": "SHADOW_ACTIVE",
                     "candidate_id": manifest.hypothesis_id,
                     "candidate_family": manifest.family,
                     "velum_artifact_id": artifact_id,
                     "velum_engineering_gate": dict(gate),
+                    "shadow_activation": shadow,
                     "execution_authority": False,
                     "broker_orders_possible": False,
                     "production_state_changed": False,
-                    "next_action": "FORWARD_SHADOW_OBSERVATION",
+                    "promotion_authorized": False,
+                    "next_action": "AWAIT_NATIVE_SHADOW_CHECKPOINT",
                 }
                 return await self._finalize(
                     problem=problem,
                     run=run,
-                    status="SUCCEEDED",
+                    status="WAITING",
                     summary=summary,
                 )
 
