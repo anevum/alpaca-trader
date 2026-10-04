@@ -1281,6 +1281,14 @@ class GraenPaperCanaryHost:
 
     def status(self) -> dict[str, Any]:
         checkpoint = self.checkpoint()
+        latest_terminal = (
+            max(
+                self.completed.values(),
+                key=lambda row: str(row.get("completed_at") or ""),
+            )
+            if self.completed
+            else None
+        )
         return {
             "ok": self.last_error is None,
             "system": "RHEN",
@@ -1294,6 +1302,35 @@ class GraenPaperCanaryHost:
             "live_execution_authorized": False,
             "live_broker_orders_possible": False,
             "active": self.activation is not None,
+            "completed_count": len(self.completed),
+            "latest_terminal": (
+                {
+                    "activation_id": str(
+                        (latest_terminal.get("activation") or {}).get(
+                            "activation_id"
+                        )
+                        or ""
+                    ),
+                    "candidate_id": str(
+                        (
+                            (latest_terminal.get("activation") or {}).get(
+                                "candidate_spec"
+                            )
+                            or {}
+                        ).get("candidate_id")
+                        or ""
+                    ),
+                    "status": str(
+                        (latest_terminal.get("checkpoint") or {}).get(
+                            "status"
+                        )
+                        or ""
+                    ),
+                    "completed_at": latest_terminal.get("completed_at"),
+                }
+                if latest_terminal is not None
+                else None
+            ),
             "candidate_id": (
                 str(
                     ((self.activation or {}).get("candidate_spec") or {}).get(
