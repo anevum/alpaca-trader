@@ -762,7 +762,11 @@ class TradingEventSink:
             metadata = dict(signal.get("metadata") or {})
             is_crypto = str(metadata.get("market") or "").lower() == "crypto"
             candidate_strategy_version_id = (
-                self.settings.crypto_strategy_version_id
+                str(
+                    metadata.get("strategy_version_id")
+                    or getattr(self.settings, "crypto_strategy_version_id", "")
+                    or self.settings.strategy_version_id
+                )
                 if is_crypto
                 else self.settings.strategy_version_id
             )
@@ -859,9 +863,12 @@ class TradingEventSink:
                     "strategy_version_id": candidate_strategy_version_id,
                     "market_lane": "crypto" if is_crypto else "us_equity",
                     "strategy_family": (
-                        getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
-                        if is_crypto
-                        else getattr(self.settings, "strategy_name", None)
+                        metadata.get("strategy_family")
+                        or (
+                            getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
+                            if is_crypto
+                            else getattr(self.settings, "strategy_name", None)
+                        )
                     ),
                     "model_version": (
                         getattr(self.settings, "crypto_model_version", None)
@@ -882,11 +889,9 @@ class TradingEventSink:
                     "data_source": "alpaca",
                     "data_feed": candidate_data_feed,
                     "bar_interval": (
-                    execution_context.get("bar_timeframe")
-                    if isinstance(execution_context, dict)
-                    and execution_context.get("bar_timeframe")
-                    else getattr(self.settings, "bar_timeframe", None)
-                ),
+                        metadata.get("bar_timeframe")
+                        or getattr(self.settings, "bar_timeframe", None)
+                    ),
                     "confirmation_state": {
                         "passes": metadata.get("confirmation_passes"),
                         "confirmations": metadata.get("confirmations") or {},
@@ -952,7 +957,12 @@ class TradingEventSink:
                     if cycle_is_crypto
                     else getattr(self.settings, "data_feed", None)
                 ),
-                "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                "bar_interval": (
+                    execution_context.get("bar_timeframe")
+                    if isinstance(execution_context, dict)
+                    and execution_context.get("bar_timeframe")
+                    else getattr(self.settings, "bar_timeframe", None)
+                ),
                 "methodology_version": "live-decision-v1",
                 "market_lane": "crypto" if cycle_is_crypto else "us_equity",
                 "strategy_family": (
