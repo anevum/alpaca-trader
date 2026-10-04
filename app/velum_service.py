@@ -27,7 +27,12 @@ from .velum_manifest import (
     dataset_fingerprint,
     evidence_fingerprint,
 )
-from .velum_graen import GRAEN_CONTEXT_UNIVERSE, replay_candidate, replay_fetch_contract
+from .velum_graen import (
+    GRAEN_CONTEXT_UNIVERSE,
+    R2H_FETCH_VERSION,
+    replay_candidate,
+    replay_fetch_contract,
+)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -707,6 +712,7 @@ async def health():
         "system": "VELUM",
         "mode": current["mode"],
         "running": current["running"],
+        "r2h_replay_fetch_version": R2H_FETCH_VERSION,
         "broker_orders_possible": False,
         "last_error": current["last_error"],
         "runtime_provenance": current["runtime_provenance"],
