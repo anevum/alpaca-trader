@@ -255,11 +255,122 @@ def _operator_projection(
         },
     }
 
+def _terminal_research_snapshot(conn: psycopg.Connection[Any]) -> dict[str, Any]:
+    """Read the narrow live GRAEN state used by the private Command terminal."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select problem_id,title,status,metadata,updated_at,started_at,completed_at
+            from graen.problems
+            where status in ('RUNNING','WAITING','QUEUED','BLOCKED')
+               or updated_at >= now() - interval '24 hours'
+            order by
+              case status when 'RUNNING' then 0 when 'WAITING' then 1
+                          when 'QUEUED' then 2 when 'BLOCKED' then 3 else 4 end,
+              updated_at desc
+            limit 50
+            """
+        )
+        columns = [column.name for column in cur.description]
+        problem_rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            select run_id,problem_id,methodology_version,status,result_summary,
+                   started_at,completed_at,created_at
+            from graen.runs
+            order by coalesce(started_at,created_at) desc
+            limit 40
+            """
+        )
+        columns = [column.name for column in cur.description]
+        run_rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            select worker_id,runtime_version,deployment_id,heartbeat_at,
+                   active_problem_id,queue_depth,last_error,updated_at
+            from graen.runtime_state
+            where singleton
+            """
+        )
+        runtime_row = cur.fetchone()
+        runtime_columns = [column.name for column in cur.description] if runtime_row else []
+        runtime = dict(zip(runtime_columns, runtime_row)) if runtime_row else {}
+
+    def stamp(value: Any) -> str | None:
+        return value.isoformat() if isinstance(value, datetime) else (
+            str(value) if value is not None else None
+        )
+
+    def metadata_text(metadata: dict[str, Any], *keys: str) -> str | None:
+        for key in keys:
+            value = metadata.get(key)
+            if isinstance(value, (str, int, float)) and str(value):
+                return str(value)[:240]
+        return None
+
+    problems = []
+    for row in problem_rows:
+        metadata = row.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        problems.append({
+            "problem_id": stamp(row.get("problem_id")),
+            "title": row.get("title"),
+            "status": row.get("status"),
+            "research_stage": metadata_text(metadata, "research_stage", "stage"),
+            "candidate_id": metadata_text(
+                metadata, "candidate_id", "candidate", "strategy_id"
+            ),
+            "hypothesis": metadata_text(metadata, "hypothesis"),
+            "family": metadata_text(metadata, "family"),
+            "mechanism": metadata_text(metadata, "mechanism"),
+            "campaign_id": metadata_text(
+                metadata, "campaign_id", "experiment_id"
+            ),
+            "updated_at": stamp(row.get("updated_at")),
+            "started_at": stamp(row.get("started_at")),
+            "completed_at": stamp(row.get("completed_at")),
+        })
+
+    runs = []
+    for row in run_rows:
+        summary = row.get("result_summary")
+        summary = summary if isinstance(summary, dict) else {}
+        runs.append({
+            "run_id": stamp(row.get("run_id")),
+            "problem_id": stamp(row.get("problem_id")),
+            "status": row.get("status"),
+            "methodology_version": row.get("methodology_version"),
+            "result_state": summary.get("state") or summary.get("result_state"),
+            "error": summary.get("error") or summary.get("reason"),
+            "started_at": stamp(row.get("started_at")),
+            "completed_at": stamp(row.get("completed_at")),
+            "created_at": stamp(row.get("created_at")),
+        })
+
+    return {
+        "graen_problems": problems,
+        "graen_runs": runs,
+        "graen_runtime": {
+            "worker_id": runtime.get("worker_id"),
+            "runtime_version": runtime.get("runtime_version"),
+            "deployment_id": runtime.get("deployment_id"),
+            "heartbeat_at": stamp(runtime.get("heartbeat_at")),
+            "active_problem_id": stamp(runtime.get("active_problem_id")),
+            "queue_depth": runtime.get("queue_depth"),
+            "last_error": runtime.get("last_error"),
+            "updated_at": stamp(runtime.get("updated_at")),
+        } if runtime else None,
+    }
+
+
 def read_command_snapshot(database_url: str) -> dict[str, Any]:
     with psycopg.connect(database_url, connect_timeout=5) as conn:
         return {
             "control": iren_read(conn),
             "work": snapshot(conn),
+            "research": _terminal_research_snapshot(conn),
         }
 
 
@@ -351,6 +462,11 @@ def project_command(
     jobs = _rows(work.get("jobs"))
     job_events = _rows(work.get("job_events"))
     commands = _rows(work.get("commands"))
+    research = (
+        dict(snapshot_value.get("research"))
+        if isinstance(snapshot_value.get("research"), dict)
+        else {}
+    )
     current_state = str(state.get("state") or "UNKNOWN")
 
     from app.iren.work import status_summary
@@ -383,6 +499,7 @@ def project_command(
         "action_required": stale or current_state != "HEALTHY" or bool(incidents),
         "configuration_identity": baseline.get("fingerprint"),
         "operator": operator,
+        "research": research,
         "work": {
             **_summary({"objectives": objectives, "jobs": jobs}),
             "next_action": summary.get("next_action"),
