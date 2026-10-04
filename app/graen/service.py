@@ -97,6 +97,12 @@ class GraenGateway:
             },
         )
 
+    async def research_exposure_ledger(self) -> Mapping[str, Any]:
+        return await self._request(
+            "POST",
+            {"action": "research_exposure_ledger"},
+        )
+
     async def queue_research_stage(
         self,
         *,
