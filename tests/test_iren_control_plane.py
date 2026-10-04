@@ -222,7 +222,17 @@ def test_durable_failure_does_not_publish_memory_state():
     asyncio.run(scenario())
 
 
-def test_durable_revision_precedes_notification_dispatch():
+def test_durable_revision_precedes_notification_dispatch(monkeypatch):
+    # This test isolates durable revision ordering. Topology completeness is
+    # covered separately by the fail-closed inventory regression test.
+    monkeypatch.setattr(
+        "app.iren.service.topology",
+        lambda *_args, **_kwargs: {
+            "inventory_complete": True,
+            "inventory_gaps": {},
+        },
+    )
+
     async def scenario():
         c = IrenController()
         c.gateway = AsyncMock(side_effect=[{"state": {}, "revision": 4}, {"ok": True, "committed": True, "revision": 5}])
