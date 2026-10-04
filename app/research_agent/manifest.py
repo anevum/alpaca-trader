@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from .authorization import FreezeAuthorization, authorize_freeze
+from .authorization import FreezeAuthorization, authorize_freeze_with_charter
 from .design_checks import DesignReview, assert_freeze_eligible
 from .experiment import PreparedExperiment, experiment_identity, prepare_experiment
 from .feasibility import FeasibilityResult, feasibility_artifact
