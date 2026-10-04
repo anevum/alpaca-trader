@@ -718,11 +718,11 @@ def _with_forward_shadow(
         shadows[candidate] = dict(shadow)
     out["forward_shadows"] = shadows
 
-    if (
-        str(shadow.get("candidate_methodology") or "")
-        == "graen-btc-consensus-trend-v14-r2g"
-    ):
+    methodology = str(shadow.get("candidate_methodology") or "")
+    if methodology == "graen-btc-consensus-trend-v14-r2g":
         out["forward_shadow_comparison"] = dict(shadow)
+    elif methodology == "graen-btc-4h-consensus-v14-r2h":
+        out["forward_shadow_fast"] = dict(shadow)
     else:
         out["forward_shadow"] = dict(shadow)
     return out
