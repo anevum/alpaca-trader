@@ -75,6 +75,19 @@ def snapshot(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         cur.execute(
             """
             select
+                e.event_id,e.job_id,e.event_type,e.event,e.created_at,
+                j.owner_system,j.objective_key,j.title,j.job_type
+            from iren.job_events e
+            join iren.jobs j on j.job_id=e.job_id
+            order by e.created_at desc,e.event_id desc
+            limit 200
+            """
+        )
+        job_events = _rows(cur)
+
+        cur.execute(
+            """
+            select
                 command_id,coalesce(command_text,command) as command_text,
                 source,requested_by,status,result,linked_job_id,
                 created_at,updated_at,completed_at
@@ -103,6 +116,7 @@ def snapshot(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     return {
         "objectives": objectives,
         "jobs": jobs,
+        "job_events": job_events,
         "commands": commands,
         "settings": settings,
     }
