@@ -14,6 +14,7 @@ from app.iren.core import fresh, reduce_state
 from app.iren.service import (
     IrenController,
     _engineering_objective_from_result,
+    _human_decision_objective_from_result,
     _runtime_identity_complete,
     app,
     controller,
@@ -68,6 +69,42 @@ def test_graen_engineering_requirement_becomes_manual_software_objective():
         "protected_authority": False,
     }
     assert objective["metadata"]["codex_scope"]["allowed_paths"] == requirement["suggested_paths"]
+
+
+
+def test_paper_pass_becomes_protected_live_risk_decision():
+    result = {
+        "condition": "HUMAN_DECISION_REQUIRED",
+        "decision": "HUMAN_DECISION_REQUIRED",
+        "graen_problem_id": "problem-paper-1",
+        "candidate_id": "AUTO-PAPER-VALIDATED-01",
+        "checkpoint": {
+            "status": "PAPER_PASSED",
+            "live_execution_authorized": False,
+        },
+        "paper_activation": {
+            "activation_id": "paper-123",
+        },
+        "protected_decision": {
+            "decision_type": "LIVE_RISK_CHARTER",
+            "candidate_id": "AUTO-PAPER-VALIDATED-01",
+            "requested_action": (
+                "Authorize, reject, or archive real-money canary promotion."
+            ),
+            "risk_increase_authorized": False,
+        },
+    }
+    objective = _human_decision_objective_from_result(result)
+    assert objective is not None
+    assert objective["objective_key"] == (
+        "decision.live-risk.auto-paper-validated-01"
+    )
+    assert objective["protected_action"] is True
+    assert objective["metadata"]["job_type"] == "HUMAN_DECISION"
+    assert objective["metadata"]["automatic_live_promotion"] is False
+    assert objective["metadata"]["automatic_risk_increase"] is False
+    assert objective["success_criteria"]["explicit_human_decision"] is True
+    assert objective["metadata"]["paper_checkpoint"]["status"] == "PAPER_PASSED"
 
 
 def test_runtime_identity_complete_requires_revision_and_deployment():
