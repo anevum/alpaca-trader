@@ -14,6 +14,22 @@ TERMINAL = {"VERIFIED", "FAILED", "SUPERSEDED"}
 LIFECYCLE = {"PREPARED", "IN_PROGRESS", "PR_OPEN", "MERGED", "VERIFYING", "VERIFIED", "FAILED", "SUPERSEDED"}
 ALLOWED_PREFIXES = ("app/iren/", "foundation/iren_", "tests/test_iren_", "docs/iren/")
 ALLOWED_FILES = {"foundation/command_iren.py"}
+RESEARCH_ENGINEERING_ALLOWED_PREFIXES = (
+    "app/graen/",
+    "app/research_agent/",
+    "graen/",
+    "research/crypto/",
+    "foundation/graen_",
+    "foundation/research_agent_",
+    "tests/test_graen_",
+    "tests/test_research_",
+    "tests/test_generated_",
+    "docs/graen/",
+)
+RESEARCH_ENGINEERING_SERVICE_SCOPE = {
+    "IREN", "IREN_EXECUTOR", "FOUNDATION",
+    "GRAEN", "GRAEN_EXECUTOR", "RESEARCH_AGENT", "VELUM", "CRYPTO_EDGE",
+}
 PROTECTED = (
     "RHEN strategy logic, risk controls, stops, targets, position sizing, capital allocation, "
     "broker behavior, live execution permissions, crypto execution, credentials, API spending "
@@ -67,12 +83,28 @@ def package_for(objective: dict, *, handoff_id: str, command_id: str | None,
     if not isinstance(criteria, dict) or not criteria:
         raise ValueError("objective_success_criteria_required")
     scope = meta.get("codex_scope") or {}
+    research_engineering = (
+        meta.get("manual_software_required") is True
+        and isinstance(meta.get("engineering_requirement"), dict)
+    )
     paths = scope.get("allowed_paths") or list(ALLOWED_PREFIXES) + sorted(ALLOWED_FILES)
-    if not all(path_allowed(p) for p in paths):
-        raise ValueError("scope_exceeds_iren_boundary")
+    if not all(
+        path_allowed(p, research_engineering=research_engineering)
+        for p in paths
+    ):
+        raise ValueError(
+            "scope_exceeds_research_engineering_boundary"
+            if research_engineering
+            else "scope_exceeds_iren_boundary"
+        )
     services = scope.get("expected_services") or ["IREN"]
-    if not services or not set(services) <= {"IREN", "IREN_EXECUTOR", "FOUNDATION"}:
-        raise ValueError("deployment_scope_exceeds_iren_boundary")
+    allowed_services = (
+        RESEARCH_ENGINEERING_SERVICE_SCOPE
+        if research_engineering
+        else {"IREN", "IREN_EXECUTOR", "FOUNDATION"}
+    )
+    if not services or not set(services) <= allowed_services:
+        raise ValueError("deployment_scope_exceeds_reviewed_boundary")
     incidents = [{"key": k, "reason": v.get("reason"), "severity": v.get("severity")}
                  for k, v in (control.get("incidents") or {}).items() if v.get("status") == "OPEN"]
     rows = (control.get("topology") or {}).get("services") or []
@@ -99,6 +131,9 @@ def package_for(objective: dict, *, handoff_id: str, command_id: str | None,
         "inventory_complete": (control.get("topology") or {}).get("inventory_complete") is True,
         "configuration_identity": (control.get("configuration_baseline") or {}).get("fingerprint"),
         "protected_boundaries": PROTECTED, "protected_authority": False,
+        "research_engineering": research_engineering,
+        "manual_software_required": meta.get("manual_software_required") is True,
+        "engineering_requirement": deepcopy(meta.get("engineering_requirement")),
         "paid_model_execution": False, "auto_merge": False,
         "branch": "codex/handoff/" + handoff_id,
     }
@@ -107,10 +142,15 @@ def package_for(objective: dict, *, handoff_id: str, command_id: str | None,
     return result
 
 
-def path_allowed(path: str) -> bool:
+def path_allowed(path: str, *, research_engineering: bool = False) -> bool:
     if not isinstance(path, str) or ".." in path or path.startswith("/") or "\\" in path:
         return False
-    return path in ALLOWED_FILES or any(path.startswith(prefix) for prefix in ALLOWED_PREFIXES)
+    if path in ALLOWED_FILES or any(path.startswith(prefix) for prefix in ALLOWED_PREFIXES):
+        return True
+    return (
+        research_engineering
+        and any(path.startswith(prefix) for prefix in RESEARCH_ENGINEERING_ALLOWED_PREFIXES)
+    )
 
 
 def render_prompt(p: dict) -> str:
@@ -167,7 +207,11 @@ Canonical package (acceptance, verification, dependencies, incidents, scope and 
 
 def criteria_from_observations(package: dict, observations: dict) -> dict:
     """Only a fixed read-only observation namespace; no caller-supplied truth flags."""
-    criteria = {}
+    criteria = {
+        "manual_software_handoff": package.get("paid_model_execution") is False
+        and package.get("auto_merge") is False,
+        "protected_authority": package.get("protected_authority") is True,
+    }
     for name, check in package.get("verification_checks", {}).items():
         if not isinstance(check, dict) or check.get("source") not in {"IREN", "IREN_EXECUTOR", "FOUNDATION"}:
             continue
@@ -195,8 +239,18 @@ def verification(package: dict, github: dict, control: dict, observations: dict,
     require(github.get("merged") is True and github.get("landed") is True, "expected_commit_not_on_main")
     require(github.get("ci_passed") is True, "required_ci_evidence_missing")
     files = github.get("files") or []
-    require(bool(files) and all(path_allowed(f) and any(f == p or f.startswith(p) for p in package["allowed_paths"])
-                              for f in files), "changed_files_outside_reviewed_scope")
+    require(
+        bool(files)
+        and all(
+            path_allowed(
+                f,
+                research_engineering=package.get("research_engineering") is True,
+            )
+            and any(f == p or f.startswith(p) for p in package["allowed_paths"])
+            for f in files
+        ),
+        "changed_files_outside_reviewed_scope",
+    )
     require(fresh(control.get("observed_at"), now), "control_observation_stale")
     require(control.get("state") == "HEALTHY", "control_not_healthy")
     require(not any(v.get("status") == "OPEN" for v in (control.get("incidents") or {}).values()), "active_incidents")
