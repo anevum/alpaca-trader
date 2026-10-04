@@ -152,6 +152,10 @@ class CandidateShadowHost:
     @classmethod
     def activation_id(cls, payload: Mapping[str, Any]) -> str:
         material = cls._activation_material(payload)
+        # graen_run_id is a transient worker attempt identity. Excluding it makes
+        # remote activation idempotent across crash/reclaim retries while the
+        # frozen problem/candidate/corpus identity remains unchanged.
+        material.pop("graen_run_id", None)
         digest = hashlib.sha256(
             json.dumps(
                 material,
