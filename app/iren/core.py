@@ -121,6 +121,33 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
         if row.get("broker_orders_possible") is True or row.get("execution_authority") is True:
             issue("safety." + name, "critical", "research_execution_authority_present")
 
+    graen_executor = services.get("GRAEN_EXECUTOR", {})
+    if graen_executor.get("ok") is True:
+        if graen_executor.get("runtime_source_mutation_authorized") is True:
+            issue(
+                "safety.GRAEN_SOURCE_MUTATION",
+                "critical",
+                "research_runtime_source_mutation_authority_present",
+            )
+        productivity_window = int(policy.get("research_productivity_stale_seconds") or 1800)
+        research_active = graen_executor.get("activity_active") is True
+        recent_claim = fresh(graen_executor.get("last_claim_at"), now, productivity_window)
+        recent_completion = fresh(
+            graen_executor.get("last_completion_at"), now, productivity_window
+        )
+        runtime_started_at = (
+            (graen_executor.get("runtime_identity") or {}).get("runtime_started_at")
+            if isinstance(graen_executor.get("runtime_identity"), dict)
+            else None
+        )
+        recently_started = fresh(runtime_started_at, now, productivity_window)
+        if not research_active and not recent_claim and not recent_completion and not recently_started:
+            issue(
+                "productivity.GRAEN",
+                "warning",
+                "autonomous_research_not_making_progress",
+            )
+
     incidents = previous.get("incidents", {})
     events = []
     for key in sorted(set(issues) | set(incidents)):
