@@ -359,3 +359,116 @@ def test_r2h_second_transport_retry_requires_internal_velum_url():
         assert runtime.gateway.queued == []
 
     asyncio.run(scenario())
+
+
+def test_r2h_port_8080_repair_allows_exactly_third_transport_retry():
+    async def scenario():
+        snapshot = {
+            "problems": [{
+                "problem_id": PROBLEM_ID,
+                "status": "BLOCKED",
+                "domain": service.PROBLEM_DOMAIN,
+                "metadata": {
+                    "research_stage": service.V14_R2H_VELUM_STAGE,
+                    "v14_r2h_candidate_spec": service.v14_r2h_candidate_spec().to_dict(),
+                    "v14_r2h_velum_transport_recovery_version": 2,
+                },
+            }],
+            "runs": [{
+                "run_id": "blocked-run-3",
+                "problem_id": PROBLEM_ID,
+                "status": "BLOCKED",
+                "started_at": "2026-10-04T16:22:34+00:00",
+                "result_summary": {
+                    "state": "RESEARCH_EXECUTION_BLOCKED",
+                    "error": "ConnectError: All connection attempts failed",
+                },
+            }],
+        }
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+        runtime.velum_base_url = "http://rhen-velum.railway.internal:8080"
+
+        result = await runtime._recover_blocked_r2h_velum_transport(snapshot)
+
+        assert result["recovered"] is True
+        assert result["retry_count"] == 3
+        metadata = runtime.gateway.queued[-1]["metadata"]
+        assert metadata["v14_r2h_velum_transport_recovery_version"] == 3
+        assert runtime.gateway.artifacts[-1]["content"]["repair"] == (
+            "retry_after_velum_port_8080_repair"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_r2h_third_transport_retry_requires_internal_8080_url():
+    async def scenario():
+        snapshot = {
+            "problems": [{
+                "problem_id": PROBLEM_ID,
+                "status": "BLOCKED",
+                "domain": service.PROBLEM_DOMAIN,
+                "metadata": {
+                    "research_stage": service.V14_R2H_VELUM_STAGE,
+                    "v14_r2h_candidate_spec": service.v14_r2h_candidate_spec().to_dict(),
+                    "v14_r2h_velum_transport_recovery_version": 2,
+                },
+            }],
+            "runs": [{
+                "run_id": "blocked-run-3",
+                "problem_id": PROBLEM_ID,
+                "status": "BLOCKED",
+                "started_at": "2026-10-04T16:22:34+00:00",
+                "result_summary": {
+                    "state": "RESEARCH_EXECUTION_BLOCKED",
+                    "error": "ConnectError: All connection attempts failed",
+                },
+            }],
+        }
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+        runtime.velum_base_url = "http://rhen-velum.railway.internal:80"
+
+        result = await runtime._recover_blocked_r2h_velum_transport(snapshot)
+
+        assert result is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+def test_r2h_transport_recovery_version_three_is_terminal():
+    async def scenario():
+        snapshot = {
+            "problems": [{
+                "problem_id": PROBLEM_ID,
+                "status": "BLOCKED",
+                "domain": service.PROBLEM_DOMAIN,
+                "metadata": {
+                    "research_stage": service.V14_R2H_VELUM_STAGE,
+                    "v14_r2h_candidate_spec": service.v14_r2h_candidate_spec().to_dict(),
+                    "v14_r2h_velum_transport_recovery_version": 3,
+                },
+            }],
+            "runs": [{
+                "run_id": "blocked-run-4",
+                "problem_id": PROBLEM_ID,
+                "status": "BLOCKED",
+                "started_at": "2026-10-04T16:25:30+00:00",
+                "result_summary": {
+                    "state": "RESEARCH_EXECUTION_BLOCKED",
+                    "error": "ConnectError: All connection attempts failed",
+                },
+            }],
+        }
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+        runtime.velum_base_url = "http://rhen-velum.railway.internal:8080"
+
+        result = await runtime._recover_blocked_r2h_velum_transport(snapshot)
+
+        assert result is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
