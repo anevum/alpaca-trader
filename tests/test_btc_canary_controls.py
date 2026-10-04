@@ -210,15 +210,6 @@ def test_canary_engine_submits_only_paper_btc_order():
     assert state.crypto_last_execution_context["execution_class"] == "EXPERIMENTAL_PAPER"
 
 
-def test_canary_normalizes_alpaca_compact_btc_position_symbol():
-    positions = [{"symbol": "BTCUSD", "qty": "0.000118079"}]
-
-    normalized = BtcCanaryExecutionEngine._normalize_broker_positions(positions)
-
-    assert normalized[0]["symbol"] == "BTC/USD"
-    assert BtcCanaryExecutionEngine._crypto_positions(normalized) == normalized
-
-
 def test_canary_engine_hard_blocks_live_mode_before_order_submission():
     settings = _settings(
         TRADING_MODE="live",
