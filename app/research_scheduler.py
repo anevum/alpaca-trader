@@ -132,6 +132,8 @@ class ResearchReportScheduler:
         }
 
     async def start(self) -> None:
+        if getattr(self.settings, "crypto_execution_mode", "") == "experimental_canary":
+            return
         if self.task is None:
             self.task = asyncio.create_task(self._run())
 
