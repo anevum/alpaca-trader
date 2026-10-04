@@ -242,13 +242,25 @@ def test_autopilot_creates_only_safe_control_reconcile_work():
     assert len(decision["action_signature"]) == 64
 
 
-def test_autopilot_refuses_model_backed_software_build():
+def test_autopilot_skips_manual_software_and_continues_independent_research():
     data = snapshot()
+    data["objectives"].append({
+        "objective_key": "RESEARCH",
+        "title": "Continue crypto edge discovery",
+        "description": "Run the next bounded GRAEN research problem.",
+        "status": "READY",
+        "priority": 80,
+        "dependencies": ["ENGINE"],
+        "owner_system": "GRAEN",
+        "protected_action": False,
+        "success_criteria": {"research_progress_restored": True},
+        "metadata": {"job_type": "GRAEN_RESEARCH_PROBLEM"},
+    })
     data["settings"] = {"autopilot_enabled": True, "autopilot_max_jobs_per_day": 3}
     decision = autopilot_decision(data, {"state": "HEALTHY", "incidents": {}})
-    assert decision["should_create"] is False
-    assert decision["reason"] == "executor_capability_required"
-    assert decision["action"]["job_type"] == "SOFTWARE_BUILD"
+    assert decision["should_create"] is True
+    assert decision["action"]["job_type"] == "GRAEN_RESEARCH_PROBLEM"
+    assert any("manual software" in row for row in decision["skipped_actions"])
 
 
 def test_autopilot_does_not_repeat_same_completed_action():
