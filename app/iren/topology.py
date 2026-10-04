@@ -33,7 +33,7 @@ def bounded_health(name, body):
     result = {key: body[key] for key in fields if key in body}
     if "current_activity" in body:
         result["current_activity"] = body["current_activity"]
-    for key in ("last_heartbeat_at", "last_claim_at", "last_completion_at"):
+    for key in ("last_heartbeat_at", "last_claim_at", "last_completion_at", "waiting_dependency_until"):
         value = body.get(key)
         if value is None:
             continue
@@ -43,6 +43,13 @@ def bounded_health(name, body):
         if parsed.tzinfo is None:
             raise ValueError("malformed_activity_timestamp")
         result[key] = value
+    engineering_required_count = body.get("engineering_required_count")
+    if engineering_required_count is not None:
+        if isinstance(engineering_required_count, bool) or not isinstance(engineering_required_count, int):
+            raise ValueError("malformed_engineering_required_count")
+        if engineering_required_count < 0 or engineering_required_count > 10000:
+            raise ValueError("malformed_engineering_required_count")
+        result["engineering_required_count"] = engineering_required_count
     active_problem_id = body.get("active_problem_id")
     if active_problem_id is not None:
         if not isinstance(active_problem_id, str) or len(active_problem_id) > 128:
@@ -109,7 +116,22 @@ def topology(observation, state, self_identity):
         # subsystem is doing useful work right now. Default healthy runtimes to
         # IDLE and require an explicit activity signal to project RUNNING.
         activity_active = health.get("activity_active") is True
-        status = "OFFLINE" if not alive else "RUNNING" if activity_active else "IDLE"
+        dependency_wait = False
+        wait_raw = health.get("waiting_dependency_until")
+        if isinstance(wait_raw, str):
+            try:
+                wait_stamp = datetime.fromisoformat(wait_raw.replace("Z", "+00:00"))
+                dependency_wait = wait_stamp.tzinfo is not None and wait_stamp > now
+            except ValueError:
+                dependency_wait = False
+        engineering_wait = int(health.get("engineering_required_count") or 0) > 0
+        status = (
+            "OFFLINE" if not alive
+            else "RUNNING" if activity_active
+            else "ENGINEERING_REQUIRED" if engineering_wait
+            else "WAITING" if dependency_wait
+            else "IDLE"
+        )
         if alive and not ready:
             status = "DEGRADED"
         if incidents.get("service." + name, {}).get("status") == "OPEN":
@@ -134,7 +156,8 @@ def topology(observation, state, self_identity):
             last_heartbeat_at=stamp if alive else None, liveness=alive, readiness=ready, status=status,
             current_activity=(
                 health.get("current_activity")
-                if activity_active and health.get("current_activity")
+                if (activity_active or dependency_wait or engineering_wait)
+                and health.get("current_activity")
                 else None
             ),
             last_success=stamp if ready else None,
