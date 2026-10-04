@@ -1,14 +1,29 @@
-"""Durable, bounded research-code handoff in the GRAEN control loop."""
+"""Manual engineering handoff for GRAEN research capabilities.
+
+Runtime research may freeze specifications and request missing software, but it may
+not edit source, create branches/PRs, merge, or deploy. After an operator/Codex
+change is deployed, this controller verifies that the deployed implementation
+matches the frozen specification and resumes research automatically.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from importlib import import_module
 import uuid
+from typing import Any, Mapping
 
 from graen.engineering import (
-    CANONICAL_BRANCH, MAX_ATTEMPTS, TRIGGERS, IntegrityError, ProtectedChange,
-    compile_bundle, digest, validate_spec, verify_bundle, verify_ci, verify_exposure, stamp,
+    IntegrityError,
+    TRIGGERS,
+    compile_bundle,
+    digest,
+    validate_spec,
+    verify_bundle,
+    verify_exposure,
 )
-from .research_repository import GitHubRepository, AuthorizationDenied, TransportUnavailable
+from app.research_agent.autonomy import build_engineering_requirement
+
+UTC = timezone.utc
 
 
 class PromotionStore:
@@ -16,166 +31,170 @@ class PromotionStore:
         self.gateway = gateway
 
     async def claim(self, problem_id, owner):
-        return await self.gateway._request("POST", {
-            "action": "research_promotion_claim", "problem_id": problem_id, "owner": owner,
-        })
+        return await self.gateway._request(
+            "POST",
+            {"action": "research_promotion_claim", "problem_id": problem_id, "owner": owner},
+        )
 
     async def save(self, problem_id, owner, revision, state):
-        return await self.gateway._request("POST", {
-            "action": "research_promotion_save", "problem_id": problem_id,
-            "owner": owner, "expected_revision": revision, "state": state,
-        })
+        return await self.gateway._request(
+            "POST",
+            {
+                "action": "research_promotion_save",
+                "problem_id": problem_id,
+                "owner": owner,
+                "expected_revision": revision,
+                "state": state,
+            },
+        )
+
+
+def _module_name(spec: Mapping[str, Any]) -> str:
+    return str(spec["hypothesis_id"]).lower().replace("-", "_")
+
+
+def _manual_resolution(
+    spec: Mapping[str, Any],
+    spec_hash: str,
+    heartbeat: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return deployed provenance only when exact frozen implementation is importable."""
+    try:
+        implementation = import_module("graen.crypto.generated." + _module_name(spec))
+    except (ImportError, ModuleNotFoundError):
+        return None
+
+    if getattr(implementation, "SPEC_HASH", None) != spec_hash:
+        return None
+    deployed_spec = getattr(implementation, "SPEC", None)
+    if not isinstance(deployed_spec, Mapping) or digest(dict(deployed_spec)) != spec_hash:
+        return None
+    if not callable(getattr(implementation, "evaluate", None)):
+        return None
+
+    source_commit = str(heartbeat.get("source_commit") or "").strip()
+    deployment_id = str(heartbeat.get("deployment_id") or "").strip()
+    heartbeat_at = str(heartbeat.get("heartbeat_at") or "").strip()
+    if not source_commit or not deployment_id or not heartbeat_at:
+        return None
+    try:
+        stamp = datetime.fromisoformat(heartbeat_at.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        if not (0 <= (datetime.now(UTC) - stamp.astimezone(UTC)).total_seconds() <= 300):
+            return None
+    except ValueError:
+        return None
+
+    return {
+        "verified": True,
+        "source_commit": source_commit,
+        "deployment_id": deployment_id,
+        "heartbeat_at": heartbeat_at,
+        "module": "graen.crypto.generated." + _module_name(spec),
+        "spec_hash": spec_hash,
+        "verification": "deployed_module_matches_frozen_prespec",
+    }
+
+
+def _requirement(spec: Mapping[str, Any], spec_hash: str) -> dict[str, Any]:
+    files = compile_bundle(dict(spec))
+    verify_bundle(dict(spec), files)
+    hypothesis_id = str(spec["hypothesis_id"])
+    expected_paths = sorted(files)
+    return build_engineering_requirement(
+        requirement_id="ENG-" + spec_hash[:12].upper(),
+        requested_by="GRAEN",
+        title=f"Implement frozen research hypothesis {hypothesis_id}",
+        reason=(
+            "GRAEN produced a frozen research specification that cannot execute until "
+            "the required trusted software implementation exists in the deployed runtime."
+        ),
+        capability_required=(
+            f"Trusted deterministic implementation for {hypothesis_id} matching frozen "
+            f"specification hash {spec_hash}."
+        ),
+        affected_components=["GRAEN research compiler", "GRAEN research executor", "research tests"],
+        blocked_research=[hypothesis_id],
+        acceptance_tests=[
+            "Deployed implementation exposes SPEC and SPEC_HASH matching the frozen specification.",
+            "Deployed implementation exposes deterministic evaluate(...) behavior.",
+            "Protected trading/risk/broker code remains unchanged.",
+            "Relevant research and CI suites pass.",
+            "GRAEN research executor reports a fresh deployment heartbeat and automatically resumes DEVELOPMENT.",
+        ],
+        suggested_paths=expected_paths,
+        continuation_policy="Continue every independent research branch while this hypothesis waits for software.",
+        risk="LOW",
+        implementation_notes=[
+            "Use the frozen prespec exactly; do not tune parameters while implementing.",
+            "Do not open validation or holdout data during software implementation.",
+            "Do not grant the runtime GitHub write, merge, deployment, or live-trading authority.",
+        ],
+    )
 
 
 class ResearchPromotion:
+    """Converts implementation gaps into manual engineering work packages."""
+
     def __init__(self, gateway, repository=None):
+        # repository is intentionally accepted for backwards constructor
+        # compatibility but is never used. Runtime source mutation is forbidden.
         self.store = PromotionStore(gateway)
-        self.repository = repository or GitHubRepository()
+        self.repository = None
 
     async def tick(self, problem_id):
         owner = str(uuid.uuid4())
         claim = await self.store.claim(problem_id, owner)
         if not claim.get("claimed"):
             return {"state": "NOT_CLAIMED"}
+
         revision = claim["revision"]
         state = dict(claim.get("state") or {})
-        state.setdefault("phase", "FREEZE")
         try:
             spec = claim.get("prespec")
             if not isinstance(spec, dict):
                 raise IntegrityError("complete_frozen_prespec_required")
             spec_hash = validate_spec(spec)
             verify_exposure(spec, claim.get("exposure") or {})
-            if state.get("spec_hash") and state["spec_hash"] != spec_hash:
+            if state.get("spec_hash") and (
+                state.get("spec_hash") != spec_hash or state.get("prespec") != spec
+            ):
                 raise IntegrityError("frozen_prespec_mutation")
-            phase = state["phase"]
+
+            phase = str(state.get("phase") or "FREEZE")
             if phase == "FREEZE":
-                # save is an atomic durable artifact + state transaction. Branch
-                # creation happens on a later tick, after read-back verification.
-                state.update({
-                    "phase": "BRANCH", "prespec": spec, "spec_hash": spec_hash,
-                    "epoch": spec["epoch"], "attempt": 0, "history": [],
-                    "research_only": True, "execution_authority": False,
-                })
-            else:
-                if not claim.get("prespec_artifact_id"):
-                    raise IntegrityError("durable_prespec_missing")
-                if not self.repository.configured:
-                    raise AuthorizationDenied("runtime_github_authorization_not_configured")
-                files = compile_bundle(spec)
-                verify_bundle(spec, files)
-                if phase == "BRANCH":
-                    if state["attempt"] >= MAX_ATTEMPTS:
-                        raise IntegrityError("bounded_engineering_attempts_exhausted")
-                    base = await self.repository.head()
-                    branch = "research-code/" + spec["hypothesis_id"].lower() + "-" + spec_hash[:12] + "-" + base[:12]
-                    await self.repository.create_branch(branch, base)
-                    state.update(phase="WRITE", base_sha=base, branch=branch, attempt=state["attempt"] + 1)
-                elif phase == "WRITE":
-                    # Canonical movement creates a fresh branch; never rebase or
-                    # force-write over another researcher's branch.
-                    if await self.repository.head() != state["base_sha"]:
-                        state["history"].append({key: state.get(key) for key in ("branch", "base_sha", "head_sha", "pr")})
-                        state["phase"] = "BRANCH"
-                    else:
-                        head = await self.repository.head(state["branch"])
-                        if head != state["base_sha"]:
-                            if not await self.repository.bundle_matches(head, files):
-                                raise IntegrityError("unexpected_branch_contents")
-                            transport = "reconciled"
-                        else:
-                            head, transport = await self.repository.write(
-                                state["branch"], state["base_sha"], files,
-                                "Research: compile " + spec["hypothesis_id"],
-                            )
-                        state.update(phase="PR", head_sha=head, write_transport=transport)
-                elif phase == "PR":
-                    number = await self.repository.open_pr(
-                        state["branch"], "Research: " + spec["hypothesis_id"],
-                        "Frozen specification: " + spec_hash + "\nEpoch: " + spec["epoch"] +
-                        "\nResearch-only bounded compiler output. No execution authority.",
+                state = {
+                    "phase": "ENGINEERING_REQUIRED",
+                    "prespec": spec,
+                    "spec_hash": spec_hash,
+                    "epoch": spec["epoch"],
+                    "engineering_requirement": _requirement(spec, spec_hash),
+                    "research_only": True,
+                    "execution_authority": False,
+                    "runtime_code_mutation_authorized": False,
+                    "runtime_git_write_authorized": False,
+                    "runtime_merge_authorized": False,
+                    "runtime_deploy_authorized": False,
+                }
+            elif phase == "ENGINEERING_REQUIRED":
+                resolved = _manual_resolution(
+                    spec,
+                    spec_hash,
+                    claim.get("executor_heartbeat") or {},
+                )
+                if resolved is not None:
+                    state.update(
+                        phase="COMPLETE",
+                        manual_resolution=resolved,
+                        resume_stage="CRYPTO_COMPILED_DEVELOPMENT",
+                        blocked_reason=None,
                     )
-                    state.update(phase="CI", pr=number)
-                elif phase == "CI":
-                    info = await self.repository.pr(state["pr"])
-                    if info["head"]["sha"] != state["head_sha"] or info["base"]["ref"] != CANONICAL_BRANCH:
-                        raise IntegrityError("pull_request_identity_changed")
-                    if info.get("merged"):
-                        # Recover a merge whose response/state write was lost.
-                        state.update(phase="DEPLOY", merge_sha=info["merge_commit_sha"])
-                    elif info.get("state") != "open":
-                        raise IntegrityError("pull_request_closed_without_merge")
-                    elif await self.repository.head() != state["base_sha"]:
-                        state["history"].append({key: state.get(key) for key in ("branch", "base_sha", "head_sha", "pr")})
-                        state["phase"] = "BRANCH"
-                    else:
-                        diff = await self.repository.diff(state["pr"])
-                        if {row["filename"] for row in diff} != set(files) or any(
-                            row.get("status") not in {"added", "modified"} or row.get("previous_filename")
-                            for row in diff
-                        ):
-                            raise ProtectedChange("protected_or_unexpected_pull_request_diff")
-                        if not await self.repository.bundle_matches(state["head_sha"], files):
-                            raise ProtectedChange("pull_request_bytes_not_compiler_output")
-                        runs = await self.repository.ci(state["head_sha"])
-                        if verify_ci(runs, head=state["head_sha"], pr_number=state["pr"]):
-                            state["ci"] = [{
-                                "id": row["id"], "head_sha": row["head_sha"],
-                                "run_attempt": row.get("run_attempt", 1),
-                                "conclusion": row["conclusion"],
-                            } for row in runs if row["head_sha"] == state["head_sha"]]
-                            result = await self.repository.merge(state["pr"], state["head_sha"])
-                            if result.get("merged") is not True or not result.get("sha"):
-                                raise IntegrityError("merge_not_verified")
-                            state.update(phase="DEPLOY", merge_sha=result["sha"])
-                        elif any(row.get("conclusion") in {"timed_out", "startup_failure"} for row in runs):
-                            attempts = int(state.get("ci_infrastructure_retries", 0))
-                            eligible = [row for row in runs if row.get("head_sha") == state["head_sha"]
-                                and row.get("conclusion") in {"timed_out", "startup_failure"}]
-                            if attempts < 2 and eligible:
-                                failed = max(eligible, key=lambda row: row["id"])
-                                marker = [failed["id"], failed.get("run_attempt", 1)]
-                                if state.get("last_ci_retry") != marker:
-                                    await self.repository.retry_ci_infrastructure(failed["id"])
-                                    state.update(ci_infrastructure_retries=attempts + 1, last_ci_retry=marker)
-                            else:
-                                state["blocked_reason"] = "bounded_ci_infrastructure_retries_exhausted"
-                        elif any(row.get("conclusion") == "failure" for row in runs):
-                            # Exact compiler output cannot safely repair arbitrary
-                            # compiler/CI defects or modify methodology parameters.
-                            # The failure and unchanged prespec remain durable.
-                            state["blocked_reason"] = "trusted_compiler_or_ci_repair_required"
-                elif phase == "DEPLOY":
-                    heartbeat = claim.get("executor_heartbeat") or {}
-                    fresh = heartbeat.get("heartbeat_at") and 0 <= (
-                        datetime.now(timezone.utc) - stamp(heartbeat["heartbeat_at"])
-                    ).total_seconds() <= 180
-                    if (
-                        heartbeat.get("source_commit") == state["merge_sha"]
-                        and heartbeat.get("deployment_id") and fresh
-                        and not heartbeat.get("last_error")
-                    ):
-                        state.update(
-                            phase="RESUME", deployment_id=heartbeat["deployment_id"],
-                            executor_heartbeat_at=heartbeat["heartbeat_at"],
-                        )
-                elif phase == "RESUME":
-                    # The gateway atomically verifies no competing active run,
-                    # writes provenance and queues only frozen DEVELOPMENT.
-                    state["phase"] = "COMPLETE"
-                    state["resume_stage"] = "CRYPTO_COMPILED_DEVELOPMENT"
-                elif phase != "COMPLETE":
-                    raise IntegrityError("unknown_promotion_phase")
-            if state.get("blocked_reason") == "runtime_github_authorization_not_configured" and self.repository.configured:
-                state.pop("blocked_reason", None)
-        except AuthorizationDenied as exc:
-            state["blocked_reason"] = str(exc)
-        except TransportUnavailable as exc:
-            # Retried on the next bounded tick, without changing specification.
-            state["blocked_reason"] = "transient_repository_transport:" + str(exc)
+            elif phase != "COMPLETE":
+                raise IntegrityError("unknown_manual_engineering_phase")
         except (IntegrityError, KeyError, ValueError) as exc:
             state["blocked_reason"] = str(exc)
-            state["protected_decision_required"] = isinstance(exc, ProtectedChange)
+
         await self.store.save(problem_id, owner, revision, state)
         return state
 
@@ -191,14 +210,18 @@ def engineering_problem_ids(snapshot):
         metadata = problem.get("metadata") or {}
         promotion = metadata.get("code_promotion") or {}
         research_stage = str(metadata.get("research_stage") or "")
-        # An explicitly queued native CRYPTO_* stage already has trusted
-        # implementation in the deployed runtime. It owns the problem until
-        # that stage completes; generic code promotion must not race it.
+
         if research_stage.startswith("CRYPTO_") and not research_stage.startswith("CRYPTO_COMPILED_"):
-            continue
+            if research_stage != "RESEARCH_IMPLEMENTATION_REQUIRED":
+                continue
+
         summary = latest.get(str(problem.get("problem_id")), {})
-        triggered = any(summary.get(key) in TRIGGERS for key in ("state", "decision", "next_action"))
-        if promotion.get("phase") == "COMPLETE":
+        triggered = any(
+            summary.get(key) in TRIGGERS
+            for key in ("state", "decision", "next_action")
+        )
+        phase = str(promotion.get("phase") or "")
+        if phase == "COMPLETE":
             continue
         if triggered or promotion or research_stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
             yield str(problem["problem_id"])
