@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+import asyncio
+import pytest
+
 from app.config import Settings
 import graen.crypto.candidate_shadow as candidate_shadow
 from graen.crypto.activity_shock_v9 import (
@@ -413,3 +416,104 @@ def test_r2f_shadow_positive_fresh_daily_marks_only_reach_human_review():
     assert checkpoint["promotion_authorized"] is False
     assert checkpoint["execution_authority"] is False
     assert checkpoint["broker_orders_possible"] is False
+
+
+def _r2f_runtime_with_rows(rows):
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(r2f_activation())
+
+    class FakeMarketData:
+        async def bars_many(self, *args, **kwargs):
+            return {"BTC/USD": rows}
+
+    runtime.market_data = FakeMarketData()
+    return runtime
+
+
+@pytest.mark.parametrize("close", [float("nan"), float("inf"), float("-inf"), 0, -1, None, "bad"])
+def test_r2f_invalid_completed_price_cannot_mutate_evidence(close):
+    rows = _daily_rows(datetime(2026, 3, 1, tzinfo=UTC), 220)
+    rows[200]["c"] = close
+    runtime = _r2f_runtime_with_rows(rows)
+    before = runtime.snapshot()
+    with pytest.raises(ValueError, match="r2f_daily_close_invalid"):
+        asyncio.run(runtime.cycle(now=datetime(2026, 10, 3, 1, tzinfo=UTC)))
+    assert runtime.snapshot() == before
+
+
+@pytest.mark.parametrize("defect,reason", [
+    ("timestamp", "timestamp_invalid"),
+    ("duplicate", "duplicate_conflict"),
+    ("gap", "calendar_gap"),
+    ("empty", "history_incomplete"),
+    ("stale", "data_stale"),
+])
+def test_r2f_invalid_daily_corpus_fails_closed(defect, reason):
+    rows = _daily_rows(datetime(2026, 3, 1, tzinfo=UTC), 220)
+    if defect == "timestamp":
+        rows[200]["t"] = "invalid"
+    elif defect == "duplicate":
+        rows.append({**rows[200], "c": rows[200]["c"] + 1})
+    elif defect == "gap":
+        del rows[200]
+    elif defect == "empty":
+        rows.clear()
+    elif defect == "stale":
+        del rows[210:]
+    runtime = _r2f_runtime_with_rows(rows)
+    before = runtime.snapshot()
+    with pytest.raises(ValueError, match="r2f_daily_" + reason):
+        asyncio.run(runtime.cycle(now=datetime(2026, 10, 3, 1, tzinfo=UTC)))
+    assert runtime.snapshot() == before
+
+
+def test_r2f_identical_duplicates_and_incomplete_prices_do_not_change_marks():
+    async def scenario():
+        now = datetime(2026, 10, 3, 1, tzinfo=UTC)
+        rows = _daily_rows(datetime(2026, 3, 1, tzinfo=UTC), 220)
+        clean = _r2f_runtime_with_rows(rows)
+        expected = await clean.cycle(now=now)
+        noisy_rows = [dict(row) for row in rows]
+        for row in noisy_rows:
+            if datetime.fromisoformat(row["t"].replace("Z", "+00:00")) + timedelta(days=1) > now:
+                row["c"] = float("nan")
+        noisy_rows.append(dict(noisy_rows[200]))
+        noisy = _r2f_runtime_with_rows(list(reversed(noisy_rows)))
+        assert await noisy.cycle(now=now) == expected
+        assert noisy.snapshot() == clean.snapshot()
+        assert len(noisy.r2f_daily_marks) == 1
+        assert await noisy.cycle(now=now) == []
+        assert len(noisy.r2f_daily_marks) == 1
+    asyncio.run(scenario())
+
+
+def test_r2f_gap_repair_resumes_exactly_once_after_restart():
+    async def scenario():
+        rows = _daily_rows(datetime(2026, 3, 1, tzinfo=UTC), 220)
+        runtime = _r2f_runtime_with_rows(rows)
+        await runtime.cycle(now=datetime(2026, 10, 2, 1, tzinfo=UTC))
+        saved = runtime.snapshot()
+        missing = rows.pop(215)  # October 2: first scoreable full day.
+        with pytest.raises(ValueError, match="calendar_gap"):
+            await runtime.cycle(now=datetime(2026, 10, 4, 1, tzinfo=UTC))
+        assert runtime.snapshot() == saved
+        rows.append(missing)
+        restored = _r2f_runtime_with_rows(rows)
+        restored.restore(saved)
+        await restored.cycle(now=datetime(2026, 10, 4, 1, tzinfo=UTC))
+        assert [mark["bar_end"] for mark in restored.r2f_daily_marks] == [
+            "2026-10-03T00:00:00+00:00", "2026-10-04T00:00:00+00:00",
+        ]
+        assert await restored.cycle(now=datetime(2026, 10, 4, 1, tzinfo=UTC)) == []
+    asyncio.run(scenario())
+
+
+def test_r2f_cannot_skip_lost_history_after_extended_outage():
+    runtime = _r2f_runtime_with_rows(
+        _daily_rows(datetime(2026, 3, 1, tzinfo=UTC), 220)
+    )
+    runtime.last_processed_bar_end = datetime(2026, 2, 28, tzinfo=UTC)
+    before = runtime.snapshot()
+    with pytest.raises(ValueError, match="r2f_daily_resume_gap"):
+        asyncio.run(runtime.cycle(now=datetime(2026, 10, 3, 1, tzinfo=UTC)))
+    assert runtime.snapshot() == before

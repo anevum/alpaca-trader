@@ -84,6 +84,45 @@ def _stamp(value: Any) -> datetime:
     return parsed.astimezone(UTC)
 
 
+
+def _r2f_completed_daily_rows(
+    source: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Never compress missing calendar days into daily momentum/evidence."""
+    by_stamp: dict[datetime, dict[str, Any]] = {}
+    for row in source:
+        try:
+            stamp = _stamp(row.get("t"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("r2f_daily_timestamp_invalid") from exc
+        end = stamp + timedelta(days=1)
+        if end > now:
+            continue  # In-progress bars are not evidence.
+        try:
+            close = float(row.get("c", row.get("close")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("r2f_daily_close_invalid") from exc
+        if not isfinite(close) or close <= 0:
+            raise ValueError("r2f_daily_close_invalid")
+        previous = by_stamp.get(stamp)
+        if previous is not None and previous["close"] != close:
+            raise ValueError("r2f_daily_duplicate_conflict")
+        by_stamp[stamp] = {"timestamp": stamp, "bar_end": end, "close": close}
+    rows = [by_stamp[key] for key in sorted(by_stamp)]
+    if len(rows) < V14_R2F_LOOKBACK_DAYS + 2:
+        raise ValueError("r2f_daily_history_incomplete")
+    if any(
+        following["timestamp"] != previous["bar_end"]
+        for previous, following in zip(rows, rows[1:])
+    ):
+        raise ValueError("r2f_daily_calendar_gap")
+    if now - rows[-1]["bar_end"] >= timedelta(days=1):
+        raise ValueError("r2f_daily_data_stale")
+    return rows
+
+
 def _bar_end(row: Mapping[str, Any]) -> datetime:
     return _stamp(row.get("t")) + timedelta(minutes=BAR_MINUTES)
 
@@ -697,24 +736,9 @@ class CandidateForwardShadow:
             timeframe="1Day",
             lookback_minutes=(V14_R2F_LOOKBACK_DAYS + 220) * 1440,
         )
-        by_stamp: dict[datetime, dict[str, Any]] = {}
-        for row in bars_by_symbol.get("BTC/USD", ()):
-            try:
-                stamp = _stamp(row.get("t"))
-                close = float(row.get("c", row.get("close")))
-            except (TypeError, ValueError):
-                continue
-            end = stamp + timedelta(days=1)
-            if close <= 0 or end > current:
-                continue
-            by_stamp[stamp] = {
-                "timestamp": stamp,
-                "bar_end": end,
-                "close": close,
-            }
-        rows = [by_stamp[key] for key in sorted(by_stamp)]
-        if len(rows) < V14_R2F_LOOKBACK_DAYS + 2:
-            return []
+        rows = _r2f_completed_daily_rows(
+            bars_by_symbol.get("BTC/USD", ()), now=current
+        )
 
         activation = self.activation or {}
         activated_at = _stamp(
@@ -763,6 +787,12 @@ class CandidateForwardShadow:
         last_end = self.last_processed_bar_end
         if last_end is None:
             return events
+
+        first_unseen = next(
+            (row for row in rows if row["bar_end"] > last_end), None
+        )
+        if first_unseen is not None and first_unseen["timestamp"] != last_end:
+            raise ValueError("r2f_daily_resume_gap")
 
         for index, row in enumerate(rows):
             end = row["bar_end"]
