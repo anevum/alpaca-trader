@@ -210,6 +210,19 @@ class _CanaryCursor:
                     "bar_interval": "4Hour",
                     "strategy_family": "btc_4h_momentum_or_sma_consensus_experimental_canary",
                     "model_version": "graen-btc-4h-consensus-v14-r2h",
+                    "candidates": [{
+                        "symbol": "BTC/USD",
+                        "features": {
+                            "signal_bar_at": "2026-10-04T20:00:00+00:00",
+                            "signal_close": "123456.78",
+                            "momentum_lookback_bars": 1080,
+                            "sma_window_bars": 1500,
+                            "momentum_return": "0.0842",
+                            "sma": "118500.00",
+                            "desired_long": True,
+                            "completed_bar_count": 12592,
+                        },
+                    }],
                     "comparison_context": {
                         "execution_result": {
                             "action": "hold",
@@ -221,6 +234,8 @@ class _CanaryCursor:
             (
                 datetime(2026, 10, 4, 21, 14, tzinfo=timezone.utc),
                 {
+                    "entry_price": "121000.00",
+                    "current_price": "122512.50",
                     "current_return_pct": "0.0125",
                     "risk_stop_pct": "0.05",
                 },
@@ -242,6 +257,26 @@ class _CanaryCursor:
                     }
                 },
             ),
+            [
+                (
+                    datetime(2026, 10, 4, 21, 15, tzinfo=timezone.utc),
+                    "decision_cycle",
+                    {
+                        "cycle_outcome": "BTC canary position protected; waiting for frozen R2H exit",
+                        "comparison_context": {
+                            "execution_result": {
+                                "action": "hold",
+                                "reason": "BTC canary position protected; waiting for frozen R2H exit",
+                            }
+                        },
+                    },
+                ),
+                (
+                    datetime(2026, 10, 4, 21, 14, tzinfo=timezone.utc),
+                    "position_metrics",
+                    {"current_return_pct": "0.0125"},
+                ),
+            ],
         ])
 
     def __enter__(self):
@@ -254,7 +289,16 @@ class _CanaryCursor:
         self.calls.append((query, args))
 
     def fetchone(self):
-        return next(self.rows)
+        row = next(self.rows)
+        if isinstance(row, list):
+            raise AssertionError("fetchone called for fetchall fixture row")
+        return row
+
+    def fetchall(self):
+        row = next(self.rows)
+        if not isinstance(row, list):
+            raise AssertionError("fetchall fixture row missing")
+        return row
 
 
 class _CanaryConn:
@@ -279,10 +323,22 @@ def test_btc_canary_activity_is_compact_read_only_projection():
     assert result["action"] == "hold"
     assert result["bar_interval"] == "4Hour"
     assert result["position_open"] is True
+    assert result["entry_price"] == "121000.00"
+    assert result["current_price"] == "122512.50"
     assert result["current_return_pct"] == "0.0125"
     assert result["risk_stop_pct"] == "0.05"
     assert result["protection_status"] == "new"
-    assert len(conn.cur.calls) == 5
+    assert result["signal"]["bar_at"] == "2026-10-04T20:00:00+00:00"
+    assert result["signal"]["momentum_return"] == "0.0842"
+    assert result["signal"]["momentum_positive"] is True
+    assert result["signal"]["sma"] == "118500.00"
+    assert result["signal"]["above_sma"] is True
+    assert result["signal"]["desired_long"] is True
+    assert result["signal"]["momentum_lookback_bars"] == 1080
+    assert result["signal"]["sma_window_bars"] == 1500
+    assert result["recent_cycles"][0]["action"] == "hold"
+    assert result["return_history"][0]["return_pct"] == "0.0125"
+    assert len(conn.cur.calls) == 6
     assert all(query.lstrip().lower().startswith("select") for query, _ in conn.cur.calls)
 
 
