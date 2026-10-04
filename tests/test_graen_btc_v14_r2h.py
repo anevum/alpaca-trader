@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 from app.graen import research_executor_service as service
 from graen.crypto.btc_4h_consensus_v14_r2h import (
@@ -98,6 +99,11 @@ class FakeGateway:
 
     def __init__(self):
         self.queued = []
+        self.artifacts = []
+
+    async def record_artifact(self, **kwargs):
+        self.artifacts.append(kwargs)
+        return {"artifact": {"artifact_id": "artifact-recovery"}}
 
     async def queue_research_stage(self, **kwargs):
         self.queued.append(kwargs)
@@ -194,5 +200,57 @@ def test_r2h_transfer_pass_queues_velum_once_without_execution_authority():
         assert metadata["v14_r2h_transfer_artifact_id"] == "artifact-r2h-transfer"
         assert metadata["r2f_forward_shadow_preserved"] is True
         assert metadata["r2g_forward_shadow_preserved"] is True
+
+    asyncio.run(scenario())
+
+
+def test_blocked_r2h_velum_transport_recovers_once_after_velum_is_healthy():
+    async def scenario():
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {
+                        "research_stage": service.V14_R2H_VELUM_STAGE,
+                        "v14_r2h_candidate_spec": (
+                            service.v14_r2h_candidate_spec().to_dict()
+                        ),
+                        "v14_r2h_origin_run_id": RUN_ID,
+                        "v14_r2h_transfer_artifact_id": "artifact-transfer",
+                    },
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": "blocked-run",
+                    "problem_id": PROBLEM_ID,
+                    "status": "BLOCKED",
+                    "started_at": "2026-10-04T15:43:49+00:00",
+                    "result_summary": {
+                        "state": "RESEARCH_EXECUTION_BLOCKED",
+                        "error": "ConnectError: All connection attempts failed",
+                    },
+                }
+            ],
+        }
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = FakeGateway()
+        runtime._velum_health_ready = AsyncMock(return_value=True)
+
+        result = await runtime._recover_blocked_r2h_velum_transport(snapshot)
+
+        assert result["recovered"] is True
+        assert result["retry_count"] == 1
+        runtime._velum_health_ready.assert_awaited_once()
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2H_VELUM_STAGE
+        metadata = runtime.gateway.queued[-1]["metadata"]
+        assert metadata["v14_r2h_velum_transport_recovery_version"] == 1
+        assert metadata["v14_r2h_recovered_blocked_run_id"] == "blocked-run"
+        assert metadata["v14_r2h_transport_recovery_artifact_id"] == "artifact-recovery"
+        assert runtime.gateway.artifacts[-1]["artifact_type"] == (
+            "CRYPTO_V14_R2H_VELUM_TRANSPORT_RECOVERY"
+        )
 
     asyncio.run(scenario())
