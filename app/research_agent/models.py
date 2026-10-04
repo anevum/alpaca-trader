@@ -160,6 +160,12 @@ class QueueItem:
     readiness: int
     estimated_compute_cost: int
     estimated_llm_cost: int
+    novelty: int = 0
+    falsifiability: int = 0
+    decision_value: int = 0
+    branch_elimination_value: int = 0
+    data_cost: int = 0
+    statistical_search_cost: int = 0
 
 
 @dataclass(frozen=True, slots=True)
