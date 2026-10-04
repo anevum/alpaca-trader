@@ -463,39 +463,55 @@ class BtcCanaryExecutionEngine(CryptoExecutionEngine):
                         "reason": "BTC canary quantity rounded to zero",
                     }
                 else:
+                    if self.ledger is None or not bool(
+                        getattr(self.ledger, "enabled", False)
+                    ):
+                        result = {
+                            "action": "blocked",
+                            "reason": (
+                                "durable BTC canary entry persistence is not configured"
+                            ),
+                        }
+                        self._record_cycle(
+                            now=now,
+                            scan=scan,
+                            entries_24h=entries_24h,
+                            result=result,
+                            canary_state=canary_state,
+                        )
+                        return result
+
                     client_order_id = self._client_order_id(
                         BTC_CANARY_SYMBOL,
                         "canary-buy",
                     )
-                    refs = None
-                    if self.ledger is not None:
-                        try:
-                            setattr(signal, "_evidence_decision_scan", scan)
-                            refs = await self.ledger.persist_entry_intent(
-                                signal=signal,
-                                qty=str(qty),
-                                client_order_id=client_order_id,
-                                correlation_id=self.state.crypto_current_correlation_id,
-                                intended_at=now,
-                            )
-                        finally:
-                            if hasattr(signal, "_evidence_decision_scan"):
-                                delattr(signal, "_evidence_decision_scan")
-                        if refs is None:
-                            result = {
-                                "action": "blocked",
-                                "reason": (
-                                    "durable BTC canary entry intent persistence unavailable"
-                                ),
-                            }
-                            self._record_cycle(
-                                now=now,
-                                scan=scan,
-                                entries_24h=entries_24h,
-                                result=result,
-                                canary_state=canary_state,
-                            )
-                            return result
+                    try:
+                        setattr(signal, "_evidence_decision_scan", scan)
+                        refs = await self.ledger.persist_entry_intent(
+                            signal=signal,
+                            qty=str(qty),
+                            client_order_id=client_order_id,
+                            correlation_id=self.state.crypto_current_correlation_id,
+                            intended_at=now,
+                        )
+                    finally:
+                        if hasattr(signal, "_evidence_decision_scan"):
+                            delattr(signal, "_evidence_decision_scan")
+                    if refs is None:
+                        result = {
+                            "action": "blocked",
+                            "reason": (
+                                "durable BTC canary entry intent persistence unavailable"
+                            ),
+                        }
+                        self._record_cycle(
+                            now=now,
+                            scan=scan,
+                            entries_24h=entries_24h,
+                            result=result,
+                            canary_state=canary_state,
+                        )
+                        return result
 
                     try:
                         order = await self.client.submit_crypto_market_buy(
