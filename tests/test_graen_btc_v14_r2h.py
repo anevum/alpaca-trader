@@ -254,3 +254,34 @@ def test_blocked_r2h_velum_transport_recovers_once_after_velum_is_healthy():
         )
 
     asyncio.run(scenario())
+
+
+def test_velum_transport_readiness_accepts_reachable_replay_service(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "ok": False,
+                "system": "VELUM",
+                "mode": "research_replay_only",
+                "last_error": "unrelated_periodic_replay_error",
+            }
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, *_args, **_kwargs):
+            return Response()
+
+    runtime = service.GraenResearchExecutor()
+    monkeypatch.setattr(service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    runtime.velum_base_url = "http://rhen-velum.railway.internal:8080"
+    runtime.velum_token = "x" * 32
+
+    assert asyncio.run(runtime._velum_health_ready()) is True

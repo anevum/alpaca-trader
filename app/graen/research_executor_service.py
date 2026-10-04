@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.23.0"
+RUNTIME_VERSION = "graen-research-executor-v1.24.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -4543,7 +4543,11 @@ class GraenResearchExecutor:
                 response = await client.get(f"{self.velum_base_url}/health")
                 response.raise_for_status()
                 payload = response.json()
-            return isinstance(payload, Mapping) and payload.get("ok") is True
+            return (
+                isinstance(payload, Mapping)
+                and payload.get("system") == "VELUM"
+                and payload.get("mode") == "research_replay_only"
+            )
         except Exception:
             return False
 
