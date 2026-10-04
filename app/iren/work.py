@@ -815,6 +815,26 @@ class IrenWorkEngine:
             )
             return
 
+        if (
+            job_type == "SOFTWARE_BUILD"
+            and (job.get("metadata") or {}).get("manual_software_required") is True
+        ):
+            await self.gateway(
+                "iren_job_update",
+                job_id=job_id,
+                status="WAITING",
+                result={
+                    "reason": "manual_chatgpt_workspace_required",
+                    "handoff_ready": True,
+                    "paid_model_execution": False,
+                    "auto_merge": False,
+                    "engineering_requirement": (
+                        (job.get("metadata") or {}).get("engineering_requirement")
+                    ),
+                },
+            )
+            return
+
         if job_type == "SOFTWARE_BUILD" and await self._model_worker_daily_limit_reached(job_id):
             await self.gateway(
                 "iren_job_update",
