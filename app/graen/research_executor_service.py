@@ -492,6 +492,7 @@ class GraenResearchExecutor:
         self.active_problem_id: str | None = None
         self.last_error: str | None = None
         self.waiting_dependency_until: datetime | None = None
+        self.engineering_required_count: int = 0
         self.last_result: dict[str, Any] | None = None
         self.last_observed_blocked_run_id: str | None = None
         self.last_v12_claim_diagnostic_signature: tuple[Any, ...] | None = None
@@ -558,6 +559,7 @@ class GraenResearchExecutor:
                 self.waiting_dependency_until.isoformat()
                 if self.waiting_dependency_until else None
             ),
+            "engineering_required_count": self.engineering_required_count,
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
             "gateway_configured": self.gateway.configured,
             "research_code_promotion_enabled": False,
