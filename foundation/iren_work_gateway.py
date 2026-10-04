@@ -482,6 +482,91 @@ def settings_update(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict
     return {"settings": _serialize(dict(zip(columns, row)))}
 
 
+def objective_create(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[str, Any]:
+    """Idempotently create/update a durable IREN objective.
+
+    This is used for externally discovered work such as a GRAEN
+    ENGINEERING_REQUIRED handoff. It creates work metadata only; it grants no
+    software, model-spending, deployment, trading, or protected-action authority.
+    """
+    requested = body.get("objective")
+    if not isinstance(requested, dict):
+        raise ValueError("invalid_iren_objective_create")
+
+    key = str(requested.get("objective_key") or "").strip()[:240]
+    title = str(requested.get("title") or "").strip()[:240]
+    description = str(requested.get("description") or "").strip()[:12000]
+    status = str(requested.get("status") or "READY").strip().upper()
+    owner_system = str(requested.get("owner_system") or "IREN").strip()[:80] or "IREN"
+    parent_key = str(requested.get("parent_key") or "").strip()[:240] or None
+    priority = max(-1000, min(1000, int(requested.get("priority") or 0)))
+    dependencies = requested.get("dependencies")
+    success_criteria = requested.get("success_criteria")
+    metadata = requested.get("metadata")
+    protected_action = requested.get("protected_action") is True
+
+    if not key or not title or status not in OBJECTIVE_STATES:
+        raise ValueError("invalid_iren_objective_create")
+    if dependencies is None:
+        dependencies = []
+    if not isinstance(dependencies, list):
+        raise ValueError("invalid_iren_objective_dependencies")
+    if success_criteria is None:
+        success_criteria = {}
+    if not isinstance(success_criteria, dict):
+        raise ValueError("invalid_iren_objective_success_criteria")
+    if metadata is None:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid_iren_objective_metadata")
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into iren.objectives (
+                    objective_key,parent_key,title,description,status,owner_system,
+                    priority,dependencies,success_criteria,protected_action,metadata
+                )
+                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                on conflict (objective_key) do update
+                set parent_key=excluded.parent_key,
+                    title=excluded.title,
+                    description=excluded.description,
+                    status=case
+                        when iren.objectives.status='COMPLETE' then 'COMPLETE'
+                        else excluded.status
+                    end,
+                    owner_system=excluded.owner_system,
+                    priority=excluded.priority,
+                    dependencies=excluded.dependencies,
+                    success_criteria=excluded.success_criteria,
+                    protected_action=excluded.protected_action,
+                    metadata=iren.objectives.metadata || excluded.metadata,
+                    updated_at=now()
+                returning *
+                """,
+                (
+                    key,
+                    parent_key,
+                    title,
+                    description,
+                    status,
+                    owner_system,
+                    priority,
+                    Jsonb(dependencies),
+                    Jsonb(success_criteria),
+                    protected_action,
+                    Jsonb(metadata),
+                ),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("iren_objective_not_created")
+            columns = [column.name for column in cur.description]
+    return {"objective": _serialize(dict(zip(columns, row)))}
+
+
 def objective_update(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[str, Any]:
     key = str(body.get("objective_key") or "").strip()
     status = str(body.get("status") or "").strip().upper()
@@ -523,6 +608,7 @@ def handle_work_action(
         "iren_jobs_claim",
         "iren_job_update",
         "iren_settings_update",
+        "iren_objective_create",
         "iren_objective_update",
         "iren_handoff_prepare", "iren_handoff_associate", "iren_handoff_verify", "iren_handoff_evidence", "iren_handoff_supersede",
     }
@@ -561,6 +647,8 @@ def handle_work_action(
             return job_update(conn, body)
         if action == "iren_settings_update":
             return settings_update(conn, body)
+        if action == "iren_objective_create":
+            return objective_create(conn, body)
         if action == "iren_objective_update":
             return objective_update(conn, body)
     return None
