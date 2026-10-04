@@ -154,6 +154,17 @@ def test_command_projection_preserves_durable_job_events():
                 "configuration_baseline": {"fingerprint": "sha256:test"},
             },
         },
+        "research": {
+            "graen_problems": [{
+                "problem_id": "problem-r2h",
+                "title": "BTC V14 R2H",
+                "status": "RUNNING",
+                "research_stage": "CRYPTO_BTC_4H_CONSENSUS_V14_R2H_VELUM_REPLAY",
+                "updated_at": "2026-10-04T15:39:50+00:00",
+            }],
+            "graen_runs": [],
+            "velum_replays": [{"status": "RUNNING", "started_at": "2026-10-04T15:39:52+00:00"}],
+        },
         "work": {
             "objectives": [],
             "jobs": [],
@@ -181,3 +192,5 @@ def test_command_projection_preserves_durable_job_events():
     assert events[0]["event_type"] == "RUNNING"
     assert events[0]["owner_system"] == "VELUM"
     assert events[0]["event"]["stage"] == "R2H"
+    assert projected["research"]["graen_problems"][0]["research_stage"].endswith("VELUM_REPLAY")
+    assert projected["research"]["velum_replays"][0]["status"] == "RUNNING"
