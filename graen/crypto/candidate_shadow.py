@@ -1410,6 +1410,171 @@ class CandidateForwardShadow:
         return events
 
 
+    async def _cycle_r2h(
+        self,
+        current: datetime,
+    ) -> list[dict[str, Any]]:
+        minimum_history = max(
+            V14_R2H_MOMENTUM_LOOKBACK_BARS,
+            V14_R2H_SMA_WINDOW_BARS,
+        )
+        bars_by_symbol = await self.market_data.bars_many(
+            ["BTC/USD"],
+            timeframe="4Hour",
+            lookback_minutes=(minimum_history + 240) * 240,
+        )
+        rows = _r2h_completed_4h_rows(
+            bars_by_symbol.get("BTC/USD", ()),
+            now=current,
+        )
+        activation = self.activation or {}
+        activated_at = _stamp(
+            activation.get("activated_at") or current.isoformat()
+        )
+        events: list[dict[str, Any]] = []
+
+        if self.last_processed_bar_end is None:
+            baseline_index = next(
+                (
+                    index
+                    for index, row in enumerate(rows)
+                    if row["bar_end"] > activated_at
+                    and index >= minimum_history
+                ),
+                None,
+            )
+            if baseline_index is None:
+                return []
+            baseline = rows[baseline_index]
+            baseline_end = baseline["bar_end"]
+            assert isinstance(baseline_end, datetime)
+            self.last_processed_bar_end = baseline_end
+            self.r2h_baseline_end = baseline_end
+            self.r2h_shadow_position = 0.0
+            events.append({
+                "event_type": "graen_candidate_shadow_baseline",
+                "symbol": "BTC/USD",
+                "occurred_at": baseline_end.isoformat(),
+                "payload": {
+                    "activation_id": self._activation_id(),
+                    "candidate_id": self._candidate_id(),
+                    "candidate_methodology": V14_R2H_METHODOLOGY_VERSION,
+                    "baseline_bar_end": baseline_end.isoformat(),
+                    "baseline_close": float(baseline["close"]),
+                    "bar_timeframe": "4Hour",
+                    "fresh_evidence_counted": False,
+                    "reason": (
+                        "first completed 4-hour bar after activation is baseline "
+                        "only; scoring begins with the following full 4-hour bar"
+                    ),
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+            })
+
+        last_end = self.last_processed_bar_end
+        if last_end is None:
+            return events
+
+        first_unseen = next(
+            (row for row in rows if row["bar_end"] > last_end),
+            None,
+        )
+        if first_unseen is not None and first_unseen["timestamp"] != last_end:
+            raise ValueError("r2h_4h_resume_gap")
+
+        for index, row in enumerate(rows):
+            end = row["bar_end"]
+            assert isinstance(end, datetime)
+            if end <= last_end:
+                continue
+            if index < minimum_history + 1:
+                continue
+
+            prior_index = index - 1
+            prior_close = float(rows[prior_index]["close"])
+            anchor_close = float(
+                rows[
+                    prior_index - V14_R2H_MOMENTUM_LOOKBACK_BARS
+                ]["close"]
+            )
+            sma_start = prior_index - V14_R2H_SMA_WINDOW_BARS + 1
+            sma_rows = rows[sma_start : prior_index + 1]
+            if len(sma_rows) != V14_R2H_SMA_WINDOW_BARS:
+                raise ValueError("r2h_4h_sma_history_incomplete")
+            sma_value = fmean(float(item["close"]) for item in sma_rows)
+            trailing_return = prior_close / anchor_close - 1.0
+            momentum_positive = trailing_return > 0.0
+            above_sma = prior_close > sma_value
+            desired_position = 1.0 if (momentum_positive or above_sma) else 0.0
+            turnover = abs(desired_position - self.r2h_shadow_position)
+            if desired_position > self.r2h_shadow_position:
+                self.entry_count += 1
+            elif desired_position < self.r2h_shadow_position:
+                self.exit_count += 1
+
+            close = float(row["close"])
+            asset_return = close / prior_close - 1.0
+            gross_return = desired_position * asset_return
+            net_return = (
+                gross_return
+                - turnover * R2H_SHADOW_COST_PER_TURNOVER
+            )
+            mark = {
+                "activation_id": self._activation_id(),
+                "candidate_id": self._candidate_id(),
+                "candidate_methodology": V14_R2H_METHODOLOGY_VERSION,
+                "symbol": "BTC/USD",
+                "bar_timeframe": "4Hour",
+                "bar_start": row["timestamp"].isoformat(),
+                "bar_end": end.isoformat(),
+                "prior_close": prior_close,
+                "close": close,
+                "momentum_lookback_bars": V14_R2H_MOMENTUM_LOOKBACK_BARS,
+                "sma_window_bars": V14_R2H_SMA_WINDOW_BARS,
+                "trailing_momentum_return": trailing_return,
+                "sma_value": sma_value,
+                "momentum_positive": momentum_positive,
+                "above_sma": above_sma,
+                "signal_rule": "OR",
+                "position": desired_position,
+                "previous_position": self.r2h_shadow_position,
+                "turnover_units": turnover,
+                "stressed_cost_per_turnover": R2H_SHADOW_COST_PER_TURNOVER,
+                "gross_return": gross_return,
+                "stressed_cost_net_return": net_return,
+                "fresh_evidence": True,
+                "historical_evidence_counted_as_fresh": False,
+                "velum_evidence_counted_as_fresh": False,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            self.r2h_4h_marks.append(mark)
+            self.r2h_4h_marks = self.r2h_4h_marks[-500:]
+            self.r2h_shadow_position = desired_position
+            self.last_processed_bar_end = end
+            last_end = end
+            events.append({
+                "event_type": "graen_candidate_shadow_4h_mark",
+                "symbol": "BTC/USD",
+                "occurred_at": end.isoformat(),
+                "payload": dict(mark),
+            })
+
+        checkpoint = self._r2h_checkpoint()
+        self.last_checkpoint_status = str(checkpoint["status"])
+        self.last_checkpoint = dict(checkpoint)
+        if events:
+            events.append({
+                "event_type": "graen_candidate_shadow_checkpoint",
+                "symbol": "",
+                "occurred_at": self.last_processed_bar_end.isoformat(),
+                "payload": dict(checkpoint),
+            })
+        self.last_error = None
+        return events
+
+
     async def cycle(
         self,
         *,
@@ -1427,6 +1592,8 @@ class CandidateForwardShadow:
             return await self._cycle_r2f(current)
         if methodology == V14_R2G_METHODOLOGY_VERSION:
             return await self._cycle_r2g(current)
+        if methodology == V14_R2H_METHODOLOGY_VERSION:
+            return await self._cycle_r2h(current)
 
         spec = self._active_spec()
         activity_minutes = int(getattr(spec, "activity_lookback_hours", 0) or 0) * 60
