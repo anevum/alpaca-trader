@@ -6,6 +6,7 @@ from foundation.graen_gateway import (
     _is_native_research_stage,
     _obj,
     _status,
+    _with_forward_shadow,
     crypto_promotion_matches_contract,
 )
 
@@ -100,3 +101,40 @@ def test_research_director_is_a_native_claimable_stage():
     stage = "CRYPTO_RESEARCH_DIRECTOR_V1"
     assert stage in RESEARCH_STAGES
     assert _is_native_research_stage(stage) is True
+
+
+
+def test_r2g_shadow_checkpoint_preserves_r2f_as_canonical_primary():
+    primary = {
+        "candidate_id": "V14-R2F-BTC-MOM-180D",
+        "candidate_methodology": "graen-btc-slow-momentum-v14-r2f",
+        "status": "COLLECTING",
+    }
+    comparison = {
+        "candidate_id": "V14-R2G-BTC-CONSENSUS-180-250",
+        "candidate_methodology": "graen-btc-consensus-trend-v14-r2g",
+        "status": "COLLECTING",
+    }
+
+    metadata = _with_forward_shadow(
+        {"forward_shadow": primary},
+        comparison,
+    )
+
+    assert metadata["forward_shadow"] == primary
+    assert metadata["forward_shadow_comparison"] == comparison
+    assert metadata["forward_shadows"][primary["candidate_id"]] == primary
+    assert metadata["forward_shadows"][comparison["candidate_id"]] == comparison
+
+
+def test_primary_shadow_updates_still_update_canonical_pointer():
+    r2f = {
+        "candidate_id": "V14-R2F-BTC-MOM-180D",
+        "candidate_methodology": "graen-btc-slow-momentum-v14-r2f",
+        "status": "READY_FOR_HUMAN_REVIEW",
+    }
+    metadata = _with_forward_shadow({}, r2f)
+
+    assert metadata["forward_shadow"] == r2f
+    assert metadata["forward_shadows"][r2f["candidate_id"]] == r2f
+    assert "forward_shadow_comparison" not in metadata
