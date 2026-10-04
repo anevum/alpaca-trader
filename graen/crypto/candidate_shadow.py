@@ -970,11 +970,15 @@ class CandidateForwardShadow:
         if last_end is None:
             return events
 
-        first_unseen = next(
-            (row for row in rows if row["bar_end"] > last_end), None
+        first_unseen_index = next(
+            (index for index, row in enumerate(rows) if row["bar_end"] > last_end),
+            None,
         )
-        if first_unseen is not None and first_unseen["timestamp"] != last_end:
-            raise ValueError("r2f_daily_resume_gap")
+        if first_unseen_index is not None:
+            if rows[first_unseen_index]["timestamp"] != last_end:
+                raise ValueError("r2f_daily_resume_gap")
+            if first_unseen_index < V14_R2F_LOOKBACK_DAYS + 1:
+                raise ValueError("r2f_daily_resume_warmup_incomplete")
 
         for index, row in enumerate(rows):
             end = row["bar_end"]
@@ -1120,11 +1124,15 @@ class CandidateForwardShadow:
         last_end = self.last_processed_bar_end
         if last_end is None:
             return events
-        first_unseen = next(
-            (row for row in rows if row["bar_end"] > last_end), None
+        first_unseen_index = next(
+            (index for index, row in enumerate(rows) if row["bar_end"] > last_end),
+            None,
         )
-        if first_unseen is not None and first_unseen["timestamp"] != last_end:
-            raise ValueError("r2g_daily_resume_gap")
+        if first_unseen_index is not None:
+            if rows[first_unseen_index]["timestamp"] != last_end:
+                raise ValueError("r2g_daily_resume_gap")
+            if first_unseen_index < minimum_history + 1:
+                raise ValueError("r2g_daily_resume_warmup_incomplete")
 
         for index, row in enumerate(rows):
             end = row["bar_end"]
