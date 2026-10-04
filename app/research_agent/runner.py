@@ -105,6 +105,12 @@ def _queue_record(item: QueueItem) -> dict[str, Any]:
             "readiness": item.readiness,
             "estimated_compute_cost": item.estimated_compute_cost,
             "estimated_llm_cost": item.estimated_llm_cost,
+            "novelty": item.novelty,
+            "falsifiability": item.falsifiability,
+            "decision_value": item.decision_value,
+            "branch_elimination_value": item.branch_elimination_value,
+            "data_cost": item.data_cost,
+            "statistical_search_cost": item.statistical_search_cost,
         },
     }
 
