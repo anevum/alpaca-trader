@@ -84,6 +84,57 @@ def _engineering_objective_from_result(result: dict) -> dict | None:
     }
 
 
+def _human_decision_objective_from_result(result: dict) -> dict | None:
+    if (
+        result.get("condition") != "HUMAN_DECISION_REQUIRED"
+        and result.get("decision") != "HUMAN_DECISION_REQUIRED"
+    ):
+        return None
+    protected = result.get("protected_decision")
+    if not isinstance(protected, dict):
+        return None
+    candidate_id = str(
+        protected.get("candidate_id")
+        or result.get("candidate_id")
+        or ""
+    ).strip()
+    if not candidate_id:
+        return None
+    safe_id = "".join(
+        ch.lower() if ch.isalnum() else "-"
+        for ch in candidate_id
+    ).strip("-")[:160]
+    return {
+        "objective_key": "decision.live-risk." + safe_id,
+        "title": "Review live-risk charter for " + candidate_id,
+        "description": str(
+            protected.get("requested_action")
+            or "Review the exact paper-validated candidate for real-money promotion."
+        )[:12000],
+        "status": "READY",
+        "owner_system": "IREN",
+        "priority": 95,
+        "dependencies": [],
+        "success_criteria": {
+            "explicit_human_decision": True,
+            "candidate_identity_frozen": True,
+            "risk_increase_automatic": False,
+        },
+        "protected_action": True,
+        "metadata": {
+            "classification": "HUMAN_DECISION_REQUIRED",
+            "source": "GRAEN",
+            "job_type": "HUMAN_DECISION",
+            "graen_problem_id": result.get("graen_problem_id"),
+            "paper_checkpoint": result.get("checkpoint"),
+            "paper_activation": result.get("paper_activation"),
+            "protected_decision": dict(protected),
+            "automatic_live_promotion": False,
+            "automatic_risk_increase": False,
+        },
+    }
+
+
 class IrenController:
     def __init__(self):
         self.state = {}
@@ -502,6 +553,13 @@ async def job_callback(
         await controller.gateway(
             "iren_objective_create",
             objective=engineering_objective,
+        )
+
+    human_decision_objective = _human_decision_objective_from_result(result)
+    if human_decision_objective is not None:
+        await controller.gateway(
+            "iren_objective_create",
+            objective=human_decision_objective,
         )
 
     if (
