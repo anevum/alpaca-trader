@@ -656,3 +656,54 @@ def test_transport_chunks_respect_count_and_body_limits():
             default=str,
         ).encode("utf-8")
         assert len(encoded) <= 900
+
+def test_fetch_btc_canary_report_uses_canonical_read_endpoint(monkeypatch):
+    sink = CapturingSink()
+    sink.settings.trading_ingest_url = "https://foundation.example/v1/events"
+    sink.settings.trading_run_id = "BTC-CANARY-001-PAPER-20261004"
+    sink.settings.strategy_version_id = "BTC-CANARY-001"
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "ok": True,
+                "report_version": "btc-canary-forward-v1",
+                "evidence": {
+                    "run_id": "BTC-CANARY-001-PAPER-20261004",
+                    "paper_only": True,
+                    "promotion_ready": False,
+                },
+            }
+
+    class Http:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    monkeypatch.setattr("app.persistence.httpx.AsyncClient", Http)
+
+    payload = asyncio.run(sink.fetch_btc_canary_report())
+
+    assert payload["report_version"] == "btc-canary-forward-v1"
+    assert len(calls) == 1
+    url, kwargs = calls[0]
+    assert url == "https://foundation.example/v1/trading-report-read"
+    assert kwargs["params"] == {
+        "canary_run_id": "BTC-CANARY-001-PAPER-20261004"
+    }
+    assert kwargs["headers"]["x-anevum-ingest-token"] == "token"
+    assert "json" not in kwargs
+
