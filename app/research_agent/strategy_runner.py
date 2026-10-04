@@ -154,6 +154,7 @@ def evaluate_validation(
     end,
     development_result: Mapping[str, Any],
     seed: int,
+    confirmatory_alpha: float = VALIDATION_ALPHA,
 ) -> dict[str, Any]:
     spec = compile_candidate(manifest)
     series = build_series(bars_by_symbol, start=start, end=end)
@@ -170,7 +171,7 @@ def evaluate_validation(
         spec,
         development_result["result"],
         result,
-        multiplicity_rejected=p_value <= VALIDATION_ALPHA,
+        multiplicity_rejected=p_value <= confirmatory_alpha,
     )
     return {
         "stage": "VALIDATION",
@@ -179,7 +180,7 @@ def evaluate_validation(
         "result": result,
         "passed": passed,
         "reasons": reasons,
-        "single_candidate_multiplicity_threshold": VALIDATION_ALPHA,
+        "single_candidate_multiplicity_threshold": confirmatory_alpha,
         "runner_version": RUNNER_VERSION,
     }
 
@@ -191,6 +192,7 @@ def evaluate_holdout(
     start,
     end,
     seed: int,
+    confirmatory_alpha: float = VALIDATION_ALPHA,
 ) -> dict[str, Any]:
     spec = compile_candidate(manifest)
     series = build_series(bars_by_symbol, start=start, end=end)
@@ -206,6 +208,10 @@ def evaluate_holdout(
         for offset, scenario in enumerate(("low", "base", "high"))
     }
     passed, reasons = _holdout_gate(spec, scenarios)
+    high_p = float(scenarios["high"]["primary"]["dependence_adjusted_null"]["p_value"])
+    if high_p > confirmatory_alpha:
+        reasons = sorted(set([*reasons, "holdout_online_alpha_spending_gate_failed"]))
+        passed = False
     return {
         "stage": "HOLDOUT",
         "opened": True,
@@ -213,5 +219,6 @@ def evaluate_holdout(
         "scenarios": scenarios,
         "passed": passed,
         "reasons": reasons,
+        "confirmatory_alpha": confirmatory_alpha,
         "runner_version": RUNNER_VERSION,
     }
