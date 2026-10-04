@@ -50,9 +50,30 @@ def test_nostra_is_independent_runtime_and_workers_can_be_idle():
     assert rows["NOSTRA"]["independent_runtime"] is True
     assert rows["NOSTRA"]["service_name"] == "nostra"
     assert rows["VELUM"]["status"] == "IDLE"
+    assert rows["GRAEN"]["status"] == "IDLE"
+    assert rows["RHEN"]["status"] == "IDLE"
+    assert rows["IREN"]["status"] == "IDLE"
     assert rows["IREN"]["schema_version"] == "service_heartbeat.v1"
     assert rows["RHEN"]["deployment"] is None  # Never invent provider identity.
     assert rows["RHEN"]["observation_source"] == "iren_http_probe"
+
+
+def test_running_requires_explicit_activity_evidence():
+    obs = observation()
+    obs["services"]["GRAEN"]["activity_active"] = True
+    obs["services"]["GRAEN"]["current_activity"] = "executing research problem GRAEN-42"
+    result, _ = reduce_state({}, obs, service.POLICY)
+    rows = {
+        row["service_id"]: row
+        for row in topology(
+            obs,
+            result,
+            service.IrenController().runtime_identity,
+        )["services"]
+    }
+    assert rows["GRAEN"]["status"] == "RUNNING"
+    assert rows["GRAEN"]["current_activity"] == "executing research problem GRAEN-42"
+    assert rows["VELUM"]["status"] == "IDLE"
 
 @pytest.mark.parametrize("body", [None, [], {}, {"ok": "true"}, {"ok": True, "running": "false"},
     {"ok": True, "runtime_provenance": {"runtime_started_at": "bad"}}])
