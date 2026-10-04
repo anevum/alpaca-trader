@@ -121,6 +121,7 @@ def freeze_preview(
     *,
     decisions: Iterable[Mapping[str, Any]],
     feasibility: FeasibilityResult | None,
+    allow_standing_charter: bool = False,
 ) -> FreezePreview:
     design_review = assert_freeze_eligible(proposal)
     digest = proposal_hash(proposal)
@@ -144,6 +145,7 @@ def freeze_preview(
         proposal_id=proposal.proposal_id,
         proposal_revision=proposal.revision,
         proposal_hash=digest,
+        allow_standing_charter=allow_standing_charter,
     )
     methodology = methodology_document(proposal)
     methodology_hash = hashlib.sha256(methodology.encode("utf-8")).hexdigest()
