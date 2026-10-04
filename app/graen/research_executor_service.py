@@ -5425,7 +5425,6 @@ class GraenResearchExecutor:
                     "retry_count": recovery_version + 1,
                     "methodology_changed": False,
                     "private_health_verified": recovery_version == 3,
-                    "methodology_changed": False,
                     "research_only": True,
                     "execution_authority": False,
                     "broker_orders_possible": False,
