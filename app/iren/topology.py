@@ -131,7 +131,7 @@ def topology(observation, state, self_identity):
         service_version=self_identity["version"], deployment=self_identity.get("deployment"),
         revision=self_identity.get("revision"), started_at=self_identity["started_at"],
         observed_at=stamp, last_heartbeat_at=stamp, liveness=True, readiness=True, status="IDLE",
-        current_activity="deterministic supervision; no active job implied",
+        current_activity=None,
         last_success=stamp, dependency_state={"durable_state": "commit_required"},
         configuration_identity=self_identity["configuration_identity"],
         observation_source="durable_iren_commit", scope="Independent from RHEN; shares its process with the scheduler").model_dump())
