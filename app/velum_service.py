@@ -56,6 +56,49 @@ async def _run_blocking(func: Any, /, *args: Any, **kwargs: Any) -> Any:
     return await asyncio.to_thread(func, *args, **kwargs)
 
 
+async def _fetch_candidate_replay_bars(
+    market_data: MarketDataClient,
+    symbols: tuple[str, ...],
+    *,
+    start: datetime,
+    end: datetime,
+    chunk_days: int | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], int]:
+    """Fetch a replay corpus with bounded requests when the candidate requires it."""
+    if chunk_days is None:
+        rows = await market_data.historical_crypto_bars_many(
+            list(symbols),
+            start=start,
+            end=end,
+        )
+        return rows, 1
+
+    merged: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+    chunk_start = start
+    chunk_count = 0
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
+        rows = await market_data.historical_crypto_bars_many(
+            list(symbols),
+            start=chunk_start,
+            end=chunk_end - timedelta(microseconds=1),
+        )
+        for symbol in symbols:
+            merged[symbol].extend(rows.get(symbol, []) or [])
+        chunk_count += 1
+        chunk_start = chunk_end
+
+    clean: dict[str, list[dict[str, Any]]] = {}
+    for symbol in symbols:
+        by_stamp: dict[str, dict[str, Any]] = {}
+        for row in merged.get(symbol, []):
+            stamp = str(row.get("t") or row.get("timestamp") or "")
+            if stamp:
+                by_stamp[stamp] = row
+        clean[symbol] = [by_stamp[key] for key in sorted(by_stamp)]
+    return clean, chunk_count
+
+
 def _build_equity_strategy(settings: Settings):
     if settings.strategy_name == "rolling_momentum_vwap":
         return RollingMomentumVwapStrategy(
@@ -746,11 +789,14 @@ async def graen_candidate_replay(
         replay_market_data = MarketDataClient(
             velum.settings.model_copy(update={"bar_timeframe": fetch_timeframe})
         )
+    replay_chunk_days = 60 if fetch_timeframe == "4Hour" else None
     async with velum.run_lock:
-        bars = await replay_market_data.historical_crypto_bars_many(
-            list(replay_symbols),
+        bars, replay_fetch_chunks = await _fetch_candidate_replay_bars(
+            replay_market_data,
+            tuple(replay_symbols),
             start=fetch_start,
             end=fetch_end,
+            chunk_days=replay_chunk_days,
         )
         result = await _run_blocking(
             replay_candidate,
@@ -776,6 +822,7 @@ async def graen_candidate_replay(
             "replay_fetch_start": fetch_start.isoformat(),
             "replay_fetch_end": fetch_end.isoformat(),
             "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
+            "replay_fetch_chunks": replay_fetch_chunks,
             "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         })
         emitted = await velum._emit(

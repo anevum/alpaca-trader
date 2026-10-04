@@ -5,7 +5,13 @@ from decimal import Decimal
 from app.config import Settings
 from app.replay import ReplayPosition
 from app.velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
-from app.velum_service import VelumRuntime, _crypto_settings, _run_blocking, require_graen_token
+from app.velum_service import (
+    VelumRuntime,
+    _crypto_settings,
+    _fetch_candidate_replay_bars,
+    _run_blocking,
+    require_graen_token,
+)
 import app.velum_graen as velum_graen
 from app.velum_graen import engineering_gate
 from graen.crypto.autonomous_campaign import adaptive_candidate_specs
@@ -454,3 +460,74 @@ def test_velum_legacy_fetch_contract_keeps_service_default_timeframe():
     assert fetch_start == start - timedelta(hours=8)
     assert fetch_end == end + timedelta(hours=3)
     assert timeframe is None
+
+
+def test_r2h_candidate_fetch_chunks_long_4h_window_and_deduplicates():
+    class FakeMarketData:
+        def __init__(self):
+            self.calls = []
+
+        async def historical_crypto_bars_many(self, symbols, *, start, end):
+            self.calls.append((tuple(symbols), start, end))
+            index = len(self.calls)
+            duplicate = "2026-05-01T00:00:00Z"
+            return {
+                "BTC/USD": [
+                    {"t": duplicate, "c": 100 + index},
+                    {"t": f"2026-05-{index + 1:02d}T00:00:00Z", "c": 101 + index},
+                ]
+            }
+
+    async def scenario():
+        market = FakeMarketData()
+        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 3, 17, tzinfo=timezone.utc)
+        bars, chunks = await _fetch_candidate_replay_bars(
+            market,
+            ("BTC/USD",),
+            start=start,
+            end=end,
+            chunk_days=60,
+        )
+        assert chunks == 8
+        assert len(market.calls) == 8
+        assert all(
+            call_end < next_start
+            for (_, _, call_end), (_, next_start, _) in zip(
+                market.calls,
+                market.calls[1:],
+            )
+        )
+        stamps = [row["t"] for row in bars["BTC/USD"]]
+        assert len(stamps) == len(set(stamps))
+        assert stamps == sorted(stamps)
+
+    asyncio.run(scenario())
+
+
+def test_legacy_candidate_fetch_remains_single_request():
+    class FakeMarketData:
+        def __init__(self):
+            self.calls = []
+
+        async def historical_crypto_bars_many(self, symbols, *, start, end):
+            self.calls.append((tuple(symbols), start, end))
+            return {"BTC/USD": [{"t": "2026-09-01T00:00:00Z", "c": 100}]}
+
+    async def scenario():
+        market = FakeMarketData()
+        start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        bars, chunks = await _fetch_candidate_replay_bars(
+            market,
+            ("BTC/USD",),
+            start=start,
+            end=end,
+            chunk_days=None,
+        )
+        assert chunks == 1
+        assert len(market.calls) == 1
+        assert market.calls[0] == (("BTC/USD",), start, end)
+        assert len(bars["BTC/USD"]) == 1
+
+    asyncio.run(scenario())
