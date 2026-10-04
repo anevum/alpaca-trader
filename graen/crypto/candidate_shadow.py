@@ -845,11 +845,100 @@ class CandidateForwardShadow:
             "broker_orders_possible": False,
         }
 
+    def _r2h_checkpoint(self) -> dict[str, Any]:
+        marks = list(self.r2h_4h_marks)
+        returns = [
+            float(row.get("stressed_cost_net_return") or 0.0)
+            for row in marks
+            if isfinite(float(row.get("stressed_cost_net_return") or 0.0))
+        ]
+        exposed_marks = sum(
+            1 for row in marks if float(row.get("position") or 0.0) > 0.0
+        )
+        turnover_units = sum(
+            float(row.get("turnover_units") or 0.0) for row in marks
+        )
+        day_blocks = len({
+            str(row.get("bar_start") or "")[:10]
+            for row in marks
+            if row.get("bar_start")
+        })
+        total_return = self._compound_returns(returns)
+        sigma = pstdev(returns) if len(returns) >= 2 else 0.0
+        sharpe = (
+            fmean(returns) / sigma * sqrt(6.0 * 365.0)
+            if sigma > 1e-15
+            else 0.0
+        )
+        max_drawdown = self._max_drawdown(returns)
+        ready = bool(
+            len(marks) >= R2H_MIN_READY_4H_MARKS
+            and exposed_marks >= R2H_MIN_READY_EXPOSED_MARKS
+            and total_return > 0.0
+            and sharpe > R2H_MIN_READY_SHARPE
+            and max_drawdown > R2H_MAX_READY_DRAWDOWN
+        )
+        review_limit_reached = len(marks) >= R2H_MAX_REVIEW_4H_MARKS
+        status = (
+            "READY_FOR_HUMAN_REVIEW"
+            if ready
+            else "SHADOW_REJECTED"
+            if review_limit_reached
+            else "COLLECTING"
+        )
+        activation = self.activation or {}
+        return {
+            "schema_version": "graen.candidate_shadow.checkpoint.v1",
+            "shadow_methodology_version": SHADOW_METHODOLOGY_VERSION,
+            "activation_id": self._activation_id(),
+            "candidate_id": self._candidate_id(),
+            "candidate_methodology": self._candidate_methodology(),
+            "evidence_phase": str(
+                activation.get("evidence_phase") or "FORWARD_SHADOW"
+            ),
+            "status": status,
+            "trade_count": self.entry_count + self.exit_count,
+            "independent_day_blocks": day_blocks,
+            "fresh_4h_mark_count": len(marks),
+            "exposed_4h_mark_count": exposed_marks,
+            "turnover_units": turnover_units,
+            "cumulative_stressed_cost_return": total_return,
+            "annualized_4h_sharpe": sharpe,
+            "max_drawdown": max_drawdown,
+            "current_shadow_position": self.r2h_shadow_position,
+            "fresh_evidence_after": str(
+                activation.get("activated_at") or ""
+            ),
+            "baseline_bar_end": (
+                self.r2h_baseline_end.isoformat()
+                if self.r2h_baseline_end
+                else None
+            ),
+            "ready_gate": {
+                "min_fresh_4h_marks": R2H_MIN_READY_4H_MARKS,
+                "min_exposed_4h_marks": R2H_MIN_READY_EXPOSED_MARKS,
+                "cumulative_return_positive": True,
+                "annualized_4h_sharpe_gt": R2H_MIN_READY_SHARPE,
+                "max_drawdown_gt": R2H_MAX_READY_DRAWDOWN,
+            },
+            "terminal_rejection_gate": {
+                "max_review_4h_marks": R2H_MAX_REVIEW_4H_MARKS,
+            },
+            "adaptive_historical_evidence_counts_as_fresh": False,
+            "velum_replay_evidence_counts_as_fresh": False,
+            "readiness_requires_human_review": True,
+            "promotion_authorized": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+        }
+
     def _checkpoint(self) -> dict[str, Any]:
         if self._candidate_methodology() == V14_R2F_METHODOLOGY_VERSION:
             return self._r2f_checkpoint()
         if self._candidate_methodology() == V14_R2G_METHODOLOGY_VERSION:
             return self._r2g_checkpoint()
+        if self._candidate_methodology() == V14_R2H_METHODOLOGY_VERSION:
+            return self._r2h_checkpoint()
         rows = list(self.closed)
         returns = [
             float(row.get("stressed_cost_net_return") or 0.0)
@@ -961,6 +1050,8 @@ class CandidateForwardShadow:
             return v14_r2f_spec_from_dict(self._candidate_spec())
         if methodology == V14_R2G_METHODOLOGY_VERSION:
             return v14_r2g_spec_from_dict(self._candidate_spec())
+        if methodology == V14_R2H_METHODOLOGY_VERSION:
+            return v14_r2h_spec_from_dict(self._candidate_spec())
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
