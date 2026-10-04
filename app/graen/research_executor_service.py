@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.27.0"
+RUNTIME_VERSION = "graen-research-executor-v1.28.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -5331,7 +5331,7 @@ class GraenResearchExecutor:
         self,
         snapshot: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        """Retry one R2H VELUM claim only after a transient transport outage clears."""
+        """Recover the frozen R2H VELUM replay only after bounded infra repairs."""
         problems = snapshot.get("problems") or []
         runs = snapshot.get("runs") or []
         for problem in problems:
@@ -5342,53 +5342,73 @@ class GraenResearchExecutor:
                 if isinstance(problem.get("metadata"), Mapping)
                 else {}
             )
+            recovery_version = int(
+                metadata.get("v14_r2h_velum_transport_recovery_version") or 0
+            )
             if (
                 problem.get("status") != "BLOCKED"
                 or problem.get("domain") != PROBLEM_DOMAIN
                 or metadata.get("research_stage") != V14_R2H_VELUM_STAGE
-                or int(
-                    metadata.get("v14_r2h_velum_transport_recovery_version") or 0
-                ) >= 3
+                or recovery_version >= 4
             ):
                 continue
+
             problem_id = str(problem.get("problem_id") or "")
-            matching = [
-                run
-                for run in runs
-                if isinstance(run, Mapping)
-                and str(run.get("problem_id") or "") == problem_id
-                and run.get("status") == "BLOCKED"
-                and isinstance(run.get("result_summary"), Mapping)
-                and str(run.get("result_summary", {}).get("error") or "").startswith(
-                    "ConnectError:"
+            matching: list[Mapping[str, Any]] = []
+            for run in runs:
+                if (
+                    not isinstance(run, Mapping)
+                    or str(run.get("problem_id") or "") != problem_id
+                    or run.get("status") != "BLOCKED"
+                    or not isinstance(run.get("result_summary"), Mapping)
+                ):
+                    continue
+                error = str(run.get("result_summary", {}).get("error") or "")
+                connect_error = error.startswith("ConnectError:")
+                known_velum_500 = bool(
+                    recovery_version == 3
+                    and error.startswith("HTTPStatusError:")
+                    and "500 Internal Server Error" in error
+                    and "/v1/graen/candidate-replay" in error
+                    and "rhen-velum.railway.internal:8080" in error
                 )
-            ]
+                if connect_error or known_velum_500:
+                    matching.append(run)
             if not matching:
                 continue
-            recovery_version = int(
-                metadata.get("v14_r2h_velum_transport_recovery_version") or 0
-            )
+
             if recovery_version == 1 and ".internal" not in self.velum_base_url:
                 continue
-            if recovery_version == 2 and not (
+            if recovery_version in {2, 3} and not (
                 ".internal" in self.velum_base_url
                 and self.velum_base_url.endswith(":8080")
             ):
                 continue
-            # Version 1 was the original deployment-race retry. Version 2
-            # followed the private-domain repair. Version 3 is reserved for
-            # the verified VELUM :8080 port repair and is the final automatic
-            # transport retry.
-            # v14_r2h_velum_transport_recovery_version. Do not couple the
-            # retry to VELUM's global periodic-replay health: the original
-            # failure was transport availability during deployment. If the
-            # transport is still unavailable, this exact retry blocks again
-            # and no further automatic retry is permitted.
+            if recovery_version == 3 and not await self._velum_health_ready():
+                return {
+                    "recovered": False,
+                    "problem_id": problem_id,
+                    "state": "WAITING_FOR_VELUM_PRIVATE_HEALTH",
+                    "next_research_stage": V14_R2H_VELUM_STAGE,
+                    "retry_count": 3,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                }
+
             blocked_run = max(
                 matching,
                 key=lambda row: str(row.get("started_at") or ""),
             )
             blocked_run_id = str(blocked_run.get("run_id") or "")
+            repair = (
+                "retry_after_railway_private_network_repair"
+                if recovery_version == 1
+                else "retry_after_velum_port_8080_repair"
+                if recovery_version == 2
+                else "retry_after_velum_ipv6_bind_repair"
+                if recovery_version == 3
+                else "retry_after_velum_transport_recovered"
+            )
             artifact_response = await self.gateway.record_artifact(
                 problem_id=problem_id,
                 run_id=blocked_run_id or None,
@@ -5401,14 +5421,10 @@ class GraenResearchExecutor:
                     "blocked_error": blocked_run.get("result_summary", {}).get(
                         "error"
                     ),
-                    "repair": (
-                        "retry_after_railway_private_network_repair"
-                        if recovery_version == 1
-                        else "retry_after_velum_port_8080_repair"
-                        if recovery_version == 2
-                        else "retry_after_velum_transport_recovered"
-                    ),
+                    "repair": repair,
                     "retry_count": recovery_version + 1,
+                    "methodology_changed": False,
+                    "private_health_verified": recovery_version == 3,
                     "methodology_changed": False,
                     "research_only": True,
                     "execution_authority": False,
