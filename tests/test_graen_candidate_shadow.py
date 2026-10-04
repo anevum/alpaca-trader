@@ -29,6 +29,10 @@ from graen.crypto.btc_slow_momentum_v14_r2f import (
     METHODOLOGY_VERSION as V14_R2F_METHODOLOGY_VERSION,
     candidate_spec as v14_r2f_candidate_spec,
 )
+from graen.crypto.btc_consensus_trend_v14_r2g import (
+    METHODOLOGY_VERSION as V14_R2G_METHODOLOGY_VERSION,
+    candidate_spec as v14_r2g_candidate_spec,
+)
 from graen.crypto.candidate_shadow import CandidateForwardShadow
 
 
@@ -516,4 +520,155 @@ def test_r2f_cannot_skip_lost_history_after_extended_outage():
     before = runtime.snapshot()
     with pytest.raises(ValueError, match="r2f_daily_resume_gap"):
         asyncio.run(runtime.cycle(now=datetime(2026, 10, 3, 1, tzinfo=UTC)))
+    assert runtime.snapshot() == before
+
+
+
+def r2g_activation(*, activated_at: datetime | None = None) -> dict:
+    spec = v14_r2g_candidate_spec().to_dict()
+    return {
+        **activation(),
+        "activation_id": "activation-v14-r2g-001",
+        "campaign_id": "v14-r2g-btc-daily-consensus-trend",
+        "candidate_methodology": V14_R2G_METHODOLOGY_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+        "velum_artifact_id": "",
+        "evidence_phase": "FORWARD_SHADOW",
+        "activated_at": (
+            activated_at or datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        ).isoformat(),
+    }
+
+
+def _r2g_runtime_with_rows(rows):
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(r2g_activation())
+
+    class FakeMarketData:
+        async def bars_many(self, *args, **kwargs):
+            return {"BTC/USD": rows}
+
+    runtime.market_data = FakeMarketData()
+    return runtime
+
+
+def test_r2g_shadow_accepts_consensus_candidate_without_execution_authority():
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(r2g_activation())
+
+    assert runtime._symbols() == ("BTC/USD",)
+    assert runtime._active_spec().momentum_lookback_days == 180
+    assert runtime._active_spec().sma_window_days == 250
+    assert runtime.status()["candidate_methodology"] == V14_R2G_METHODOLOGY_VERSION
+    assert runtime.status()["r2g_daily_mark_count"] == 0
+    assert runtime.execution_authority is False
+    assert runtime.broker_orders_possible is False
+
+
+def test_r2g_shadow_baseline_and_signal_are_fresh_and_causal():
+    async def scenario():
+        activated_at = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        rows = _daily_rows(datetime(2026, 1, 1, tzinfo=UTC), 300)
+        runtime = _r2g_runtime_with_rows(rows)
+        runtime.activate(r2g_activation(activated_at=activated_at))
+
+        first = await runtime.cycle(
+            now=datetime(2026, 10, 2, 1, 0, tzinfo=UTC)
+        )
+        assert [
+            event for event in first
+            if event["event_type"] == "graen_candidate_shadow_baseline"
+        ]
+        assert [
+            event for event in first
+            if event["event_type"] == "graen_candidate_shadow_daily_mark"
+        ] == []
+        assert runtime.r2g_daily_marks == []
+
+        second = await runtime.cycle(
+            now=datetime(2026, 10, 3, 1, 0, tzinfo=UTC)
+        )
+        marks = [
+            event for event in second
+            if event["event_type"] == "graen_candidate_shadow_daily_mark"
+        ]
+        assert len(marks) == 1
+        mark = runtime.r2g_daily_marks[0]
+        assert mark["candidate_methodology"] == V14_R2G_METHODOLOGY_VERSION
+        assert mark["momentum_lookback_days"] == 180
+        assert mark["sma_window_days"] == 250
+        assert mark["signal_rule"] == "OR"
+        assert mark["momentum_positive"] is True
+        assert mark["above_sma"] is True
+        assert mark["position"] == 1.0
+        assert mark["fresh_evidence"] is True
+        assert mark["execution_authority"] is False
+
+    asyncio.run(scenario())
+
+
+def test_r2g_shadow_state_is_restart_restorable():
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(r2g_activation())
+    runtime.r2g_baseline_end = datetime(2026, 10, 2, tzinfo=UTC)
+    runtime.last_processed_bar_end = datetime(2026, 10, 3, tzinfo=UTC)
+    runtime.r2g_shadow_position = 1.0
+    runtime.r2g_daily_marks.append(
+        {
+            "bar_end": "2026-10-03T00:00:00+00:00",
+            "position": 1.0,
+            "turnover_units": 1.0,
+            "stressed_cost_net_return": 0.01,
+        }
+    )
+
+    restored = CandidateForwardShadow(settings())
+    restored.restore(runtime.snapshot())
+
+    assert restored.r2g_shadow_position == 1.0
+    assert len(restored.r2g_daily_marks) == 1
+    assert restored.r2g_baseline_end == runtime.r2g_baseline_end
+    assert restored._candidate_methodology() == V14_R2G_METHODOLOGY_VERSION
+    assert restored.execution_authority is False
+
+
+def test_r2g_shadow_uses_same_fresh_review_gate_as_r2f():
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(r2g_activation())
+    start = datetime(2026, 10, 2, tzinfo=UTC)
+    runtime.r2g_baseline_end = start
+    runtime.last_processed_bar_end = start
+    runtime.r2g_shadow_position = 1.0
+
+    for index in range(30):
+        value = 0.003 if index % 5 else -0.001
+        runtime.r2g_daily_marks.append(
+            {
+                "bar_end": (start + timedelta(days=index + 1)).isoformat(),
+                "position": 1.0,
+                "turnover_units": 0.0,
+                "stressed_cost_net_return": value,
+            }
+        )
+
+    checkpoint = runtime._checkpoint()
+    assert checkpoint["status"] == "READY_FOR_HUMAN_REVIEW"
+    assert checkpoint["fresh_daily_mark_count"] == 30
+    assert checkpoint["exposed_day_count"] == 30
+    assert checkpoint["comparison_against"] == "V14-R2F-BTC-MOM-180D"
+    assert checkpoint["promotion_authorized"] is False
+    assert checkpoint["execution_authority"] is False
+    assert checkpoint["broker_orders_possible"] is False
+
+
+def test_r2g_daily_gap_fails_closed_without_mutating_evidence():
+    rows = _daily_rows(datetime(2026, 1, 1, tzinfo=UTC), 300)
+    del rows[260]
+    runtime = _r2g_runtime_with_rows(rows)
+    before = runtime.snapshot()
+    with pytest.raises(ValueError, match="r2g_daily_calendar_gap"):
+        asyncio.run(
+            runtime.cycle(now=datetime(2026, 10, 3, 1, tzinfo=UTC))
+        )
     assert runtime.snapshot() == before
