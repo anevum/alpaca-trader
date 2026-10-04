@@ -20,11 +20,18 @@ def bounded_health(name, body):
     if not isinstance(body, dict) or type(body.get("ok")) is not bool:
         raise ValueError("malformed_health")
     fields = ("ok", "startup_reconciled", "reconciliation_safe", "broker_orders_possible",
-              "execution_authority", "running", "worker_alive", "shadow_only")
+              "execution_authority", "running", "worker_alive", "shadow_only", "activity_active")
     for key in fields:
         if key in body and type(body[key]) is not bool:
             raise ValueError("malformed_health_flag")
+    if "current_activity" in body and (
+        body["current_activity"] is not None
+        and (not isinstance(body["current_activity"], str) or len(body["current_activity"]) > 240)
+    ):
+        raise ValueError("malformed_current_activity")
     result = {key: body[key] for key in fields if key in body}
+    if "current_activity" in body:
+        result["current_activity"] = body["current_activity"]
     result["last_error"] = bool(body.get("last_error"))
     provenance = body.get("runtime_provenance") or {}
     if not isinstance(provenance, dict):
@@ -82,7 +89,11 @@ def topology(observation, state, self_identity):
         ready = alive and not health.get("last_error", False)
         if name == "RHEN":
             ready = ready and health.get("startup_reconciled") is True and health.get("reconciliation_safe") is True
-        status = "OFFLINE" if not alive else "RUNNING" if health.get("running", True) else "IDLE"
+        # A live background loop is process liveness, not evidence that the
+        # subsystem is doing useful work right now. Default healthy runtimes to
+        # IDLE and require an explicit activity signal to project RUNNING.
+        activity_active = health.get("activity_active") is True
+        status = "OFFLINE" if not alive else "RUNNING" if activity_active else "IDLE"
         if alive and not ready:
             status = "DEGRADED"
         if incidents.get("service." + name, {}).get("status") == "OPEN":
@@ -105,7 +116,11 @@ def topology(observation, state, self_identity):
             deployment=identity.get("deployment_id"), revision=identity.get("git_commit"),
             started_at=identity.get("runtime_started_at"), observed_at=stamp,
             last_heartbeat_at=stamp if alive else None, liveness=alive, readiness=ready, status=status,
-            current_activity="worker active" if health.get("running") else None,
+            current_activity=(
+                health.get("current_activity")
+                if activity_active and health.get("current_activity")
+                else None
+            ),
             last_success=stamp if ready else None,
             last_failure=health.get("error_type") or ("reported_error" if health.get("last_error") else None),
             configuration_identity=observation.get("configuration", {}).get("fingerprint") if name == "RHEN" else None,
@@ -115,8 +130,8 @@ def topology(observation, state, self_identity):
         runtime_kind="SERVICE", independent_runtime=True, service_name="rhen-research-scheduler",
         service_version=self_identity["version"], deployment=self_identity.get("deployment"),
         revision=self_identity.get("revision"), started_at=self_identity["started_at"],
-        observed_at=stamp, last_heartbeat_at=stamp, liveness=True, readiness=True, status="RUNNING",
-        current_activity="deterministic supervision and canonical scheduler",
+        observed_at=stamp, last_heartbeat_at=stamp, liveness=True, readiness=True, status="IDLE",
+        current_activity="deterministic supervision; no active job implied",
         last_success=stamp, dependency_state={"durable_state": "commit_required"},
         configuration_identity=self_identity["configuration_identity"],
         observation_source="durable_iren_commit", scope="Independent from RHEN; shares its process with the scheduler").model_dump())
