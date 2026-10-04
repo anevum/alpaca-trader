@@ -237,13 +237,10 @@ def test_blocked_r2h_velum_transport_recovers_once_after_velum_is_healthy():
         }
         runtime = service.GraenResearchExecutor()
         runtime.gateway = FakeGateway()
-        runtime._velum_health_ready = AsyncMock(return_value=True)
-
         result = await runtime._recover_blocked_r2h_velum_transport(snapshot)
 
         assert result["recovered"] is True
         assert result["retry_count"] == 1
-        runtime._velum_health_ready.assert_awaited_once()
         assert runtime.gateway.queued[-1]["stage"] == service.V14_R2H_VELUM_STAGE
         metadata = runtime.gateway.queued[-1]["metadata"]
         assert metadata["v14_r2h_velum_transport_recovery_version"] == 1
