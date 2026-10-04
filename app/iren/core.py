@@ -141,7 +141,23 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
             else None
         )
         recently_started = fresh(runtime_started_at, now, productivity_window)
-        if not research_active and not recent_claim and not recent_completion and not recently_started:
+        dependency_wait = False
+        wait_raw = graen_executor.get("waiting_dependency_until")
+        if isinstance(wait_raw, str):
+            try:
+                wait_stamp = datetime.fromisoformat(wait_raw.replace("Z", "+00:00"))
+                dependency_wait = wait_stamp.tzinfo is not None and wait_stamp > now
+            except ValueError:
+                dependency_wait = False
+        engineering_wait = int(graen_executor.get("engineering_required_count") or 0) > 0
+        if (
+            not research_active
+            and not recent_claim
+            and not recent_completion
+            and not recently_started
+            and not dependency_wait
+            and not engineering_wait
+        ):
             issue(
                 "productivity.GRAEN",
                 "warning",
