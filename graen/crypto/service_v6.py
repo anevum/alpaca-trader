@@ -23,6 +23,13 @@ from .research_v6 import (
 )
 from .shadow_v6 import CryptoResidualReclaimShadow
 from .candidate_shadow import CandidateForwardShadow
+from .btc_slow_momentum_v14_r2f import (
+    candidate_spec as v14_r2f_candidate_spec,
+)
+from .btc_consensus_trend_v14_r2g import (
+    METHODOLOGY_VERSION as V14_R2G_METHODOLOGY_VERSION,
+    candidate_spec as v14_r2g_candidate_spec,
+)
 
 
 DEVELOPMENT_START = datetime(2025, 9, 1, tzinfo=timezone.utc)
@@ -107,7 +114,9 @@ class GraenCryptoV6Runtime:
         )
         self.shadow = CryptoResidualReclaimShadow(self.settings)
         self.candidate_shadow = CandidateForwardShadow(self.settings)
+        self.comparison_shadow = CandidateForwardShadow(self.settings)
         self.candidate_shadow_task: asyncio.Task | None = None
+        self.comparison_shadow_task: asyncio.Task | None = None
         self.candidate_shadow_interval_seconds = _env_int(
             "GRAEN_CANDIDATE_SHADOW_INTERVAL_SECONDS",
             30,
@@ -148,10 +157,18 @@ class GraenCryptoV6Runtime:
             },
             "shadow": self.shadow.status(),
             "candidate_shadow": self.candidate_shadow.status(),
+            "candidate_shadow_comparison": self.comparison_shadow.status(),
         }
 
     async def start(self) -> None:
-        await self._restore_candidate_shadow()
+        await self._restore_candidate_shadow(
+            self.candidate_shadow,
+            candidate_id=v14_r2f_candidate_spec().candidate_id,
+        )
+        await self._restore_candidate_shadow(
+            self.comparison_shadow,
+            candidate_id=v14_r2g_candidate_spec().candidate_id,
+        )
         if self.legacy_v6_research_enabled and self.task is None:
             self.task = asyncio.create_task(self._run(), name="graen-crypto-native-v6")
         if self.legacy_v6_shadow_enabled and self.shadow_task is None:
@@ -161,8 +178,19 @@ class GraenCryptoV6Runtime:
             )
         if self.candidate_shadow_task is None:
             self.candidate_shadow_task = asyncio.create_task(
-                self._run_candidate_shadow(),
+                self._run_candidate_shadow(
+                    self.candidate_shadow,
+                    role="primary",
+                ),
                 name="graen-candidate-forward-shadow",
+            )
+        if self.comparison_shadow_task is None:
+            self.comparison_shadow_task = asyncio.create_task(
+                self._run_candidate_shadow(
+                    self.comparison_shadow,
+                    role="comparison",
+                ),
+                name="graen-candidate-forward-shadow-comparison",
             )
 
     async def stop(self) -> None:
@@ -173,6 +201,7 @@ class GraenCryptoV6Runtime:
                 self.task,
                 self.shadow_task,
                 self.candidate_shadow_task,
+                self.comparison_shadow_task,
             )
             if task is not None
         ]
@@ -183,6 +212,7 @@ class GraenCryptoV6Runtime:
         self.task = None
         self.shadow_task = None
         self.candidate_shadow_task = None
+        self.comparison_shadow_task = None
 
     async def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -281,17 +311,26 @@ class GraenCryptoV6Runtime:
             else ""
         )
 
-    async def _restore_candidate_shadow(self) -> None:
+    async def _restore_candidate_shadow(
+        self,
+        shadow: CandidateForwardShadow | None = None,
+        *,
+        candidate_id: str | None = None,
+    ) -> None:
+        target = shadow or self.candidate_shadow
         url = self._report_read_url
         token = str(self.settings.trading_ingest_token or "").strip()
         if not url or not token:
             return
         try:
+            params = {"latest": "graen_shadow"}
+            if candidate_id:
+                params["shadow_candidate_id"] = candidate_id
             async with httpx.AsyncClient(timeout=15.0) as http:
                 response = await http.get(
                     url,
                     headers={"x-anevum-ingest-token": token},
-                    params={"latest": "graen_shadow"},
+                    params=params,
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -310,13 +349,16 @@ class GraenCryptoV6Runtime:
                 else None
             )
             if isinstance(state, Mapping):
-                self.candidate_shadow.restore(state)
+                target.restore(state)
             elif isinstance(activation, Mapping):
-                self.candidate_shadow.activate(activation)
+                target.activate(activation)
         except Exception as exc:
             print(
                 "GRAEN_CANDIDATE_SHADOW_RESTORE_ERROR",
-                {"error": f"{type(exc).__name__}: {exc}"},
+                {
+                    "candidate_id": candidate_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
                 flush=True,
             )
 
@@ -376,7 +418,9 @@ class GraenCryptoV6Runtime:
     async def _sync_candidate_shadow_checkpoint(
         self,
         checkpoint: Mapping[str, Any],
+        shadow: CandidateForwardShadow | None = None,
     ) -> bool:
+        target = shadow or self.candidate_shadow
         url = os.getenv("GRAEN_GATEWAY_URL", "").strip()
         token = os.getenv("GRAEN_GATEWAY_TOKEN", "").strip()
         if not url or len(token) < 32:
@@ -388,10 +432,7 @@ class GraenCryptoV6Runtime:
                 json={
                     "action": "shadow_checkpoint",
                     "problem_id": str(
-                        (self.candidate_shadow.activation or {}).get(
-                            "problem_id"
-                        )
-                        or ""
+                        (target.activation or {}).get("problem_id") or ""
                     ),
                     "activation_id": str(
                         checkpoint.get("activation_id") or ""
@@ -407,8 +448,12 @@ class GraenCryptoV6Runtime:
             payload = response.json()
         return bool(isinstance(payload, Mapping) and payload.get("ok"))
 
-    async def _persist_candidate_shadow_state(self) -> None:
-        state = self.candidate_shadow.snapshot()
+    async def _persist_candidate_shadow_state(
+        self,
+        shadow: CandidateForwardShadow | None = None,
+    ) -> None:
+        target = shadow or self.candidate_shadow
+        state = target.snapshot()
         activation_id = str(state.get("activation_id") or "")
         if not activation_id:
             return
@@ -438,6 +483,11 @@ class GraenCryptoV6Runtime:
             request.get("candidate_methodology") or ""
         )
         problem_id = str(request.get("problem_id") or "")
+        target_shadow = (
+            self.comparison_shadow
+            if candidate_methodology == V14_R2G_METHODOLOGY_VERSION
+            else self.candidate_shadow
+        )
         velum_artifact_id = str(
             request.get("velum_artifact_id") or ""
         )
@@ -476,9 +526,9 @@ class GraenCryptoV6Runtime:
             "broker_orders_possible": False,
         }
         if (
-            self.candidate_shadow.active
+            target_shadow.active
             and str(
-                (self.candidate_shadow.activation or {}).get(
+                (target_shadow.activation or {}).get(
                     "activation_id"
                 )
                 or ""
@@ -499,12 +549,12 @@ class GraenCryptoV6Runtime:
         )
         if not persisted:
             raise RuntimeError("candidate_shadow_activation_not_persisted")
-        self.candidate_shadow.activate(activation)
-        await self._persist_candidate_shadow_state()
+        target_shadow.activate(activation)
+        await self._persist_candidate_shadow_state(target_shadow)
 
-        checkpoint = self.candidate_shadow._checkpoint()
-        self.candidate_shadow.last_checkpoint = dict(checkpoint)
-        self.candidate_shadow.last_checkpoint_status = str(
+        checkpoint = target_shadow._checkpoint()
+        target_shadow.last_checkpoint = dict(checkpoint)
+        target_shadow.last_checkpoint_status = str(
             checkpoint["status"]
         )
         persisted = await self._emit_candidate_shadow(
@@ -514,7 +564,7 @@ class GraenCryptoV6Runtime:
         )
         if not persisted:
             raise RuntimeError("candidate_shadow_checkpoint_not_persisted")
-        if not await self._sync_candidate_shadow_checkpoint(checkpoint):
+        if not await self._sync_candidate_shadow_checkpoint(checkpoint, target_shadow):
             raise RuntimeError("candidate_shadow_checkpoint_not_synced")
 
         await self._slack(
@@ -524,11 +574,17 @@ class GraenCryptoV6Runtime:
         )
         return {"activation": activation, "duplicate": False}
 
-    async def _run_candidate_shadow(self) -> None:
+    async def _run_candidate_shadow(
+        self,
+        shadow: CandidateForwardShadow | None = None,
+        *,
+        role: str = "primary",
+    ) -> None:
+        target = shadow or self.candidate_shadow
         while not self.stop_event.is_set():
-            before = self.candidate_shadow.snapshot()
+            before = target.snapshot()
             try:
-                events = await self.candidate_shadow.cycle()
+                events = await target.cycle()
                 if events:
                     for event in events:
                         event_type = str(
@@ -552,7 +608,7 @@ class GraenCryptoV6Runtime:
                             )
                         if event_type == "graen_candidate_shadow_checkpoint":
                             if not await self._sync_candidate_shadow_checkpoint(
-                                payload
+                                payload, target
                             ):
                                 raise RuntimeError(
                                     "candidate_shadow_checkpoint_not_synced"
@@ -571,21 +627,21 @@ class GraenCryptoV6Runtime:
                                     + str(payload.get("trade_count") or 0)
                                     + " | broker orders: disabled"
                                 )
-                    await self._persist_candidate_shadow_state()
-                self.candidate_shadow.last_error = None
+                    await self._persist_candidate_shadow_state(target)
+                target.last_error = None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 try:
-                    self.candidate_shadow.restore(before)
+                    target.restore(before)
                 except Exception:
                     pass
-                self.candidate_shadow.last_error = (
+                target.last_error = (
                     f"{type(exc).__name__}: {exc}"
                 )
                 print(
                     "GRAEN_CANDIDATE_SHADOW_ERROR",
-                    {"error": self.candidate_shadow.last_error},
+                    {"role": role, "error": target.last_error},
                     flush=True,
                 )
             try:
