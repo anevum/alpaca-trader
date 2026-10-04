@@ -57,6 +57,14 @@ from graen.crypto.btc_consensus_trend_v14_r2g import (
     UNIVERSE as V14_R2G_UNIVERSE,
     spec_from_dict as v14_r2g_spec_from_dict,
 )
+from graen.crypto.btc_4h_consensus_v14_r2h import (
+    COST_SCENARIOS as V14_R2H_COST_SCENARIOS,
+    METHODOLOGY_VERSION as V14_R2H_METHODOLOGY_VERSION,
+    MOMENTUM_LOOKBACK_BARS as V14_R2H_MOMENTUM_LOOKBACK_BARS,
+    SMA_WINDOW_BARS as V14_R2H_SMA_WINDOW_BARS,
+    UNIVERSE as V14_R2H_UNIVERSE,
+    spec_from_dict as v14_r2h_spec_from_dict,
+)
 
 
 UTC = timezone.utc
@@ -69,6 +77,7 @@ SUPPORTED_CANDIDATE_METHODOLOGIES = {
     V13_METHODOLOGY_VERSION,
     V14_R2F_METHODOLOGY_VERSION,
     V14_R2G_METHODOLOGY_VERSION,
+    V14_R2H_METHODOLOGY_VERSION,
 }
 MIN_READY_TRADES = 30
 MIN_READY_DAYS = 20
@@ -93,6 +102,15 @@ R2G_MIN_READY_EXPOSED_DAYS = 10
 R2G_MAX_REVIEW_DAILY_MARKS = 120
 R2G_MIN_READY_SHARPE = 0.0
 R2G_MAX_READY_DRAWDOWN = -0.25
+
+R2H_SHADOW_COST_PER_TURNOVER = float(
+    V14_R2H_COST_SCENARIOS["taker_stress_30bp"]
+)
+R2H_MIN_READY_4H_MARKS = 18
+R2H_MIN_READY_EXPOSED_MARKS = 6
+R2H_MAX_REVIEW_4H_MARKS = 60
+R2H_MIN_READY_SHARPE = 0.0
+R2H_MAX_READY_DRAWDOWN = -0.25
 
 
 def _stamp(value: Any) -> datetime:
@@ -180,6 +198,52 @@ def _r2g_completed_daily_rows(
         raise ValueError("r2g_daily_calendar_gap")
     if now - rows[-1]["bar_end"] >= timedelta(days=1):
         raise ValueError("r2g_daily_data_stale")
+    return rows
+
+
+def _r2h_completed_4h_rows(
+    source: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Require complete fresh 4-hour history for the frozen R2H signal."""
+    by_stamp: dict[datetime, dict[str, Any]] = {}
+    for row in source:
+        try:
+            stamp = _stamp(row.get("t"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("r2h_4h_timestamp_invalid") from exc
+        end = stamp + timedelta(hours=4)
+        if end > now:
+            continue
+        try:
+            close = float(row.get("c", row.get("close")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("r2h_4h_close_invalid") from exc
+        if not isfinite(close) or close <= 0:
+            raise ValueError("r2h_4h_close_invalid")
+        previous = by_stamp.get(stamp)
+        if previous is not None and previous["close"] != close:
+            raise ValueError("r2h_4h_duplicate_conflict")
+        by_stamp[stamp] = {
+            "timestamp": stamp,
+            "bar_end": end,
+            "close": close,
+        }
+    rows = [by_stamp[key] for key in sorted(by_stamp)]
+    required = max(
+        V14_R2H_MOMENTUM_LOOKBACK_BARS,
+        V14_R2H_SMA_WINDOW_BARS,
+    ) + 2
+    if len(rows) < required:
+        raise ValueError("r2h_4h_history_incomplete")
+    if any(
+        following["timestamp"] != previous["bar_end"]
+        for previous, following in zip(rows, rows[1:])
+    ):
+        raise ValueError("r2h_4h_calendar_gap")
+    if now - rows[-1]["bar_end"] >= timedelta(hours=4):
+        raise ValueError("r2h_4h_data_stale")
     return rows
 
 
