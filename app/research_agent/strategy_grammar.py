@@ -166,10 +166,37 @@ def missing_primitives(
     return result
 
 
+def compiler_profile(manifest: StrategyManifest) -> str | None:
+    if (
+        manifest.family == "cross_asset_diffusion"
+        and manifest.information_source == "cross_asset_returns"
+        and manifest.feature == "lead_lag_gap"
+        and manifest.trigger == "threshold"
+        and manifest.entry in {"market_next_bar", "delayed_market"}
+        and manifest.exit in {"time_60m", "time_120m", "time_240m"}
+        and manifest.sizing == "research_fixed_unit"
+        and manifest.execution == "stressed_market"
+    ):
+        return "research_v7_candidate_v1"
+    if (
+        manifest.family == "breadth_laggard_response"
+        and manifest.information_source == "cross_asset_returns"
+        and manifest.feature == "cross_sectional_breadth"
+        and manifest.trigger == "threshold"
+        and manifest.entry == "market_next_bar"
+        and manifest.exit in {"time_60m", "time_120m", "time_240m"}
+        and manifest.sizing == "research_fixed_unit"
+        and manifest.execution == "stressed_market"
+    ):
+        return "research_v7_candidate_v1"
+    return None
+
+
 def validate_manifest(
     manifest: StrategyManifest,
     *,
     trusted: Mapping[str, Sequence[str]] | None = None,
+    require_compiler: bool = True,
 ) -> dict[str, Any]:
     if manifest.grammar_version != GRAMMAR_VERSION:
         raise StrategyGrammarError("unsupported strategy grammar version")
@@ -190,12 +217,15 @@ def validate_manifest(
         raise StrategyGrammarError("strategy parameters must be a mapping")
 
     unsupported = missing_primitives(manifest, trusted=trusted)
+    profile = None if unsupported else compiler_profile(manifest)
+    compiler_missing = require_compiler and profile is None
     return {
         "schema_version": GRAMMAR_VERSION,
         "manifest_hash": manifest_hash(manifest),
-        "trusted_compiler_compatible": not unsupported,
+        "trusted_compiler_compatible": not unsupported and profile is not None,
+        "compiler_profile": profile,
         "missing_primitives": unsupported,
-        "software_change_required": bool(unsupported),
+        "software_change_required": bool(unsupported or compiler_missing),
         "execution_authority": False,
         "live_execution_authorized": False,
     }
