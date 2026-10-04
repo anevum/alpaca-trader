@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.28.0"
+RUNTIME_VERSION = "graen-research-executor-v1.29.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -4552,6 +4552,25 @@ class GraenResearchExecutor:
             return False
 
 
+    async def _velum_r2h_fetch_ready(self) -> bool:
+        if not self.velum_configured:
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.get(f"{self.velum_base_url}/health")
+                response.raise_for_status()
+                payload = response.json()
+            return (
+                isinstance(payload, Mapping)
+                and payload.get("system") == "VELUM"
+                and payload.get("mode") == "research_replay_only"
+                and payload.get("r2h_replay_fetch_version")
+                == "r2h-4hour-fetch-v1"
+            )
+        except Exception:
+            return False
+
+
     async def _replay_in_velum(
         self,
         *,
@@ -5349,7 +5368,7 @@ class GraenResearchExecutor:
                 problem.get("status") != "BLOCKED"
                 or problem.get("domain") != PROBLEM_DOMAIN
                 or metadata.get("research_stage") != V14_R2H_VELUM_STAGE
-                or recovery_version >= 4
+                or recovery_version >= 5
             ):
                 continue
 
@@ -5366,7 +5385,7 @@ class GraenResearchExecutor:
                 error = str(run.get("result_summary", {}).get("error") or "")
                 connect_error = error.startswith("ConnectError:")
                 known_velum_500 = bool(
-                    recovery_version == 3
+                    recovery_version in {3, 4}
                     and error.startswith("HTTPStatusError:")
                     and "500 Internal Server Error" in error
                     and "/v1/graen/candidate-replay" in error
@@ -5379,7 +5398,7 @@ class GraenResearchExecutor:
 
             if recovery_version == 1 and ".internal" not in self.velum_base_url:
                 continue
-            if recovery_version in {2, 3} and not (
+            if recovery_version in {2, 3, 4} and not (
                 ".internal" in self.velum_base_url
                 and self.velum_base_url.endswith(":8080")
             ):
@@ -5391,6 +5410,16 @@ class GraenResearchExecutor:
                     "state": "WAITING_FOR_VELUM_PRIVATE_HEALTH",
                     "next_research_stage": V14_R2H_VELUM_STAGE,
                     "retry_count": 3,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                }
+            if recovery_version == 4 and not await self._velum_r2h_fetch_ready():
+                return {
+                    "recovered": False,
+                    "problem_id": problem_id,
+                    "state": "WAITING_FOR_VELUM_R2H_4HOUR_FETCH",
+                    "next_research_stage": V14_R2H_VELUM_STAGE,
+                    "retry_count": 4,
                     "execution_authority": False,
                     "broker_orders_possible": False,
                 }
@@ -5407,6 +5436,8 @@ class GraenResearchExecutor:
                 if recovery_version == 2
                 else "retry_after_velum_ipv6_bind_repair"
                 if recovery_version == 3
+                else "retry_after_r2h_4hour_fetch_repair"
+                if recovery_version == 4
                 else "retry_after_velum_transport_recovered"
             )
             artifact_response = await self.gateway.record_artifact(
@@ -5424,7 +5455,8 @@ class GraenResearchExecutor:
                     "repair": repair,
                     "retry_count": recovery_version + 1,
                     "methodology_changed": False,
-                    "private_health_verified": recovery_version == 3,
+                    "private_health_verified": recovery_version in {3, 4},
+                    "r2h_4hour_fetch_verified": recovery_version == 4,
                     "research_only": True,
                     "execution_authority": False,
                     "broker_orders_possible": False,
