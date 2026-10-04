@@ -2073,6 +2073,610 @@ class GraenResearchExecutor:
             summary=summary,
         )
 
+    async def _execute_hypothesis_planner(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        self.active_methodology_version = "graen-hypothesis-planner-v1"
+
+        snapshot = await self.gateway.snapshot()
+        exposure = await self.gateway.research_exposure_ledger()
+        plan = plan_next_hypothesis(snapshot, exposure, now=datetime.now(UTC))
+
+        decision_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_STRATEGY_PLANNER_DECISION",
+            methodology_version="graen-hypothesis-planner-v1",
+            content={
+                **plan,
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_state_changed": False,
+            },
+        )
+        decision_artifact_id = (
+            str((decision_artifact.get("artifact") or {}).get("artifact_id"))
+            if isinstance(decision_artifact.get("artifact"), Mapping)
+            and (decision_artifact.get("artifact") or {}).get("artifact_id")
+            else None
+        )
+
+        state = str(plan.get("state") or "")
+        if state == "ENGINEERING_REQUIRED":
+            manifest = plan.get("manifest")
+            manifest_hash = str(plan.get("manifest_hash") or "")
+            requirement = build_engineering_requirement(
+                requirement_id=(
+                    "ENG-GRAEN-" + (manifest_hash[:12].upper() if len(manifest_hash) == 64 else "HYPOTHESIS-ENGINE")
+                ),
+                requested_by="GRAEN",
+                title="Extend autonomous crypto hypothesis capability",
+                reason=str(plan.get("reason") or "trusted research capability exhausted"),
+                capability_required=str(
+                    plan.get("capability_required")
+                    or "A trusted strategy grammar/compiler capability required by the frozen hypothesis."
+                ),
+                affected_components=[
+                    "app/research_agent/strategy_grammar.py",
+                    "app/research_agent/strategy_runner.py",
+                    "app/research_agent/hypothesis_planner.py",
+                    "app/graen/research_executor_service.py",
+                ],
+                blocked_research=[
+                    str((manifest or {}).get("hypothesis_id") or problem_id)
+                    if isinstance(manifest, Mapping)
+                    else problem_id
+                ],
+                acceptance_tests=[
+                    "New capability is represented by a frozen strategy manifest, not arbitrary runtime Python.",
+                    "Development, validation, holdout, and VELUM remain causally separated.",
+                    "Complete search exposure and online multiplicity accounting remain intact.",
+                    "Runtime source/Git/merge/deploy authority remains false.",
+                    "Existing trading, broker, risk, and credential boundaries remain unchanged.",
+                    "After deployment, IREN can restart the planner without manual research-stage intervention.",
+                ],
+                suggested_paths=[
+                    "app/research_agent/strategy_grammar.py",
+                    "app/research_agent/strategy_runner.py",
+                    "app/research_agent/hypothesis_planner.py",
+                    "tests/test_strategy_grammar.py",
+                ],
+                continuation_policy="Continue every independent research branch; do not repeat exhausted hypotheses.",
+                risk="MEDIUM",
+                implementation_notes=[
+                    "Treat the frozen hypothesis/search history as authoritative.",
+                    "Prefer extending data-driven primitives over creating one-off strategy files.",
+                    "Do not enable or increase live crypto execution as part of this engineering task.",
+                ],
+            )
+            await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type="ENGINEERING_REQUIREMENT",
+                methodology_version="graen-hypothesis-planner-v1",
+                content=requirement,
+            )
+            summary = {
+                "state": "ENGINEERING_REQUIRED",
+                "decision": "MANUAL_SOFTWARE_REQUIRED",
+                "status": "WAITING_FOR_ENGINEERING",
+                "planner_artifact_id": decision_artifact_id,
+                "engineering_requirement": requirement,
+                "manual_chatgpt_workspace_required": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_state_changed": False,
+                "next_action": "OPEN_CHATGPT_CODEX_HANDOFF",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=ENGINEERING_REQUIRED_STAGE,
+                next_metadata={
+                    "autonomous_continuation": True,
+                    "engineering_requirement": requirement,
+                    "planner_artifact_id": decision_artifact_id,
+                },
+            )
+
+        if state == "WAITING_FOR_UNINSPECTED_CORPUS":
+            corpus = plan.get("corpus") if isinstance(plan.get("corpus"), Mapping) else {}
+            next_eligible = str(corpus.get("next_eligible_at") or "")
+            parsed = None
+            try:
+                parsed = datetime.fromisoformat(next_eligible.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                parsed = parsed.astimezone(UTC)
+            except ValueError:
+                parsed = None
+            self.waiting_dependency_until = parsed
+            summary = {
+                "state": "WAITING_FOR_UNINSPECTED_CORPUS",
+                "decision": "WAIT_FOR_NEW_EVIDENCE",
+                "status": "WAITING_DATA",
+                "planner_artifact_id": decision_artifact_id,
+                "candidate_id": (
+                    (plan.get("manifest") or {}).get("hypothesis_id")
+                    if isinstance(plan.get("manifest"), Mapping)
+                    else None
+                ),
+                "next_eligible_at": next_eligible or None,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "production_state_changed": False,
+                "next_action": "RESUME_PLANNER_WHEN_CORPUS_ELIGIBLE",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=WAITING_CORPUS_STAGE,
+                next_metadata={
+                    "autonomous_continuation": True,
+                    "resume_stage": HYPOTHESIS_PLANNER_STAGE,
+                    "next_eligible_at": next_eligible,
+                    "planner_artifact_id": decision_artifact_id,
+                },
+            )
+
+        if state != "READY":
+            raise RuntimeError(f"unsupported_hypothesis_planner_state:{state}")
+
+        manifest = plan.get("manifest")
+        if not isinstance(manifest, Mapping):
+            raise RuntimeError("hypothesis_planner_missing_manifest")
+        self.waiting_dependency_until = None
+        manifest_artifact = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_STRATEGY_MANIFEST_V1",
+            methodology_version=STRATEGY_RUNNER_VERSION,
+            content={
+                "manifest": dict(manifest),
+                "manifest_hash": plan.get("manifest_hash"),
+                "compiler_profile": plan.get("compiler_profile"),
+                "corpus": plan.get("corpus"),
+                "search_generation": plan.get("search_generation"),
+                "validation_alpha": plan.get("validation_alpha"),
+                "selection_policy": plan.get("selection_policy"),
+                "planner_artifact_id": decision_artifact_id,
+                "frozen_before_corpus_access": True,
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            },
+        )
+        manifest_artifact_id = (
+            str((manifest_artifact.get("artifact") or {}).get("artifact_id"))
+            if isinstance(manifest_artifact.get("artifact"), Mapping)
+            and (manifest_artifact.get("artifact") or {}).get("artifact_id")
+            else None
+        )
+        frozen = {
+            "autonomous_continuation": True,
+            "strategy_manifest": dict(manifest),
+            "strategy_manifest_hash": str(plan.get("manifest_hash") or ""),
+            "strategy_corpus": dict(plan.get("corpus") or {}),
+            "strategy_search_generation": int(plan.get("search_generation") or 1),
+            "strategy_validation_alpha": float(plan.get("validation_alpha") or 0.0),
+            "strategy_manifest_artifact_id": manifest_artifact_id,
+            "strategy_planner_artifact_id": decision_artifact_id,
+        }
+        summary = {
+            "state": "STRATEGY_MANIFEST_FROZEN",
+            "decision": "CONTINUE_RESEARCH",
+            "status": "READY_FOR_DEVELOPMENT",
+            "candidate_id": manifest.get("hypothesis_id"),
+            "candidate_family": manifest.get("family"),
+            "manifest_hash": plan.get("manifest_hash"),
+            "manifest_artifact_id": manifest_artifact_id,
+            "search_generation": plan.get("search_generation"),
+            "validation_alpha": plan.get("validation_alpha"),
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "production_state_changed": False,
+            "next_action": "RUN_DEVELOPMENT",
+        }
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary=summary,
+            next_stage=STRATEGY_DEVELOPMENT_STAGE,
+            next_metadata=frozen,
+        )
+
+    async def _execute_strategy_manifest(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
+        stage = str(metadata.get("research_stage") or "")
+        manifest_payload = metadata.get("strategy_manifest")
+        corpus = metadata.get("strategy_corpus")
+        if not isinstance(manifest_payload, Mapping) or not isinstance(corpus, Mapping):
+            raise RuntimeError("strategy_manifest_stage_missing_frozen_contract")
+        manifest = manifest_from_dict(manifest_payload)
+        manifest_hash_value = str(metadata.get("strategy_manifest_hash") or "")
+        from app.research_agent.strategy_grammar import manifest_hash as strategy_manifest_hash
+        if strategy_manifest_hash(manifest) != manifest_hash_value:
+            raise RuntimeError("strategy_manifest_hash_mismatch")
+
+        search_generation = int(metadata.get("strategy_search_generation") or 1)
+        alpha = float(metadata.get("strategy_validation_alpha") or 0.0)
+        if not 0 < alpha <= 0.05:
+            raise RuntimeError("invalid_strategy_confirmatory_alpha")
+        self.active_methodology_version = STRATEGY_RUNNER_VERSION
+
+        def bounds(name: str) -> tuple[datetime, datetime]:
+            values = corpus.get(name)
+            if not isinstance(values, (list, tuple)) or len(values) != 2:
+                raise RuntimeError("invalid_strategy_corpus")
+            left = datetime.fromisoformat(str(values[0]).replace("Z", "+00:00"))
+            right = datetime.fromisoformat(str(values[1]).replace("Z", "+00:00"))
+            if left.tzinfo is None or right.tzinfo is None or not left < right:
+                raise RuntimeError("invalid_strategy_corpus")
+            return left.astimezone(UTC), right.astimezone(UTC)
+
+        async def record(artifact_type: str, payload: Mapping[str, Any]) -> str | None:
+            response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=run_id,
+                artifact_type=artifact_type,
+                methodology_version=STRATEGY_RUNNER_VERSION,
+                content={
+                    **dict(payload),
+                    "manifest_hash": manifest_hash_value,
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "search_generation": search_generation,
+                    "confirmatory_alpha": alpha,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                },
+            )
+            artifact = response.get("artifact")
+            return (
+                str(artifact.get("artifact_id"))
+                if isinstance(artifact, Mapping) and artifact.get("artifact_id")
+                else None
+            )
+
+        continuation_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key != "research_stage"
+        }
+
+        if stage == STRATEGY_DEVELOPMENT_STAGE:
+            start, end = bounds("development")
+            await record(
+                "CRYPTO_STRATEGY_STAGE_OPENED",
+                {"stage": "DEVELOPMENT", "start": start.isoformat(), "end": end.isoformat()},
+            )
+            bars = await self._fetch_stage(
+                CONTEXT_UNIVERSE,
+                start=start,
+                end=end,
+                warmup_hours=8,
+            )
+            result = evaluate_strategy_development(
+                bars,
+                manifest,
+                start=start,
+                end=end,
+                seed=93000 + search_generation * 100,
+            )
+            artifact_id = await record("CRYPTO_STRATEGY_DEVELOPMENT_RESULT", result)
+            if result.get("passed") is True:
+                next_metadata = {
+                    **continuation_metadata,
+                    "strategy_development_result": result,
+                    "strategy_development_artifact_id": artifact_id,
+                }
+                summary = {
+                    "state": "STRATEGY_DEVELOPMENT_PASSED",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "DEVELOPMENT_PASS",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "development_artifact_id": artifact_id,
+                    "validation_opened": False,
+                    "holdout_opened": False,
+                    "execution_authority": False,
+                    "next_action": "RUN_UNTOUCHED_VALIDATION",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=STRATEGY_VALIDATION_STAGE,
+                    next_metadata=next_metadata,
+                )
+            summary = {
+                "state": "STRATEGY_REJECTED_DEVELOPMENT",
+                "decision": "CONTINUE_RESEARCH",
+                "status": "DEVELOPMENT_FAIL",
+                "candidate_id": manifest.hypothesis_id,
+                "candidate_family": manifest.family,
+                "reasons": result.get("reasons") or [],
+                "validation_opened": False,
+                "holdout_opened": False,
+                "execution_authority": False,
+                "next_action": "GENERATE_NEXT_HYPOTHESIS",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=HYPOTHESIS_PLANNER_STAGE,
+                next_metadata={"autonomous_continuation": True},
+            )
+
+        if stage == STRATEGY_VALIDATION_STAGE:
+            development = metadata.get("strategy_development_result")
+            if not isinstance(development, Mapping) or development.get("passed") is not True:
+                raise RuntimeError("strategy_validation_requires_passed_development")
+            start, end = bounds("validation")
+            await record(
+                "CRYPTO_STRATEGY_STAGE_OPENED",
+                {"stage": "VALIDATION", "start": start.isoformat(), "end": end.isoformat()},
+            )
+            bars = await self._fetch_stage(
+                CONTEXT_UNIVERSE,
+                start=start,
+                end=end,
+                warmup_hours=8,
+            )
+            result = evaluate_strategy_validation(
+                bars,
+                manifest,
+                start=start,
+                end=end,
+                development_result=development,
+                seed=94000 + search_generation * 100,
+                confirmatory_alpha=alpha,
+            )
+            artifact_id = await record("CRYPTO_STRATEGY_VALIDATION_RESULT", result)
+            if result.get("passed") is True:
+                next_metadata = {
+                    **continuation_metadata,
+                    "strategy_validation_result": result,
+                    "strategy_validation_artifact_id": artifact_id,
+                }
+                summary = {
+                    "state": "STRATEGY_VALIDATION_PASSED",
+                    "decision": "CONTINUE_RESEARCH",
+                    "status": "VALIDATION_PASS",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "validation_artifact_id": artifact_id,
+                    "validation_opened": True,
+                    "holdout_opened": False,
+                    "execution_authority": False,
+                    "next_action": "RUN_UNTOUCHED_HOLDOUT",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=STRATEGY_HOLDOUT_STAGE,
+                    next_metadata=next_metadata,
+                )
+            summary = {
+                "state": "STRATEGY_REJECTED_VALIDATION",
+                "decision": "CONTINUE_RESEARCH",
+                "status": "VALIDATION_FAIL",
+                "candidate_id": manifest.hypothesis_id,
+                "candidate_family": manifest.family,
+                "reasons": result.get("reasons") or [],
+                "validation_opened": True,
+                "holdout_opened": False,
+                "execution_authority": False,
+                "next_action": "GENERATE_NEXT_HYPOTHESIS",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=HYPOTHESIS_PLANNER_STAGE,
+                next_metadata={"autonomous_continuation": True},
+            )
+
+        if stage == STRATEGY_HOLDOUT_STAGE:
+            validation = metadata.get("strategy_validation_result")
+            if not isinstance(validation, Mapping) or validation.get("passed") is not True:
+                raise RuntimeError("strategy_holdout_requires_passed_validation")
+            start, end = bounds("holdout")
+            await record(
+                "CRYPTO_STRATEGY_STAGE_OPENED",
+                {"stage": "HOLDOUT", "start": start.isoformat(), "end": end.isoformat()},
+            )
+            bars = await self._fetch_stage(
+                CONTEXT_UNIVERSE,
+                start=start,
+                end=end,
+                warmup_hours=8,
+            )
+            result = evaluate_strategy_holdout(
+                bars,
+                manifest,
+                start=start,
+                end=end,
+                seed=95000 + search_generation * 100,
+                confirmatory_alpha=alpha,
+            )
+            artifact_id = await record("CRYPTO_STRATEGY_HOLDOUT_RESULT", result)
+            if result.get("passed") is True:
+                next_metadata = {
+                    **continuation_metadata,
+                    "strategy_holdout_result": result,
+                    "strategy_holdout_artifact_id": artifact_id,
+                }
+                summary = {
+                    "state": "STRATEGY_HOLDOUT_PASSED",
+                    "decision": "PROMOTE_TO_VELUM",
+                    "status": "HOLDOUT_PASS",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "holdout_artifact_id": artifact_id,
+                    "holdout_opened": True,
+                    "holdout_passed": True,
+                    "execution_authority": False,
+                    "next_action": "RUN_VELUM_REPLAY",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=STRATEGY_VELUM_STAGE,
+                    next_metadata=next_metadata,
+                )
+            summary = {
+                "state": "STRATEGY_REJECTED_HOLDOUT",
+                "decision": "CONTINUE_RESEARCH",
+                "status": "HOLDOUT_FAIL",
+                "candidate_id": manifest.hypothesis_id,
+                "candidate_family": manifest.family,
+                "reasons": result.get("reasons") or [],
+                "holdout_opened": True,
+                "holdout_passed": False,
+                "execution_authority": False,
+                "next_action": "GENERATE_NEXT_HYPOTHESIS",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=HYPOTHESIS_PLANNER_STAGE,
+                next_metadata={"autonomous_continuation": True},
+            )
+
+        if stage == STRATEGY_VELUM_STAGE:
+            holdout = metadata.get("strategy_holdout_result")
+            if not isinstance(holdout, Mapping) or holdout.get("passed") is not True:
+                raise RuntimeError("strategy_velum_requires_passed_holdout")
+            _, holdout_end = bounds("holdout")
+            replay_start = holdout_end
+            replay_end = min(
+                replay_start + timedelta(days=30),
+                datetime.now(UTC) - timedelta(minutes=10),
+            )
+            if replay_end <= replay_start:
+                next_eligible = replay_start + timedelta(days=1)
+                self.waiting_dependency_until = next_eligible
+                summary = {
+                    "state": "VELUM_REPLAY_WAITING_FOR_DATA",
+                    "decision": "WAIT_FOR_NEW_EVIDENCE",
+                    "status": "WAITING_DATA",
+                    "candidate_id": manifest.hypothesis_id,
+                    "next_eligible_at": next_eligible.isoformat(),
+                    "execution_authority": False,
+                    "next_action": "RESUME_VELUM_WHEN_DATA_AVAILABLE",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="WAITING",
+                    summary=summary,
+                    next_stage=WAITING_CORPUS_STAGE,
+                    next_metadata={
+                        **continuation_metadata,
+                        "resume_stage": STRATEGY_VELUM_STAGE,
+                        "next_eligible_at": next_eligible.isoformat(),
+                    },
+                )
+
+            candidate_spec = compile_strategy_candidate(manifest).to_dict()
+            velum = await self._replay_in_velum(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id="strategy-manifest-autonomous-v1",
+                epoch_index=search_generation,
+                generation=search_generation,
+                candidate_methodology=STRATEGY_RUNNER_VERSION,
+                candidate_spec=candidate_spec,
+                replay_start=replay_start,
+                replay_end=replay_end,
+                seed=96000 + search_generation * 100,
+            )
+            artifact_id = await record(
+                "CRYPTO_STRATEGY_VELUM_RESULT",
+                {
+                    "velum_result": velum,
+                    "replay_start": replay_start.isoformat(),
+                    "replay_end": replay_end.isoformat(),
+                },
+            )
+            gate = velum.get("engineering_gate")
+            passed = isinstance(gate, Mapping) and gate.get("passed") is True
+            if passed:
+                summary = {
+                    "state": "CANDIDATE_READY_FOR_FORWARD_SHADOW",
+                    "decision": "FORWARD_SHADOW_REQUIRED",
+                    "status": "VELUM_PASS",
+                    "candidate_id": manifest.hypothesis_id,
+                    "candidate_family": manifest.family,
+                    "velum_artifact_id": artifact_id,
+                    "velum_engineering_gate": dict(gate),
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "production_state_changed": False,
+                    "next_action": "FORWARD_SHADOW_OBSERVATION",
+                }
+                return await self._finalize(
+                    problem=problem,
+                    run=run,
+                    status="SUCCEEDED",
+                    summary=summary,
+                )
+
+            summary = {
+                "state": "STRATEGY_REJECTED_VELUM",
+                "decision": "CONTINUE_RESEARCH",
+                "status": "VELUM_FAIL",
+                "candidate_id": manifest.hypothesis_id,
+                "candidate_family": manifest.family,
+                "velum_artifact_id": artifact_id,
+                "velum_engineering_gate": dict(gate) if isinstance(gate, Mapping) else {},
+                "execution_authority": False,
+                "next_action": "GENERATE_NEXT_HYPOTHESIS",
+            }
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary=summary,
+                next_stage=HYPOTHESIS_PLANNER_STAGE,
+                next_metadata={"autonomous_continuation": True},
+            )
+
+        raise RuntimeError(f"unsupported_strategy_manifest_stage:{stage}")
+
     async def _execute_autonomous_campaign(
         self,
         problem: Mapping[str, Any],
