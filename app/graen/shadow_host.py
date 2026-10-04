@@ -14,11 +14,16 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.persistence import TradingEventSink
+from app.research_agent.strategy_runner import (
+    RUNNER_VERSION as STRATEGY_RUNNER_VERSION,
+)
 from graen.crypto.candidate_shadow import CandidateForwardShadow
 
 
 UTC = timezone.utc
-SHADOW_HOST_VERSION = "graen.forward-shadow-host.v1"
+SHADOW_HOST_VERSION = "graen.forward-shadow-host.v2"
+STATE_SCHEMA_VERSION = "graen.forward-shadow-host.state.v2"
+TERMINAL_STATUSES = {"SHADOW_REJECTED", "READY_FOR_PAPER"}
 
 
 class ShadowActivationRequest(BaseModel):
@@ -34,11 +39,12 @@ class ShadowActivationRequest(BaseModel):
 
 
 class CandidateShadowHost:
-    """Durable, broker-proof host for GRAEN forward-shadow candidates.
+    """Durable broker-proof queue for forward-shadow candidates.
 
-    The host owns no broker client and has no execution path. It reads crypto
-    market data through CandidateForwardShadow, persists restart state, and
-    mirrors research events into the canonical telemetry lane.
+    One candidate is observed at a time to keep attribution deterministic.
+    Additional validated candidates queue durably. Terminal evidence is retained
+    by activation id so GRAEN can poll the exact candidate after the host has
+    advanced to the next queued candidate.
     """
 
     def __init__(
@@ -50,12 +56,22 @@ class CandidateShadowHost:
         state_path: str | Path | None = None,
         poll_seconds: int | None = None,
     ) -> None:
-        self.runtime = CandidateForwardShadow(settings)
+        self.settings = settings.model_copy(
+            update={
+                "execution_enabled": False,
+                "live_trading": False,
+                "bot_armed": False,
+                "crypto_execution_enabled": False,
+                "scan_only": True,
+            }
+        )
+        self.runtime = CandidateForwardShadow(self.settings)
         self.event_sink = event_sink
         self.token = str(
             token
             if token is not None
             else os.getenv("GRAEN_SHADOW_TOKEN", "")
+            or os.getenv("GRAEN_GATEWAY_TOKEN", "")
         ).strip()
         default_root = str(
             os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "") or "/data"
@@ -77,6 +93,9 @@ class CandidateShadowHost:
             self.poll_seconds = max(15, min(int(raw_poll), 3600))
         except (TypeError, ValueError):
             self.poll_seconds = 60
+
+        self.pending: list[dict[str, Any]] = []
+        self.completed: dict[str, dict[str, Any]] = {}
         self.lock = asyncio.Lock()
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -143,6 +162,67 @@ class CandidateShadowHost:
         ).hexdigest()
         return "shadow-" + digest[:32]
 
+    @staticmethod
+    def _activation_from_material(
+        material: Mapping[str, Any],
+        activation_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "graen.candidate_shadow.activation.v1",
+            "activation_id": activation_id,
+            **dict(material),
+            "candidate_id": str(
+                (material.get("candidate_spec") or {}).get("candidate_id")
+                or ""
+            ),
+            "activated_at": datetime.now(UTC).isoformat(),
+            "research_only": True,
+            "promotion_authorized": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "live_execution_authorized": False,
+        }
+
+    @staticmethod
+    def _project_checkpoint(runtime: CandidateForwardShadow) -> dict[str, Any]:
+        shadow = runtime.status()
+        raw = dict(shadow.get("last_checkpoint") or runtime._checkpoint())
+        raw_status = str(
+            shadow.get("last_checkpoint_status")
+            or raw.get("status")
+            or "COLLECTING"
+        ).upper()
+        status = raw_status
+        if (
+            shadow.get("candidate_methodology") == STRATEGY_RUNNER_VERSION
+            and raw_status == "READY_FOR_HUMAN_REVIEW"
+        ):
+            status = "READY_FOR_PAPER"
+        return {
+            **raw,
+            "raw_status": raw_status,
+            "status": status,
+            "candidate_id": shadow.get("candidate_id"),
+            "candidate_methodology": shadow.get("candidate_methodology"),
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "live_execution_authorized": False,
+            "promotion_authorized": False,
+        }
+
+    def _state_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": STATE_SCHEMA_VERSION,
+            "saved_at": datetime.now(UTC).isoformat(),
+            "active": (
+                self.runtime.snapshot()
+                if self.runtime.active
+                else None
+            ),
+            "pending": list(self.pending),
+            "completed": dict(self.completed),
+        }
+
     def _atomic_write(self, payload: Mapping[str, Any]) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(
@@ -165,8 +245,10 @@ class CandidateShadowHost:
         self.last_persisted_at = datetime.now(UTC)
 
     async def persist(self) -> None:
-        snapshot = self.runtime.snapshot()
-        await asyncio.to_thread(self._atomic_write, snapshot)
+        await asyncio.to_thread(
+            self._atomic_write,
+            self._state_payload(),
+        )
 
     def _restore_sync(self) -> None:
         if not self.state_path.exists():
@@ -175,77 +257,42 @@ class CandidateShadowHost:
             payload = json.load(handle)
         if not isinstance(payload, Mapping):
             raise ValueError("candidate shadow state must be an object")
-        self.runtime.restore(payload)
+
+        # Backward-compatible restore from the original single-runtime file.
+        if payload.get("schema_version") != STATE_SCHEMA_VERSION:
+            self.runtime.restore(payload)
+            self.pending = []
+            self.completed = {}
+            return
+
+        active = payload.get("active")
+        self.runtime = CandidateForwardShadow(self.settings)
+        if isinstance(active, Mapping):
+            self.runtime.restore(active)
+        pending = payload.get("pending") or []
+        self.pending = [
+            dict(value)
+            for value in pending
+            if isinstance(value, Mapping)
+        ]
+        completed = payload.get("completed") or {}
+        self.completed = {
+            str(key): dict(value)
+            for key, value in dict(completed).items()
+            if isinstance(value, Mapping)
+        }
 
     async def restore(self) -> None:
         try:
             await asyncio.to_thread(self._restore_sync)
             self.last_error = None
         except Exception as exc:
-            # Research evidence fails closed. A corrupt optional shadow state
-            # must not take down RHEN's trading process.
+            self.runtime = CandidateForwardShadow(self.settings)
+            self.pending = []
+            self.completed = {}
             self.last_error = (
                 "restore_failed:" + type(exc).__name__ + ":" + str(exc)
             )[:1000]
-
-    async def activate(
-        self,
-        payload: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        material = self._activation_material(payload)
-        if not all(
-            str(material[key]).strip()
-            for key in (
-                "problem_id",
-                "graen_run_id",
-                "campaign_id",
-                "candidate_methodology",
-            )
-        ):
-            raise ValueError("complete shadow activation identity is required")
-        if not material["candidate_spec"]:
-            raise ValueError("candidate_spec is required")
-
-        activation_id = self.activation_id(material)
-        async with self.lock:
-            previous_id = str(
-                (self.runtime.activation or {}).get("activation_id") or ""
-            )
-            duplicate = previous_id == activation_id
-            if duplicate:
-                activation = dict(self.runtime.activation or {})
-            else:
-                activation = {
-                    "schema_version": "graen.candidate_shadow.activation.v1",
-                    "activation_id": activation_id,
-                    **material,
-                    "candidate_id": str(
-                        material["candidate_spec"].get("candidate_id") or ""
-                    ),
-                    "activated_at": datetime.now(UTC).isoformat(),
-                    "research_only": True,
-                    "promotion_authorized": False,
-                    "execution_authority": False,
-                    "broker_orders_possible": False,
-                    "live_execution_authorized": False,
-                }
-                self.runtime.activate(activation)
-                await self.persist()
-                self._emit(
-                    {
-                        "event_type": "graen_candidate_shadow_activated",
-                        "symbol": "",
-                        "occurred_at": activation["activated_at"],
-                        "payload": activation,
-                    }
-                )
-        return {
-            "activation": activation,
-            "duplicate": duplicate,
-            "execution_authority": False,
-            "broker_orders_possible": False,
-            "live_execution_authorized": False,
-        }
 
     def _emit(self, event: Mapping[str, Any]) -> None:
         event_type = str(
@@ -295,15 +342,214 @@ class CandidateShadowHost:
             },
         )
 
+    def _activate_now(self, activation: Mapping[str, Any]) -> None:
+        runtime = CandidateForwardShadow(self.settings)
+        runtime.activate(dict(activation))
+        self.runtime = runtime
+
+    def _active_id(self) -> str:
+        return str(
+            (self.runtime.activation or {}).get("activation_id") or ""
+        )
+
+    def _complete_active(self) -> None:
+        activation_id = self._active_id()
+        if not activation_id:
+            return
+        checkpoint = self._project_checkpoint(self.runtime)
+        self.completed[activation_id] = {
+            "activation": dict(self.runtime.activation or {}),
+            "checkpoint": checkpoint,
+            "candidate": self.runtime.status(),
+            "completed_at": datetime.now(UTC).isoformat(),
+        }
+        self._emit(
+            {
+                "event_type": "graen_candidate_shadow_terminal_checkpoint",
+                "occurred_at": datetime.now(UTC).isoformat(),
+                "payload": {
+                    "activation_id": activation_id,
+                    "checkpoint": checkpoint,
+                },
+            }
+        )
+        self.runtime = CandidateForwardShadow(self.settings)
+
+    def _advance_queue(self) -> None:
+        if self.runtime.active or not self.pending:
+            return
+        activation = self.pending.pop(0)
+        self._activate_now(activation)
+        self._emit(
+            {
+                "event_type": "graen_candidate_shadow_activated",
+                "occurred_at": activation.get("activated_at"),
+                "payload": dict(activation),
+            }
+        )
+
+    async def activate(
+        self,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        material = self._activation_material(payload)
+        if not all(
+            str(material[key]).strip()
+            for key in (
+                "problem_id",
+                "graen_run_id",
+                "campaign_id",
+                "candidate_methodology",
+            )
+        ):
+            raise ValueError("complete shadow activation identity is required")
+        if not material["candidate_spec"]:
+            raise ValueError("candidate_spec is required")
+
+        activation_id = self.activation_id(material)
+        async with self.lock:
+            if self._active_id() == activation_id:
+                return {
+                    "activation": dict(self.runtime.activation or {}),
+                    "duplicate": True,
+                    "queued": False,
+                    "checkpoint": self._project_checkpoint(self.runtime),
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "live_execution_authorized": False,
+                }
+            for queued in self.pending:
+                if str(queued.get("activation_id") or "") == activation_id:
+                    return {
+                        "activation": dict(queued),
+                        "duplicate": True,
+                        "queued": True,
+                        "checkpoint": {
+                            "status": "QUEUED",
+                            "execution_authority": False,
+                        },
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                        "live_execution_authorized": False,
+                    }
+            completed = self.completed.get(activation_id)
+            if completed is not None:
+                return {
+                    "activation": dict(completed.get("activation") or {}),
+                    "duplicate": True,
+                    "queued": False,
+                    "checkpoint": dict(completed.get("checkpoint") or {}),
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "live_execution_authorized": False,
+                }
+
+            activation = self._activation_from_material(
+                material,
+                activation_id,
+            )
+            queued = self.runtime.active
+            if queued:
+                self.pending.append(activation)
+                self._emit(
+                    {
+                        "event_type": "graen_candidate_shadow_queued",
+                        "occurred_at": datetime.now(UTC).isoformat(),
+                        "payload": activation,
+                    }
+                )
+            else:
+                self._activate_now(activation)
+                self._emit(
+                    {
+                        "event_type": "graen_candidate_shadow_activated",
+                        "occurred_at": activation["activated_at"],
+                        "payload": activation,
+                    }
+                )
+            await self.persist()
+            return {
+                "activation": activation,
+                "duplicate": False,
+                "queued": queued,
+                "checkpoint": {
+                    "status": (
+                        "QUEUED"
+                        if queued
+                        else self._project_checkpoint(self.runtime)["status"]
+                    ),
+                    "execution_authority": False,
+                },
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_execution_authorized": False,
+            }
+
+    def checkpoint(self, activation_id: str) -> dict[str, Any] | None:
+        activation_id = str(activation_id or "").strip()
+        if not activation_id:
+            return None
+        if self._active_id() == activation_id:
+            return {
+                "activation_id": activation_id,
+                "queued": False,
+                "completed": False,
+                "checkpoint": self._project_checkpoint(self.runtime),
+                "candidate": self.runtime.status(),
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+        for queued in self.pending:
+            if str(queued.get("activation_id") or "") == activation_id:
+                return {
+                    "activation_id": activation_id,
+                    "queued": True,
+                    "completed": False,
+                    "checkpoint": {
+                        "status": "QUEUED",
+                        "candidate_id": queued.get("candidate_id"),
+                        "candidate_methodology": queued.get(
+                            "candidate_methodology"
+                        ),
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                    },
+                    "candidate": {
+                        "candidate_id": queued.get("candidate_id"),
+                        "candidate_methodology": queued.get(
+                            "candidate_methodology"
+                        ),
+                    },
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                }
+        completed = self.completed.get(activation_id)
+        if completed is not None:
+            return {
+                "activation_id": activation_id,
+                "queued": False,
+                "completed": True,
+                "checkpoint": dict(completed.get("checkpoint") or {}),
+                "candidate": dict(completed.get("candidate") or {}),
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+        return None
+
     async def cycle_once(self) -> list[dict[str, Any]]:
         async with self.lock:
+            self._advance_queue()
             if not self.runtime.active:
                 return []
             events = await self.runtime.cycle()
             self.last_cycle_at = datetime.now(UTC)
-            if events:
-                for event in events:
-                    self._emit(event)
+            for event in events:
+                self._emit(event)
+            checkpoint = self._project_checkpoint(self.runtime)
+            if checkpoint["status"] in TERMINAL_STATUSES:
+                self._complete_active()
+                self._advance_queue()
+            if events or checkpoint["status"] in TERMINAL_STATUSES:
                 await self.persist()
             self.last_error = None
             return events
@@ -343,17 +589,21 @@ class CandidateShadowHost:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
-        if self.runtime.active:
-            try:
-                async with self.lock:
-                    await self.persist()
-            except Exception as exc:
-                self.last_error = (
-                    "persist_failed:" + type(exc).__name__ + ":" + str(exc)
-                )[:1000]
+        try:
+            async with self.lock:
+                await self.persist()
+        except Exception as exc:
+            self.last_error = (
+                "persist_failed:" + type(exc).__name__ + ":" + str(exc)
+            )[:1000]
 
     def status(self) -> dict[str, Any]:
         shadow = self.runtime.status()
+        checkpoint = (
+            self._project_checkpoint(self.runtime)
+            if self.runtime.active
+            else {}
+        )
         return {
             "ok": self.last_error is None,
             "system": "GRAEN",
@@ -362,6 +612,8 @@ class CandidateShadowHost:
             "running": self.running,
             "auth_configured": self.auth_configured,
             "active": self.runtime.active,
+            "queue_count": len(self.pending),
+            "completed_count": len(self.completed),
             "current_activity": (
                 "Forward-shadow observation "
                 + str(shadow.get("candidate_id") or "")
@@ -380,8 +632,8 @@ class CandidateShadowHost:
             ),
             "last_error": self.last_error or shadow.get("last_error"),
             "state_path": str(self.state_path),
-            "checkpoint": shadow.get("last_checkpoint") or {},
-            "checkpoint_status": shadow.get("last_checkpoint_status"),
+            "checkpoint": checkpoint,
+            "checkpoint_status": checkpoint.get("status"),
             "candidate_id": shadow.get("candidate_id"),
             "candidate_methodology": shadow.get(
                 "candidate_methodology"
@@ -406,6 +658,7 @@ def create_shadow_router(host: CandidateShadowHost) -> APIRouter:
             "running": status["running"],
             "auth_configured": status["auth_configured"],
             "active": status["active"],
+            "queue_count": status["queue_count"],
             "checkpoint_status": status["checkpoint_status"],
             "execution_authority": False,
             "broker_orders_possible": False,
@@ -417,6 +670,17 @@ def create_shadow_router(host: CandidateShadowHost) -> APIRouter:
     ) -> dict[str, Any]:
         host.require_token(x_graen_shadow_token)
         return host.status()
+
+    @router.get("/v1/candidate-shadow/checkpoint/{activation_id}")
+    async def candidate_shadow_checkpoint(
+        activation_id: str,
+        x_graen_shadow_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        host.require_token(x_graen_shadow_token)
+        checkpoint = host.checkpoint(activation_id)
+        if checkpoint is None:
+            raise HTTPException(status_code=404, detail="activation not found")
+        return checkpoint
 
     @router.post("/v1/candidate-shadow/activate")
     async def candidate_shadow_activate(
