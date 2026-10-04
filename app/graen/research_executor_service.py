@@ -183,7 +183,7 @@ from graen.crypto.btc_consensus_trend_v14_r2g import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.19.0"
+RUNTIME_VERSION = "graen-research-executor-v1.20.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -497,6 +497,8 @@ class GraenResearchExecutor:
                 V12_METHODOLOGY_VERSION,
                 V13_METHODOLOGY_VERSION,
                 V14_METHODOLOGY_VERSION,
+                V14_R2F_METHODOLOGY_VERSION,
+                V14_R2G_METHODOLOGY_VERSION,
                 RESEARCH_DIRECTOR_METHODOLOGY,
             ],
             "running": running,
@@ -6496,6 +6498,167 @@ class GraenResearchExecutor:
         )
 
 
+    async def _recover_v14_r2g_pass_into_forward_shadow_comparison(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Activate R2G beside R2F after adaptive comparison discovery passes."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        artifacts = snapshot.get("artifacts") or []
+        r2f_candidate_id = v14_r2f_candidate_spec().candidate_id
+        r2g_candidate_id = v14_r2g_candidate_spec().candidate_id
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+
+            if any(
+                isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("artifact_type")
+                == "CRYPTO_V14_R2G_FORWARD_SHADOW_ACTIVATION"
+                and (
+                    not isinstance(row.get("content"), Mapping)
+                    or row.get("content", {}).get("candidate_id")
+                    == r2g_candidate_id
+                )
+                for row in artifacts
+            ):
+                continue
+
+            r2f_activation = next(
+                (
+                    row
+                    for row in artifacts
+                    if isinstance(row, Mapping)
+                    and str(row.get("problem_id") or "") == problem_id
+                    and row.get("artifact_type")
+                    == "CRYPTO_V14_R2F_FORWARD_SHADOW_ACTIVATION"
+                    and (
+                        not isinstance(row.get("content"), Mapping)
+                        or row.get("content", {}).get("candidate_id")
+                        == r2f_candidate_id
+                    )
+                ),
+                None,
+            )
+            if r2f_activation is None:
+                continue
+
+            matching = [
+                row
+                for row in runs
+                if isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("methodology_version")
+                == V14_R2G_METHODOLOGY_VERSION
+                and isinstance(row.get("result_summary"), Mapping)
+                and row.get("result_summary", {}).get("state")
+                == (
+                    "V14_R2G_ADAPTIVE_DISCOVERY_"
+                    "SURVIVES_TO_FORWARD_SHADOW_COMPARISON"
+                )
+                and row.get("result_summary", {}).get("decision")
+                == "HOLD_FOR_NONDISRUPTIVE_FORWARD_SHADOW_COMPARISON"
+            ]
+            if not matching:
+                continue
+
+            if not self.shadow_configured:
+                diagnostic = {
+                    "recovered": False,
+                    "problem_id": problem_id,
+                    "state": "V14_R2G_FORWARD_COMPARISON_WAITING_FOR_SERVICE",
+                    "candidate_id": r2g_candidate_id,
+                    "r2f_forward_shadow_preserved": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                }
+                print("GRAEN_V14_R2G_SHADOW_WAIT", diagnostic, flush=True)
+                return diagnostic
+
+            origin = max(
+                matching,
+                key=lambda row: str(row.get("started_at") or ""),
+            )
+            origin_run_id = str(origin.get("run_id") or "")
+            activation = await self._activate_forward_shadow(
+                problem_id=problem_id,
+                graen_run_id=origin_run_id,
+                campaign_id=V14_R2G_CAMPAIGN_ID,
+                epoch_index=0,
+                generation=1,
+                candidate_methodology=V14_R2G_METHODOLOGY_VERSION,
+                candidate_spec=v14_r2g_candidate_spec().to_dict(),
+                velum_artifact_id="",
+                evidence_phase="FORWARD_SHADOW",
+            )
+            artifact_response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=origin_run_id or None,
+                artifact_type="CRYPTO_V14_R2G_FORWARD_SHADOW_ACTIVATION",
+                methodology_version=V14_R2G_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V14_R2G_CAMPAIGN_ID,
+                    "candidate_id": r2g_candidate_id,
+                    "candidate_spec": v14_r2g_candidate_spec().to_dict(),
+                    "activation": activation,
+                    "comparison_against_candidate_id": r2f_candidate_id,
+                    "r2f_activation_artifact_id": str(
+                        r2f_activation.get("artifact_id") or ""
+                    )
+                    or None,
+                    "r2f_forward_shadow_preserved": True,
+                    "evidence_role": "FRESH_FORWARD_SHADOW_COMPARISON_ONLY",
+                    "historical_adaptive_evidence_counts_as_fresh": False,
+                    "live_execution_authorized": False,
+                    "promotion_authorized": False,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            artifact = (
+                artifact_response.get("artifact")
+                if isinstance(artifact_response.get("artifact"), Mapping)
+                else {}
+            )
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "candidate_id": r2g_candidate_id,
+                "comparison_against_candidate_id": r2f_candidate_id,
+                "activation_id": (
+                    activation.get("activation_id")
+                    or (activation.get("activation") or {}).get("activation_id")
+                ),
+                "activation_artifact_id": artifact.get("artifact_id"),
+                "evidence_role": "FRESH_FORWARD_SHADOW_COMPARISON_ONLY",
+                "r2f_forward_shadow_preserved": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_execution_authorized": False,
+            }
+            print("GRAEN_V14_R2G_SHADOW_ACTIVATED", result, flush=True)
+            return result
+        return None
+
+
     async def _recover_v14_r2f_pass_into_forward_shadow(
         self,
         snapshot: Mapping[str, Any],
@@ -8135,6 +8298,16 @@ class GraenResearchExecutor:
             snapshot = await self.gateway.snapshot()
         v14_r2f_to_r2g_recovery = await self._recover_v14_r2f_shadow_into_r2g(snapshot)
         if v14_r2f_to_r2g_recovery is not None:
+            snapshot = await self.gateway.snapshot()
+        v14_r2g_shadow_recovery = (
+            await self._recover_v14_r2g_pass_into_forward_shadow_comparison(
+                snapshot
+            )
+        )
+        if (
+            v14_r2g_shadow_recovery is not None
+            and v14_r2g_shadow_recovery.get("recovered")
+        ):
             snapshot = await self.gateway.snapshot()
         v14_r2d_to_r2e_recovery = await self._recover_v14_r2d_fail_into_r2e(snapshot)
         if v14_r2d_to_r2e_recovery is not None:

@@ -1883,3 +1883,122 @@ def test_v14_r2g_pass_does_not_replace_active_r2f_shadow(monkeypatch):
         assert result["live_execution_authorized"] is False
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r2g_pass_activates_parallel_forward_comparison_once():
+    async def scenario():
+        r2f = service.v14_r2f_candidate_spec().to_dict()
+        r2g = service.v14_r2g_candidate_spec().to_dict()
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-04T04:03:00+00:00",
+                    "methodology_version": service.V14_R2G_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2G_CAMPAIGN_ID,
+                        "candidate_id": r2g["candidate_id"],
+                        "state": (
+                            "V14_R2G_ADAPTIVE_DISCOVERY_"
+                            "SURVIVES_TO_FORWARD_SHADOW_COMPARISON"
+                        ),
+                        "decision": (
+                            "HOLD_FOR_NONDISRUPTIVE_FORWARD_SHADOW_COMPARISON"
+                        ),
+                    },
+                }
+            ],
+            "artifacts": [
+                {
+                    "artifact_id": "r2f-activation-artifact",
+                    "problem_id": PROBLEM_ID,
+                    "artifact_type": "CRYPTO_V14_R2F_FORWARD_SHADOW_ACTIVATION",
+                    "content": {
+                        "candidate_id": r2f["candidate_id"],
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        runtime.shadow_base_url = "https://shadow.example"
+        runtime.shadow_token = "s" * 40
+        activations = []
+
+        async def fake_activate(**kwargs):
+            activations.append(kwargs)
+            return {
+                "activation_id": "activation-r2g-comparison-001",
+                "activation": {
+                    "activation_id": "activation-r2g-comparison-001",
+                },
+                "duplicate": False,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "promotion_authorized": False,
+            }
+
+        runtime._activate_forward_shadow = fake_activate
+        result = await (
+            runtime._recover_v14_r2g_pass_into_forward_shadow_comparison(
+                snapshot
+            )
+        )
+
+        assert result["recovered"] is True
+        assert result["candidate_id"] == r2g["candidate_id"]
+        assert result["comparison_against_candidate_id"] == r2f["candidate_id"]
+        assert result["r2f_forward_shadow_preserved"] is True
+        assert result["evidence_role"] == (
+            "FRESH_FORWARD_SHADOW_COMPARISON_ONLY"
+        )
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["live_execution_authorized"] is False
+        assert len(activations) == 1
+        assert (
+            activations[0]["candidate_methodology"]
+            == service.V14_R2G_METHODOLOGY_VERSION
+        )
+        assert activations[0]["candidate_spec"] == r2g
+        assert activations[0]["evidence_phase"] == "FORWARD_SHADOW"
+
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == (
+            "CRYPTO_V14_R2G_FORWARD_SHADOW_ACTIVATION"
+        )
+        assert artifact["content"]["r2f_forward_shadow_preserved"] is True
+        assert artifact["content"]["historical_adaptive_evidence_counts_as_fresh"] is False
+        assert artifact["content"]["promotion_authorized"] is False
+
+        snapshot["artifacts"].append(
+            {
+                "artifact_id": "r2g-activation-artifact",
+                "problem_id": PROBLEM_ID,
+                "artifact_type": "CRYPTO_V14_R2G_FORWARD_SHADOW_ACTIVATION",
+                "content": {
+                    "candidate_id": r2g["candidate_id"],
+                },
+            }
+        )
+        runtime.gateway.artifacts.clear()
+        second = await (
+            runtime._recover_v14_r2g_pass_into_forward_shadow_comparison(
+                snapshot
+            )
+        )
+        assert second is None
+        assert len(activations) == 1
+        assert runtime.gateway.artifacts == []
+
+    asyncio.run(scenario())

@@ -49,6 +49,14 @@ from graen.crypto.btc_slow_momentum_v14_r2f import (
     UNIVERSE as V14_R2F_UNIVERSE,
     spec_from_dict as v14_r2f_spec_from_dict,
 )
+from graen.crypto.btc_consensus_trend_v14_r2g import (
+    COST_SCENARIOS as V14_R2G_COST_SCENARIOS,
+    METHODOLOGY_VERSION as V14_R2G_METHODOLOGY_VERSION,
+    MOMENTUM_LOOKBACK_DAYS as V14_R2G_MOMENTUM_LOOKBACK_DAYS,
+    SMA_WINDOW_DAYS as V14_R2G_SMA_WINDOW_DAYS,
+    UNIVERSE as V14_R2G_UNIVERSE,
+    spec_from_dict as v14_r2g_spec_from_dict,
+)
 
 
 UTC = timezone.utc
@@ -60,6 +68,7 @@ SUPPORTED_CANDIDATE_METHODOLOGIES = {
     V12_METHODOLOGY_VERSION,
     V13_METHODOLOGY_VERSION,
     V14_R2F_METHODOLOGY_VERSION,
+    V14_R2G_METHODOLOGY_VERSION,
 }
 MIN_READY_TRADES = 30
 MIN_READY_DAYS = 20
@@ -75,6 +84,15 @@ R2F_MIN_READY_EXPOSED_DAYS = 10
 R2F_MAX_REVIEW_DAILY_MARKS = 120
 R2F_MIN_READY_SHARPE = 0.0
 R2F_MAX_READY_DRAWDOWN = -0.25
+
+R2G_SHADOW_COST_PER_TURNOVER = float(
+    V14_R2G_COST_SCENARIOS["taker_stress_30bp"]
+)
+R2G_MIN_READY_DAILY_MARKS = 30
+R2G_MIN_READY_EXPOSED_DAYS = 10
+R2G_MAX_REVIEW_DAILY_MARKS = 120
+R2G_MIN_READY_SHARPE = 0.0
+R2G_MAX_READY_DRAWDOWN = -0.25
 
 
 def _stamp(value: Any) -> datetime:
@@ -120,6 +138,48 @@ def _r2f_completed_daily_rows(
         raise ValueError("r2f_daily_calendar_gap")
     if now - rows[-1]["bar_end"] >= timedelta(days=1):
         raise ValueError("r2f_daily_data_stale")
+    return rows
+
+
+def _r2g_completed_daily_rows(
+    source: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Require complete daily history for the R2G momentum/SMA comparison."""
+    by_stamp: dict[datetime, dict[str, Any]] = {}
+    for row in source:
+        try:
+            stamp = _stamp(row.get("t"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("r2g_daily_timestamp_invalid") from exc
+        end = stamp + timedelta(days=1)
+        if end > now:
+            continue
+        try:
+            close = float(row.get("c", row.get("close")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("r2g_daily_close_invalid") from exc
+        if not isfinite(close) or close <= 0:
+            raise ValueError("r2g_daily_close_invalid")
+        previous = by_stamp.get(stamp)
+        if previous is not None and previous["close"] != close:
+            raise ValueError("r2g_daily_duplicate_conflict")
+        by_stamp[stamp] = {"timestamp": stamp, "bar_end": end, "close": close}
+    rows = [by_stamp[key] for key in sorted(by_stamp)]
+    required = max(
+        V14_R2G_MOMENTUM_LOOKBACK_DAYS,
+        V14_R2G_SMA_WINDOW_DAYS,
+    ) + 2
+    if len(rows) < required:
+        raise ValueError("r2g_daily_history_incomplete")
+    if any(
+        following["timestamp"] != previous["bar_end"]
+        for previous, following in zip(rows, rows[1:])
+    ):
+        raise ValueError("r2g_daily_calendar_gap")
+    if now - rows[-1]["bar_end"] >= timedelta(days=1):
+        raise ValueError("r2g_daily_data_stale")
     return rows
 
 
@@ -247,6 +307,9 @@ class CandidateForwardShadow:
         self.r2f_daily_marks: list[dict[str, Any]] = []
         self.r2f_shadow_position = 0.0
         self.r2f_baseline_end: datetime | None = None
+        self.r2g_daily_marks: list[dict[str, Any]] = []
+        self.r2g_shadow_position = 0.0
+        self.r2g_baseline_end: datetime | None = None
 
     @property
     def active(self) -> bool:
@@ -277,6 +340,8 @@ class CandidateForwardShadow:
         methodology = self._candidate_methodology()
         if methodology == V14_R2F_METHODOLOGY_VERSION:
             return tuple(V14_R2F_UNIVERSE)
+        if methodology == V14_R2G_METHODOLOGY_VERSION:
+            return tuple(V14_R2G_UNIVERSE)
         if methodology == V13_METHODOLOGY_VERSION:
             return tuple(V13_UNIVERSE)
         if methodology == V12_METHODOLOGY_VERSION:
@@ -322,6 +387,13 @@ class CandidateForwardShadow:
                 if self.r2f_baseline_end
                 else None
             ),
+            "r2g_daily_mark_count": len(self.r2g_daily_marks),
+            "r2g_shadow_position": self.r2g_shadow_position,
+            "r2g_baseline_end": (
+                self.r2g_baseline_end.isoformat()
+                if self.r2g_baseline_end
+                else None
+            ),
             "last_checkpoint": dict(self.last_checkpoint or {}),
             "last_checkpoint_status": self.last_checkpoint_status,
             "last_error": self.last_error,
@@ -346,6 +418,8 @@ class CandidateForwardShadow:
             v13_spec_from_dict(candidate_spec)
         elif methodology == V14_R2F_METHODOLOGY_VERSION:
             v14_r2f_spec_from_dict(candidate_spec)
+        elif methodology == V14_R2G_METHODOLOGY_VERSION:
+            v14_r2g_spec_from_dict(candidate_spec)
 
         activation_id = str(activation.get("activation_id") or "")
         if not activation_id:
@@ -368,6 +442,9 @@ class CandidateForwardShadow:
         self.r2f_daily_marks.clear()
         self.r2f_shadow_position = 0.0
         self.r2f_baseline_end = None
+        self.r2g_daily_marks.clear()
+        self.r2g_shadow_position = 0.0
+        self.r2g_baseline_end = None
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -403,6 +480,13 @@ class CandidateForwardShadow:
             "r2f_baseline_end": (
                 self.r2f_baseline_end.isoformat()
                 if self.r2f_baseline_end
+                else None
+            ),
+            "r2g_daily_marks": list(self.r2g_daily_marks[-400:]),
+            "r2g_shadow_position": self.r2g_shadow_position,
+            "r2g_baseline_end": (
+                self.r2g_baseline_end.isoformat()
+                if self.r2g_baseline_end
                 else None
             ),
             "last_checkpoint": dict(self.last_checkpoint or {}),
@@ -455,6 +539,19 @@ class CandidateForwardShadow:
         self.r2f_baseline_end = (
             _stamp(payload["r2f_baseline_end"])
             if payload.get("r2f_baseline_end")
+            else None
+        )
+        self.r2g_daily_marks = [
+            dict(row)
+            for row in list(payload.get("r2g_daily_marks") or [])[-400:]
+            if isinstance(row, Mapping)
+        ]
+        self.r2g_shadow_position = float(
+            payload.get("r2g_shadow_position") or 0.0
+        )
+        self.r2g_baseline_end = (
+            _stamp(payload["r2g_baseline_end"])
+            if payload.get("r2g_baseline_end")
             else None
         )
         checkpoint = payload.get("last_checkpoint")
@@ -566,9 +663,92 @@ class CandidateForwardShadow:
             "broker_orders_possible": False,
         }
 
+    def _r2g_checkpoint(self) -> dict[str, Any]:
+        marks = list(self.r2g_daily_marks)
+        returns = [
+            float(row.get("stressed_cost_net_return") or 0.0)
+            for row in marks
+            if isfinite(float(row.get("stressed_cost_net_return") or 0.0))
+        ]
+        exposed_days = sum(
+            1 for row in marks if float(row.get("position") or 0.0) > 0.0
+        )
+        turnover_units = sum(
+            float(row.get("turnover_units") or 0.0) for row in marks
+        )
+        total_return = self._compound_returns(returns)
+        sigma = pstdev(returns) if len(returns) >= 2 else 0.0
+        sharpe = (
+            fmean(returns) / sigma * sqrt(365.0)
+            if sigma > 1e-15
+            else 0.0
+        )
+        max_drawdown = self._max_drawdown(returns)
+        ready = bool(
+            len(marks) >= R2G_MIN_READY_DAILY_MARKS
+            and exposed_days >= R2G_MIN_READY_EXPOSED_DAYS
+            and total_return > 0.0
+            and sharpe > R2G_MIN_READY_SHARPE
+            and max_drawdown > R2G_MAX_READY_DRAWDOWN
+        )
+        review_limit_reached = len(marks) >= R2G_MAX_REVIEW_DAILY_MARKS
+        status = (
+            "READY_FOR_HUMAN_REVIEW"
+            if ready
+            else "SHADOW_REJECTED"
+            if review_limit_reached
+            else "COLLECTING"
+        )
+        activation = self.activation or {}
+        return {
+            "schema_version": "graen.candidate_shadow.checkpoint.v1",
+            "shadow_methodology_version": SHADOW_METHODOLOGY_VERSION,
+            "activation_id": self._activation_id(),
+            "candidate_id": self._candidate_id(),
+            "candidate_methodology": self._candidate_methodology(),
+            "evidence_phase": str(
+                activation.get("evidence_phase") or "FORWARD_SHADOW"
+            ),
+            "status": status,
+            "trade_count": self.entry_count + self.exit_count,
+            "independent_day_blocks": len(marks),
+            "fresh_daily_mark_count": len(marks),
+            "exposed_day_count": exposed_days,
+            "turnover_units": turnover_units,
+            "cumulative_stressed_cost_return": total_return,
+            "annualized_daily_sharpe": sharpe,
+            "max_drawdown": max_drawdown,
+            "current_shadow_position": self.r2g_shadow_position,
+            "fresh_evidence_after": str(
+                activation.get("activated_at") or ""
+            ),
+            "baseline_bar_end": (
+                self.r2g_baseline_end.isoformat()
+                if self.r2g_baseline_end
+                else None
+            ),
+            "ready_gate": {
+                "min_fresh_daily_marks": R2G_MIN_READY_DAILY_MARKS,
+                "min_exposed_days": R2G_MIN_READY_EXPOSED_DAYS,
+                "cumulative_return_positive": True,
+                "annualized_daily_sharpe_gt": R2G_MIN_READY_SHARPE,
+                "max_drawdown_gt": R2G_MAX_READY_DRAWDOWN,
+            },
+            "terminal_rejection_gate": {
+                "max_review_daily_marks": R2G_MAX_REVIEW_DAILY_MARKS,
+            },
+            "comparison_against": "V14-R2F-BTC-MOM-180D",
+            "adaptive_historical_evidence_counts_as_fresh": False,
+            "promotion_authorized": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+        }
+
     def _checkpoint(self) -> dict[str, Any]:
         if self._candidate_methodology() == V14_R2F_METHODOLOGY_VERSION:
             return self._r2f_checkpoint()
+        if self._candidate_methodology() == V14_R2G_METHODOLOGY_VERSION:
+            return self._r2g_checkpoint()
         rows = list(self.closed)
         returns = [
             float(row.get("stressed_cost_net_return") or 0.0)
@@ -678,6 +858,8 @@ class CandidateForwardShadow:
             return v13_spec_from_dict(self._candidate_spec())
         if methodology == V14_R2F_METHODOLOGY_VERSION:
             return v14_r2f_spec_from_dict(self._candidate_spec())
+        if methodology == V14_R2G_METHODOLOGY_VERSION:
+            return v14_r2g_spec_from_dict(self._candidate_spec())
         raise RuntimeError(
             f"unsupported_shadow_candidate_methodology:{methodology}"
         )
@@ -873,6 +1055,169 @@ class CandidateForwardShadow:
         return events
 
 
+    async def _cycle_r2g(
+        self,
+        current: datetime,
+    ) -> list[dict[str, Any]]:
+        minimum_history = max(
+            V14_R2G_MOMENTUM_LOOKBACK_DAYS,
+            V14_R2G_SMA_WINDOW_DAYS,
+        )
+        bars_by_symbol = await self.market_data.bars_many(
+            ["BTC/USD"],
+            timeframe="1Day",
+            lookback_minutes=(minimum_history + 220) * 1440,
+        )
+        rows = _r2g_completed_daily_rows(
+            bars_by_symbol.get("BTC/USD", ()), now=current
+        )
+        activation = self.activation or {}
+        activated_at = _stamp(
+            activation.get("activated_at") or current.isoformat()
+        )
+        events: list[dict[str, Any]] = []
+
+        if self.last_processed_bar_end is None:
+            baseline_index = next(
+                (
+                    index
+                    for index, row in enumerate(rows)
+                    if row["bar_end"] > activated_at
+                    and index >= minimum_history
+                ),
+                None,
+            )
+            if baseline_index is None:
+                return []
+            baseline = rows[baseline_index]
+            baseline_end = baseline["bar_end"]
+            assert isinstance(baseline_end, datetime)
+            self.last_processed_bar_end = baseline_end
+            self.r2g_baseline_end = baseline_end
+            self.r2g_shadow_position = 0.0
+            events.append({
+                "event_type": "graen_candidate_shadow_baseline",
+                "symbol": "BTC/USD",
+                "occurred_at": baseline_end.isoformat(),
+                "payload": {
+                    "activation_id": self._activation_id(),
+                    "candidate_id": self._candidate_id(),
+                    "candidate_methodology": V14_R2G_METHODOLOGY_VERSION,
+                    "baseline_bar_end": baseline_end.isoformat(),
+                    "baseline_close": float(baseline["close"]),
+                    "fresh_evidence_counted": False,
+                    "comparison_against": "V14-R2F-BTC-MOM-180D",
+                    "reason": (
+                        "first completed daily bar after R2G activation is "
+                        "baseline only; comparison scoring begins with the "
+                        "following full day"
+                    ),
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+            })
+
+        last_end = self.last_processed_bar_end
+        if last_end is None:
+            return events
+        first_unseen = next(
+            (row for row in rows if row["bar_end"] > last_end), None
+        )
+        if first_unseen is not None and first_unseen["timestamp"] != last_end:
+            raise ValueError("r2g_daily_resume_gap")
+
+        for index, row in enumerate(rows):
+            end = row["bar_end"]
+            assert isinstance(end, datetime)
+            if end <= last_end:
+                continue
+            if index < minimum_history + 1:
+                continue
+
+            prior_index = index - 1
+            prior_close = float(rows[prior_index]["close"])
+            anchor_close = float(
+                rows[
+                    prior_index - V14_R2G_MOMENTUM_LOOKBACK_DAYS
+                ]["close"]
+            )
+            sma_start = prior_index - V14_R2G_SMA_WINDOW_DAYS + 1
+            sma_rows = rows[sma_start : prior_index + 1]
+            if len(sma_rows) != V14_R2G_SMA_WINDOW_DAYS:
+                raise ValueError("r2g_daily_sma_history_incomplete")
+            sma_value = fmean(float(item["close"]) for item in sma_rows)
+            trailing_return = prior_close / anchor_close - 1.0
+            momentum_positive = trailing_return > 0.0
+            above_sma = prior_close > sma_value
+            desired_position = 1.0 if (momentum_positive or above_sma) else 0.0
+            turnover = abs(
+                desired_position - self.r2g_shadow_position
+            )
+            if desired_position > self.r2g_shadow_position:
+                self.entry_count += 1
+            elif desired_position < self.r2g_shadow_position:
+                self.exit_count += 1
+
+            close = float(row["close"])
+            asset_return = close / prior_close - 1.0
+            gross_return = desired_position * asset_return
+            net_return = (
+                gross_return
+                - turnover * R2G_SHADOW_COST_PER_TURNOVER
+            )
+            mark = {
+                "activation_id": self._activation_id(),
+                "candidate_id": self._candidate_id(),
+                "candidate_methodology": V14_R2G_METHODOLOGY_VERSION,
+                "symbol": "BTC/USD",
+                "bar_start": row["timestamp"].isoformat(),
+                "bar_end": end.isoformat(),
+                "prior_close": prior_close,
+                "close": close,
+                "momentum_lookback_days": V14_R2G_MOMENTUM_LOOKBACK_DAYS,
+                "sma_window_days": V14_R2G_SMA_WINDOW_DAYS,
+                "trailing_momentum_return": trailing_return,
+                "sma_value": sma_value,
+                "momentum_positive": momentum_positive,
+                "above_sma": above_sma,
+                "signal_rule": "OR",
+                "position": desired_position,
+                "previous_position": self.r2g_shadow_position,
+                "turnover_units": turnover,
+                "stressed_cost_per_turnover": R2G_SHADOW_COST_PER_TURNOVER,
+                "gross_return": gross_return,
+                "stressed_cost_net_return": net_return,
+                "fresh_evidence": True,
+                "comparison_against": "V14-R2F-BTC-MOM-180D",
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            self.r2g_daily_marks.append(mark)
+            self.r2g_daily_marks = self.r2g_daily_marks[-400:]
+            self.r2g_shadow_position = desired_position
+            self.last_processed_bar_end = end
+            last_end = end
+            events.append({
+                "event_type": "graen_candidate_shadow_daily_mark",
+                "symbol": "BTC/USD",
+                "occurred_at": end.isoformat(),
+                "payload": dict(mark),
+            })
+
+        checkpoint = self._r2g_checkpoint()
+        self.last_checkpoint_status = str(checkpoint["status"])
+        self.last_checkpoint = dict(checkpoint)
+        if events:
+            events.append({
+                "event_type": "graen_candidate_shadow_checkpoint",
+                "symbol": "",
+                "occurred_at": self.last_processed_bar_end.isoformat(),
+                "payload": dict(checkpoint),
+            })
+        self.last_error = None
+        return events
+
+
     async def cycle(
         self,
         *,
@@ -888,6 +1233,8 @@ class CandidateForwardShadow:
             )
         if methodology == V14_R2F_METHODOLOGY_VERSION:
             return await self._cycle_r2f(current)
+        if methodology == V14_R2G_METHODOLOGY_VERSION:
+            return await self._cycle_r2g(current)
 
         spec = self._active_spec()
         activity_minutes = int(getattr(spec, "activity_lookback_hours", 0) or 0) * 60
