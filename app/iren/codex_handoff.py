@@ -35,7 +35,13 @@ PROTECTED = (
     "broker behavior, live execution permissions, crypto execution, credentials, API spending "
     "limits, destructive infrastructure actions, legal/publication actions and external capital behavior"
 )
-REQUIRED_CHECKS = {"test", "velum-graen", "graen-forward-shadow", "inventory", "codex-postgres"}
+REQUIRED_CHECKS = {
+    "test",
+    "velum-graen",
+    "graen-forward-shadow",
+    "graen-v14-ml",
+    "codex-postgres",
+}
 
 
 def digest(value: Any) -> str:
