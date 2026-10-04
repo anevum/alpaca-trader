@@ -19,6 +19,7 @@ from .config import get_settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
+from .graen.shadow_host import CandidateShadowHost, create_shadow_router
 from .crypto_execution import CryptoExecutionEngine
 from .crypto_promotion import fetch_crypto_promotion_status
 from .crypto_layer import (
@@ -74,6 +75,7 @@ else:
         confirmation_symbols=settings.confirmation_symbols,
     )
 event_sink = TradingEventSink(settings)
+candidate_shadow_host = CandidateShadowHost(settings, event_sink)
 universe = DynamicUniverse(settings, client, market_data, runtime_state)
 engine = ExecutionEngine(
     settings,
@@ -860,6 +862,7 @@ async def lifespan(app: FastAPI):
         flush=True,
     )
     await event_sink.start()
+    await candidate_shadow_host.start()
     await slack_notifier.start()
 
     runtime_provenance = capture_runtime_provenance()
@@ -963,6 +966,7 @@ async def lifespan(app: FastAPI):
     await crypto_task
     await slack_market_task
     await research_reports.stop()
+    await candidate_shadow_host.stop()
     event_sink.emit(
         event_type="runtime_stop",
         correlation_id=uuid4().hex,
@@ -977,6 +981,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RHEN", version=RHEN_VERSION, lifespan=lifespan)
+app.include_router(create_shadow_router(candidate_shadow_host))
 
 
 @app.get("/health")
@@ -1016,6 +1021,22 @@ async def health():
         "last_error": runtime_state.last_error,
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
+        "forward_shadow": {
+            "running": candidate_shadow_host.running,
+            "auth_configured": candidate_shadow_host.auth_configured,
+            "active": candidate_shadow_host.runtime.active,
+            "candidate_id": candidate_shadow_host.runtime.status().get("candidate_id"),
+            "checkpoint_status": candidate_shadow_host.runtime.status().get(
+                "last_checkpoint_status"
+            ),
+            "last_cycle_at": (
+                candidate_shadow_host.last_cycle_at.isoformat()
+                if candidate_shadow_host.last_cycle_at else None
+            ),
+            "last_error": candidate_shadow_host.last_error,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+        },
         "slack_notifications": slack_notifier.status(),
         "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
         "crypto": {
