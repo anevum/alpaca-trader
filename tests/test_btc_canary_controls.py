@@ -10,6 +10,7 @@ from app.config import Settings
 from app.crypto_canary import BTC_CANARY_SMA_BARS
 from app.crypto_canary_execution import BtcCanaryExecutionEngine
 from app.risk import validate_btc_canary_buy
+from app.research_scheduler import ResearchReportScheduler
 from app.state import RuntimeState
 
 
@@ -60,6 +61,20 @@ def test_canary_authorization_is_paper_only():
 def test_canary_mode_cannot_enable_validated_crypto_execution():
     with pytest.raises(ValueError, match="CRYPTO_EXECUTION_ENABLED"):
         _settings(CRYPTO_EXECUTION_ENABLED="true")
+
+
+def test_canary_does_not_start_embedded_research_scheduler():
+    scheduler = ResearchReportScheduler(
+        _settings(),
+        object(),
+        object(),
+        RuntimeState(),
+        object(),
+    )
+
+    asyncio.run(scheduler.start())
+
+    assert scheduler.task is None
 
 
 def test_canary_risk_gate_is_btc_only_and_single_entry_per_24h():
