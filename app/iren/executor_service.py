@@ -618,6 +618,8 @@ class ExecutorRuntime:
             "metadata": {
                 "objective_key": job.objective_key,
                 "requested_via": "iren-executor",
+                "autonomous_continuation": True,
+                "autonomy_charter": "ANEVUM-AUTONOMY-CHARTER-V1",
             },
         }
         try:
