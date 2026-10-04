@@ -390,6 +390,20 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         )
         protection_row = cur.fetchone()
 
+        cur.execute(
+            """
+            select occurred_at, event_type, payload
+            from rhen.events
+            where run_id = %s
+              and strategy_version_id = %s
+              and event_type in ('decision_cycle', 'position_metrics')
+            order by occurred_at desc, event_id desc
+            limit 40
+            """,
+            (run_id, "BTC-CANARY-001"),
+        )
+        recent_evidence_rows = cur.fetchall()
+
     decision_at, decision_payload = decision if decision else (None, {})
     comparison = (
         dict(decision_payload.get("comparison_context") or {})
@@ -397,6 +411,21 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         else {}
     )
     execution_result = dict(comparison.get("execution_result") or {})
+
+    candidate_features: dict[str, Any] = {}
+    raw_candidates = decision_payload.get("candidates") if isinstance(decision_payload, dict) else None
+    if isinstance(raw_candidates, list):
+        for candidate in raw_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            symbol = str(candidate.get("symbol") or "").upper().replace("/", "").replace("-", "")
+            if symbol != "BTCUSD":
+                continue
+            features = candidate.get("features")
+            if isinstance(features, dict):
+                candidate_features = dict(features)
+            break
+
     position_at, position_payload = (
         position_metrics if position_metrics else (None, {})
     )
@@ -445,6 +474,41 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             str(value) if value not in (None, "") else None
         )
 
+    def decimal_value(value: Any) -> Decimal | None:
+        if value in (None, ""):
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    signal_close = decimal_value(candidate_features.get("signal_close"))
+    sma = decimal_value(candidate_features.get("sma"))
+    momentum_return = decimal_value(candidate_features.get("momentum_return"))
+
+    recent_cycles: list[dict[str, Any]] = []
+    return_history: list[dict[str, Any]] = []
+    for occurred_at, event_type, payload_value in recent_evidence_rows:
+        payload = dict(payload_value or {})
+        if event_type == "decision_cycle" and len(recent_cycles) < 10:
+            context = dict(payload.get("comparison_context") or {})
+            result = dict(context.get("execution_result") or {})
+            recent_cycles.append({
+                "at": stamp(occurred_at),
+                "action": result.get("action"),
+                "reason": result.get("reason") or payload.get("cycle_outcome"),
+            })
+        elif event_type == "position_metrics" and len(return_history) < 24:
+            value = payload.get("current_return_pct")
+            if decimal_value(value) is not None:
+                return_history.append({
+                    "at": stamp(occurred_at),
+                    "return_pct": str(value),
+                })
+
+    recent_cycles.reverse()
+    return_history.reverse()
+
     return {
         "available": True,
         "run_id": run_id,
@@ -464,11 +528,35 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         "model_version": decision_payload.get("model_version"),
         "position_open": position_open,
         "position_observed_at": stamp(position_at),
+        "entry_price": position_payload.get("entry_price"),
+        "current_price": position_payload.get("current_price"),
         "current_return_pct": position_payload.get("current_return_pct"),
         "risk_stop_pct": position_payload.get("risk_stop_pct"),
         "account_observed_at": stamp(account_at),
         "protection_status": protection_status,
         "protection_observed_at": stamp(protection_at),
+        "signal": {
+            "bar_at": candidate_features.get("signal_bar_at"),
+            "close": candidate_features.get("signal_close"),
+            "momentum_return": candidate_features.get("momentum_return"),
+            "momentum_positive": (
+                momentum_return > Decimal("0")
+                if momentum_return is not None
+                else None
+            ),
+            "momentum_lookback_bars": candidate_features.get("momentum_lookback_bars"),
+            "sma": candidate_features.get("sma"),
+            "above_sma": (
+                signal_close > sma
+                if signal_close is not None and sma is not None
+                else None
+            ),
+            "sma_window_bars": candidate_features.get("sma_window_bars"),
+            "desired_long": candidate_features.get("desired_long"),
+            "completed_bar_count": candidate_features.get("completed_bar_count"),
+        },
+        "recent_cycles": recent_cycles,
+        "return_history": return_history,
     }
 
 
