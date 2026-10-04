@@ -181,3 +181,49 @@ def test_command_projection_preserves_durable_job_events():
     assert events[0]["event_type"] == "RUNNING"
     assert events[0]["owner_system"] == "VELUM"
     assert events[0]["event"]["stage"] == "R2H"
+
+
+
+def test_command_projection_preserves_terminal_research_state():
+    snapshot = {
+        "control": {
+            "revision": 12,
+            "state": {
+                "state": "HEALTHY",
+                "observed_at": "2026-10-04T16:00:00+00:00",
+                "topology": {"services": [], "dependencies": {}},
+                "incidents": {},
+                "configuration_baseline": {"fingerprint": "sha256:test"},
+            },
+        },
+        "work": {"objectives": [], "jobs": [], "job_events": [], "commands": []},
+        "research": {
+            "graen_problems": [{
+                "problem_id": "p1",
+                "title": "BTC R2H",
+                "status": "RUNNING",
+                "research_stage": "CRYPTO_BTC_4H_CONSENSUS_V14_R2H_VELUM_REPLAY",
+            }],
+            "graen_runs": [{
+                "run_id": "r1",
+                "problem_id": "p1",
+                "status": "RUNNING",
+                "methodology_version": "btc-4h-consensus-v14-r2h",
+            }],
+            "graen_runtime": {
+                "runtime_version": "graen-runtime-v1",
+                "queue_depth": 0,
+            },
+        },
+    }
+
+    projected = project_command(
+        snapshot,
+        now=datetime(2026, 10, 4, 16, 0, 30, tzinfo=timezone.utc),
+    )
+
+    assert projected["research"]["graen_problems"][0]["status"] == "RUNNING"
+    assert projected["research"]["graen_problems"][0]["research_stage"].endswith(
+        "_VELUM_REPLAY"
+    )
+    assert projected["research"]["graen_runs"][0]["run_id"] == "r1"
