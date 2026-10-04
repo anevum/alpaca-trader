@@ -2705,8 +2705,20 @@ class GraenResearchExecutor:
             activation = metadata.get("strategy_shadow_activation")
             if not isinstance(activation, Mapping):
                 raise RuntimeError("strategy_shadow_requires_activation")
-            status = await self._forward_shadow_status()
-            if str(status.get("candidate_id") or "") != manifest.hypothesis_id:
+            activation_id = str(activation.get("activation_id") or "")
+            status = await self._forward_shadow_status(activation_id)
+            candidate_status = status.get("candidate")
+            candidate_status = (
+                dict(candidate_status)
+                if isinstance(candidate_status, Mapping)
+                else {}
+            )
+            observed_candidate_id = str(
+                candidate_status.get("candidate_id")
+                or (status.get("checkpoint") or {}).get("candidate_id")
+                or ""
+            )
+            if observed_candidate_id != manifest.hypothesis_id:
                 raise RuntimeError("forward_shadow_candidate_identity_mismatch")
             checkpoint = status.get("checkpoint")
             checkpoint = dict(checkpoint) if isinstance(checkpoint, Mapping) else {}
@@ -5332,18 +5344,24 @@ class GraenResearchExecutor:
         }
 
 
-    async def _forward_shadow_status(self) -> dict[str, Any]:
+    async def _forward_shadow_status(
+        self,
+        activation_id: str,
+    ) -> dict[str, Any]:
         if not self.shadow_configured:
             raise RuntimeError("forward shadow service is not configured")
+        activation_id = str(activation_id or "").strip()
+        if not activation_id:
+            raise RuntimeError("forward shadow activation id is required")
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                f"{self.shadow_base_url}/v1/candidate-shadow/status",
+                f"{self.shadow_base_url}/v1/candidate-shadow/checkpoint/{activation_id}",
                 headers={"x-graen-shadow-token": self.shadow_token},
             )
             response.raise_for_status()
             payload = response.json()
         if not isinstance(payload, Mapping):
-            raise RuntimeError("forward shadow status is malformed")
+            raise RuntimeError("forward shadow checkpoint is malformed")
         return dict(payload)
 
     async def _velum_health_snapshot(self) -> dict[str, Any] | None:
