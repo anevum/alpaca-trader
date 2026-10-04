@@ -33,6 +33,11 @@ from graen.crypto.btc_hypotheses_v13 import (
     METHODOLOGY_VERSION as V13_METHODOLOGY_VERSION,
     candidate_specs as v13_candidate_specs,
 )
+from graen.crypto.btc_4h_consensus_v14_r2h import (
+    FAMILY as V14_R2H_FAMILY,
+    METHODOLOGY_VERSION as V14_R2H_METHODOLOGY_VERSION,
+    candidate_spec as v14_r2h_candidate_spec,
+)
 
 
 class HoldStrategy:
@@ -366,6 +371,71 @@ def test_velum_dispatches_v13_exact_candidate_without_execution_authority(monkey
     assert result["candidate_methodology"] == V13_METHODOLOGY_VERSION
     assert result["candidate_family"] == V13_FAMILY
     assert result["engineering_gate"]["passed"] is True
+    assert result["execution_authority"] is False
+    assert result["broker_orders_possible"] is False
+    assert result["promotion_authorized"] is False
+
+
+def test_velum_r2h_fetch_contract_includes_slow_signal_warmup():
+    start = datetime(2026, 4, 4, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    symbols, fetch_start, fetch_end = velum_graen.replay_fetch_contract(
+        V14_R2H_METHODOLOGY_VERSION,
+        start=start,
+        end=end,
+    )
+    assert symbols == ("BTC/USD",)
+    assert fetch_start < start
+    assert (start - fetch_start).days == 260
+    assert fetch_end == end
+
+
+def test_velum_dispatches_r2h_slow_candidate_without_legacy_trade_gate(monkeypatch):
+    spec = v14_r2h_candidate_spec()
+    replay_payload = {
+        "scenarios": {
+            "taker_stress_30bp": {
+                "bar_count": 1080,
+                "total_return": 0.12,
+                "sharpe": 0.8,
+                "max_drawdown": -0.10,
+            },
+            "severe_stress_50bp": {
+                "bar_count": 1080,
+                "total_return": 0.10,
+                "sharpe": 0.7,
+                "max_drawdown": -0.11,
+            },
+        },
+        "one_bar_execution_delay": {
+            "bar_count": 1080,
+            "total_return": 0.09,
+            "sharpe": 0.6,
+            "max_drawdown": -0.12,
+        },
+        "engineering_gate": {
+            "passed": True,
+            "reasons": [],
+        },
+    }
+
+    monkeypatch.setattr(
+        velum_graen,
+        "evaluate_v14_r2h_replay",
+        lambda *args, **kwargs: replay_payload,
+    )
+    result = velum_graen.replay_candidate(
+        {},
+        candidate_spec=spec.to_dict(),
+        candidate_methodology=V14_R2H_METHODOLOGY_VERSION,
+        start=datetime(2026, 4, 4, tzinfo=timezone.utc),
+        end=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    )
+
+    assert result["candidate_methodology"] == V14_R2H_METHODOLOGY_VERSION
+    assert result["candidate_family"] == V14_R2H_FAMILY
+    assert result["engineering_gate"]["passed"] is True
+    assert result["independent_confirmatory_evidence"] is False
     assert result["execution_authority"] is False
     assert result["broker_orders_possible"] is False
     assert result["promotion_authorized"] is False
