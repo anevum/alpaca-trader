@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from statistics import mean
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -94,6 +95,211 @@ def _fetch_events(
         tuple(args),
     )
     return [_event_dict(row) for row in cur.fetchall()]
+
+
+def _btc_canary_run_evidence(
+    cur: psycopg.Cursor[Any],
+    *,
+    run_id: str,
+) -> dict[str, Any]:
+    """Summarize one BTC paper-canary run from canonical append-only evidence."""
+    cur.execute(
+        """
+        select
+            event_id, event_key, run_id, strategy_version_id, event_type,
+            occurred_at, symbol, correlation_id, source, payload, ingested_at
+        from rhen.events
+        where run_id = %s
+          and strategy_version_id = %s
+        order by occurred_at asc, event_id asc
+        limit %s
+        """,
+        (run_id, "BTC-CANARY-001", 50000),
+    )
+    events = [_event_dict(row) for row in cur.fetchall()]
+
+    def as_decimal(value: Any) -> Decimal | None:
+        if value in (None, ""):
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    def compact_symbol(value: Any) -> str:
+        return str(value or "").upper().replace("/", "").replace("-", "")
+
+    position_events = [
+        event
+        for event in events
+        if event["event_type"] == "position_metrics"
+        and compact_symbol(event.get("symbol")) == "BTCUSD"
+    ]
+    return_observations: list[tuple[str | None, Decimal]] = []
+    for event in position_events:
+        value = as_decimal((event.get("payload") or {}).get("current_return_pct"))
+        if value is not None:
+            return_observations.append((event.get("occurred_at"), value))
+
+    latest_position_metrics = (
+        dict(position_events[-1].get("payload") or {})
+        if position_events
+        else None
+    )
+    latest_return = (
+        return_observations[-1][1]
+        if return_observations
+        else None
+    )
+    max_favorable_return = (
+        max(value for _, value in return_observations)
+        if return_observations
+        else None
+    )
+    max_adverse_return = (
+        min(value for _, value in return_observations)
+        if return_observations
+        else None
+    )
+
+    decision_events = [
+        event for event in events if event["event_type"] == "decision_cycle"
+    ]
+    action_counts: dict[str, int] = defaultdict(int)
+    latest_decision: dict[str, Any] | None = None
+    for event in decision_events:
+        payload = dict(event.get("payload") or {})
+        comparison = dict(payload.get("comparison_context") or {})
+        execution_result = dict(comparison.get("execution_result") or {})
+        action = str(execution_result.get("action") or "").strip().lower()
+        if action:
+            action_counts[action] += 1
+        latest_decision = {
+            "occurred_at": event.get("occurred_at"),
+            "action": execution_result.get("action"),
+            "reason": execution_result.get("reason"),
+            "cycle_outcome": payload.get("cycle_outcome"),
+            "bar_interval": payload.get("bar_interval"),
+            "strategy_family": payload.get("strategy_family"),
+            "model_version": payload.get("model_version"),
+            "calibration_version": payload.get("calibration_version"),
+            "regime_version": payload.get("regime_version"),
+            "execution_adapter_version": payload.get("execution_adapter_version"),
+        }
+
+    order_events = [
+        event for event in events if event["event_type"] == "broker_order"
+    ]
+    protection_orders: list[dict[str, Any]] = []
+    for event in order_events:
+        payload = dict(event.get("payload") or {})
+        order = dict(payload.get("order") or {})
+        client_order_id = str(order.get("client_order_id") or "").lower()
+        if "hardstop" in client_order_id or "canary-hardstop" in client_order_id:
+            protection_orders.append(
+                {
+                    "occurred_at": event.get("occurred_at"),
+                    "broker_order_id": order.get("id"),
+                    "status": order.get("status"),
+                    "side": order.get("side"),
+                    "client_order_id": order.get("client_order_id"),
+                    "exit_reason": payload.get("exit_reason"),
+                }
+            )
+
+    fill_events = [
+        event for event in events if event["event_type"] == "broker_fill"
+    ]
+    fill_side_counts: dict[str, int] = defaultdict(int)
+    for event in fill_events:
+        activity = dict((event.get("payload") or {}).get("activity") or {})
+        side = str(activity.get("side") or "").strip().lower()
+        if side:
+            fill_side_counts[side] += 1
+
+    account_events = [
+        event for event in events if event["event_type"] == "account_snapshot"
+    ]
+    latest_account = (
+        dict(account_events[-1].get("payload") or {})
+        if account_events
+        else None
+    )
+    latest_positions = (
+        list(latest_account.get("positions") or [])
+        if isinstance(latest_account, dict)
+        else []
+    )
+    btc_positions = [
+        position
+        for position in latest_positions
+        if compact_symbol(position.get("symbol")) == "BTCUSD"
+        and (as_decimal(position.get("qty")) or Decimal("0")) != 0
+    ]
+    position_open = bool(btc_positions)
+
+    buy_fill_events = int(fill_side_counts.get("buy", 0))
+    sell_fill_events = int(fill_side_counts.get("sell", 0))
+    if position_open:
+        evidence_state = "COLLECTING_OPEN_POSITION"
+        assessment = "COLLECTING_FORWARD_EVIDENCE"
+    elif sell_fill_events > 0:
+        evidence_state = "EXIT_OBSERVED"
+        assessment = "FORWARD_EXIT_EVIDENCE_AVAILABLE"
+    elif buy_fill_events > 0:
+        evidence_state = "ENTRY_OBSERVED_NO_OPEN_POSITION"
+        assessment = "RECONCILE_EXIT_EVIDENCE"
+    else:
+        evidence_state = "NO_ENTRY_OBSERVED"
+        assessment = "AWAITING_FORWARD_ENTRY_EVIDENCE"
+
+    active_protection_statuses = {
+        "new", "accepted", "held", "pending_new", "partially_filled"
+    }
+    active_protection = [
+        order
+        for order in protection_orders
+        if str(order.get("status") or "").lower() in active_protection_statuses
+    ]
+
+    return {
+        "run_id": run_id,
+        "strategy_version_id": "BTC-CANARY-001",
+        "research_status": "NOT_PROMOTED",
+        "paper_only": True,
+        "live_execution_authorized": False,
+        "promotion_ready": False,
+        "evidence_state": evidence_state,
+        "assessment": assessment,
+        "event_count": len(events),
+        "event_limit_reached": len(events) >= 50000,
+        "first_event_at": events[0].get("occurred_at") if events else None,
+        "latest_event_at": events[-1].get("occurred_at") if events else None,
+        "decision_cycles": len(decision_events),
+        "decision_action_counts": dict(sorted(action_counts.items())),
+        "latest_decision": latest_decision,
+        "position_observations": len(position_events),
+        "position_open": position_open,
+        "latest_position_metrics": latest_position_metrics,
+        "current_return_pct": str(latest_return) if latest_return is not None else None,
+        "max_favorable_return_pct": (
+            str(max_favorable_return)
+            if max_favorable_return is not None
+            else None
+        ),
+        "max_adverse_return_pct": (
+            str(max_adverse_return)
+            if max_adverse_return is not None
+            else None
+        ),
+        "broker_order_events": len(order_events),
+        "broker_fill_events": len(fill_events),
+        "buy_fill_events": buy_fill_events,
+        "sell_fill_events": sell_fill_events,
+        "protective_order_events": len(protection_orders),
+        "active_protective_orders": active_protection,
+        "latest_account_snapshot": latest_account,
+    }
 
 
 def _candidate_identity(candidate: dict[str, Any]) -> str:
@@ -854,6 +1060,7 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
             post_event_evidence_session = params.get("post_event_evidence_session")
             crypto_evidence_session = params.get("crypto_evidence_session")
             crypto_promotion = params.get("crypto_promotion")
+            canary_run_id = params.get("canary_run_id")
             start_date = params.get("start")
             end_date = params.get("end")
 
@@ -878,6 +1085,22 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
 
             if crypto_promotion in {"1", "true", "True"}:
                 return {"ok": True, "evidence": _promotion_evidence(cur)}
+
+            if canary_run_id:
+                normalized_run_id = str(canary_run_id).strip()
+                if (
+                    not normalized_run_id.startswith("BTC-CANARY-")
+                    or len(normalized_run_id) > 160
+                ):
+                    return {"ok": False, "error": "invalid_canary_run_id"}
+                return {
+                    "ok": True,
+                    "report_version": "btc-canary-forward-v1",
+                    "evidence": _btc_canary_run_evidence(
+                        cur,
+                        run_id=normalized_run_id,
+                    ),
+                }
 
             if _valid_date(crypto_evidence_session):
                 start, end = _session_bounds(str(crypto_evidence_session))
