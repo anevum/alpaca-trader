@@ -251,3 +251,11 @@ def test_shadow_host_strategy_runner_projects_ready_for_paper(tmp_path):
         assert checkpoint["live_execution_authorized"] is False
 
     asyncio.run(scenario())
+
+
+
+def test_shadow_activation_identity_ignores_transient_run_id():
+    first = activation_payload()
+    second = activation_payload()
+    second["graen_run_id"] = "55555555-5555-5555-5555-555555555555"
+    assert CandidateShadowHost.activation_id(first) == CandidateShadowHost.activation_id(second)
