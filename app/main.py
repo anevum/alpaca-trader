@@ -20,6 +20,7 @@ from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .crypto_execution import CryptoExecutionEngine
+from .crypto_canary_execution import BtcCanaryExecutionEngine
 from .crypto_promotion import fetch_crypto_promotion_status
 from .crypto_layer import (
     CryptoMarketDataClient,
@@ -139,6 +140,13 @@ crypto_engine = CryptoExecutionEngine(
     crypto_universe,
     ledger=event_sink,
 )
+btc_canary_engine = BtcCanaryExecutionEngine(
+    settings,
+    client,
+    crypto_market_data,
+    runtime_state,
+    ledger=event_sink,
+)
 research_reports = ResearchReportScheduler(
     settings,
     client,
@@ -209,6 +217,9 @@ def scheduler_configuration_snapshot() -> dict:
         "risk_per_trade_pct": str(settings.risk_per_trade_pct),
         "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
         "crypto_execution_enabled": settings.crypto_execution_enabled,
+        "crypto_execution_mode": settings.crypto_execution_mode,
+        "btc_canary_enabled": settings.btc_canary_enabled,
+        "btc_canary_execution_authorized": settings.btc_canary_execution_authorized,
     }
     material = {"comparison": comparison, "protected": protected}
     digest = hashlib.sha256(
@@ -317,6 +328,9 @@ async def command_snapshot() -> dict:
             "exit_states": runtime_state.exit_states,
             "crypto_lane_enabled": settings.crypto_lane_enabled,
             "crypto_execution_enabled": settings.crypto_execution_enabled,
+            "crypto_execution_mode": settings.crypto_execution_mode,
+            "btc_canary_enabled": settings.btc_canary_enabled,
+            "btc_canary_execution_authorized": settings.btc_canary_execution_authorized,
             "crypto_universe_size": settings.crypto_universe_size,
             "crypto_poll_seconds": settings.crypto_poll_seconds,
             "crypto_confirmation_symbols": list(settings.crypto_confirmation_symbols),
@@ -692,14 +706,29 @@ async def crypto_monitor_loop():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
                 runtime_state.begin_crypto_cycle(uuid4().hex)
-                runtime_state.crypto_graen_promotion = (
-                    await fetch_crypto_promotion_status(settings)
-                )
-                result = await crypto_engine.run_once()
+                if settings.crypto_execution_mode == "experimental_canary":
+                    runtime_state.crypto_graen_promotion = {
+                        "status": "EXPERIMENTAL_PAPER_BYPASS",
+                        "promotion_ready": False,
+                        "reason": (
+                            "BTC-CANARY-001 bypasses promotion only for paper "
+                            "forward execution; it has no live authority"
+                        ),
+                        "execution_class": "EXPERIMENTAL_PAPER",
+                        "strategy_version_id": "BTC-CANARY-001",
+                        "live_execution_authorized": False,
+                    }
+                    result = await btc_canary_engine.run_once()
+                else:
+                    runtime_state.crypto_graen_promotion = (
+                        await fetch_crypto_promotion_status(settings)
+                    )
+                    result = await crypto_engine.run_once()
                 print(
                     "CRYPTO_EXECUTION_CYCLE",
                     {
                         "execution_enabled": settings.crypto_execution_enabled,
+                        "execution_mode": settings.crypto_execution_mode,
                         "action": result.get("action"),
                         "symbol": result.get("symbol"),
                         "reason": result.get("reason"),
