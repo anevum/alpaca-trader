@@ -519,6 +519,12 @@ class GraenResearchExecutor:
             ],
             "running": running,
             "autorun": self.autorun,
+            "activity_active": self.active_problem_id is not None,
+            "current_activity": (
+                "Research problem " + self.active_problem_id
+                if self.active_problem_id
+                else "Awaiting next autonomous research problem"
+            ),
             "market_data_credentials_configured": bool(self.settings.credentials_configured),
             "gateway_configured": self.gateway.configured,
             "research_code_promotion_enabled": False,
