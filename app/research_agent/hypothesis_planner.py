@@ -223,6 +223,11 @@ def plan_next(
     now: datetime,
 ) -> dict[str, Any]:
     prior_hashes = previously_frozen_manifest_hashes(snapshot)
+    prior_hashes.update(
+        str(value)
+        for value in exposure.get("strategy_manifest_hashes") or []
+        if len(str(value)) == 64
+    )
     catalog = _catalog()
     candidate = next(
         (manifest for manifest in catalog if manifest_hash(manifest) not in prior_hashes),
