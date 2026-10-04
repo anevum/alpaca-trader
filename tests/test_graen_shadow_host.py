@@ -133,3 +133,121 @@ def test_shadow_host_rejects_wrong_token(tmp_path):
     with pytest.raises(HTTPException) as exc:
         host.require_token("b" * 40)
     assert exc.value.status_code == 401
+
+
+
+def test_shadow_host_queues_candidates_and_retains_exact_terminal_checkpoint(tmp_path):
+    async def scenario():
+        host = CandidateShadowHost(
+            settings(),
+            EventSink(),
+            token="s" * 40,
+            state_path=tmp_path / "shadow.json",
+        )
+        first_payload = activation_payload()
+        second_payload = activation_payload()
+        second_payload["problem_id"] = "33333333-3333-3333-3333-333333333333"
+        second_payload["graen_run_id"] = "44444444-4444-4444-4444-444444444444"
+
+        first = await host.activate(first_payload)
+        second = await host.activate(second_payload)
+        first_id = first["activation"]["activation_id"]
+        second_id = second["activation"]["activation_id"]
+
+        assert second["queued"] is True
+        assert host.status()["queue_count"] == 1
+        assert host.checkpoint(second_id)["checkpoint"]["status"] == "QUEUED"
+
+        async def no_events():
+            return []
+
+        host.runtime.cycle = no_events
+        host._project_checkpoint = lambda _runtime: {
+            "status": "SHADOW_REJECTED",
+            "candidate_id": first["activation"]["candidate_id"],
+            "candidate_methodology": first["activation"]["candidate_methodology"],
+            "execution_authority": False,
+            "broker_orders_possible": False,
+        }
+
+        await host.cycle_once()
+
+        completed = host.checkpoint(first_id)
+        assert completed is not None
+        assert completed["completed"] is True
+        assert completed["checkpoint"]["status"] == "SHADOW_REJECTED"
+        assert host.status()["queue_count"] == 0
+        assert host.status()["active"] is True
+        assert host._active_id() == second_id
+        assert host.execution_authority is False
+        assert host.broker_orders_possible is False
+
+    asyncio.run(scenario())
+
+
+def test_shadow_host_strategy_runner_projects_ready_for_paper(tmp_path):
+    from app.research_agent.strategy_grammar import build_manifest
+    from app.research_agent.strategy_runner import (
+        RUNNER_VERSION as STRATEGY_RUNNER_VERSION,
+        compile_candidate,
+    )
+
+    async def scenario():
+        host = CandidateShadowHost(
+            settings(),
+            EventSink(),
+            token="s" * 40,
+            state_path=tmp_path / "shadow.json",
+        )
+        manifest = build_manifest(
+            hypothesis_id="AUTO-SHADOW-HOST-01",
+            family="cross_asset_diffusion",
+            mechanism="BTC information diffusion into liquid crypto followers.",
+            information_source="cross_asset_returns",
+            feature="lead_lag_gap",
+            transformation="residualize_btc",
+            regime="dispersion_bucket",
+            trigger="threshold",
+            entry="market_next_bar",
+            exit="time_60m",
+            parameters={
+                "hold_minutes": 60,
+                "scan_minutes": 10,
+                "lookback_minutes": 30,
+                "concentration_limit": 0.70,
+                "leader_symbol": "BTC/USD",
+                "leader_threshold": 0.0035,
+                "lag_gap_threshold": 0.0015,
+                "min_target_return": -0.005,
+                "max_target_return": 0.0035,
+                "min_breadth_positive": 3,
+                "require_btc_nonnegative": False,
+            },
+            symbols=("BTC/USD", "ETH/USD", "SOL/USD"),
+            timeframe="5m",
+            falsification_statement=(
+                "Reject if stressed-cost forward expectancy is nonpositive."
+            ),
+        )
+        spec = compile_candidate(manifest).to_dict()
+        payload = activation_payload()
+        payload["campaign_id"] = "strategy-manifest-autonomous-v1"
+        payload["candidate_methodology"] = STRATEGY_RUNNER_VERSION
+        payload["candidate_spec"] = spec
+
+        activation = await host.activate(payload)
+        host.runtime.last_checkpoint = {
+            "status": "READY_FOR_HUMAN_REVIEW",
+            "trade_count": 30,
+        }
+        host.runtime.last_checkpoint_status = "READY_FOR_HUMAN_REVIEW"
+        checkpoint = host.checkpoint(
+            activation["activation"]["activation_id"]
+        )["checkpoint"]
+
+        assert checkpoint["raw_status"] == "READY_FOR_HUMAN_REVIEW"
+        assert checkpoint["status"] == "READY_FOR_PAPER"
+        assert checkpoint["execution_authority"] is False
+        assert checkpoint["live_execution_authorized"] is False
+
+    asyncio.run(scenario())
