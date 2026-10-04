@@ -1727,3 +1727,159 @@ def test_v14_r2f_pass_activates_fresh_forward_shadow_once():
         assert runtime.gateway.artifacts == []
 
     asyncio.run(scenario())
+
+
+
+def test_v14_r2f_active_shadow_queues_r2g_once():
+    async def scenario():
+        candidate = service.v14_r2f_candidate_spec().to_dict()
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": V14_RUN_ID,
+                    "problem_id": PROBLEM_ID,
+                    "status": "WAITING",
+                    "started_at": "2026-10-03T23:15:23+00:00",
+                    "methodology_version": service.V14_R2F_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "campaign_id": service.V14_R2F_CAMPAIGN_ID,
+                        "candidate_id": candidate["candidate_id"],
+                        "state": (
+                            "V14_R2F_ADAPTIVE_DISCOVERY_"
+                            "SURVIVES_TO_FORWARD_SHADOW"
+                        ),
+                    },
+                }
+            ],
+            "artifacts": [
+                {
+                    "artifact_id": "r2f-activation-artifact",
+                    "problem_id": PROBLEM_ID,
+                    "artifact_type": (
+                        "CRYPTO_V14_R2F_FORWARD_SHADOW_ACTIVATION"
+                    ),
+                    "created_at": "2026-10-03T23:43:29+00:00",
+                    "content": {
+                        "candidate_id": candidate["candidate_id"],
+                    },
+                }
+            ],
+        }
+        runtime = _runtime(snapshot)
+        result = await runtime._recover_v14_r2f_shadow_into_r2g(snapshot)
+
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V14_R2G_STAGE
+        assert result["r2f_forward_shadow_preserved"] is True
+        assert runtime.gateway.queued[-1]["stage"] == service.V14_R2G_STAGE
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == "CRYPTO_V14_R2G_CONSENSUS_SELECTION"
+        assert artifact["content"]["r2f_forward_shadow_preserved"] is True
+        assert artifact["content"]["live_execution_authorized"] is False
+
+        snapshot["runs"].append(
+            {
+                "run_id": "abababab-abab-abab-abab-abababababab",
+                "problem_id": PROBLEM_ID,
+                "status": "WAITING",
+                "methodology_version": service.V14_R2G_METHODOLOGY_VERSION,
+                "result_summary": {
+                    "campaign_id": service.V14_R2G_CAMPAIGN_ID,
+                    "state": (
+                        "V14_R2G_ADAPTIVE_DISCOVERY_"
+                        "SURVIVES_TO_FORWARD_SHADOW_COMPARISON"
+                    ),
+                },
+            }
+        )
+        runtime.gateway.queued.clear()
+        second = await runtime._recover_v14_r2f_shadow_into_r2g(snapshot)
+        assert second is None
+        assert runtime.gateway.queued == []
+
+    asyncio.run(scenario())
+
+
+def test_v14_r2g_pass_does_not_replace_active_r2f_shadow(monkeypatch):
+    async def scenario():
+        runtime = _runtime()
+
+        async def fake_fetch():
+            return {"BTC/USD": []}
+
+        runtime._fetch_v14_r2f_btc_daily = fake_fetch
+
+        def fake_evaluate(_rows):
+            return {
+                "adaptive_recent_window": {
+                    "scenarios": {
+                        "taker_stress_30bp": {
+                            "bar_count": 638,
+                            "entry_count": 4,
+                            "turnover_units": 8,
+                            "total_return": 0.236,
+                            "sharpe": 0.541,
+                            "max_drawdown": -0.282,
+                        },
+                        "severe_stress_50bp": {
+                            "total_return": 0.217,
+                        },
+                    },
+                    "one_day_execution_delay": {
+                        "total_return": 0.208,
+                        "sharpe": 0.500,
+                    },
+                },
+                "robustness_neighborhood": {
+                    "positive_return_share": 1.0,
+                    "sharpe_gte_045_share": 1.0,
+                },
+                "adaptive_gate": {
+                    "survives_to_forward_shadow_comparison": True,
+                },
+            }
+
+        monkeypatch.setattr(
+            service,
+            "evaluate_v14_r2g_consensus_trend",
+            fake_evaluate,
+        )
+        problem = {
+            "problem_id": PROBLEM_ID,
+            "status": "RUNNING",
+            "domain": service.PROBLEM_DOMAIN,
+            "metadata": {
+                "research_stage": service.V14_R2G_STAGE,
+                "v14_r2g_campaign_id": service.V14_R2G_CAMPAIGN_ID,
+                "r2f_forward_shadow_preserved": True,
+            },
+        }
+        result = await runtime._execute_btc_consensus_trend_v14_r2g(
+            problem,
+            {"run_id": V14_RUN_ID},
+        )
+
+        assert (
+            result["state"]
+            == "V14_R2G_ADAPTIVE_DISCOVERY_"
+            "SURVIVES_TO_FORWARD_SHADOW_COMPARISON"
+        )
+        assert (
+            result["decision"]
+            == "HOLD_FOR_NONDISRUPTIVE_FORWARD_SHADOW_COMPARISON"
+        )
+        assert result["r2f_forward_shadow_preserved"] is True
+        assert result["promotion_eligible"] is False
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["live_execution_authorized"] is False
+
+    asyncio.run(scenario())
