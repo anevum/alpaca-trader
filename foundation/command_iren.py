@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import psycopg
@@ -322,12 +323,162 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     }
 
 
+def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
+    """Compact private BTC canary state for the fast Command observation poll."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select run_id, max(occurred_at) as latest_at
+            from rhen.events
+            where strategy_version_id = %s
+              and run_id like 'BTC-CANARY-%%'
+            group by run_id
+            order by latest_at desc
+            limit 1
+            """,
+            ("BTC-CANARY-001",),
+        )
+        run_row = cur.fetchone()
+        if not run_row:
+            return {
+                "available": False,
+                "strategy_version_id": "BTC-CANARY-001",
+                "paper_only": True,
+                "live_execution_authorized": False,
+                "promotion_ready": False,
+                "evidence_state": "NO_CANONICAL_RUN",
+            }
+
+        run_id = str(run_row[0])
+        latest_at = run_row[1]
+
+        def latest_payload(event_type: str) -> tuple[Any, dict[str, Any]] | None:
+            cur.execute(
+                """
+                select occurred_at, payload
+                from rhen.events
+                where run_id = %s
+                  and strategy_version_id = %s
+                  and event_type = %s
+                order by occurred_at desc, event_id desc
+                limit 1
+                """,
+                (run_id, "BTC-CANARY-001", event_type),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return row[0], dict(row[1] or {})
+
+        decision = latest_payload("decision_cycle")
+        position_metrics = latest_payload("position_metrics")
+        account = latest_payload("account_snapshot")
+
+        cur.execute(
+            """
+            select occurred_at, payload
+            from rhen.events
+            where run_id = %s
+              and strategy_version_id = %s
+              and event_type = 'broker_order'
+              and lower(coalesce(payload->'order'->>'client_order_id', ''))
+                  like '%%hardstop%%'
+            order by occurred_at desc, event_id desc
+            limit 1
+            """,
+            (run_id, "BTC-CANARY-001"),
+        )
+        protection_row = cur.fetchone()
+
+    decision_at, decision_payload = decision if decision else (None, {})
+    comparison = (
+        dict(decision_payload.get("comparison_context") or {})
+        if isinstance(decision_payload, dict)
+        else {}
+    )
+    execution_result = dict(comparison.get("execution_result") or {})
+    position_at, position_payload = (
+        position_metrics if position_metrics else (None, {})
+    )
+    account_at, account_payload = account if account else (None, {})
+
+    def nonzero(value: Any) -> bool:
+        if value in (None, ""):
+            return False
+        try:
+            return Decimal(str(value)) != Decimal("0")
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+
+    positions = (
+        list(account_payload.get("positions") or [])
+        if isinstance(account_payload, dict)
+        else []
+    )
+    position_open = any(
+        isinstance(position, dict)
+        and str(position.get("symbol") or "")
+            .upper().replace("/", "").replace("-", "") == "BTCUSD"
+        and nonzero(position.get("qty"))
+        for position in positions
+    )
+
+    protection_at = None
+    protection_status = None
+    if protection_row:
+        protection_at = protection_row[0]
+        protection_payload = dict(protection_row[1] or {})
+        protection_order = dict(protection_payload.get("order") or {})
+        protection_status = protection_order.get("status")
+
+    if position_open:
+        evidence_state = "COLLECTING_OPEN_POSITION"
+    elif execution_result.get("action") in {"exit", "closed", "flat"}:
+        evidence_state = "EXIT_OBSERVED"
+    elif decision:
+        evidence_state = "OBSERVING"
+    else:
+        evidence_state = "AWAITING_DECISION_EVIDENCE"
+
+    def stamp(value: Any) -> str | None:
+        return value.isoformat() if isinstance(value, datetime) else (
+            str(value) if value not in (None, "") else None
+        )
+
+    return {
+        "available": True,
+        "run_id": run_id,
+        "strategy_version_id": "BTC-CANARY-001",
+        "paper_only": True,
+        "live_execution_authorized": False,
+        "promotion_ready": False,
+        "research_status": "NOT_PROMOTED",
+        "evidence_state": evidence_state,
+        "observed_at": stamp(latest_at),
+        "decision_at": stamp(decision_at),
+        "action": execution_result.get("action"),
+        "reason": execution_result.get("reason")
+            or decision_payload.get("cycle_outcome"),
+        "bar_interval": decision_payload.get("bar_interval"),
+        "strategy_family": decision_payload.get("strategy_family"),
+        "model_version": decision_payload.get("model_version"),
+        "position_open": position_open,
+        "position_observed_at": stamp(position_at),
+        "current_return_pct": position_payload.get("current_return_pct"),
+        "risk_stop_pct": position_payload.get("risk_stop_pct"),
+        "account_observed_at": stamp(account_at),
+        "protection_status": protection_status,
+        "protection_observed_at": stamp(protection_at),
+    }
+
+
 def read_command_snapshot(database_url: str) -> dict[str, Any]:
     with psycopg.connect(database_url, connect_timeout=5) as conn:
         return {
             "control": iren_read(conn),
             "work": snapshot(conn),
             "research": _research_activity(conn),
+            "btc_canary": _btc_canary_activity(conn),
         }
 
 
@@ -371,6 +522,11 @@ def project_command(
     research = (
         dict(snapshot_value.get("research"))
         if isinstance(snapshot_value.get("research"), dict)
+        else {}
+    )
+    btc_canary = (
+        dict(snapshot_value.get("btc_canary"))
+        if isinstance(snapshot_value.get("btc_canary"), dict)
         else {}
     )
     raw_state = (
@@ -454,6 +610,7 @@ def project_command(
         "incidents": incidents,
         "scheduler": state.get("scheduler"),
         "research": research,
+        "btc_canary": btc_canary,
         "action_required": stale or current_state != "HEALTHY" or bool(incidents),
         "configuration_identity": baseline.get("fingerprint"),
         "operator": operator,
