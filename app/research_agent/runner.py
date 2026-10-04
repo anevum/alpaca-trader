@@ -13,6 +13,7 @@ from .evidence import (
 )
 from .models import CanonicalEvidence, QueueItem, ResearchCategory, deterministic_dict
 from .policy import EDGE_DISCOVERY_V1_EXPERIMENT_KEY, RDR_V21_EXPERIMENT_KEY
+from .priority import information_value_from_evidence
 from .queue import build_queue
 from .strategy_health import compute_strategy_health
 
@@ -90,6 +91,9 @@ def _queue_record(item: QueueItem) -> dict[str, Any]:
         "status": item.snapshot.status,
         "category": item.classification.category.value,
         "priority_score": item.priority_score,
+        "information_value_score": information_value_from_evidence(
+            item.snapshot.evidence_summary
+        ),
         "evidence_integrity_blocker": (
             item.classification.evidence_integrity_blocker
         ),
