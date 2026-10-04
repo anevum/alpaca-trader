@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.config import Settings
+from app.market_data import MarketDataClient
+import app.market_data as market_data
 from app.replay import ReplayPosition
 from app.velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
 from app.velum_service import VelumRuntime, _crypto_settings, _run_blocking, require_graen_token
@@ -379,7 +381,7 @@ def test_velum_dispatches_v13_exact_candidate_without_execution_authority(monkey
 def test_velum_r2h_fetch_contract_includes_slow_signal_warmup():
     start = datetime(2026, 4, 4, tzinfo=timezone.utc)
     end = datetime(2026, 10, 1, tzinfo=timezone.utc)
-    symbols, fetch_start, fetch_end = velum_graen.replay_fetch_contract(
+    symbols, fetch_start, fetch_end, timeframe = velum_graen.replay_fetch_contract(
         V14_R2H_METHODOLOGY_VERSION,
         start=start,
         end=end,
@@ -388,6 +390,52 @@ def test_velum_r2h_fetch_contract_includes_slow_signal_warmup():
     assert fetch_start < start
     assert (start - fetch_start).days == 260
     assert fetch_end == end
+    assert timeframe == "4Hour"
+
+
+def test_crypto_historical_fetch_uses_explicit_replay_timeframe(monkeypatch):
+    requests = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"bars": {"BTC/USD": []}, "next_page_token": None}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, *, headers, params):
+            requests.append({"headers": headers, "params": dict(params)})
+            return Response()
+
+    monkeypatch.setattr(
+        market_data.httpx,
+        "AsyncClient",
+        lambda **_kwargs: Client(),
+    )
+    cfg = settings().model_copy(
+        update={
+            "alpaca_api_key": "test-key",
+            "alpaca_api_secret": "test-secret",
+        }
+    )
+    client = MarketDataClient(cfg)
+    asyncio.run(
+        client.historical_crypto_bars_many(
+            ["BTC/USD"],
+            start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            timeframe="4Hour",
+        )
+    )
+
+    assert requests[0]["params"]["timeframe"] == "4Hour"
 
 
 def test_velum_dispatches_r2h_slow_candidate_without_legacy_trade_gate(monkeypatch):
