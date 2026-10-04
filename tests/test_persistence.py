@@ -393,7 +393,16 @@ def test_decision_cycle_honors_explicit_crypto_strategy_provenance():
                 "symbol": "BTC/USD",
                 "reference_price": "100",
                 "reason": "hold",
-                "metadata": {"market": "crypto"},
+                "metadata": {
+                    "market": "crypto",
+                    "strategy_family": "btc_4h_momentum_or_sma_consensus_experimental_canary",
+                    "strategy_version_id": "BTC-CANARY-001",
+                    "model_version": "graen-btc-4h-consensus-v14-r2h",
+                    "calibration_version": "none-experimental-canary",
+                    "regime_version": "r2h-slow-consensus",
+                    "execution_adapter_version": "alpaca-crypto-canary-v1",
+                    "bar_timeframe": "4Hour",
+                },
             }
         },
         cycle_outcome="hold",
@@ -402,6 +411,10 @@ def test_decision_cycle_honors_explicit_crypto_strategy_provenance():
             "strategy_family": "btc_4h_momentum_or_sma_consensus_experimental_canary",
             "strategy_version_id": "BTC-CANARY-001",
             "source_candidate_id": "V14-R2H-BTC-4H-CONSENSUS-1080-1500",
+            "model_version": "graen-btc-4h-consensus-v14-r2h",
+            "calibration_version": "none-experimental-canary",
+            "regime_version": "r2h-slow-consensus",
+            "execution_adapter_version": "alpaca-crypto-canary-v1",
             "bar_timeframe": "4Hour",
         },
     )
@@ -411,7 +424,15 @@ def test_decision_cycle_honors_explicit_crypto_strategy_provenance():
     assert payload["market_lane"] == "crypto"
     assert payload["bar_interval"] == "4Hour"
     assert payload["strategy_family"] == "btc_4h_momentum_or_sma_consensus_experimental_canary"
-    assert payload["model_version"] == "BTC-CANARY-001"
+    assert payload["model_version"] == "graen-btc-4h-consensus-v14-r2h"
+    assert payload["calibration_version"] == "none-experimental-canary"
+    assert payload["regime_version"] == "r2h-slow-consensus"
+    assert payload["execution_adapter_version"] == "alpaca-crypto-canary-v1"
+    candidate = payload["candidates"][0]
+    assert candidate["strategy_version_id"] == "BTC-CANARY-001"
+    assert candidate["strategy_family"] == "btc_4h_momentum_or_sma_consensus_experimental_canary"
+    assert candidate["model_version"] == "graen-btc-4h-consensus-v14-r2h"
+    assert candidate["bar_interval"] == "4Hour"
     assert payload["comparison_context"]["execution_context"]["source_candidate_id"] == (
         "V14-R2H-BTC-4H-CONSENSUS-1080-1500"
     )
