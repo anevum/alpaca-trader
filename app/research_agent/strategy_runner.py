@@ -13,7 +13,7 @@ from graen.crypto.research_v7 import (
     evaluate_candidate,
 )
 
-from .strategy_grammar import StrategyManifest, validate_manifest
+from .strategy_grammar import StrategyManifest, compiler_profile, validate_manifest
 
 
 RUNNER_VERSION = "graen.strategy-runner.v1"
@@ -47,31 +47,6 @@ def _float(
         raise StrategyRunnerError(f"invalid parameter: {name}")
     return value
 
-
-def compiler_profile(manifest: StrategyManifest) -> str | None:
-    if (
-        manifest.family == "cross_asset_diffusion"
-        and manifest.information_source == "cross_asset_returns"
-        and manifest.feature == "lead_lag_gap"
-        and manifest.trigger == "threshold"
-        and manifest.entry in {"market_next_bar", "delayed_market"}
-        and manifest.exit in {"time_60m", "time_120m", "time_240m"}
-        and manifest.sizing == "research_fixed_unit"
-        and manifest.execution == "stressed_market"
-    ):
-        return SUPPORTED_COMPILER_PROFILE
-    if (
-        manifest.family == "breadth_laggard_response"
-        and manifest.information_source == "cross_asset_returns"
-        and manifest.feature == "cross_sectional_breadth"
-        and manifest.trigger == "threshold"
-        and manifest.entry == "market_next_bar"
-        and manifest.exit in {"time_60m", "time_120m", "time_240m"}
-        and manifest.sizing == "research_fixed_unit"
-        and manifest.execution == "stressed_market"
-    ):
-        return SUPPORTED_COMPILER_PROFILE
-    return None
 
 
 def compile_candidate(manifest: StrategyManifest) -> CandidateSpec:
