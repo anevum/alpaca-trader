@@ -169,14 +169,15 @@ class BtcCanaryExecutionEngine(CryptoExecutionEngine):
         result: dict[str, Any],
         canary_state: Any,
     ) -> None:
+        canary_metadata = canary_state.metadata()
         self.state.crypto_last_execution_context = {
             "decision_at": now.isoformat(),
             "execution_class": "EXPERIMENTAL_PAPER",
-            "strategy_version_id": "BTC-CANARY-001",
+            "strategy_version_id": BTC_CANARY_STRATEGY_VERSION_ID,
             "active_universe": [BTC_CANARY_SYMBOL],
             "entries_24h": entries_24h,
             "circuit_open_reason": self._circuit_open_reason,
-            "canary_state": canary_state.metadata(),
+            "canary_state": canary_metadata,
             "scan": scan,
             "result": result,
         }
@@ -203,6 +204,12 @@ class BtcCanaryExecutionEngine(CryptoExecutionEngine):
                     "strategy_family": BTC_CANARY_FAMILY,
                     "strategy_version_id": BTC_CANARY_STRATEGY_VERSION_ID,
                     "source_candidate_id": BTC_CANARY_SOURCE_CANDIDATE_ID,
+                    "model_version": canary_metadata.get("model_version"),
+                    "calibration_version": canary_metadata.get("calibration_version"),
+                    "regime_version": canary_metadata.get("regime_version"),
+                    "execution_adapter_version": canary_metadata.get(
+                        "execution_adapter_version"
+                    ),
                     "bar_timeframe": BTC_CANARY_TIMEFRAME,
                 },
                 execution_result=result,
