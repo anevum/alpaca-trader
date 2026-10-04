@@ -231,6 +231,18 @@ def validate_manifest(
     }
 
 
+def manifest_from_dict(payload: Mapping[str, Any]) -> StrategyManifest:
+    data = dict(payload)
+    data["symbols"] = tuple(str(value) for value in data.get("symbols") or ())
+    data["source_hypotheses"] = tuple(
+        str(value) for value in data.get("source_hypotheses") or ()
+    )
+    data["parameters"] = dict(data.get("parameters") or {})
+    manifest = StrategyManifest(**data)
+    validate_manifest(manifest, require_compiler=False)
+    return manifest
+
+
 def build_manifest(
     *,
     hypothesis_id: str,
