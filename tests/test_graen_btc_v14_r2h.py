@@ -565,19 +565,23 @@ def test_r2h_4h_fetch_repair_does_not_consume_retry_on_old_velum_commit():
     asyncio.run(scenario())
 
 
-def test_r2h_transport_recovery_version_five_is_terminal():
+def test_r2h_version_five_waits_for_missing_velum_provenance():
     async def scenario():
         runtime = service.GraenResearchExecutor()
         runtime.gateway = FakeGateway()
         runtime.velum_base_url = "http://rhen-velum.railway.internal:8080"
-        runtime._velum_health_snapshot = AsyncMock()
+        runtime._velum_health_snapshot = AsyncMock(return_value={})
 
         result = await runtime._recover_blocked_r2h_velum_transport(
             _r2h_ipv6_blocked_snapshot(version=5)
         )
 
-        assert result is None
-        runtime._velum_health_snapshot.assert_not_awaited()
+        assert result["recovered"] is False
+        assert result["state"] == "WAITING_FOR_VELUM_CHUNK_FIX"
+        assert result["retry_count"] == 5
+        assert result["observed_velum_git_commit"] is None
+        assert result["execution_authority"] is False
+        runtime._velum_health_snapshot.assert_awaited_once()
         assert runtime.gateway.queued == []
         assert runtime.gateway.artifacts == []
 

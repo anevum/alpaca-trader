@@ -16,6 +16,31 @@ from .cash_flow import (
 )
 
 
+def _canonical_crypto_symbols(payload: Any) -> Any:
+    """Adapt Alpaca's compact USD crypto positions to our pair identity.
+
+    Only broker-classified crypto assets are converted. An equity ticker ending
+    in USD is never inferred to be crypto. Keep the exact provider symbol for
+    execution evidence and preserve all other broker fields.
+    """
+    if isinstance(payload, list):
+        return [_canonical_crypto_symbols(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+    asset_class = str(payload.get("asset_class") or payload.get("class") or "").lower()
+    symbol = str(payload.get("symbol") or "")
+    if asset_class != "crypto" or "/" in symbol:
+        return payload
+    upper = symbol.upper()
+    if not upper.endswith("USD") or len(upper) <= 3:
+        return payload
+    return {
+        **payload,
+        "symbol": upper[:-3] + "/USD",
+        "broker_symbol": symbol,
+    }
+
+
 class AlpacaClient:
     """Thin Alpaca Trading API client.
 
@@ -82,7 +107,7 @@ class AlpacaClient:
                 ) from exc
             if response.status_code == 204:
                 return None
-            return response.json()
+            return _canonical_crypto_symbols(response.json())
 
         raise RuntimeError("unreachable broker request retry state")
 
