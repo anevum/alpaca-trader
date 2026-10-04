@@ -11,7 +11,13 @@ import pytest
 import httpx
 
 from app.iren.core import fresh, reduce_state
-from app.iren.service import IrenController, app, controller, POLICY
+from app.iren.service import (
+    IrenController,
+    _runtime_identity_complete,
+    app,
+    controller,
+    POLICY,
+)
 from app import orchestration_scheduler as scheduler
 
 
@@ -32,6 +38,47 @@ def observation(seconds=0):
         "scheduler": {"configured": True, "last_error": False, "last_success_at": stamp},
         "runs": [],
     }
+
+
+def test_runtime_identity_complete_requires_revision_and_deployment():
+    assert _runtime_identity_complete({
+        "runtime_identity": {
+            "git_commit": "a" * 40,
+            "deployment_id": "deployment-1",
+        }
+    })
+    assert not _runtime_identity_complete({
+        "runtime_identity": {
+            "git_commit": "a" * 40,
+            "deployment_id": None,
+        }
+    })
+    assert not _runtime_identity_complete({"runtime_identity": {}})
+    assert not _runtime_identity_complete({})
+
+
+def test_incomplete_runtime_inventory_fails_closed(monkeypatch):
+    async def scenario():
+        c = IrenController()
+        c.gateway = AsyncMock(side_effect=[
+            {"state": {}, "revision": 0},
+            {"ok": True, "committed": True, "revision": 1},
+        ])
+        c.observe = AsyncMock(return_value=observation())
+        c.dispatch = AsyncMock()
+        c.verify_api = AsyncMock()
+        monkeypatch.setattr(
+            "app.iren.service.topology",
+            lambda *_args, **_kwargs: {
+                "inventory_complete": False,
+                "inventory_gaps": {"VELUM": ["deployment"]},
+            },
+        )
+        await c.tick()
+        assert c.state["state"] == "DEGRADED"
+        assert c.state["topology"]["inventory_complete"] is False
+
+    asyncio.run(scenario())
 
 
 def test_determinism_and_no_input_mutation():
@@ -175,7 +222,17 @@ def test_durable_failure_does_not_publish_memory_state():
     asyncio.run(scenario())
 
 
-def test_durable_revision_precedes_notification_dispatch():
+def test_durable_revision_precedes_notification_dispatch(monkeypatch):
+    # This test isolates durable revision ordering. Topology completeness is
+    # covered separately by the fail-closed inventory regression test.
+    monkeypatch.setattr(
+        "app.iren.service.topology",
+        lambda *_args, **_kwargs: {
+            "inventory_complete": True,
+            "inventory_gaps": {},
+        },
+    )
+
     async def scenario():
         c = IrenController()
         c.gateway = AsyncMock(side_effect=[{"state": {}, "revision": 4}, {"ok": True, "committed": True, "revision": 5}])
