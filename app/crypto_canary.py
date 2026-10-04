@@ -33,7 +33,7 @@ class BtcCanaryState:
     def metadata(self) -> dict[str, Any]:
         return {
             "experimental_canary": True,
-            "execution_class": "EXPERIMENTAL_LIVE",
+            "execution_class": "EXPERIMENTAL_PAPER",
             "strategy_version_id": BTC_CANARY_STRATEGY_VERSION_ID,
             "strategy_family": BTC_CANARY_FAMILY,
             "source_candidate_id": BTC_CANARY_SOURCE_CANDIDATE_ID,
