@@ -1020,7 +1020,10 @@ class TradingEventSink:
         market = str(metadata.get("market") or "").lower()
         time_in_force = "gtc" if market == "crypto" else "day"
         strategy_version_id = (
-            self.settings.crypto_strategy_version_id
+            str(
+                metadata.get("strategy_version_id")
+                or self.settings.crypto_strategy_version_id
+            )
             if market == "crypto"
             else self.settings.strategy_version_id
         )
@@ -1128,25 +1131,42 @@ class TradingEventSink:
                         "strategy_version_id": strategy_version_id,
                         "market_lane": market or "us_equity",
                         "strategy_family": (
-                            getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
+                            metadata.get("strategy_family")
+                            or getattr(
+                                self.settings,
+                                "crypto_strategy_family",
+                                "rolling_momentum_vwap",
+                            )
                             if market == "crypto"
                             else getattr(self.settings, "strategy_name", None)
                         ),
                         "model_version": (
-                            getattr(self.settings, "crypto_model_version", None)
-                            if market == "crypto" else strategy_version_id
+                            metadata.get("model_version")
+                            or getattr(self.settings, "crypto_model_version", None)
+                            if market == "crypto"
+                            else strategy_version_id
                         ),
                         "calibration_version": (
-                            getattr(self.settings, "crypto_calibration_version", None)
-                            if market == "crypto" else None
+                            metadata.get("calibration_version")
+                            or getattr(self.settings, "crypto_calibration_version", None)
+                            if market == "crypto"
+                            else None
                         ),
                         "regime_version": (
-                            getattr(self.settings, "crypto_regime_version", None)
-                            if market == "crypto" else None
+                            metadata.get("regime_version")
+                            or getattr(self.settings, "crypto_regime_version", None)
+                            if market == "crypto"
+                            else None
                         ),
                         "execution_adapter_version": (
-                            getattr(self.settings, "crypto_execution_adapter_version", None)
-                            if market == "crypto" else "alpaca-equity-execution-v1"
+                            metadata.get("execution_adapter_version")
+                            or getattr(
+                                self.settings,
+                                "crypto_execution_adapter_version",
+                                None,
+                            )
+                            if market == "crypto"
+                            else "alpaca-equity-execution-v1"
                         ),
                         "data_source": "alpaca",
                         "data_feed": (
@@ -1154,7 +1174,10 @@ class TradingEventSink:
                             if market == "crypto"
                             else getattr(self.settings, "data_feed", None)
                         ),
-                        "bar_interval": getattr(self.settings, "bar_timeframe", None),
+                        "bar_interval": (
+                            metadata.get("bar_timeframe")
+                            or getattr(self.settings, "bar_timeframe", None)
+                        ),
                         "forward_outcomes_status": "pending",
                         "confirmation_state": {
                             "passes": metadata.get("confirmation_passes"),
@@ -1166,6 +1189,9 @@ class TradingEventSink:
                         },
                         "research_attribution": {
                             "live_strategy_version": strategy_version_id,
+                            "source_candidate_id": metadata.get("source_candidate_id"),
+                            "execution_class": metadata.get("execution_class"),
+                            "research_status": metadata.get("research_status"),
                         },
                         "ads002": None if market == "crypto" else ads002_shadow,
                         "ads002_v2": None if market == "crypto" else ads002_v2,
