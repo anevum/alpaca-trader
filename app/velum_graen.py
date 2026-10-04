@@ -48,7 +48,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 )
 
 
-METHODOLOGY_VERSION = "velum-graen-candidate-replay-v6"
+METHODOLOGY_VERSION = "velum-graen-candidate-replay-v7"
 GRAEN_CONTEXT_UNIVERSE = CONTEXT_UNIVERSE
 
 
@@ -57,13 +57,20 @@ def replay_fetch_contract(
     *,
     start: datetime,
     end: datetime,
-) -> tuple[tuple[str, ...], datetime, datetime]:
+) -> tuple[tuple[str, ...], datetime, datetime, str | None]:
     if candidate_methodology == V14_R2H_METHODOLOGY_VERSION:
         # R2H needs the frozen 250-day SMA and 180-day momentum warmup before
         # the bounded replay window. This warmup is input-only and is never
-        # scored as replay evidence.
-        return ("BTC/USD",), start - timedelta(days=260), end
-    return tuple(GRAEN_CONTEXT_UNIVERSE), start - timedelta(hours=8), end + timedelta(hours=3)
+        # scored as replay evidence. The timeframe is part of the frozen
+        # contract so VELUM cannot silently fall back to its 1-minute runtime
+        # default and over-fetch hundreds of thousands of bars.
+        return ("BTC/USD",), start - timedelta(days=260), end, "4Hour"
+    return (
+        tuple(GRAEN_CONTEXT_UNIVERSE),
+        start - timedelta(hours=8),
+        end + timedelta(hours=3),
+        None,
+    )
 
 
 def engineering_gate(
