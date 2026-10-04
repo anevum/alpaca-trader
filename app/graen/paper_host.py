@@ -175,9 +175,13 @@ class GraenPaperCanaryHost:
         self.max_review_round_trips = _int_env(
             "GRAEN_PAPER_MAX_REVIEW_ROUND_TRIPS", 40, 10, 400
         )
+        self.max_review_days = _int_env(
+            "GRAEN_PAPER_MAX_REVIEW_DAYS", 45, 7, 180
+        )
 
         self.activation: dict[str, Any] | None = None
         self.rounds: dict[str, dict[str, Any]] = {}
+        self.completed: dict[str, dict[str, Any]] = {}
         self.circuit_open_reason: str | None = None
         self.ambiguous_submission_count = 0
         self.execution_error_count = 0
@@ -317,6 +321,7 @@ class GraenPaperCanaryHost:
             "activation": self.activation,
             "shadow": self.shadow.snapshot(),
             "rounds": self.rounds,
+            "completed": self.completed,
             "circuit_open_reason": self.circuit_open_reason,
             "ambiguous_submission_count": self.ambiguous_submission_count,
             "execution_error_count": self.execution_error_count,
@@ -366,6 +371,16 @@ class GraenPaperCanaryHost:
                 if isinstance(value, Mapping)
             }
             if isinstance(rounds, Mapping)
+            else {}
+        )
+        completed = payload.get("completed")
+        self.completed = (
+            {
+                str(key): dict(value)
+                for key, value in completed.items()
+                if isinstance(value, Mapping)
+            }
+            if isinstance(completed, Mapping)
             else {}
         )
         self.circuit_open_reason = (
@@ -451,6 +466,15 @@ class GraenPaperCanaryHost:
                     "paper_execution_authority": True,
                     "live_execution_authority": False,
                 }
+            completed = self.completed.get(activation_id)
+            if completed is not None:
+                return {
+                    "activation": dict(completed.get("activation") or {}),
+                    "duplicate": True,
+                    "checkpoint": dict(completed.get("checkpoint") or {}),
+                    "paper_execution_authority": True,
+                    "live_execution_authority": False,
+                }
             if self.activation is not None:
                 raise ValueError(
                     "paper adapter already owns another candidate; complete "
@@ -474,7 +498,8 @@ class GraenPaperCanaryHost:
                 "execution_class": "AUTONOMOUS_PAPER",
                 "paper_only": True,
                 "live_execution_authorized": False,
-                "promotion_authorized": False,
+                "max_review_days": self.max_review_days,
+            "promotion_authorized": False,
             }
             shadow_activation = {
                 "schema_version": "graen.candidate_shadow.activation.v1",
@@ -1039,6 +1064,35 @@ class GraenPaperCanaryHost:
                     await self._handle_exit(event)
             await self._reconcile()
             self.last_cycle_at = datetime.now(UTC)
+            checkpoint = self.checkpoint()
+            if (
+                self.activation is not None
+                and checkpoint.get("status") in {"PAPER_PASSED", "PAPER_REJECTED"}
+                and not self._open_rounds()
+            ):
+                activation_id = str(
+                    self.activation.get("activation_id") or ""
+                )
+                if activation_id:
+                    self.completed[activation_id] = {
+                        "activation": dict(self.activation),
+                        "checkpoint": dict(checkpoint),
+                        "completed_at": datetime.now(UTC).isoformat(),
+                    }
+                    self._emit(
+                        "graen_paper_terminal_checkpoint",
+                        {
+                            "activation_id": activation_id,
+                            "checkpoint": checkpoint,
+                        },
+                        event_key=activation_id + ":terminal",
+                    )
+                self.activation = None
+                self.rounds = {}
+                self.shadow = CandidateForwardShadow(self.settings)
+                self.circuit_open_reason = None
+                self.ambiguous_submission_count = 0
+                self.execution_error_count = 0
             await self.persist()
             self.last_error = None
             return events
@@ -1074,6 +1128,14 @@ class GraenPaperCanaryHost:
             len(evidence) >= self.min_round_trips
             and day_count >= self.min_independent_days
         )
+        open_round_count = len(self._open_rounds())
+        activation_started = _stamp(
+            (self.activation or {}).get("activated_at")
+        ) or datetime.now(UTC)
+        elapsed_days = max(
+            (datetime.now(UTC) - activation_started).days,
+            0,
+        )
         gates = {
             "minimum_round_trips": len(evidence) >= self.min_round_trips,
             "minimum_independent_days": day_count >= self.min_independent_days,
@@ -1087,11 +1149,15 @@ class GraenPaperCanaryHost:
             ),
             "no_execution_errors": self.execution_error_count == 0,
             "circuit_closed": self.circuit_open_reason is None,
+            "no_open_rounds": open_round_count == 0,
         }
         ready = enough and all(gates.values())
-        limit_reached = len(evidence) >= self.max_review_round_trips
+        limit_reached = (
+            len(evidence) >= self.max_review_round_trips
+            or elapsed_days >= self.max_review_days
+        ) and open_round_count == 0
         status = (
-            "READY_FOR_LIVE_REVIEW"
+            "PAPER_PASSED"
             if ready
             else "PAPER_REJECTED"
             if limit_reached
@@ -1102,6 +1168,7 @@ class GraenPaperCanaryHost:
             "status": status,
             "round_trip_count": len(evidence),
             "independent_day_count": day_count,
+            "elapsed_days": elapsed_days,
             "expectancy_per_round_trip": expectancy,
             "profit_factor": profit_factor,
             "mean_entry_slippage_pct": mean_slippage,
@@ -1157,6 +1224,58 @@ class GraenPaperCanaryHost:
                 self.last_error = (
                     "persist_failed:" + type(exc).__name__ + ":" + str(exc)
                 )[:1000]
+
+    def checkpoint_for_activation(
+        self,
+        activation_id: str,
+    ) -> dict[str, Any] | None:
+        activation_id = str(activation_id or "").strip()
+        if not activation_id:
+            return None
+        if (
+            self.activation is not None
+            and str(self.activation.get("activation_id") or "")
+            == activation_id
+        ):
+            return {
+                "paper_activation_id": activation_id,
+                "completed": False,
+                "checkpoint": self.checkpoint(),
+                "candidate": {
+                    "candidate_id": str(
+                        (self.activation.get("candidate_spec") or {}).get(
+                            "candidate_id"
+                        )
+                        or ""
+                    ),
+                    "state": "ACTIVE",
+                },
+                "live_execution_authorized": False,
+            }
+        completed = self.completed.get(activation_id)
+        if completed is not None:
+            return {
+                "paper_activation_id": activation_id,
+                "completed": True,
+                "checkpoint": dict(completed.get("checkpoint") or {}),
+                "candidate": {
+                    "candidate_id": str(
+                        (
+                            (completed.get("activation") or {}).get(
+                                "candidate_spec"
+                            )
+                            or {}
+                        ).get("candidate_id")
+                        or ""
+                    ),
+                    "state": str(
+                        (completed.get("checkpoint") or {}).get("status")
+                        or ""
+                    ),
+                },
+                "live_execution_authorized": False,
+            }
+        return None
 
     def status(self) -> dict[str, Any]:
         checkpoint = self.checkpoint()
@@ -1242,6 +1361,17 @@ def create_paper_router(host: GraenPaperCanaryHost) -> APIRouter:
     ) -> dict[str, Any]:
         host.require_token(x_graen_paper_token)
         return host.status()
+
+    @router.get("/v1/graen-paper/checkpoint/{activation_id}")
+    async def graen_paper_checkpoint(
+        activation_id: str,
+        x_graen_paper_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        host.require_token(x_graen_paper_token)
+        checkpoint = host.checkpoint_for_activation(activation_id)
+        if checkpoint is None:
+            raise HTTPException(status_code=404, detail="activation not found")
+        return checkpoint
 
     @router.post("/v1/graen-paper/activate")
     async def graen_paper_activate(
