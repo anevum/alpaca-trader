@@ -939,6 +939,103 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
     }
 
 
+def _research_exposure_ledger(
+    conn: psycopg.Connection[Any],
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a complete conservative corpus-exposure ledger from durable artifacts."""
+    def parse_stamp(value: Any) -> datetime | None:
+        try:
+            parsed=datetime.fromisoformat(str(value).replace("Z","+00:00"))
+            if parsed.tzinfo is None:
+                return None
+            return parsed.astimezone(UTC)
+        except (TypeError,ValueError):
+            return None
+
+    intervals: set[tuple[str,str]] = set()
+    sources: dict[tuple[str,str], set[str]] = {}
+
+    def add(left: Any, right: Any, source: str) -> None:
+        start=parse_stamp(left)
+        end=parse_stamp(right)
+        if start is None or end is None or not start < end:
+            return
+        key=(start.isoformat(),end.isoformat())
+        intervals.add(key)
+        sources.setdefault(key,set()).add(source)
+
+    def walk(value: Any, source: str) -> None:
+        if isinstance(value,dict):
+            corpus=value.get("corpus")
+            if isinstance(corpus,dict):
+                for stage,bounds in corpus.items():
+                    if isinstance(bounds,(list,tuple)) and len(bounds)==2:
+                        add(bounds[0],bounds[1],f"{source}:corpus:{stage}")
+            for prefix in (
+                "development","validation","holdout","replay","screen",
+                "bar_screen","quote_screen","alpaca_screen",
+            ):
+                left=value.get(prefix+"_start")
+                right=value.get(prefix+"_end")
+                if left is not None and right is not None:
+                    add(left,right,f"{source}:{prefix}")
+            if value.get("start") is not None and value.get("end") is not None:
+                add(value.get("start"),value.get("end"),f"{source}:range")
+            # Common chained boundaries freeze three non-overlapping stages.
+            ds=parse_stamp(value.get("development_start"))
+            vs=parse_stamp(value.get("validation_start"))
+            hs=parse_stamp(value.get("holdout_start"))
+            he=parse_stamp(value.get("holdout_end"))
+            if ds and vs:
+                add(ds,vs,f"{source}:development")
+            if vs and hs:
+                add(vs,hs,f"{source}:validation")
+            if hs and he:
+                add(hs,he,f"{source}:holdout")
+            for child in value.values():
+                walk(child,source)
+        elif isinstance(value,(list,tuple)):
+            for child in value:
+                walk(child,source)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select artifact_id,artifact_type,methodology_version,content,created_at
+            from graen.artifacts
+            order by created_at asc
+            """
+        )
+        rows=cur.fetchall()
+
+    for artifact_id,artifact_type,methodology,content,created_at in rows:
+        source=":".join([
+            str(artifact_type or "artifact"),
+            str(methodology or "unknown"),
+            str(artifact_id),
+        ])
+        walk(_obj(content),source)
+
+    ordered=sorted(intervals)
+    latest=max((end for _,end in ordered),default=None)
+    return {
+        "schema_version":"graen.corpus-exposure-ledger.v1",
+        "complete":True,
+        "artifact_count_scanned":len(rows),
+        "inspected_intervals":[
+            {
+                "start":left,
+                "end":right,
+                "sources":sorted(sources.get((left,right),set())),
+            }
+            for left,right in ordered
+        ],
+        "latest_inspected_end":latest,
+        "built_at":datetime.now(UTC).isoformat(),
+    }
+
+
 def _compiled_evidence(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[str, Any]:
     problem_id=_uuid(body.get("problem_id"),"invalid_compiled_stage")
     spec_hash=str(body.get("spec_hash") or "")
@@ -1304,6 +1401,7 @@ def handle_graen_action(
             "complete_research_problem":_complete_research,
             "shadow_checkpoint":_shadow_checkpoint,
             "compiled_stage_evidence":_compiled_evidence,
+            "research_exposure_ledger":_research_exposure_ledger,
             "research_promotion_claim":_promotion_claim,
             "research_promotion_save":_promotion_save,
             "crypto_promotion_status":_crypto_promotion_status,
