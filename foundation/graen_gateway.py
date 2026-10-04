@@ -955,6 +955,7 @@ def _research_exposure_ledger(
 
     intervals: set[tuple[str,str]] = set()
     sources: dict[tuple[str,str], set[str]] = {}
+    strategy_manifest_hashes: set[str] = set()
 
     def add(left: Any, right: Any, source: str) -> None:
         start=parse_stamp(left)
@@ -1015,7 +1016,15 @@ def _research_exposure_ledger(
             str(methodology or "unknown"),
             str(artifact_id),
         ])
-        walk(_obj(content),source)
+        payload=_obj(content)
+        if str(artifact_type or "") in {
+            "CRYPTO_STRATEGY_MANIFEST_V1",
+            "CRYPTO_STRATEGY_PLANNER_DECISION",
+        }:
+            candidate_hash=str(payload.get("manifest_hash") or "")
+            if len(candidate_hash)==64:
+                strategy_manifest_hashes.add(candidate_hash)
+        walk(payload,source)
 
     ordered=sorted(intervals)
     latest=max((end for _,end in ordered),default=None)
@@ -1032,6 +1041,8 @@ def _research_exposure_ledger(
             for left,right in ordered
         ],
         "latest_inspected_end":latest,
+        "strategy_manifest_hashes":sorted(strategy_manifest_hashes),
+        "strategy_manifest_count":len(strategy_manifest_hashes),
         "built_at":datetime.now(UTC).isoformat(),
     }
 
