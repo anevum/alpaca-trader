@@ -146,3 +146,68 @@ def test_r2g_activation_uses_parallel_shadow_without_replacing_r2f(monkeypatch):
         assert runtime.candidate_shadow.status()["candidate_id"] == r2f_spec.candidate_id
 
     asyncio.run(scenario())
+
+
+
+def test_shadow_checkpoint_sync_falls_back_to_trading_ingest_token(monkeypatch):
+    async def scenario():
+        token = "i" * 40
+        monkeypatch.delenv("GRAEN_GATEWAY_TOKEN", raising=False)
+        monkeypatch.setenv(
+            "GRAEN_GATEWAY_URL",
+            "https://foundation.example/v1/graen-gateway",
+        )
+        monkeypatch.setenv("TRADING_INGEST_TOKEN", token)
+        runtime = GraenCryptoV6Runtime(Settings())
+        runtime.candidate_shadow.activation = {
+            "problem_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        }
+        observed = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"ok": True}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, url, *, headers, json):
+                observed["url"] = url
+                observed["headers"] = headers
+                observed["json"] = json
+                return FakeResponse()
+
+        monkeypatch.setattr(
+            "graen.crypto.service_v6.httpx.AsyncClient",
+            FakeClient,
+        )
+        checkpoint = {
+            "activation_id": "activation-r2f",
+            "candidate_id": "V14-R2F-BTC-MOM-180D",
+            "status": "COLLECTING",
+            "candidate_methodology": V14_R2F_METHODOLOGY_VERSION,
+            "evidence_phase": "FORWARD_SHADOW",
+        }
+        synced = await runtime._sync_candidate_shadow_checkpoint(
+            checkpoint,
+            runtime.candidate_shadow,
+        )
+
+        assert synced is True
+        assert observed["headers"] == {
+            "x-graen-gateway-token": token,
+        }
+        assert observed["json"]["action"] == "shadow_checkpoint"
+        assert observed["json"]["candidate_id"] == checkpoint["candidate_id"]
+
+    asyncio.run(scenario())
