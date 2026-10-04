@@ -31,6 +31,59 @@ def _runtime_identity_complete(row: dict) -> bool:
     )
 
 
+def _engineering_objective_from_result(result: dict) -> dict | None:
+    requirement = result.get("engineering_requirement")
+    if result.get("condition") != "ENGINEERING_REQUIRED" or not isinstance(requirement, dict):
+        return None
+    requirement_id = str(requirement.get("requirement_id") or "").strip()
+    if not requirement_id:
+        return None
+
+    safe_id = "".join(
+        ch.lower() if ch.isalnum() else "-"
+        for ch in requirement_id
+    ).strip("-")[:180]
+    suggested_paths = [
+        str(path)
+        for path in requirement.get("suggested_paths") or []
+        if isinstance(path, str) and path.strip()
+    ]
+    return {
+        "objective_key": "engineering." + safe_id,
+        "title": str(
+            requirement.get("title")
+            or "Implement GRAEN research capability"
+        )[:240],
+        "description": str(
+            requirement.get("handoff_prompt")
+            or requirement.get("reason")
+            or "Manual research software update required."
+        )[:12000],
+        "status": "READY",
+        "owner_system": "IREN",
+        "priority": 85,
+        "dependencies": [],
+        "success_criteria": {
+            "manual_software_handoff": True,
+            "protected_authority": False,
+        },
+        "protected_action": False,
+        "metadata": {
+            "classification": "ENGINEERING_REQUIRED",
+            "source": "GRAEN",
+            "job_type": "SOFTWARE_BUILD",
+            "manual_software_required": True,
+            "engineering_requirement": requirement,
+            "graen_problem_id": result.get("graen_problem_id"),
+            "codex_scope": {
+                "allowed_paths": suggested_paths,
+                "expected_services": ["GRAEN", "GRAEN_EXECUTOR"],
+                "verification_checks": {},
+            },
+        },
+    }
+
+
 class IrenController:
     def __init__(self):
         self.state = {}
@@ -444,60 +497,12 @@ async def job_callback(
         error=error,
     )
 
-    requirement = result.get("engineering_requirement")
-    if (
-        result.get("condition") == "ENGINEERING_REQUIRED"
-        and isinstance(requirement, dict)
-    ):
-        requirement_id = str(requirement.get("requirement_id") or "").strip()
-        if requirement_id:
-            safe_id = "".join(
-                ch.lower() if ch.isalnum() else "-"
-                for ch in requirement_id
-            ).strip("-")[:180]
-            suggested_paths = [
-                str(path)
-                for path in requirement.get("suggested_paths") or []
-                if isinstance(path, str) and path.strip()
-            ]
-            objective = {
-                "objective_key": "engineering." + safe_id,
-                "title": str(
-                    requirement.get("title")
-                    or "Implement GRAEN research capability"
-                )[:240],
-                "description": str(
-                    requirement.get("handoff_prompt")
-                    or requirement.get("reason")
-                    or "Manual research software update required."
-                )[:12000],
-                "status": "READY",
-                "owner_system": "IREN",
-                "priority": 85,
-                "dependencies": [],
-                "success_criteria": {
-                    "manual_software_handoff": True,
-                    "protected_authority": False,
-                },
-                "protected_action": False,
-                "metadata": {
-                    "classification": "ENGINEERING_REQUIRED",
-                    "source": "GRAEN",
-                    "job_type": "SOFTWARE_BUILD",
-                    "manual_software_required": True,
-                    "engineering_requirement": requirement,
-                    "graen_problem_id": result.get("graen_problem_id"),
-                    "codex_scope": {
-                        "allowed_paths": suggested_paths,
-                        "expected_services": ["GRAEN", "GRAEN_EXECUTOR"],
-                        "verification_checks": {},
-                    },
-                },
-            }
-            await controller.gateway(
-                "iren_objective_create",
-                objective=objective,
-            )
+    engineering_objective = _engineering_objective_from_result(result)
+    if engineering_objective is not None:
+        await controller.gateway(
+            "iren_objective_create",
+            objective=engineering_objective,
+        )
 
     if (
         result.get("engineering_requirement_resolved") is True
