@@ -180,10 +180,18 @@ from graen.crypto.btc_consensus_trend_v14_r2g import (
     candidate_spec as v14_r2g_candidate_spec,
     evaluate_btc_consensus_trend_discovery as evaluate_v14_r2g_consensus_trend,
 )
+from graen.crypto.btc_4h_consensus_v14_r2h import (
+    CAMPAIGN_ID as V14_R2H_CAMPAIGN_ID,
+    FAMILY as V14_R2H_FAMILY,
+    METHODOLOGY_VERSION as V14_R2H_METHODOLOGY_VERSION,
+    campaign_manifest as v14_r2h_campaign_manifest,
+    candidate_spec as v14_r2h_candidate_spec,
+    evaluate_btc_4h_consensus_transfer as evaluate_v14_r2h_consensus_transfer,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.20.0"
+RUNTIME_VERSION = "graen-research-executor-v1.21.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -301,6 +309,7 @@ V14_R2D_STAGE = "CRYPTO_TRIANGULAR_ARBITRAGE_V14_R2D_PREFLIGHT"
 V14_R2E_STAGE = "CRYPTO_BTC_4H_TREND_V14_R2E_PREFLIGHT"
 V14_R2F_STAGE = "CRYPTO_BTC_DAILY_MOMENTUM_V14_R2F_DISCOVERY"
 V14_R2G_STAGE = "CRYPTO_BTC_DAILY_CONSENSUS_V14_R2G_DISCOVERY"
+V14_R2H_STAGE = "CRYPTO_BTC_4H_CONSENSUS_V14_R2H_TRANSFER"
 V14_STAGE_KEYS = {
     V14_PREFLIGHT_STAGE,
     V14_R2A_STAGE,
@@ -310,6 +319,7 @@ V14_STAGE_KEYS = {
     V14_R2E_STAGE,
     V14_R2F_STAGE,
     V14_R2G_STAGE,
+    V14_R2H_STAGE,
 }
 
 RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
@@ -6498,6 +6508,246 @@ class GraenResearchExecutor:
         )
 
 
+    async def _recover_v14_r2g_pass_into_r2h_faststart(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Queue the 4h fast-start transfer while preserving both daily shadows."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            matching = [
+                row
+                for row in runs
+                if isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("methodology_version") == V14_R2G_METHODOLOGY_VERSION
+                and isinstance(row.get("result_summary"), Mapping)
+                and row.get("result_summary", {}).get("state")
+                == "V14_R2G_ADAPTIVE_DISCOVERY_SURVIVES_TO_FORWARD_SHADOW_COMPARISON"
+            ]
+            if not matching:
+                continue
+            if any(
+                isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and (
+                    row.get("methodology_version") == V14_R2H_METHODOLOGY_VERSION
+                    or (
+                        isinstance(row.get("result_summary"), Mapping)
+                        and row.get("result_summary", {}).get("campaign_id")
+                        == V14_R2H_CAMPAIGN_ID
+                    )
+                )
+                for row in runs
+            ):
+                continue
+            origin = max(
+                matching,
+                key=lambda row: str(row.get("started_at") or ""),
+            )
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V14_R2H_STAGE,
+                metadata={
+                    "v14_r2h_campaign_id": V14_R2H_CAMPAIGN_ID,
+                    "v14_r2h_origin_run_id": str(origin.get("run_id") or "") or None,
+                    "r2f_forward_shadow_preserved": True,
+                    "r2g_forward_shadow_preserved": True,
+                    "faststart_validation_mode": "HISTORICAL_TRANSFER_THEN_VELUM_THEN_4H_SHADOW",
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v14_r2h_stage_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "next_research_stage": V14_R2H_STAGE,
+                "v14_r2h_campaign_id": V14_R2H_CAMPAIGN_ID,
+                "r2f_forward_shadow_preserved": True,
+                "r2g_forward_shadow_preserved": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+            print("GRAEN_V14_R2G_TO_R2H", result, flush=True)
+            return result
+        return None
+
+
+    async def _execute_btc_4h_consensus_v14_r2h(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        stage = str(metadata.get("research_stage") or V14_R2H_STAGE)
+        if stage != V14_R2H_STAGE:
+            raise RuntimeError(f"unsupported_v14_r2h_research_stage:{stage}")
+        self.active_methodology_version = V14_R2H_METHODOLOGY_VERSION
+
+        prespec_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V14_R2H_4H_CONSENSUS_PRESPEC",
+            methodology_version=V14_R2H_METHODOLOGY_VERSION,
+            content={
+                **v14_r2h_campaign_manifest(),
+                "r2f_forward_shadow_preserved": True,
+                "r2g_forward_shadow_preserved": True,
+                "frozen_before_4h_corpus_access": True,
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        prespec_artifact = (
+            prespec_response.get("artifact")
+            if isinstance(prespec_response.get("artifact"), Mapping)
+            else {}
+        )
+
+        rows = await self._fetch_v14_r2e_btc_4h()
+        result = await asyncio.to_thread(
+            evaluate_v14_r2h_consensus_transfer,
+            rows,
+        )
+        result_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V14_R2H_4H_CONSENSUS_RESULT",
+            methodology_version=V14_R2H_METHODOLOGY_VERSION,
+            content={
+                **result,
+                "prespec_artifact_id": prespec_artifact.get("artifact_id"),
+                "r2f_forward_shadow_preserved": True,
+                "r2g_forward_shadow_preserved": True,
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+        result_artifact = (
+            result_response.get("artifact")
+            if isinstance(result_response.get("artifact"), Mapping)
+            else {}
+        )
+        gate = (
+            result.get("transfer_gate")
+            if isinstance(result.get("transfer_gate"), Mapping)
+            else {}
+        )
+        window = (
+            result.get("adaptive_transfer_window")
+            if isinstance(result.get("adaptive_transfer_window"), Mapping)
+            else {}
+        )
+        scenarios = (
+            window.get("scenarios")
+            if isinstance(window.get("scenarios"), Mapping)
+            else {}
+        )
+        decisive = (
+            scenarios.get("taker_stress_30bp")
+            if isinstance(scenarios.get("taker_stress_30bp"), Mapping)
+            else {}
+        )
+        severe = (
+            scenarios.get("severe_stress_50bp")
+            if isinstance(scenarios.get("severe_stress_50bp"), Mapping)
+            else {}
+        )
+        delayed = (
+            window.get("one_bar_execution_delay")
+            if isinstance(window.get("one_bar_execution_delay"), Mapping)
+            else {}
+        )
+        robustness = (
+            result.get("robustness_neighborhood")
+            if isinstance(result.get("robustness_neighborhood"), Mapping)
+            else {}
+        )
+        survived = bool(gate.get("survives_to_velum_and_forward_shadow"))
+        spec = v14_r2h_candidate_spec().to_dict()
+
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary={
+                "state": (
+                    "V14_R2H_4H_TRANSFER_SURVIVES_TO_VELUM_AND_FORWARD_SHADOW"
+                    if survived
+                    else "V14_R2H_4H_TRANSFER_BROKER_FEASIBILITY_FAIL"
+                ),
+                "status": (
+                    "BTC_4H_CONSENSUS_TRANSFER_PASS"
+                    if survived
+                    else "BTC_4H_CONSENSUS_TRANSFER_REJECTED"
+                ),
+                "decision": (
+                    "ADVANCE_TO_VELUM_AND_4H_SHADOW"
+                    if survived
+                    else "V14_R2H_DO_NOT_PROMOTE"
+                ),
+                "campaign_id": V14_R2H_CAMPAIGN_ID,
+                "candidate_id": spec.get("candidate_id"),
+                "candidate_family": V14_R2H_FAMILY,
+                "candidate_spec": spec,
+                "result_artifact_id": result_artifact.get("artifact_id"),
+                "evidence_role": "ADAPTIVE_CROSS_RESOLUTION_TRANSFER_ONLY",
+                "independent_historical_validation": False,
+                "independent_historical_holdout": False,
+                "taker_stress_30bp_bar_count": decisive.get("bar_count"),
+                "taker_stress_30bp_entry_count": decisive.get("entry_count"),
+                "taker_stress_30bp_turnover_units": decisive.get("turnover_units"),
+                "taker_stress_30bp_total_return": decisive.get("total_return"),
+                "taker_stress_30bp_sharpe": decisive.get("sharpe"),
+                "taker_stress_30bp_max_drawdown": decisive.get("max_drawdown"),
+                "severe_stress_50bp_total_return": severe.get("total_return"),
+                "one_bar_delay_total_return": delayed.get("total_return"),
+                "one_bar_delay_sharpe": delayed.get("sharpe"),
+                "neighborhood_positive_return_share": robustness.get(
+                    "positive_return_share"
+                ),
+                "neighborhood_sharpe_gte_045_share": robustness.get(
+                    "sharpe_gte_045_share"
+                ),
+                "r2f_forward_shadow_preserved": True,
+                "r2g_forward_shadow_preserved": True,
+                "next_action": (
+                    "RUN_VELUM_REPLAY_AND_ACTIVATE_4H_FORWARD_SHADOW"
+                    if survived
+                    else "KEEP_DAILY_SHADOWS_AND_CONTINUE_RESEARCH"
+                ),
+                "shadow_only": survived,
+                "promotion_eligible": False,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "crypto_execution_enabled": False,
+                "live_execution_authorized": False,
+            },
+        )
+
+
     async def _recover_v14_r2g_pass_into_forward_shadow_comparison(
         self,
         snapshot: Mapping[str, Any],
@@ -8309,6 +8559,11 @@ class GraenResearchExecutor:
             and v14_r2g_shadow_recovery.get("recovered")
         ):
             snapshot = await self.gateway.snapshot()
+        v14_r2h_faststart_recovery = (
+            await self._recover_v14_r2g_pass_into_r2h_faststart(snapshot)
+        )
+        if v14_r2h_faststart_recovery is not None:
+            snapshot = await self.gateway.snapshot()
         v14_r2d_to_r2e_recovery = await self._recover_v14_r2d_fail_into_r2e(snapshot)
         if v14_r2d_to_r2e_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -8352,6 +8607,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_v14_r2h = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") == V14_R2H_STAGE
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v14_r2g = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -8481,7 +8744,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V14_R2G_METHODOLOGY_VERSION
+            V14_R2H_METHODOLOGY_VERSION
+            if staged_v14_r2h
+            else V14_R2G_METHODOLOGY_VERSION
             if staged_v14_r2g
             else V14_R2F_METHODOLOGY_VERSION
             if staged_v14_r2f
@@ -8546,6 +8811,7 @@ class GraenResearchExecutor:
                 "v14_r2e_to_r2f_recovery": v14_r2e_to_r2f_recovery,
                 "v14_r2f_shadow_recovery": v14_r2f_shadow_recovery,
                 "v14_r2f_to_r2g_recovery": v14_r2f_to_r2g_recovery,
+                "v14_r2h_faststart_recovery": v14_r2h_faststart_recovery,
                 "v14_r2d_to_r2e_recovery": v14_r2d_to_r2e_recovery,
                 "v14_r2c_to_r2d_recovery": v14_r2c_to_r2d_recovery,
                 "v14_r2b_to_r2c_recovery": v14_r2b_to_r2c_recovery,
@@ -8573,6 +8839,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") == V14_R2H_STAGE:
+                return await self._execute_btc_4h_consensus_v14_r2h(problem, run)
             if metadata.get("research_stage") == V14_R2G_STAGE:
                 return await self._execute_btc_consensus_trend_v14_r2g(problem, run)
             if metadata.get("research_stage") == V14_R2F_STAGE:
