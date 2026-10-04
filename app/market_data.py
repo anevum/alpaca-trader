@@ -161,9 +161,14 @@ class MarketDataClient:
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             for batch in batches:
+                selected_timeframe = str(
+                    timeframe or self.settings.bar_timeframe
+                ).strip()
+                if not selected_timeframe:
+                    raise ValueError("historical crypto bar timeframe is required")
                 params = {
                     "symbols": ",".join(batch),
-                    "timeframe": self.settings.bar_timeframe,
+                    "timeframe": selected_timeframe,
                     "start": start.astimezone(timezone.utc).isoformat(),
                     "end": end.astimezone(timezone.utc).isoformat(),
                     "limit": 10000,
@@ -201,6 +206,7 @@ class MarketDataClient:
         *,
         start: datetime,
         end: datetime,
+        timeframe: str | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """Fetch Alpaca US crypto bars for VELUM. Read-only; no broker access."""
         if not self.settings.credentials_configured:
