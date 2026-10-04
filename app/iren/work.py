@@ -465,6 +465,18 @@ def autopilot_decision(
 
         job_type = str(action.get("job_type") or "").upper()
         if job_type not in AUTOPILOT_SAFE_JOB_TYPES:
+            # Manual software work must remain visible as IREN's next operator
+            # action without freezing unrelated autonomous research. Skip only
+            # this objective for the autopilot planning pass and keep looking
+            # for a safe independent action.
+            objective_key = _text(action.get("objective_key"))
+            if job_type == "SOFTWARE_BUILD" and objective_key:
+                skipped_actions.append(
+                    str(action.get("title") or objective_key)
+                    + " [manual software]"
+                )
+                excluded_objectives.add(objective_key)
+                continue
             return {
                 "should_create": False,
                 "reason": "executor_capability_required",
