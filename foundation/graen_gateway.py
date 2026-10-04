@@ -1079,8 +1079,8 @@ def _promotion_save(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict
             prespec_id=metadata.get("code_prespec_artifact_id")
             if state.get("prespec") and not prespec_id:
                 spec_hash=str(state.get("spec_hash") or "")
-                if state.get("phase")!="BRANCH" or len(spec_hash)!=64:
-                    raise ValueError("prespec_must_be_frozen_before_branch")
+                if state.get("phase") not in {"BRANCH","ENGINEERING_REQUIRED"} or len(spec_hash)!=64:
+                    raise ValueError("prespec_must_be_frozen_before_engineering")
                 content={
                     "specification":state["prespec"],
                     "specification_hash":spec_hash,
@@ -1102,16 +1102,29 @@ def _promotion_save(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict
                 prespec_id=str(cur.fetchone()[0])
 
             if state.get("phase")=="COMPLETE":
-                if (
-                    previous.get("phase")!="RESUME"
-                    or state.get("resume_stage")!="CRYPTO_COMPILED_DEVELOPMENT"
-                    or not state.get("merge_sha")
-                    or not state.get("deployment_id")
-                    or not state.get("executor_heartbeat_at")
-                    or not isinstance(state.get("ci"),list)
-                    or not state.get("ci")
-                    or not prespec_id
-                ):
+                manual_resolution=_obj(state.get("manual_resolution"))
+                manual_complete=(
+                    previous.get("phase")=="ENGINEERING_REQUIRED"
+                    and state.get("resume_stage")=="CRYPTO_COMPILED_DEVELOPMENT"
+                    and manual_resolution.get("verified") is True
+                    and bool(manual_resolution.get("source_commit"))
+                    and bool(manual_resolution.get("deployment_id"))
+                    and bool(manual_resolution.get("heartbeat_at"))
+                    and bool(manual_resolution.get("spec_hash"))
+                    and manual_resolution.get("spec_hash")==state.get("spec_hash")
+                    and bool(prespec_id)
+                )
+                legacy_complete=(
+                    previous.get("phase")=="RESUME"
+                    and state.get("resume_stage")=="CRYPTO_COMPILED_DEVELOPMENT"
+                    and bool(state.get("merge_sha"))
+                    and bool(state.get("deployment_id"))
+                    and bool(state.get("executor_heartbeat_at"))
+                    and isinstance(state.get("ci"),list)
+                    and bool(state.get("ci"))
+                    and bool(prespec_id)
+                )
+                if not (manual_complete or legacy_complete):
                     raise ValueError("verified_deployment_required_before_resume")
                 cur.execute(
                     "select 1 from graen.runs where problem_id=%s and status='RUNNING' limit 1",
