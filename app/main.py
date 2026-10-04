@@ -1162,6 +1162,61 @@ async def health():
     }
 
 
+@app.get("/v1/crypto/canary/evaluation")
+async def btc_canary_evaluation() -> dict:
+    """Read canonical forward evidence for the isolated BTC paper canary."""
+    if (
+        settings.crypto_execution_mode != "experimental_canary"
+        or not settings.btc_canary_enabled
+    ):
+        return {
+            "ok": True,
+            "enabled": False,
+            "paper_only": True,
+            "live_execution_authorized": False,
+        }
+    try:
+        canonical = await event_sink.fetch_btc_canary_report()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"btc_canary_report_unavailable:{type(exc).__name__}",
+        ) from exc
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "paper_only": True,
+        "live_execution_authorized": False,
+        "source": "foundation_canonical_evidence",
+        "run_id": settings.trading_run_id,
+        "report_version": canonical.get("report_version"),
+        "evidence": canonical.get("evidence"),
+        "runtime": {
+            "git_commit": (
+                runtime_provenance.git_commit
+                if runtime_provenance is not None
+                else None
+            ),
+            "deployment_id": (
+                runtime_provenance.deployment_id
+                if runtime_provenance is not None
+                else None
+            ),
+            "last_execution_at": (
+                runtime_state.crypto_last_execution_at.isoformat()
+                if runtime_state.crypto_last_execution_at
+                else None
+            ),
+            "last_decision": runtime_state.crypto_last_decision,
+            "active_positions": runtime_state.crypto_active_positions,
+            "persistence": event_sink.status(),
+        },
+    }
+
+
 @app.get("/v1/scheduler/configuration")
 async def scheduler_configuration(x_anevum_scheduler_token: str | None = Header(default=None)):
     require_scheduler_token(x_anevum_scheduler_token)
