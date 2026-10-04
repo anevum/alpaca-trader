@@ -537,7 +537,7 @@ class GraenCryptoV6Runtime:
         ):
             return {
                 "activation": dict(
-                    self.candidate_shadow.activation or {}
+                    target_shadow.activation or {}
                 ),
                 "duplicate": True,
             }
