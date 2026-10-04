@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from foundation.command_iren import project_command
+from foundation.command_iren import _btc_canary_activity, project_command
 from foundation.cloudflare_access import normalize_team_domain
 
 
@@ -194,3 +194,128 @@ def test_command_projection_preserves_durable_job_events():
     assert events[0]["event"]["stage"] == "R2H"
     assert projected["research"]["graen_problems"][0]["research_stage"].endswith("VELUM_REPLAY")
     assert projected["research"]["velum_replays"][0]["status"] == "RUNNING"
+
+class _CanaryCursor:
+    def __init__(self):
+        self.calls = []
+        self.rows = iter([
+            (
+                "BTC-CANARY-001-PAPER-20261004",
+                datetime(2026, 10, 4, 21, 15, tzinfo=timezone.utc),
+            ),
+            (
+                datetime(2026, 10, 4, 21, 15, tzinfo=timezone.utc),
+                {
+                    "cycle_outcome": "BTC canary position protected; waiting for frozen R2H exit",
+                    "bar_interval": "4Hour",
+                    "strategy_family": "btc_4h_momentum_or_sma_consensus_experimental_canary",
+                    "model_version": "graen-btc-4h-consensus-v14-r2h",
+                    "comparison_context": {
+                        "execution_result": {
+                            "action": "hold",
+                            "reason": "BTC canary position protected; waiting for frozen R2H exit",
+                        }
+                    },
+                },
+            ),
+            (
+                datetime(2026, 10, 4, 21, 14, tzinfo=timezone.utc),
+                {
+                    "current_return_pct": "0.0125",
+                    "risk_stop_pct": "0.05",
+                },
+            ),
+            (
+                datetime(2026, 10, 4, 21, 14, tzinfo=timezone.utc),
+                {
+                    "positions": [
+                        {"symbol": "BTC/USD", "qty": "0.000011"}
+                    ]
+                },
+            ),
+            (
+                datetime(2026, 10, 4, 18, 40, tzinfo=timezone.utc),
+                {
+                    "order": {
+                        "status": "new",
+                        "client_order_id": "anevum-crypto-btc-usd-canary-hardstop-test",
+                    }
+                },
+            ),
+        ])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def execute(self, query, args):
+        self.calls.append((query, args))
+
+    def fetchone(self):
+        return next(self.rows)
+
+
+class _CanaryConn:
+    def __init__(self):
+        self.cur = _CanaryCursor()
+
+    def cursor(self):
+        return self.cur
+
+
+def test_btc_canary_activity_is_compact_read_only_projection():
+    conn = _CanaryConn()
+    result = _btc_canary_activity(conn)
+
+    assert result["available"] is True
+    assert result["run_id"] == "BTC-CANARY-001-PAPER-20261004"
+    assert result["paper_only"] is True
+    assert result["live_execution_authorized"] is False
+    assert result["promotion_ready"] is False
+    assert result["research_status"] == "NOT_PROMOTED"
+    assert result["evidence_state"] == "COLLECTING_OPEN_POSITION"
+    assert result["action"] == "hold"
+    assert result["bar_interval"] == "4Hour"
+    assert result["position_open"] is True
+    assert result["current_return_pct"] == "0.0125"
+    assert result["risk_stop_pct"] == "0.05"
+    assert result["protection_status"] == "new"
+    assert len(conn.cur.calls) == 5
+    assert all(query.lstrip().lower().startswith("select") for query, _ in conn.cur.calls)
+
+
+def test_command_projection_preserves_private_btc_canary_state():
+    snapshot = {
+        "control": {
+            "revision": 12,
+            "state": {
+                "state": "HEALTHY",
+                "observed_at": "2026-10-04T21:15:00+00:00",
+                "topology": {"services": [], "dependencies": {}},
+                "incidents": {},
+                "configuration_baseline": {"fingerprint": "sha256:test"},
+            },
+        },
+        "research": {},
+        "btc_canary": {
+            "available": True,
+            "run_id": "BTC-CANARY-001-PAPER-20261004",
+            "paper_only": True,
+            "live_execution_authorized": False,
+            "evidence_state": "COLLECTING_OPEN_POSITION",
+            "current_return_pct": "0.0125",
+        },
+        "work": {"objectives": [], "jobs": [], "commands": []},
+    }
+
+    projected = project_command(
+        snapshot,
+        now=datetime(2026, 10, 4, 21, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert projected["btc_canary"]["available"] is True
+    assert projected["btc_canary"]["run_id"] == "BTC-CANARY-001-PAPER-20261004"
+    assert projected["btc_canary"]["live_execution_authorized"] is False
+
