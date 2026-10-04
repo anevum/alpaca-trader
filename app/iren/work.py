@@ -26,6 +26,7 @@ AUTOPILOT_SAFE_JOB_TYPES = {
     "CONTROL_STABLE_BUILD_VERIFY",
     "CONTROL_MODEL_WORKER_VERIFY",
     "CONTROL_RUNTIME_EVIDENCE_VERIFY",
+    "GRAEN_RESEARCH_PROBLEM",
 }
 MODEL_WORKER_MAX_JOBS_PER_DAY = 1
 
@@ -180,6 +181,31 @@ def choose_next_action(
     ]
     if incidents:
         incident = incidents[0]
+        if incident["key"] == "productivity.GRAEN":
+            return {
+                "objective_key": None,
+                "title": "Continue autonomous crypto edge discovery",
+                "owner_system": "GRAEN",
+                "job_type": "GRAEN_RESEARCH_PROBLEM",
+                "protected_action": False,
+                "reason": "autonomous_research_productivity_recovery",
+                "success_criteria": {
+                    "research_progress_restored": True,
+                    "live_trading_changed": False,
+                },
+                "description": (
+                    "Continue the canonical objective: discover a reproducible, cost-aware "
+                    "crypto trading edge. Read durable GRAEN search history first; do not "
+                    "repeat terminal hypotheses without materially new information. Choose "
+                    "the highest-information falsifiable experiment available using trusted "
+                    "research primitives. Preserve untouched validation/holdout boundaries, "
+                    "cost assumptions, multiplicity controls, and execution isolation. If "
+                    "the next hypothesis requires software not present in the trusted runtime, "
+                    "freeze the research specification and emit ENGINEERING_REQUIRED rather "
+                    "than modifying source code. Continue independent research branches when possible."
+                ),
+                "incident": incident,
+            }
         return {
             "objective_key": None,
             "title": f"Resolve {incident['key']}",
