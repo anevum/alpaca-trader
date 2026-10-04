@@ -374,6 +374,9 @@ class CandidateForwardShadow:
         self.r2g_daily_marks: list[dict[str, Any]] = []
         self.r2g_shadow_position = 0.0
         self.r2g_baseline_end: datetime | None = None
+        self.r2h_4h_marks: list[dict[str, Any]] = []
+        self.r2h_shadow_position = 0.0
+        self.r2h_baseline_end: datetime | None = None
 
     @property
     def active(self) -> bool:
@@ -406,6 +409,8 @@ class CandidateForwardShadow:
             return tuple(V14_R2F_UNIVERSE)
         if methodology == V14_R2G_METHODOLOGY_VERSION:
             return tuple(V14_R2G_UNIVERSE)
+        if methodology == V14_R2H_METHODOLOGY_VERSION:
+            return tuple(V14_R2H_UNIVERSE)
         if methodology == V13_METHODOLOGY_VERSION:
             return tuple(V13_UNIVERSE)
         if methodology == V12_METHODOLOGY_VERSION:
@@ -458,6 +463,13 @@ class CandidateForwardShadow:
                 if self.r2g_baseline_end
                 else None
             ),
+            "r2h_4h_mark_count": len(self.r2h_4h_marks),
+            "r2h_shadow_position": self.r2h_shadow_position,
+            "r2h_baseline_end": (
+                self.r2h_baseline_end.isoformat()
+                if self.r2h_baseline_end
+                else None
+            ),
             "last_checkpoint": dict(self.last_checkpoint or {}),
             "last_checkpoint_status": self.last_checkpoint_status,
             "last_error": self.last_error,
@@ -484,6 +496,8 @@ class CandidateForwardShadow:
             v14_r2f_spec_from_dict(candidate_spec)
         elif methodology == V14_R2G_METHODOLOGY_VERSION:
             v14_r2g_spec_from_dict(candidate_spec)
+        elif methodology == V14_R2H_METHODOLOGY_VERSION:
+            v14_r2h_spec_from_dict(candidate_spec)
 
         activation_id = str(activation.get("activation_id") or "")
         if not activation_id:
@@ -509,6 +523,9 @@ class CandidateForwardShadow:
         self.r2g_daily_marks.clear()
         self.r2g_shadow_position = 0.0
         self.r2g_baseline_end = None
+        self.r2h_4h_marks.clear()
+        self.r2h_shadow_position = 0.0
+        self.r2h_baseline_end = None
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -551,6 +568,13 @@ class CandidateForwardShadow:
             "r2g_baseline_end": (
                 self.r2g_baseline_end.isoformat()
                 if self.r2g_baseline_end
+                else None
+            ),
+            "r2h_4h_marks": list(self.r2h_4h_marks[-500:]),
+            "r2h_shadow_position": self.r2h_shadow_position,
+            "r2h_baseline_end": (
+                self.r2h_baseline_end.isoformat()
+                if self.r2h_baseline_end
                 else None
             ),
             "last_checkpoint": dict(self.last_checkpoint or {}),
@@ -616,6 +640,19 @@ class CandidateForwardShadow:
         self.r2g_baseline_end = (
             _stamp(payload["r2g_baseline_end"])
             if payload.get("r2g_baseline_end")
+            else None
+        )
+        self.r2h_4h_marks = [
+            dict(row)
+            for row in list(payload.get("r2h_4h_marks") or [])[-500:]
+            if isinstance(row, Mapping)
+        ]
+        self.r2h_shadow_position = float(
+            payload.get("r2h_shadow_position") or 0.0
+        )
+        self.r2h_baseline_end = (
+            _stamp(payload["r2h_baseline_end"])
+            if payload.get("r2h_baseline_end")
             else None
         )
         checkpoint = payload.get("last_checkpoint")
