@@ -374,6 +374,50 @@ def test_decision_cycle_event_is_deterministic_and_preserves_unavailable_quote()
     assert candidate["quote"]["midpoint"] is None
     assert candidate["forward_outcomes_status"] == "pending"
 
+def test_decision_cycle_honors_explicit_crypto_strategy_provenance():
+    sink = CapturingSink()
+    started = datetime(2026, 10, 4, 20, 0, tzinfo=timezone.utc)
+    sink.settings.crypto_location = "us"
+    sink.settings.crypto_strategy_family = "rolling_momentum_vwap"
+    sink.settings.crypto_model_version = "crypto-rmvwap-model-v1"
+    sink.settings.bar_timeframe = "1Min"
+    sink.record_decision_cycle(
+        correlation_id="btc-canary-cycle-1",
+        cycle_started_at=started,
+        cycle_ended_at=started,
+        market_is_open=True,
+        active_universe=["BTC/USD"],
+        scan={
+            "BTC/USD": {
+                "action": "hold",
+                "symbol": "BTC/USD",
+                "reference_price": "100",
+                "reason": "hold",
+                "metadata": {"market": "crypto"},
+            }
+        },
+        cycle_outcome="hold",
+        comparison_context={
+            "market": "crypto",
+            "strategy_family": "btc_4h_momentum_or_sma_consensus_experimental_canary",
+            "strategy_version_id": "BTC-CANARY-001",
+            "source_candidate_id": "V14-R2H-BTC-4H-CONSENSUS-1080-1500",
+            "bar_timeframe": "4Hour",
+        },
+    )
+
+    event = sink.events[-1]
+    payload = event["payload"]
+    assert payload["market_lane"] == "crypto"
+    assert payload["bar_interval"] == "4Hour"
+    assert payload["strategy_family"] == "btc_4h_momentum_or_sma_consensus_experimental_canary"
+    assert payload["model_version"] == "BTC-CANARY-001"
+    assert payload["comparison_context"]["execution_context"]["source_candidate_id"] == (
+        "V14-R2H-BTC-4H-CONSENSUS-1080-1500"
+    )
+
+
+
 
 
 
