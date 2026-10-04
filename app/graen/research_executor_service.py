@@ -9590,6 +9590,51 @@ class GraenResearchExecutor:
 
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
+
+        # Dependency waits are durable problem states. Re-arm the frozen stage
+        # only when its declared eligibility time arrives; otherwise report the
+        # wait as productive state instead of spinning the executor.
+        now = datetime.now(UTC)
+        waiting_until: list[datetime] = []
+        expired_waits: list[tuple[str, str]] = []
+        engineering_required = 0
+        for row in snapshot.get("problems") or []:
+            if not isinstance(row, Mapping) or row.get("status") != "WAITING":
+                continue
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+            stage = str(metadata.get("research_stage") or "")
+            if stage == ENGINEERING_REQUIRED_STAGE:
+                engineering_required += 1
+            if stage != WAITING_CORPUS_STAGE:
+                continue
+            resume_stage = str(metadata.get("resume_stage") or HYPOTHESIS_PLANNER_STAGE)
+            raw = str(metadata.get("next_eligible_at") or "")
+            try:
+                eligible = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if eligible.tzinfo is None:
+                    eligible = eligible.replace(tzinfo=UTC)
+                eligible = eligible.astimezone(UTC)
+            except ValueError:
+                eligible = now
+            if eligible <= now:
+                expired_waits.append((str(row.get("problem_id")), resume_stage))
+            else:
+                waiting_until.append(eligible)
+
+        self.engineering_required_count = engineering_required
+        self.waiting_dependency_until = min(waiting_until) if waiting_until else None
+        for waiting_problem_id, resume_stage in expired_waits[:4]:
+            await self.gateway.queue_research_stage(
+                problem_id=waiting_problem_id,
+                stage=resume_stage,
+                metadata={
+                    "autonomous_continuation": True,
+                    "dependency_wait_released_at": now.isoformat(),
+                },
+            )
+        if expired_waits:
+            snapshot = await self.gateway.snapshot()
+            self.waiting_dependency_until = None
         r2h_velum_transport_recovery = (
             await self._recover_blocked_r2h_velum_transport(snapshot)
         )
