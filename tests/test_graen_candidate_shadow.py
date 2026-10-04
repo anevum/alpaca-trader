@@ -672,3 +672,39 @@ def test_r2g_daily_gap_fails_closed_without_mutating_evidence():
             runtime.cycle(now=datetime(2026, 10, 3, 1, tzinfo=UTC))
         )
     assert runtime.snapshot() == before
+
+
+@pytest.mark.parametrize("candidate,cursor_index", [
+    ("r2f", 0), ("r2f", 100), ("r2f", 179),
+    ("r2g", 0), ("r2g", 100), ("r2g", 249),
+])
+def test_daily_restart_cannot_skip_unseen_days_without_signal_warmup(candidate, cursor_index):
+    start = datetime(2025, 9, 1, tzinfo=UTC)
+    rows = _daily_rows(start, 400)
+    factory = _r2f_runtime_with_rows if candidate == "r2f" else _r2g_runtime_with_rows
+    runtime = factory(rows)
+    runtime.last_processed_bar_end = start + timedelta(days=cursor_index + 1)
+    before = runtime.snapshot()
+    with pytest.raises(ValueError, match=candidate + "_daily_resume_warmup_incomplete"):
+        asyncio.run(runtime.cycle(now=start + timedelta(days=400, hours=1)))
+    assert runtime.snapshot() == before
+
+
+@pytest.mark.parametrize("candidate,cursor_index", [("r2f", 180), ("r2g", 250)])
+def test_daily_restart_at_exact_warmup_boundary_scores_every_unseen_day(candidate, cursor_index):
+    async def scenario():
+        start = datetime(2025, 9, 1, tzinfo=UTC)
+        rows = _daily_rows(start, 400)
+        factory = _r2f_runtime_with_rows if candidate == "r2f" else _r2g_runtime_with_rows
+        runtime = factory(rows)
+        cursor = start + timedelta(days=cursor_index + 1)
+        runtime.last_processed_bar_end = cursor
+        await runtime.cycle(now=start + timedelta(days=400, hours=1))
+        marks = getattr(runtime, candidate + "_daily_marks")
+        assert len(marks) == 400 - cursor_index - 1
+        assert datetime.fromisoformat(marks[0]["bar_start"]) == cursor
+        assert [datetime.fromisoformat(mark["bar_end"]) for mark in marks] == [
+            cursor + timedelta(days=offset + 1) for offset in range(len(marks))
+        ]
+        assert await runtime.cycle(now=start + timedelta(days=400, hours=1)) == []
+    asyncio.run(scenario())
