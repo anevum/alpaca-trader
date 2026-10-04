@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.3",
+  "scheduler_version": "anevum-scheduler-v1.0.4",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -248,137 +248,20 @@
       "implementation_target": "scheduler_self_health",
       "version": "1.0.0",
       "protected_action_level": "read_only"
-    },
+    }
+  ],
+  "independent_runtimes": [
     {
-      "workflow_id": "nostra.snapshot",
       "subsystem": "NOSTRA",
       "owner": "NOSTRA",
-      "enabled": false,
-      "schedule_type": "market_session_offset",
-      "schedule_expression": "market_open-10m",
-      "anchor": "open",
-      "offset_minutes": -10,
-      "timezone": "America/New_York",
-      "market_calendar_dependency": true,
-      "catchup_policy": "skip_after_window",
-      "stale_after_minutes": 10,
-      "retry_policy": {
-        "max_attempts": 2,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "success_route": "rhen-research",
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "nostra_snapshot_hook",
-      "version": "1.0.0",
-      "protected_action_level": "research_only"
-    },
-    {
-      "workflow_id": "nostra.forecast",
-      "subsystem": "NOSTRA",
-      "owner": "NOSTRA",
-      "enabled": false,
-      "schedule_type": "market_session_offset",
-      "schedule_expression": "market_open-5m",
-      "anchor": "open",
-      "offset_minutes": -5,
-      "timezone": "America/New_York",
-      "market_calendar_dependency": true,
-      "catchup_policy": "skip_after_window",
-      "stale_after_minutes": 5,
-      "retry_policy": {
-        "max_attempts": 2,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "success_route": "rhen-research",
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "nostra_forecast_hook",
-      "version": "1.0.0",
-      "protected_action_level": "research_only"
-    },
-    {
-      "workflow_id": "nostra.outcome_resolution",
-      "subsystem": "NOSTRA",
-      "owner": "NOSTRA",
-      "enabled": false,
-      "schedule_type": "market_session_offset",
-      "schedule_expression": "market_close+30m",
-      "anchor": "close",
-      "offset_minutes": 30,
-      "timezone": "America/New_York",
-      "market_calendar_dependency": true,
-      "catchup_policy": "catch_up",
-      "stale_after_minutes": 720,
-      "retry_policy": {
-        "max_attempts": 2,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "success_route": "rhen-research",
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "nostra_outcome_hook",
-      "version": "1.0.0",
-      "protected_action_level": "research_only"
-    },
-    {
-      "workflow_id": "nostra.scoring.daily",
-      "subsystem": "NOSTRA",
-      "owner": "NOSTRA",
-      "enabled": false,
-      "schedule_type": "market_session_offset",
-      "schedule_expression": "market_close+60m",
-      "anchor": "close",
-      "offset_minutes": 60,
-      "timezone": "America/New_York",
-      "market_calendar_dependency": true,
-      "catchup_policy": "catch_up",
-      "stale_after_minutes": 720,
-      "retry_policy": {
-        "max_attempts": 2,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "success_route": "rhen-research",
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "nostra_score_hook",
-      "version": "1.0.0",
-      "protected_action_level": "research_only"
-    },
-    {
-      "workflow_id": "nostra.scoring.weekly",
-      "subsystem": "NOSTRA",
-      "owner": "NOSTRA",
-      "enabled": false,
-      "schedule_type": "market_session_offset",
-      "schedule_expression": "last_session_of_week:market_close+105m",
-      "anchor": "close",
-      "offset_minutes": 105,
-      "last_session_of_week": true,
-      "timezone": "America/New_York",
-      "market_calendar_dependency": true,
-      "catchup_policy": "catch_up",
-      "stale_after_minutes": 2880,
-      "retry_policy": {
-        "max_attempts": 2,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "success_route": "rhen-research",
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "nostra_weekly_hook",
-      "version": "1.0.0",
-      "protected_action_level": "research_only"
+      "mode": "independent_autorun",
+      "scheduler_owned": false,
+      "health_owner": "IREN",
+      "evidence_store": "Foundation/PostgreSQL",
+      "forecast_horizon_minutes": 10,
+      "research_only": true,
+      "execution_authority": false,
+      "status": "ACTIVE"
     }
   ]
 }
