@@ -336,7 +336,12 @@ class BtcCanaryExecutionEngine(CryptoExecutionEngine):
                 )
 
             exit_reason = None
-            if (
+            if self._circuit_open_reason:
+                exit_reason = (
+                    "BTC canary fail-safe flatten: circuit open "
+                    f"({self._circuit_open_reason})"
+                )
+            elif (
                 entry > 0
                 and current > 0
                 and return_pct <= -self.settings.btc_canary_stop_pct
