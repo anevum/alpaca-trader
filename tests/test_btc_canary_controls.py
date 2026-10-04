@@ -217,3 +217,34 @@ def test_canary_engine_hard_blocks_live_mode_before_order_submission():
     assert result["action"] == "blocked"
     assert "paper" in result["reason"].lower()
     assert broker.buy_calls == []
+
+
+
+class HighSlippagePaperBroker(PaperBroker):
+    async def submit_crypto_market_buy(self, symbol, qty, client_order_id):
+        order = await super().submit_crypto_market_buy(symbol, qty, client_order_id)
+        order["filled_avg_price"] = "100.60"
+        return order
+
+
+def test_canary_opens_circuit_when_paper_fill_slippage_exceeds_threshold():
+    settings = _settings()
+    broker = HighSlippagePaperBroker()
+    state = RuntimeState()
+    state.begin_crypto_cycle("btc-canary-slippage-test")
+    engine = BtcCanaryExecutionEngine(
+        settings,
+        broker,
+        CanaryMarketData(),
+        state,
+        ledger=None,
+    )
+
+    result = asyncio.run(engine.run_once())
+
+    assert result["action"] == "submitted"
+    assert result["circuit_open_reason"] == "entry_slippage_threshold_exceeded"
+    assert (
+        state.crypto_last_execution_context["circuit_open_reason"]
+        == "entry_slippage_threshold_exceeded"
+    )
