@@ -699,6 +699,33 @@ def _complete_research(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
     return {}
 
 
+def _with_forward_shadow(
+    value: dict[str, Any],
+    shadow: dict[str, Any],
+) -> dict[str, Any]:
+    """Store parallel forward shadows without letting R2G replace canonical R2F."""
+    out = dict(value)
+    shadows = _obj(out.get("forward_shadows"))
+    primary = _obj(out.get("forward_shadow"))
+    primary_candidate = str(primary.get("candidate_id") or "")
+    if primary_candidate:
+        shadows.setdefault(primary_candidate, primary)
+
+    candidate = str(shadow.get("candidate_id") or "")
+    if candidate:
+        shadows[candidate] = dict(shadow)
+    out["forward_shadows"] = shadows
+
+    if (
+        str(shadow.get("candidate_methodology") or "")
+        == "graen-btc-consensus-trend-v14-r2g"
+    ):
+        out["forward_shadow_comparison"] = dict(shadow)
+    else:
+        out["forward_shadow"] = dict(shadow)
+    return out
+
+
 def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[str, Any]:
     problem_id=_uuid(body.get("problem_id"),"invalid_shadow_checkpoint")
     activation=str(body.get("activation_id") or "").strip()[:160]
@@ -769,7 +796,7 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
             linked=row[0]
             metadata=_obj(row[1])
             metadata.pop("research_stage",None)
-            metadata["forward_shadow"]=shadow
+            metadata = _with_forward_shadow(metadata, shadow)
 
             if methodology=="graen-btc-hypothesis-tournament-v13":
                 frozen=_obj(metadata.get("v13_candidate_spec"))
@@ -856,7 +883,7 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
                 )
                 j=cur.fetchone()
                 if j:
-                    output=_obj(j[0])
+                    output=_with_forward_shadow(_obj(j[0]), shadow)
                     output.update({
                         "current_stage":(
                             "V13_HOLDOUT_QUEUED"
@@ -869,7 +896,6 @@ def _shadow_checkpoint(conn: psycopg.Connection[Any], body: dict[str, Any]) -> d
                             if status=="SHADOW_REJECTED"
                             else "FORWARD_SHADOW_RUNNING"
                         ),
-                        "forward_shadow":shadow,
                         "v13_transition":transition,
                         "v13_artifact_id":artifact_id,
                         "execution_authority":False,
