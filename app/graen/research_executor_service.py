@@ -9790,6 +9790,14 @@ class GraenResearchExecutor:
                             "execution_authority": False,
                         },
                     )
+        staged_strategy = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") in STRATEGY_STAGE_KEYS
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v14_r2h = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -9928,7 +9936,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V14_R2H_METHODOLOGY_VERSION
+            STRATEGY_RUNNER_VERSION
+            if staged_strategy
+            else V14_R2H_METHODOLOGY_VERSION
             if staged_v14_r2h
             else V14_R2G_METHODOLOGY_VERSION
             if staged_v14_r2g
@@ -10023,7 +10033,23 @@ class GraenResearchExecutor:
 
         metadata = problem.get("metadata") if isinstance(problem.get("metadata"), Mapping) else {}
         try:
-            if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
+            research_stage = str(metadata.get("research_stage") or "")
+            if (
+                research_stage == HYPOTHESIS_PLANNER_STAGE
+                or (
+                    metadata.get("autonomous_continuation") is True
+                    and not research_stage
+                )
+            ):
+                return await self._execute_hypothesis_planner(problem, run)
+            if research_stage in {
+                STRATEGY_DEVELOPMENT_STAGE,
+                STRATEGY_VALIDATION_STAGE,
+                STRATEGY_HOLDOUT_STAGE,
+                STRATEGY_VELUM_STAGE,
+            }:
+                return await self._execute_strategy_manifest(problem, run)
+            if research_stage.startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
             if metadata.get("research_stage") in {
                 V14_R2H_STAGE,
