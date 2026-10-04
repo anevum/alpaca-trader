@@ -465,8 +465,6 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         "position_open": position_open,
         "position_observed_at": stamp(position_at),
         "current_return_pct": position_payload.get("current_return_pct"),
-        "max_favorable_return_pct": position_payload.get("mfe_pct"),
-        "max_adverse_return_pct": position_payload.get("mae_pct"),
         "risk_stop_pct": position_payload.get("risk_stop_pct"),
         "account_observed_at": stamp(account_at),
         "protection_status": protection_status,
