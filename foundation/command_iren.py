@@ -876,6 +876,37 @@ def project_command(
         current_state=current_state,
     )
 
+    operating_summary = (
+        research.get("operating_summary")
+        if isinstance(research.get("operating_summary"), dict)
+        else {}
+    )
+    operating_condition = str(operating_summary.get("condition") or "UNKNOWN")
+    productivity = str(operating_summary.get("productivity") or "UNKNOWN")
+    engineering_required = int(operating_summary.get("engineering_required") or 0)
+    research_attention = (
+        operating_condition in {"ENGINEERING_REQUIRED", "BLOCKED"}
+        or productivity == "STALLED"
+    )
+    if engineering_required:
+        operator["state"] = "ENGINEERING_REQUIRED"
+        operator["message"] = (
+            f"{engineering_required} software requirement"
+            + ("" if engineering_required == 1 else "s")
+            + " require manual ChatGPT/Codex work. Independent research may continue."
+        )
+    elif productivity == "STALLED":
+        operator["state"] = "DEGRADED_PRODUCTIVITY"
+        operator["message"] = (
+            "Services are responsive but research has stopped making measurable progress. "
+            "IREN must derive or repair the next autonomous action."
+        )
+    elif operating_condition == "RESEARCHING" and current_state == "HEALTHY":
+        operator["state"] = "RESEARCHING"
+        operator["message"] = (
+            "ANEVUM infrastructure is healthy and GRAEN is actively progressing research."
+        )
+
     return {
         "schema_version": "iren_command.v2",
         "work_schema_version": "iren_work.v1",
@@ -883,12 +914,19 @@ def project_command(
         "observed_at": state.get("observed_at"),
         "stale": stale,
         "state": current_state,
+        "operating_state": operating_condition,
+        "productivity_state": productivity,
         "topology": topology,
         "incidents": incidents,
         "scheduler": state.get("scheduler"),
         "research": research,
         "btc_canary": btc_canary,
-        "action_required": stale or current_state != "HEALTHY" or bool(incidents),
+        "action_required": (
+            stale
+            or current_state != "HEALTHY"
+            or bool(incidents)
+            or research_attention
+        ),
         "configuration_identity": baseline.get("fingerprint"),
         "operator": operator,
         "work": {
