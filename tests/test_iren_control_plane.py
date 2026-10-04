@@ -331,6 +331,33 @@ def test_graen_idle_productivity_is_control_plane_degradation():
     assert state["incidents"]["productivity.GRAEN"]["reason"] == "autonomous_research_not_making_progress"
 
 
+@pytest.mark.parametrize(
+    "wait_fields",
+    [
+        {"engineering_required_count": 1},
+        {"waiting_dependency_until": "2026-09-30T12:00:00+00:00"},
+    ],
+)
+def test_graen_legitimate_wait_does_not_trigger_productivity_incident(wait_fields):
+    obs = observation()
+    obs["services"]["GRAEN_EXECUTOR"] = {
+        "ok": True,
+        "activity_active": False,
+        "last_claim_at": "2026-09-30T09:00:00+00:00",
+        "last_completion_at": "2026-09-30T09:00:00+00:00",
+        "runtime_identity": {"runtime_started_at": "2026-09-30T09:00:00+00:00"},
+        "runtime_source_mutation_authorized": False,
+        **wait_fields,
+    }
+    state, _ = reduce_state({}, obs, POLICY)
+    assert "productivity.GRAEN" not in {
+        key
+        for key, value in state["incidents"].items()
+        if value.get("status") == "OPEN"
+    }
+    assert state["incidents"].get("productivity.GRAEN", {}).get("failure_count", 0) == 0
+
+
 def test_graen_runtime_source_mutation_authority_is_critical():
     obs = observation()
     obs["services"]["GRAEN_EXECUTOR"] = {
