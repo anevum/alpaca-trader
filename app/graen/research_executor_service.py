@@ -192,7 +192,7 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.29.0"
+RUNTIME_VERSION = "graen-research-executor-v1.30.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -313,6 +313,7 @@ V14_R2G_STAGE = "CRYPTO_BTC_DAILY_CONSENSUS_V14_R2G_DISCOVERY"
 V14_R2H_STAGE = "CRYPTO_BTC_4H_CONSENSUS_V14_R2H_TRANSFER"
 V14_R2H_VELUM_STAGE = "CRYPTO_BTC_4H_CONSENSUS_V14_R2H_VELUM_REPLAY"
 V14_R2H_VELUM_4H_FETCH_FIX_COMMIT = "54f98e493a4ca71f2dbf17c31fbc0cf74c2757c8"
+V14_R2H_VELUM_CHUNK_FETCH_FIX_COMMIT = "6f22220557934839152aeddaf49ac367982defad"
 V14_STAGE_KEYS = {
     V14_PREFLIGHT_STAGE,
     V14_R2A_STAGE,
@@ -5355,7 +5356,7 @@ class GraenResearchExecutor:
                 problem.get("status") != "BLOCKED"
                 or problem.get("domain") != PROBLEM_DOMAIN
                 or metadata.get("research_stage") != V14_R2H_VELUM_STAGE
-                or recovery_version >= 5
+                or recovery_version >= 6
             ):
                 continue
 
@@ -5372,7 +5373,7 @@ class GraenResearchExecutor:
                 error = str(run.get("result_summary", {}).get("error") or "")
                 connect_error = error.startswith("ConnectError:")
                 known_velum_500 = bool(
-                    recovery_version in {3, 4}
+                    recovery_version in {3, 4, 5}
                     and error.startswith("HTTPStatusError:")
                     and "500 Internal Server Error" in error
                     and "/v1/graen/candidate-replay" in error
@@ -5385,7 +5386,7 @@ class GraenResearchExecutor:
 
             if recovery_version == 1 and ".internal" not in self.velum_base_url:
                 continue
-            if recovery_version in {2, 3, 4} and not (
+            if recovery_version in {2, 3, 4, 5} and not (
                 ".internal" in self.velum_base_url
                 and self.velum_base_url.endswith(":8080")
             ):
@@ -5401,7 +5402,7 @@ class GraenResearchExecutor:
                     "broker_orders_possible": False,
                 }
             verified_velum_commit: str | None = None
-            if recovery_version == 4:
+            if recovery_version in {4, 5}:
                 health = await self._velum_health_snapshot()
                 provenance = (
                     health.get("runtime_provenance")
@@ -5410,15 +5411,25 @@ class GraenResearchExecutor:
                     else {}
                 )
                 verified_velum_commit = str(provenance.get("git_commit") or "")
-                if verified_velum_commit != V14_R2H_VELUM_4H_FETCH_FIX_COMMIT:
+                required_velum_commit = (
+                    V14_R2H_VELUM_4H_FETCH_FIX_COMMIT
+                    if recovery_version == 4
+                    else V14_R2H_VELUM_CHUNK_FETCH_FIX_COMMIT
+                )
+                waiting_state = (
+                    "WAITING_FOR_VELUM_4H_FETCH_FIX"
+                    if recovery_version == 4
+                    else "WAITING_FOR_VELUM_CHUNKED_4H_FETCH_FIX"
+                )
+                if verified_velum_commit != required_velum_commit:
                     return {
                         "recovered": False,
                         "problem_id": problem_id,
-                        "state": "WAITING_FOR_VELUM_4H_FETCH_FIX",
+                        "state": waiting_state,
                         "next_research_stage": V14_R2H_VELUM_STAGE,
-                        "retry_count": 4,
+                        "retry_count": recovery_version,
                         "observed_velum_git_commit": verified_velum_commit or None,
-                        "required_velum_git_commit": V14_R2H_VELUM_4H_FETCH_FIX_COMMIT,
+                        "required_velum_git_commit": required_velum_commit,
                         "execution_authority": False,
                         "broker_orders_possible": False,
                     }
@@ -5437,6 +5448,8 @@ class GraenResearchExecutor:
                 if recovery_version == 3
                 else "retry_after_velum_4h_fetch_repair"
                 if recovery_version == 4
+                else "retry_after_velum_chunked_4h_fetch_repair"
+                if recovery_version == 5
                 else "retry_after_velum_transport_recovered"
             )
             artifact_response = await self.gateway.record_artifact(
@@ -5454,7 +5467,7 @@ class GraenResearchExecutor:
                     "repair": repair,
                     "retry_count": recovery_version + 1,
                     "methodology_changed": False,
-                    "private_health_verified": recovery_version in {3, 4},
+                    "private_health_verified": recovery_version in {3, 4, 5},
                     "verified_velum_git_commit": verified_velum_commit,
                     "research_only": True,
                     "execution_authority": False,
