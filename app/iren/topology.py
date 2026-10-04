@@ -20,7 +20,8 @@ def bounded_health(name, body):
     if not isinstance(body, dict) or type(body.get("ok")) is not bool:
         raise ValueError("malformed_health")
     fields = ("ok", "startup_reconciled", "reconciliation_safe", "broker_orders_possible",
-              "execution_authority", "running", "worker_alive", "shadow_only", "activity_active")
+              "execution_authority", "running", "worker_alive", "shadow_only", "activity_active",
+              "manual_engineering_handoff_enabled", "runtime_source_mutation_authorized")
     for key in fields:
         if key in body and type(body[key]) is not bool:
             raise ValueError("malformed_health_flag")
@@ -32,6 +33,21 @@ def bounded_health(name, body):
     result = {key: body[key] for key in fields if key in body}
     if "current_activity" in body:
         result["current_activity"] = body["current_activity"]
+    for key in ("last_heartbeat_at", "last_claim_at", "last_completion_at"):
+        value = body.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or len(value) > 128:
+            raise ValueError("malformed_activity_timestamp")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("malformed_activity_timestamp")
+        result[key] = value
+    active_problem_id = body.get("active_problem_id")
+    if active_problem_id is not None:
+        if not isinstance(active_problem_id, str) or len(active_problem_id) > 128:
+            raise ValueError("malformed_active_problem_id")
+        result["active_problem_id"] = active_problem_id
     result["last_error"] = bool(body.get("last_error"))
     provenance = body.get("runtime_provenance") or {}
     if not isinstance(provenance, dict):
