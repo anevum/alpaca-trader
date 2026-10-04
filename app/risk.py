@@ -254,6 +254,70 @@ def validate_crypto_buy(
     return RiskDecision(True, "crypto risk checks passed")
 
 
+def validate_btc_canary_buy(
+    settings: Settings,
+    symbol: str,
+    notional: Decimal,
+    account: dict[str, Any],
+    positions: list[dict[str, Any]],
+    entries_24h: int,
+) -> RiskDecision:
+    symbol = symbol.upper()
+    if symbol != "BTC/USD":
+        return RiskDecision(False, "BTC canary is restricted to BTC/USD")
+    if not settings.btc_canary_execution_authorized:
+        return RiskDecision(False, "BTC canary experimental-live execution is not authorized")
+
+    blocked = _account_can_trade(account)
+    if blocked:
+        return blocked
+    if account.get("cash_flow_error"):
+        return RiskDecision(False, str(account["cash_flow_error"]))
+
+    crypto_positions = [
+        position
+        for position in positions
+        if "/" in str(position.get("symbol", ""))
+        and d(position.get("qty")) > 0
+    ]
+    if crypto_positions:
+        return RiskDecision(False, "BTC canary requires the crypto book to be flat")
+
+    if notional <= 0:
+        return RiskDecision(False, "BTC canary order notional must be positive")
+    if notional > settings.btc_canary_max_order_notional:
+        return RiskDecision(False, "BTC canary order exceeds its max-order notional")
+    if notional > settings.btc_canary_max_total_position_notional:
+        return RiskDecision(False, "BTC canary order exceeds its total-position notional")
+
+    all_long_positions = [
+        position for position in positions if d(position.get("qty")) > 0
+    ]
+    shared_exposure = sum(
+        (abs(d(position.get("market_value"))) for position in all_long_positions),
+        Decimal("0"),
+    )
+    if shared_exposure + notional > settings.max_total_position_notional:
+        return RiskDecision(False, "BTC canary order exceeds shared MAX_TOTAL_POSITION_NOTIONAL")
+
+    if (
+        settings.btc_canary_max_entries_24h > 0
+        and entries_24h >= settings.btc_canary_max_entries_24h
+    ):
+        return RiskDecision(False, "BTC canary 24-hour entry limit reached")
+
+    cash = d(account.get("cash"))
+    if cash < notional:
+        return RiskDecision(False, "insufficient cash")
+
+    equity = d(account.get("equity"))
+    last_equity = risk_reference_equity(account)
+    if last_equity > 0 and (last_equity - equity) >= settings.max_daily_loss:
+        return RiskDecision(False, "shared daily loss circuit breaker is active")
+
+    return RiskDecision(True, "BTC canary risk checks passed")
+
+
 def validate_crypto_sell_to_flat(
     settings: Settings,
     symbol: str,
