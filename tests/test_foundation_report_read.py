@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from foundation.report_read import (
     _attach_outcomes,
+    _btc_canary_run_evidence,
     _candidate_is_crypto,
     _complete_forward_horizons,
     _decision_candidates,
@@ -331,3 +332,168 @@ def test_crypto_forward_evidence_route_requests_newest_incomplete_candidates():
     assert "max_complete_outcomes=7" in block
     assert "result_limit=5000" in block
     assert "newest_first=True" in block
+
+class _CanaryRunCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.query = ""
+        self.args = ()
+        self.execute_calls = 0
+
+    def execute(self, query, args) -> None:
+        self.execute_calls += 1
+        self.query = query
+        self.args = args
+
+    def fetchall(self):
+        return self.rows
+
+
+def _canary_event_row(
+    event_id,
+    event_type,
+    occurred_at,
+    payload,
+    *,
+    symbol="BTC/USD",
+):
+    return (
+        event_id,
+        f"canary-event-{event_id}",
+        "BTC-CANARY-001-PAPER-20261004",
+        "BTC-CANARY-001",
+        event_type,
+        occurred_at,
+        symbol,
+        f"correlation-{event_id}",
+        "RHEN",
+        payload,
+        occurred_at,
+    )
+
+
+def test_btc_canary_run_evidence_summarizes_forward_paper_state():
+    t0 = datetime(2026, 10, 4, 18, 40, tzinfo=timezone.utc)
+    t1 = datetime(2026, 10, 4, 19, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 10, 4, 20, 0, tzinfo=timezone.utc)
+    cur = _CanaryRunCursor(
+        [
+            _canary_event_row(
+                1,
+                "broker_fill",
+                t0,
+                {"activity": {"id": "fill-buy", "side": "buy", "qty": "0.00001"}},
+            ),
+            _canary_event_row(
+                2,
+                "broker_order",
+                t0,
+                {
+                    "order": {
+                        "id": "stop-1",
+                        "client_order_id": "anevum-crypto-btc-usd-canary-hardstop-test",
+                        "side": "sell",
+                        "status": "new",
+                    }
+                },
+            ),
+            _canary_event_row(
+                3,
+                "position_metrics",
+                t1,
+                {
+                    "entry_price": "100",
+                    "current_price": "99",
+                    "current_return_pct": "-0.01",
+                    "risk_stop_pct": "0.05",
+                },
+            ),
+            _canary_event_row(
+                4,
+                "position_metrics",
+                t2,
+                {
+                    "entry_price": "100",
+                    "current_price": "102",
+                    "current_return_pct": "0.02",
+                    "risk_stop_pct": "0.05",
+                },
+            ),
+            _canary_event_row(
+                5,
+                "decision_cycle",
+                t2,
+                {
+                    "cycle_outcome": "BTC canary position protected; waiting for frozen R2H exit",
+                    "bar_interval": "4Hour",
+                    "strategy_family": "btc_4h_momentum_or_sma_consensus_experimental_canary",
+                    "model_version": "graen-btc-4h-consensus-v14-r2h",
+                    "calibration_version": "none-experimental-canary",
+                    "regime_version": "r2h-slow-consensus",
+                    "execution_adapter_version": "alpaca-crypto-canary-v1",
+                    "comparison_context": {
+                        "execution_result": {
+                            "action": "hold",
+                            "reason": "BTC canary position protected; waiting for frozen R2H exit",
+                        }
+                    },
+                },
+            ),
+            _canary_event_row(
+                6,
+                "account_snapshot",
+                t2,
+                {
+                    "open_positions": 1,
+                    "positions": [
+                        {
+                            "symbol": "BTC/USD",
+                            "qty": "0.00001",
+                            "avg_entry_price": "100",
+                        }
+                    ],
+                },
+                symbol="",
+            ),
+        ]
+    )
+
+    result = _btc_canary_run_evidence(
+        cur,
+        run_id="BTC-CANARY-001-PAPER-20261004",
+    )
+
+    assert cur.execute_calls == 1
+    assert "where run_id = %s" in cur.query.lower()
+    assert cur.args == (
+        "BTC-CANARY-001-PAPER-20261004",
+        "BTC-CANARY-001",
+        50000,
+    )
+    assert result["paper_only"] is True
+    assert result["live_execution_authorized"] is False
+    assert result["promotion_ready"] is False
+    assert result["evidence_state"] == "COLLECTING_OPEN_POSITION"
+    assert result["assessment"] == "COLLECTING_FORWARD_EVIDENCE"
+    assert result["position_open"] is True
+    assert result["position_observations"] == 2
+    assert result["current_return_pct"] == "0.02"
+    assert result["max_favorable_return_pct"] == "0.02"
+    assert result["max_adverse_return_pct"] == "-0.01"
+    assert result["buy_fill_events"] == 1
+    assert result["sell_fill_events"] == 0
+    assert result["protective_order_events"] == 1
+    assert len(result["active_protective_orders"]) == 1
+    assert result["decision_action_counts"] == {"hold": 1}
+    assert result["latest_decision"]["bar_interval"] == "4Hour"
+
+
+def test_btc_canary_report_route_is_read_only_and_run_scoped():
+    source = __import__("inspect").getsource(
+        __import__("foundation.report_read", fromlist=["read_report"]).read_report
+    )
+    assert 'canary_run_id = params.get("canary_run_id")' in source
+    assert 'report_version": "btc-canary-forward-v1"' in source
+    assert "_btc_canary_run_evidence(" in source
+    assert 'startswith("BTC-CANARY-")' in source
+
