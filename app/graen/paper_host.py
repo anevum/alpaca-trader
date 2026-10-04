@@ -264,7 +264,9 @@ class GraenPaperCanaryHost:
     def _activation_id(payload: Mapping[str, Any]) -> str:
         material = {
             "problem_id": payload.get("problem_id"),
-            "graen_run_id": payload.get("graen_run_id"),
+            # graen_run_id is a transient worker attempt identity. The paper
+            # activation must survive a crash/reclaim between remote activation
+            # and local metadata persistence.
             "campaign_id": payload.get("campaign_id"),
             "candidate_methodology": payload.get(
                 "candidate_methodology"
