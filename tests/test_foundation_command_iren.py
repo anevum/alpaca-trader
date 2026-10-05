@@ -277,6 +277,28 @@ class _CanaryCursor:
                     {"current_return_pct": "0.0125"},
                 ),
             ],
+            [
+                (
+                    datetime(2026, 10, 4, 18, 35, tzinfo=timezone.utc),
+                    {
+                        "activity": {
+                            "side": "buy",
+                            "price": "121000.00",
+                            "qty": "0.000011",
+                        }
+                    },
+                ),
+            ],
+            [
+                (
+                    datetime(2026, 10, 4, 18, 40, tzinfo=timezone.utc),
+                    {"current_return_pct": "-0.0020"},
+                ),
+                (
+                    datetime(2026, 10, 4, 21, 14, tzinfo=timezone.utc),
+                    {"current_return_pct": "0.0125"},
+                ),
+            ],
         ])
 
     def __enter__(self):
@@ -338,7 +360,9 @@ def test_btc_canary_activity_is_compact_read_only_projection():
     assert result["signal"]["sma_window_bars"] == 1500
     assert result["recent_cycles"][0]["action"] == "hold"
     assert result["return_history"][0]["return_pct"] == "0.0125"
-    assert len(conn.cur.calls) == 6
+    assert result["aggressive_70"]["campaign_id"] == "BTC-AGGRO70-001"
+    assert result["aggressive_70"]["completed_trades"] == 0
+    assert len(conn.cur.calls) == 8
     assert all(query.lstrip().lower().startswith("select") for query, _ in conn.cur.calls)
 
 
