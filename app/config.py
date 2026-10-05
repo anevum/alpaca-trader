@@ -712,8 +712,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CRYPTO_STOP_LIMIT_BUFFER_PCT must be between 0 and 0.10"
             )
-        if not 1 <= self.crypto_max_hold_minutes <= 1440:
-            raise ValueError("CRYPTO_MAX_HOLD_MINUTES must be between 1 and 1440")
+        crypto_max_hold_limit = (
+            10080
+            if self.crypto_execution_mode == "btc_direct_paper"
+            else 1440
+        )
+        if not 1 <= self.crypto_max_hold_minutes <= crypto_max_hold_limit:
+            raise ValueError(
+                "CRYPTO_MAX_HOLD_MINUTES must be between 1 and "
+                f"{crypto_max_hold_limit}"
+            )
         if not 0 <= self.crypto_reentry_cooldown_minutes <= 1440:
             raise ValueError(
                 "CRYPTO_REENTRY_COOLDOWN_MINUTES must be between 0 and 1440"
