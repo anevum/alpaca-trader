@@ -7341,6 +7341,151 @@ class GraenResearchExecutor:
         return None
 
 
+    async def _recover_v15_pass_into_forward_shadow(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Activate V15 in its dedicated broker-proof forward shadow slot."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        artifacts = snapshot.get("artifacts") or []
+        candidate_id = v15_candidate_spec().candidate_id
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+
+            if any(
+                isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("artifact_type")
+                == "CRYPTO_V15_R1_FORWARD_SHADOW_ACTIVATION"
+                and (
+                    not isinstance(row.get("content"), Mapping)
+                    or row.get("content", {}).get("candidate_id")
+                    == candidate_id
+                )
+                for row in artifacts
+            ):
+                continue
+
+            matching = [
+                row
+                for row in runs
+                if isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("methodology_version") == V15_METHODOLOGY_VERSION
+                and isinstance(row.get("result_summary"), Mapping)
+                and row.get("result_summary", {}).get("state")
+                == "V15_R1_HOLDOUT_PASS_READY_FOR_ISOLATED_FORWARD_PAPER"
+                and row.get("result_summary", {}).get("decision")
+                == "START_ISOLATED_FORWARD_PAPER"
+            ]
+            if not matching:
+                continue
+
+            if not self.shadow_configured:
+                diagnostic = {
+                    "recovered": False,
+                    "problem_id": problem_id,
+                    "state": "V15_FORWARD_SHADOW_WAITING_FOR_SERVICE",
+                    "candidate_id": candidate_id,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "live_execution_authorized": False,
+                }
+                print("GRAEN_V15_SHADOW_WAIT", diagnostic, flush=True)
+                return diagnostic
+
+            origin = max(
+                matching,
+                key=lambda row: str(row.get("started_at") or ""),
+            )
+            origin_run_id = str(origin.get("run_id") or "")
+            origin_summary = (
+                origin.get("result_summary")
+                if isinstance(origin.get("result_summary"), Mapping)
+                else {}
+            )
+            spec = origin_summary.get("candidate_spec")
+            if not isinstance(spec, Mapping) or spec.get("candidate_id") != candidate_id:
+                spec = v15_candidate_spec().to_dict()
+
+            activation = await self._activate_forward_shadow(
+                problem_id=problem_id,
+                graen_run_id=origin_run_id,
+                campaign_id=V15_CAMPAIGN_ID,
+                epoch_index=0,
+                generation=1,
+                candidate_methodology=V15_METHODOLOGY_VERSION,
+                candidate_spec=spec,
+                velum_artifact_id=str(
+                    origin_summary.get("result_artifact_id") or ""
+                ),
+                evidence_phase="FORWARD_SHADOW",
+            )
+            artifact_response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=origin_run_id or None,
+                artifact_type="CRYPTO_V15_R1_FORWARD_SHADOW_ACTIVATION",
+                methodology_version=V15_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V15_CAMPAIGN_ID,
+                    "candidate_id": candidate_id,
+                    "candidate_spec": dict(spec),
+                    "activation": activation,
+                    "evidence_role": (
+                        "FRESH_FORWARD_4H_OPERATIONAL_CONFIRMATION_ONLY"
+                    ),
+                    "historical_holdout_counts_as_fresh": False,
+                    "starts_flat_after_activation": True,
+                    "promotion_authorized": False,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "live_execution_authorized": False,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            artifact = (
+                artifact_response.get("artifact")
+                if isinstance(artifact_response.get("artifact"), Mapping)
+                else {}
+            )
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "candidate_id": candidate_id,
+                "activation_id": (
+                    activation.get("activation_id")
+                    or (activation.get("activation") or {}).get("activation_id")
+                ),
+                "activation_artifact_id": artifact.get("artifact_id"),
+                "evidence_role": (
+                    "FRESH_FORWARD_4H_OPERATIONAL_CONFIRMATION_ONLY"
+                ),
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_execution_authorized": False,
+            }
+            print("GRAEN_V15_SHADOW_ACTIVATED", result, flush=True)
+            return result
+        return None
+
+
     async def _recover_v14_r2h_pass_into_velum(
         self,
         snapshot: Mapping[str, Any],
@@ -9261,6 +9406,14 @@ class GraenResearchExecutor:
         v15_recovery = await self._recover_v14_r2h_velum_pass_into_v15(snapshot)
         if v15_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v15_shadow_recovery = await self._recover_v15_pass_into_forward_shadow(
+            snapshot
+        )
+        if (
+            v15_shadow_recovery is not None
+            and v15_shadow_recovery.get("recovered")
+        ):
+            snapshot = await self.gateway.snapshot()
         v14_r2d_to_r2e_recovery = await self._recover_v14_r2d_fail_into_r2e(snapshot)
         if v14_r2d_to_r2e_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -9522,6 +9675,7 @@ class GraenResearchExecutor:
                 "v14_r2h_faststart_recovery": v14_r2h_faststart_recovery,
                 "v14_r2h_velum_recovery": v14_r2h_velum_recovery,
                 "v15_recovery": v15_recovery,
+                "v15_shadow_recovery": v15_shadow_recovery,
                 "r2h_velum_transport_recovery": r2h_velum_transport_recovery,
                 "v14_r2d_to_r2e_recovery": v14_r2d_to_r2e_recovery,
                 "v14_r2c_to_r2d_recovery": v14_r2c_to_r2d_recovery,
