@@ -436,10 +436,12 @@ class GraenResearchExecutor:
             "GRAEN_RESEARCH_WORKER_ID",
             "graen-crypto-research-executor",
         ).strip() or "graen-crypto-research-executor"
-        self.interval_seconds = max(
-            15,
-            int(os.getenv("GRAEN_RESEARCH_TICK_SECONDS", "30")),
-        )
+        raw_tick_seconds = os.getenv("GRAEN_RESEARCH_TICK_SECONDS", "").strip()
+        try:
+            configured_tick_seconds = int(raw_tick_seconds) if raw_tick_seconds else 30
+        except ValueError:
+            configured_tick_seconds = 30
+        self.interval_seconds = max(15, configured_tick_seconds)
         self.autorun = _truthy("GRAEN_RESEARCH_AUTORUN", True)
         self.settings = _research_settings(get_settings())
         self.market_data = MarketDataClient(self.settings)
