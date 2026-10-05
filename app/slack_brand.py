@@ -50,7 +50,7 @@ _ROUTE_SYSTEM = {
 }
 
 _PREFIX_RE = re.compile(
-    r"^:(?:anevum|rhen|iren|graen|nostra|velum)(?:_[a-z0-9_]+)?:\\s*",
+    r"^:(?:anevum|rhen|iren|graen|nostra|velum)(?:_[a-z0-9_]+)?:\s*",
     re.IGNORECASE,
 )
 
@@ -140,7 +140,7 @@ def infer_semantic_emoji(
             return STATUS_EMOJI["ACTIVE"]
         return "◆"
 
-    if any(token in upper for token in ("LIVE", "ONLINE", "MARKET OPEN", "MARKET CLOSED", "RUNNING", "STARTED", "STARTING")):
+    if any(token in upper for token in ("LIVE", "ONLINE", "MARKET OPEN", "MARKET CLOSED", "RUNNING")):
         return STATUS_EMOJI["ACTIVE"]
 
     explicit_module = module_from_text(text)
