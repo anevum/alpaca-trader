@@ -20,6 +20,7 @@ from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .crypto_execution import CryptoExecutionEngine
+from .crypto_stats import crypto_trade_stats
 from .crypto_promotion import fetch_crypto_promotion_status
 from .crypto_layer import (
     CryptoMarketDataClient,
@@ -342,6 +343,13 @@ async def command_snapshot() -> dict:
         for order in recent_orders
         if str(order.get("client_order_id", "")).startswith("anevum-")
     ]
+    crypto_stats = crypto_trade_stats(
+        recent_orders,
+        positions,
+        strategy_version_id=settings.crypto_strategy_version_id,
+        strategy_family=settings.crypto_strategy_family,
+        start_at=settings.crypto_stats_start_at,
+    )
     entry_count = engine._entry_orders_today(recent_orders)
     equity = Decimal(str(account.get("equity", "0")))
     last_equity = Decimal(str(account.get("last_equity", "0")))
@@ -391,6 +399,7 @@ async def command_snapshot() -> dict:
             "account_blocked": bool(account.get("account_blocked")),
         },
         "account_history": account_history,
+        "crypto_stats": crypto_stats,
         "strategy": {
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
@@ -758,7 +767,7 @@ async def crypto_monitor_loop():
                             "GRAEN/NOSTRA/ADS promotion"
                         ),
                         "execution_class": "BTC_DIRECT_PAPER",
-                        "strategy_version_id": "RHEN-BTC-DIRECT-001",
+                        "strategy_version_id": settings.crypto_strategy_version_id,
                         "live_execution_authorized": False,
                     }
                 else:
@@ -868,6 +877,12 @@ def _runtime_configuration_snapshot() -> dict:
         "crypto_poll_seconds": settings.crypto_poll_seconds,
         "crypto_quote_currencies": sorted(settings.crypto_quote_currencies),
         "crypto_confirmation_symbols": list(settings.crypto_confirmation_symbols),
+        "crypto_strategy_version_id": settings.crypto_strategy_version_id,
+        "crypto_strategy_family": settings.crypto_strategy_family,
+        "crypto_stats_start_at": (
+            settings.crypto_stats_start_at.isoformat()
+            if settings.crypto_stats_start_at else None
+        ),
     }
 
 
@@ -1516,6 +1531,38 @@ async def orders(authorization: str | None = Header(default=None)):
     require_admin(authorization)
     try:
         return await client.recent_orders(limit=100)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/v1/crypto/stats")
+async def crypto_stats_endpoint(authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    try:
+        positions, recent_orders = await asyncio.gather(
+            client.positions(),
+            client.recent_orders(limit=500),
+        )
+        return {
+            "ok": True,
+            "market": "crypto",
+            "execution_mode": settings.crypto_execution_mode,
+            "execution_enabled": settings.crypto_execution_enabled,
+            "stats": crypto_trade_stats(
+                recent_orders,
+                positions,
+                strategy_version_id=settings.crypto_strategy_version_id,
+                strategy_family=settings.crypto_strategy_family,
+                start_at=settings.crypto_stats_start_at,
+            ),
+            "runtime": {
+                "last_decision": runtime_state.crypto_last_decision,
+                "last_signal": runtime_state.crypto_last_signal,
+                "last_order": runtime_state.crypto_last_order,
+                "last_error": runtime_state.crypto_last_error,
+                "last_execution_at": runtime_state.crypto_last_execution_at,
+            },
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
