@@ -109,6 +109,7 @@ LOOPBACK = {
     "IREN_NOSTRA_HEALTH_URL": "http://127.0.0.1:8115/health",
     "RHEN_CORE_DB_PATH": "/data/rhen-core.db",
     "FOUNDATION_OUTBOX_PATH": "/data/foundation-outbox.jsonl",
+    "FOUNDATION_SHADOW_ENABLED": "false",
     "RHEN_CANONICAL_SCHEDULER_ENABLED": "false",
 }
 
