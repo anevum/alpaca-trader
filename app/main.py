@@ -1162,6 +1162,10 @@ async def health():
             "graen_promotion": runtime_state.crypto_graen_promotion,
             "scanner_healthy": runtime_state.crypto_scanner_healthy,
             "execution_healthy": runtime_state.crypto_execution_healthy,
+            "execution_mode": settings.crypto_execution_mode,
+            "broker_writes_allowed": (
+                settings.crypto_execution_mode != "btc_direct_live_signal"
+            ),
             "last_market_data_at": runtime_state.crypto_last_market_data_at,
             "last_scan_at": runtime_state.crypto_last_scan_at,
             "symbols_scanned": runtime_state.crypto_candidates_generated,

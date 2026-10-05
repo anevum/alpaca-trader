@@ -68,8 +68,16 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
         for flag in ("startup_reconciled", "reconciliation_safe"):
             if rhen.get(flag) is not True:
                 issue(f"safety.{flag}", "critical", "broker_reconciliation_not_confirmed")
-        if rhen.get("crypto_execution_enabled") is not policy["crypto_execution_expected"]:
-            issue("safety.crypto_execution", "critical", "crypto_execution_policy_mismatch")
+        if rhen.get("crypto_execution_enabled") is True:
+            if (
+                rhen.get("crypto_broker_writes_allowed")
+                is not policy["crypto_live_broker_writes_expected"]
+            ):
+                issue(
+                    "safety.crypto_execution",
+                    "critical",
+                    "crypto_broker_write_authority_policy_mismatch",
+                )
         if rhen.get("strategy_version_id") != policy["expected_strategy"]:
             issue("safety.strategy_identity", "critical", "unexpected_live_strategy")
         persistence = rhen.get("persistence", {})
@@ -87,6 +95,8 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
             issue("evidence.loss", "warning", "runtime_event_loss_increasing")
     config = observation.get("configuration", {})
     baseline = previous.get("configuration_baseline")
+    if previous.get("version") != policy["version"]:
+        baseline = None
     if not config.get("fingerprint"):
         issue("configuration.unavailable", "warning", "protected_configuration_unobserved")
     elif baseline and baseline["fingerprint"] != config["fingerprint"]:
@@ -94,16 +104,31 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
     elif not baseline:
         baseline = {**config, "observed_at": observation["observed_at"], "basis": "observed_production_baseline"}
     scheduler = observation.get("scheduler", {})
-    if scheduler.get("configured") is not True or scheduler.get("last_error"):
-        issue("scheduler.health", "critical", "canonical_scheduler_degraded")
-    elif not scheduler.get("running_job") and not fresh(scheduler.get("last_success_at"), now, policy["stale_after_seconds"]) and not fresh(scheduler.get("started_at"), now, policy["stale_after_seconds"]):
-        issue("scheduler.stale", "critical", "scheduler_tick_stale")
+    scheduler_enabled = scheduler.get("enabled") is not False
+    if scheduler_enabled:
+        if scheduler.get("configured") is not True or scheduler.get("last_error"):
+            issue("scheduler.health", "critical", "canonical_scheduler_degraded")
+        elif (
+            not scheduler.get("running_job")
+            and not fresh(
+                scheduler.get("last_success_at"),
+                now,
+                policy["stale_after_seconds"],
+            )
+            and not fresh(
+                scheduler.get("started_at"),
+                now,
+                policy["stale_after_seconds"],
+            )
+        ):
+            issue("scheduler.stale", "critical", "scheduler_tick_stale")
     # Use only the latest current execution per workflow; old misses remain history.
     latest: dict[str, dict] = {}
-    for row in observation.get("runs", []):
-        key = row.get("workflow_id", "")
-        if key not in latest or _workflow_run_key(row) > _workflow_run_key(latest[key]):
-            latest[key] = row
+    if scheduler_enabled:
+        for row in observation.get("runs", []):
+            key = row.get("workflow_id", "")
+            if key not in latest or _workflow_run_key(row) > _workflow_run_key(latest[key]):
+                latest[key] = row
     for key, row in latest.items():
         if key.startswith("verification.") or not fresh(row.get("scheduled_at"), now, 86400):
             continue

@@ -1,11 +1,11 @@
 {
-  "version": "iren-control-v2.0.0",
+  "version": "iren-control-v2.1.0",
   "tick_seconds": 60,
   "stale_after_seconds": 180,
   "failure_observations": 2,
   "recovery_observations": 3,
   "expected_strategy": "LIVE-2026-09-25-003",
-  "crypto_execution_expected": false,
+  "crypto_live_broker_writes_expected": false,
   "capabilities": [
     "observe",
     "classify",
