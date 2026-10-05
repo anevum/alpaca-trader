@@ -225,6 +225,7 @@ def _engine_settings():
         crypto_calibration_version="crypto-calibration-test-v1",
         crypto_regime_version="nostra-crypto-regime-v1",
         crypto_execution_adapter_version="alpaca-crypto-execution-v1",
+        crypto_execution_mode="validated",
         crypto_calibration_promoted=True,
         crypto_max_quote_age_seconds=15,
         crypto_min_quoted_depth=Decimal("0"),
