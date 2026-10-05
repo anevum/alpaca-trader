@@ -95,6 +95,7 @@ create table if not exists anevum.broker_accounts (
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     unique (provider, environment, provider_account_id),
+    unique (tenant_id, broker_account_id),
     check (provider = 'ALPACA'),
     check (environment in ('PAPER','LIVE'))
 );
@@ -128,9 +129,11 @@ create index if not exists anevum_broker_authorizations_account_idx
 
 create table if not exists anevum.capital_allocations (
     allocation_id uuid primary key default gen_random_uuid(),
-    tenant_id uuid not null references anevum.tenants(tenant_id),
-    broker_account_id uuid not null references anevum.broker_accounts(broker_account_id),
+    tenant_id uuid not null,
+    broker_account_id uuid not null,
     allocation_mode text not null default 'PERCENT_WITH_CAP',
+    foreign key (tenant_id, broker_account_id)
+        references anevum.broker_accounts(tenant_id, broker_account_id),
     allocation_fraction numeric(9,8) not null,
     absolute_cap numeric(30,10) not null,
     status text not null default 'ACTIVE',
@@ -150,9 +153,11 @@ create unique index if not exists anevum_capital_allocations_active_uidx
 
 create table if not exists anevum.risk_profiles (
     risk_profile_id uuid primary key default gen_random_uuid(),
-    tenant_id uuid not null references anevum.tenants(tenant_id),
-    broker_account_id uuid not null references anevum.broker_accounts(broker_account_id),
+    tenant_id uuid not null,
+    broker_account_id uuid not null,
     max_position_fraction numeric(9,8) not null,
+    foreign key (tenant_id, broker_account_id)
+        references anevum.broker_accounts(tenant_id, broker_account_id),
     max_gross_exposure_fraction numeric(9,8) not null,
     max_daily_loss_fraction numeric(9,8) not null,
     max_drawdown_fraction numeric(9,8) not null,
@@ -210,9 +215,11 @@ create table if not exists anevum.strategy_releases (
 
 create table if not exists anevum.tenant_strategy_assignments (
     assignment_id uuid primary key default gen_random_uuid(),
-    tenant_id uuid not null references anevum.tenants(tenant_id),
-    broker_account_id uuid not null references anevum.broker_accounts(broker_account_id),
+    tenant_id uuid not null,
+    broker_account_id uuid not null,
     strategy_release_id text not null references anevum.strategy_releases(strategy_release_id),
+    foreign key (tenant_id, broker_account_id)
+        references anevum.broker_accounts(tenant_id, broker_account_id),
     status text not null default 'ACTIVE',
     assigned_at timestamptz not null default now(),
     unassigned_at timestamptz,
@@ -227,9 +234,11 @@ create unique index if not exists anevum_tenant_strategy_assignments_active_uidx
 
 create table if not exists rhen.account_order_intents (
     order_intent_id text primary key,
-    tenant_id uuid not null references anevum.tenants(tenant_id),
-    broker_account_id uuid not null references anevum.broker_accounts(broker_account_id),
+    tenant_id uuid not null,
+    broker_account_id uuid not null,
     strategy_release_id text not null references anevum.strategy_releases(strategy_release_id),
+    foreign key (tenant_id, broker_account_id)
+        references anevum.broker_accounts(tenant_id, broker_account_id),
     signal_id text not null,
     symbol text not null,
     side text not null,
