@@ -20,6 +20,7 @@ create table if not exists rhen.strategy_signals (
     metadata jsonb not null default '{}'::jsonb,
     created_at timestamptz not null default now(),
     check (action in ('ENTER_LONG','EXIT_LONG')),
+    check (position('/' in symbol) > 0),
     check (reference_price > 0),
     check (
         (action = 'ENTER_LONG'
