@@ -33,6 +33,7 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
         regime_version: str = "nostra-crypto-regime-v1",
         execution_adapter_version: str = "alpaca-crypto-execution-v1",
         feature_volatility_lookback: int = 30,
+        min_fast_slow_gap_pct: Decimal = Decimal("0"),
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -43,6 +44,7 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
         self.regime_version = regime_version
         self.execution_adapter_version = execution_adapter_version
         self.feature_volatility_lookback = feature_volatility_lookback
+        self.min_fast_slow_gap_pct = min_fast_slow_gap_pct
 
     @staticmethod
     def _vwap(bars: list[dict[str, Any]]) -> Decimal:
@@ -128,9 +130,13 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
             (current_close - rolling_vwap) / rolling_vwap
             if rolling_vwap > 0 else Decimal("0")
         )
+        fast_slow_gap_pct = (
+            (fast_average - slow_average) / slow_average
+            if slow_average > 0 else Decimal("0")
+        )
 
         checks = {
-            "fast_above_slow": fast_average > slow_average,
+            "fast_above_slow": fast_slow_gap_pct >= self.min_fast_slow_gap_pct,
             "rising": current_close > previous_close,
             "momentum_ok": momentum_pct >= self.min_momentum_pct,
             "vwap_ok": (
@@ -182,6 +188,8 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
             "rolling_vwap": str(rolling_vwap),
             "momentum_pct": str(momentum_pct),
             "vwap_edge_pct": str(vwap_edge_pct),
+            "fast_slow_gap_pct": str(fast_slow_gap_pct),
+            "min_fast_slow_gap_pct": str(self.min_fast_slow_gap_pct),
             "checks": checks,
             "confirmations": {},
             "regime_confirmations": {},
