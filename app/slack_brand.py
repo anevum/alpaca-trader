@@ -2,43 +2,64 @@ from __future__ import annotations
 
 import re
 
-SYSTEM_EMOJI = {
+# RHEN v3 notification language.
+#
+# Runtime notifications use one installed RHEN brand mark plus a small set of
+# universal semantic emoji. The retired IREN/GRAEN/NOSTRA/VELUM names remain
+# accepted as compatibility inputs, but they no longer select separate brands.
+BRAND_EMOJI = {
     "ANEVUM": ":anevum:",
-    "IREN": ":iren:",
     "RHEN": ":rhen:",
-    "NOSTRA": ":nostra:",
-    "GRAEN": ":graen:",
-    "VELUM": ":velum:",
 }
 
-IREN_STATE_EMOJI = {
-    "HEALTHY": ":iren:",
-    "DEGRADED": ":iren_alert:",
-    "INCIDENT": ":iren_alert:",
+LEGACY_SYSTEM_MODULE = {
+    "RHEN": "EXECUTION",
+    "IREN": "CONTROL",
+    "GRAEN": "RESEARCH",
+    "VELUM": "REPLAY",
+    "NOSTRA": "FORECAST",
+}
+
+MODULE_EMOJI = {
+    "EXECUTION": "↗️",
+    "CONTROL": "🎛️",
+    "RESEARCH": "🧪",
+    "REPLAY": "↺",
+    "FORECAST": "🔭",
+    "CORE": "🗄️",
+    "WORKER": "⚙️",
+    "COMMAND": "🖥️",
+}
+
+STATUS_EMOJI = {
+    "ACTIVE": "🔵",
+    "SUCCESS": "✅",
+    "WARNING": "⚠️",
+    "CRITICAL": "🔴",
+    "WAITING": "⏳",
+    "RISK": "🛡️",
+    "EVIDENCE": "◇",
 }
 
 _ROUTE_SYSTEM = {
     "iren-control": "IREN",
     "rhen-live": "RHEN",
     "rhen-daily": "RHEN",
-    "rhen-research": "RHEN",
+    "rhen-research": "GRAEN",
     "rhen-alerts": "RHEN",
 }
 
-_KNOWN_PREFIX = re.compile(
-    r"^:(?:anevum|iren|rhen|nostra|graen|velum)(?:_[a-z0-9_]+)?:\s*",
-    re.IGNORECASE,
-)
+_PREFIX_RE = re.compile(r"^:(?:anevum|rhen):\s*", re.IGNORECASE)
 
 
 def infer_system(text: str, *, route: str | None = None) -> str:
-    """Infer the subsystem represented by an operational Slack message."""
+    """Infer a legacy compatibility owner from message text or route."""
     upper = str(text or "").upper()
-    for system in ("IREN", "RHEN", "NOSTRA", "GRAEN", "VELUM", "ANEVUM"):
+    for system in ("RHEN", "IREN", "GRAEN", "VELUM", "NOSTRA", "ANEVUM"):
         if (
             upper.startswith(f"*{system} //")
             or upper.startswith(f"{system} //")
-            or f"*{system} //" in upper[:80]
+            or f"*{system} //" in upper[:100]
         ):
             return system
     if route:
@@ -47,16 +68,11 @@ def infer_system(text: str, *, route: str | None = None) -> str:
 
 
 def infer_iren_state(text: str) -> str | None:
-    """Map IREN operational wording into broad health states."""
+    """Compatibility helper for old IREN/control health wording."""
     upper = str(text or "").upper()
     if any(
         token in upper
-        for token in (
-            "// RECOVERED //",
-            "// SUCCEEDED",
-            " HEALTHY",
-            "STATE: HEALTHY",
-        )
+        for token in ("// RECOVERED //", "// SUCCEEDED", " HEALTHY", "STATE: HEALTHY")
     ):
         return "HEALTHY"
     if any(
@@ -72,14 +88,7 @@ def infer_iren_state(text: str) -> str | None:
         )
     ):
         return "INCIDENT"
-    if any(
-        token in upper
-        for token in (
-            "DEGRADED",
-            "// WARNING",
-            " WARNING",
-        )
-    ):
+    if any(token in upper for token in ("DEGRADED", "// WARNING", " WARNING")):
         return "DEGRADED"
     return None
 
@@ -88,116 +97,68 @@ def _word(upper: str, token: str) -> bool:
     return re.search(rf"\b{re.escape(token)}\b", upper) is not None
 
 
+def system_module(system: str | None) -> str:
+    """Map legacy subsystem keys to their RHEN v3 module identity."""
+    return LEGACY_SYSTEM_MODULE.get(str(system or "RHEN").upper(), "EXECUTION")
+
+
 def infer_semantic_emoji(
     text: str,
     *,
     system: str,
     iren_state: str | None = None,
 ) -> str:
-    """Choose the most specific installed ANEVUM Slack emoji for a message."""
+    """Return one stable semantic emoji for an ANEVUM/RHEN notification."""
     upper = str(text or "").upper()
-    resolved = system.upper()
+    resolved = str(system or "RHEN").upper()
 
-    if resolved == "IREN":
-        if any(token in upper for token in ("FAILED", "FAILURE", "ERROR")):
-            return ":iren_failed:"
-        if any(token in upper for token in ("WAITING", "MISSED", "STALE", "PENDING", "QUEUED")):
-            return ":iren_waiting:"
-        if any(token in upper for token in ("CONFIG", "DRIFT")):
-            return ":iren_config:"
-        if any(token in upper for token in ("WORKING", "RUNNING", "STARTED", "STARTING")):
-            return ":iren_working:"
-        if any(
-            token in upper
-            for token in (
-                "ALERT",
-                "DEGRADED",
-                "WARNING",
-                "CRITICAL",
-                "INCIDENT",
-                "// OPEN //",
-                "// ESCALATED //",
-                "ATTENTION_REQUIRED",
-            )
-        ):
-            return ":iren_alert:"
-        state = (iren_state or infer_iren_state(text) or "").upper()
-        if state in IREN_STATE_EMOJI:
-            return IREN_STATE_EMOJI[state]
-        return ":iren:"
-
-    if resolved == "RHEN":
-        if _word(upper, "BUY"):
-            return ":rhen_buy:"
-        if _word(upper, "SELL"):
-            return ":rhen_sell:"
-        if any(token in upper for token in ("EVIDENCE", "PERSISTENCE", "TELEMETRY")):
-            return ":rhen_evidence:"
-        if any(token in upper for token in ("RISK", "PROTECTION", "BREAKER", "BLOCKED", "STOP")):
-            return ":rhen_risk:"
-        if "SCAN" in upper:
-            return ":rhen_scan:"
-        if any(token in upper for token in ("EXECUTION", "SUBMITTED", "ORDER")):
-            return ":rhen_execution:"
-        if any(token in upper for token in ("LIVE", "ONLINE", "MARKET OPEN", "MARKET CLOSED")):
-            return ":rhen_live:"
-        return ":rhen:"
-
-    if resolved == "GRAEN":
-        if any(token in upper for token in ("REJECTED", "REJECT")):
-            return ":graen_rejected:"
-        if any(token in upper for token in ("VALIDATED", "VALIDATION", "PROMOTION_READY")):
-            return ":graen_validated:"
-        if "HYPOTHESIS" in upper:
-            return ":graen_hypothesis:"
-        if "TEST" in upper:
-            return ":graen_test:"
-        if any(token in upper for token in ("RESEARCH", "DISCOVERY", "EXPERIMENT")):
-            return ":graen_research:"
-        return ":graen:"
-
-    if resolved == "NOSTRA":
-        if "FORECAST" in upper:
-            return ":nostra_forecast:"
-        if "SIGNAL" in upper:
-            return ":nostra_signal:"
-        if _word(upper, "UP"):
-            return ":nostra_up:"
-        if _word(upper, "DOWN"):
-            return ":nostra_down:"
-        if "NEUTRAL" in upper:
-            return ":nostra_neutral:"
-        return ":nostra:"
-
-    if resolved == "VELUM":
-        if any(token in upper for token in ("FAILED", "FAILURE", "ERROR")):
-            return ":velum_fail:"
-        if "ARCHIVE" in upper:
-            return ":velum_archive:"
-        if "DATA" in upper:
-            return ":velum_data:"
-        if "REPLAY" in upper:
-            return ":velum_replay:"
-        if any(token in upper for token in ("PASS", "PASSED", "SUCCEEDED", "COMPLETE", "COMPLETED")):
-            return ":velum_pass:"
-        return ":velum:"
+    if any(token in upper for token in ("FAILED", "FAILURE", "ERROR", "CRITICAL")):
+        return STATUS_EMOJI["CRITICAL"]
+    if any(token in upper for token in ("BLOCKED", "BREAKER", "STOP", "RISK", "PROTECTION")):
+        return STATUS_EMOJI["RISK"]
+    if any(token in upper for token in ("DEGRADED", "WARNING", "ATTENTION_REQUIRED", "// OPEN //", "// ESCALATED //")):
+        return STATUS_EMOJI["WARNING"]
+    if any(token in upper for token in ("WAITING", "MISSED", "STALE", "PENDING", "QUEUED")):
+        return STATUS_EMOJI["WAITING"]
+    if any(token in upper for token in ("RECOVERED", "SUCCEEDED", "COMPLETE", "COMPLETED", "VALIDATED", "PASSED", " SAFE")):
+        return STATUS_EMOJI["SUCCESS"]
 
     if resolved == "ANEVUM":
-        if any(token in upper for token in ("DEPLOY", "RELEASE")):
-            return ":anevum_deploy:"
-        if any(token in upper for token in ("MAINTENANCE", "REPAIR", "HOTFIX")):
-            return ":anevum_maintenance:"
-        if any(token in upper for token in ("WARNING", "FAILED", "FAILURE", "ERROR", "DEGRADED")):
-            return ":anevum_warning:"
-        if any(token in upper for token in ("PRIORITY", "ATTENTION_REQUIRED", "URGENT")):
-            return ":anevum_priority:"
-        if any(token in upper for token in ("COMPLETE", "COMPLETED", "SUCCEEDED", "RECOVERED")):
-            return ":anevum_complete:"
-        if "MESSAGE" in upper:
-            return ":anevum_message:"
-        return ":anevum:"
+        if any(token in upper for token in ("DEPLOY", "RELEASE", "MAINTENANCE", "REPAIR", "HOTFIX")):
+            return STATUS_EMOJI["ACTIVE"]
+        return "◆"
 
-    return SYSTEM_EMOJI.get(resolved, SYSTEM_EMOJI["ANEVUM"])
+    if _word(upper, "BUY") or any(token in upper for token in ("EXECUTION", "SUBMITTED", "ORDER", "SCAN")):
+        return MODULE_EMOJI["EXECUTION"]
+    if _word(upper, "SELL"):
+        return "↘️"
+    if any(token in upper for token in ("EVIDENCE", "PERSISTENCE", "TELEMETRY", "DATA")):
+        return STATUS_EMOJI["EVIDENCE"]
+    if any(token in upper for token in ("RESEARCH", "DISCOVERY", "EXPERIMENT", "HYPOTHESIS", "TEST", "PROMOTION_READY")):
+        return MODULE_EMOJI["RESEARCH"]
+    if "REPLAY" in upper or "ARCHIVE" in upper:
+        return MODULE_EMOJI["REPLAY"]
+    if any(token in upper for token in ("FORECAST", "SIGNAL", "REGIME", "CALIBRATION")):
+        return MODULE_EMOJI["FORECAST"]
+    if any(token in upper for token in ("CONFIG", "DRIFT", "CONTROL", "ASC")):
+        return MODULE_EMOJI["CONTROL"]
+    if any(token in upper for token in ("CORE", "STORE", "SQLITE")):
+        return MODULE_EMOJI["CORE"]
+    if any(token in upper for token in ("WORKER", "AGENT")):
+        return MODULE_EMOJI["WORKER"]
+    if "COMMAND" in upper:
+        return MODULE_EMOJI["COMMAND"]
+    if any(token in upper for token in ("LIVE", "ONLINE", "MARKET OPEN", "MARKET CLOSED", "RUNNING", "STARTED", "STARTING")):
+        return STATUS_EMOJI["ACTIVE"]
+
+    state = (iren_state or infer_iren_state(text) or "").upper()
+    if state == "HEALTHY":
+        return STATUS_EMOJI["SUCCESS"]
+    if state == "DEGRADED":
+        return STATUS_EMOJI["WARNING"]
+    if state == "INCIDENT":
+        return STATUS_EMOJI["CRITICAL"]
+    return MODULE_EMOJI[system_module(resolved)]
 
 
 def emoji_prefix(
@@ -208,11 +169,13 @@ def emoji_prefix(
     iren_state: str | None = None,
 ) -> str:
     resolved_system = (system or infer_system(text, route=route)).upper()
-    return infer_semantic_emoji(
+    brand = BRAND_EMOJI["ANEVUM"] if resolved_system == "ANEVUM" else BRAND_EMOJI["RHEN"]
+    semantic = infer_semantic_emoji(
         text,
         system=resolved_system,
         iren_state=iren_state,
     )
+    return f"{brand} {semantic}"
 
 
 def decorate_slack_message(
@@ -222,31 +185,39 @@ def decorate_slack_message(
     route: str | None = None,
     iren_state: str | None = None,
 ) -> str:
-    """Prefix a Slack message with the most specific installed ANEVUM emoji.
+    """Prefix a Slack message with the canonical ANEVUM/RHEN v3 notification mark.
 
-    Existing branded messages are returned unchanged so routing layers may safely
-    call this helper more than once.
+    Existing v3 branded messages are returned unchanged so routing layers may
+    safely call this helper more than once.
     """
     message = str(text or "").strip()
-    if not message or _KNOWN_PREFIX.match(message):
+    if not message or _PREFIX_RE.match(message):
         return message
     return f"{emoji_prefix(message, system=system, route=route, iren_state=iren_state)} {message}"
 
 
-def event_system(kind: str | None) -> str:
-    """Resolve the subsystem identity for direct runtime event notifications."""
+def event_module(kind: str | None) -> str:
+    """Resolve a runtime event to a RHEN v3 module label."""
     normalized = str(kind or "").strip().lower()
     if normalized.startswith("nostra"):
-        return "NOSTRA"
+        return "FORECAST"
     if normalized.startswith("velum"):
-        return "VELUM"
+        return "REPLAY"
     if normalized.startswith("graen") or normalized in {
         "research_agent",
         "research_reporting",
         "research_scheduler",
         "crypto_promotion",
     }:
-        return "GRAEN"
+        return "RESEARCH"
     if normalized.startswith("iren") or normalized == "asc":
-        return "IREN"
+        return "CONTROL"
+    if normalized in {"persistence", "core", "store"}:
+        return "CORE"
+    return "EXECUTION"
+
+
+def event_system(kind: str | None) -> str:
+    """All production runtime events now belong to the RHEN product/runtime."""
+    _ = kind
     return "RHEN"
