@@ -626,7 +626,7 @@ class SchedulerRuntime:
         target = item.workflow["implementation_target"]
         session = item.details.get("session") or item.trigger_reference
 
-        if target == "trader_preflight":
+        if target == "rhen_preflight":
             local = await self._post(
                 self.rhen_url + "/preflight",
                 self.scheduler_headers,
@@ -644,14 +644,14 @@ class SchedulerRuntime:
                 )
             return {"local": local, "dependencies": dependencies}
 
-        if target == "trader_market_open":
+        if target == "rhen_market_open":
             return await self._post(
                 self.rhen_url + "/market-open",
                 self.scheduler_headers,
                 {"session": session, "scheduled_at": _iso(item.scheduled_at)},
             )
 
-        if target == "trader_session_close":
+        if target == "rhen_session_close":
             return await self._post(
                 self.rhen_url + "/session-close",
                 self.scheduler_headers,
@@ -659,7 +659,7 @@ class SchedulerRuntime:
                 timeout=300,
             )
 
-        if target == "research_agent_daily":
+        if target == "graen_daily_research":
             return await self._research_review("daily", str(session), invoke_model=True)
 
         if target == "weekly_operating_review":
@@ -751,13 +751,13 @@ class SchedulerRuntime:
         nostra = next(
             (
                 dict(row)
-                for row in self.registry.get("independent_runtimes", [])
+                for row in self.registry.get("hosted_subsystems", [])
                 if row.get("subsystem") == "NOSTRA"
             ),
             {
                 "subsystem": "NOSTRA",
-                "mode": "independent_autorun",
-                "scheduler_owned": False,
+                "mode": "rhen_hosted_autorun",
+                "scheduler_owned": True,
                 "health_owner": "IREN",
                 "research_only": True,
                 "execution_authority": False,
