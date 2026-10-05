@@ -8,6 +8,11 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
+from foundation.alpaca_broker_sandbox import (
+    AlpacaBrokerSandboxProvider,
+    sandbox_provider_status,
+)
+
 
 CURRENCY = "USD"
 SCHEMA_VERSION = "anevum-finance.v1"
@@ -685,6 +690,597 @@ def set_rhen_allocation(
     return result
 
 
+
+def _provider_account_status(value: Any) -> str:
+    status = str(value or "").strip().upper()
+    if status == "ACTIVE":
+        return "ACTIVE"
+    if status in {"DISABLED", "CLOSED", "REJECTED"}:
+        return "CLOSED" if status == "CLOSED" else "RESTRICTED"
+    return "PENDING"
+
+
+def _safe_provider_metadata(account: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "provider_status": str(account.get("status") or "").strip() or None,
+        "account_type": str(account.get("account_type") or "").strip() or None,
+        "currency": str(account.get("currency") or "").strip() or None,
+        "crypto_status": str(account.get("crypto_status") or "").strip() or None,
+    }
+
+
+def _provider_account_for_customer(
+    cur: psycopg.Cursor[Any],
+    *,
+    customer_id: Any,
+) -> tuple[Any, str] | None:
+    cur.execute(
+        """
+        select provider_account_id, provider_account_ref
+        from anevum.financial_provider_accounts
+        where customer_id=%s
+          and provider='ALPACA_BROKER'
+          and provider_environment='SANDBOX'
+          and status <> 'CLOSED'
+        order by created_at asc
+        limit 1
+        """,
+        (customer_id,),
+    )
+    row = cur.fetchone()
+    return (row[0], str(row[1])) if row else None
+
+
+def create_sandbox_provider_account(
+    database_url: str,
+    *,
+    command_subject: str,
+    application: dict[str, Any],
+) -> dict[str, Any]:
+    subject = _safe_key(command_subject, field="command_subject", max_length=320)
+    if not isinstance(application, dict) or not application:
+        raise ValueError("invalid_account_application")
+
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.cursor() as cur:
+            customer = _customer_row(cur, subject)
+            if not customer:
+                raise ValueError("financial_customer_not_initialized")
+            customer_id = customer[0]
+            existing = _provider_account_for_customer(cur, customer_id=customer_id)
+            if existing:
+                result = read_snapshot(database_url, command_subject=subject)
+                result["provider_account_existing"] = True
+                return result
+
+    provider = AlpacaBrokerSandboxProvider.from_env()
+    try:
+        account = provider.create_customer_account(application)
+    finally:
+        provider.close()
+
+    account_ref = _safe_key(account.get("id"), field="provider_account_ref", max_length=100)
+    status = _provider_account_status(account.get("status"))
+    metadata = _safe_provider_metadata(account)
+
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                customer = _customer_row(cur, subject)
+                if not customer:
+                    raise ValueError("financial_customer_not_initialized")
+                customer_id = customer[0]
+                cur.execute(
+                    """
+                    insert into anevum.financial_provider_accounts (
+                        customer_id, provider, provider_account_ref,
+                        provider_environment, status, metadata
+                    )
+                    values (%s,'ALPACA_BROKER',%s,'SANDBOX',%s,%s)
+                    on conflict (provider, provider_account_ref) do update
+                    set status=excluded.status,
+                        metadata=excluded.metadata,
+                        updated_at=now()
+                    """,
+                    (customer_id, account_ref, status, Jsonb(metadata)),
+                )
+                cur.execute(
+                    """
+                    insert into anevum.audit_log (
+                        actor_type, actor_id, system_key, action, object_type,
+                        object_id, details
+                    )
+                    values ('COMMAND_USER',%s,'FINANCE',
+                            'finance.sandbox_provider_account_create',
+                            'financial_provider_account',%s,%s)
+                    """,
+                    (
+                        subject,
+                        account_ref,
+                        Jsonb({
+                            "provider": "ALPACA_BROKER",
+                            "environment": "SANDBOX",
+                            "status": status,
+                        }),
+                    ),
+                )
+    result = read_snapshot(database_url, command_subject=subject)
+    result["provider_account_created"] = True
+    return result
+
+
+def refresh_sandbox_provider_account(
+    database_url: str,
+    *,
+    command_subject: str,
+) -> dict[str, Any]:
+    subject = _safe_key(command_subject, field="command_subject", max_length=320)
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.cursor() as cur:
+            customer = _customer_row(cur, subject)
+            if not customer:
+                raise ValueError("financial_customer_not_initialized")
+            provider_row = _provider_account_for_customer(cur, customer_id=customer[0])
+            if not provider_row:
+                raise ValueError("sandbox_provider_account_not_found")
+            provider_account_id, provider_account_ref = provider_row
+
+    provider = AlpacaBrokerSandboxProvider.from_env()
+    try:
+        account = provider.get_account(provider_account_ref)
+    finally:
+        provider.close()
+
+    status = _provider_account_status(account.get("status"))
+    metadata = _safe_provider_metadata(account)
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update anevum.financial_provider_accounts
+                    set status=%s, metadata=%s, updated_at=now()
+                    where provider_account_id=%s
+                    """,
+                    (status, Jsonb(metadata), provider_account_id),
+                )
+    return read_snapshot(database_url, command_subject=subject)
+
+
+def create_sandbox_bank_link(
+    database_url: str,
+    *,
+    command_subject: str,
+    processor_token: str,
+    bank_account_type: str = "CHECKING",
+    nickname: str | None = None,
+) -> dict[str, Any]:
+    subject = _safe_key(command_subject, field="command_subject", max_length=320)
+    token = _safe_key(processor_token, field="processor_token", max_length=1000)
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.cursor() as cur:
+            customer = _customer_row(cur, subject)
+            if not customer:
+                raise ValueError("financial_customer_not_initialized")
+            customer_id = customer[0]
+            provider_row = _provider_account_for_customer(cur, customer_id=customer_id)
+            if not provider_row:
+                raise ValueError("sandbox_provider_account_not_found")
+            provider_account_id, provider_account_ref = provider_row
+
+    provider = AlpacaBrokerSandboxProvider.from_env()
+    try:
+        link = provider.create_bank_link(
+            provider_account_ref,
+            {
+                "processor_token": token,
+                "bank_account_type": bank_account_type,
+                "nickname": nickname,
+            },
+        )
+    finally:
+        provider.close()
+
+    relationship_ref = _safe_key(
+        link.get("id"),
+        field="provider_relationship_ref",
+        max_length=100,
+    )
+    raw_status = str(link.get("status") or "").strip().upper()
+    status = "ACTIVE" if raw_status in {"APPROVED", "ACTIVE"} else "PENDING"
+    account_type = str(link.get("account_type") or bank_account_type or "").strip().upper()[:20] or None
+    display_name = str(nickname or "Linked bank").strip()[:120]
+
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into anevum.financial_bank_links (
+                        customer_id, provider_account_id, provider,
+                        provider_relationship_ref, bank_account_type,
+                        display_name, status, metadata
+                    )
+                    values (%s,%s,'ALPACA_BROKER',%s,%s,%s,%s,%s)
+                    on conflict (provider, provider_relationship_ref) do update
+                    set bank_account_type=excluded.bank_account_type,
+                        display_name=excluded.display_name,
+                        status=excluded.status,
+                        metadata=excluded.metadata,
+                        updated_at=now()
+                    """,
+                    (
+                        customer_id,
+                        provider_account_id,
+                        relationship_ref,
+                        account_type,
+                        display_name,
+                        status,
+                        Jsonb({"provider_status": raw_status or None}),
+                    ),
+                )
+                cur.execute(
+                    """
+                    insert into anevum.audit_log (
+                        actor_type, actor_id, system_key, action,
+                        object_type, object_id, details
+                    )
+                    values ('COMMAND_USER',%s,'FINANCE','finance.sandbox_bank_link',
+                            'financial_bank_link',%s,%s)
+                    """,
+                    (
+                        subject,
+                        relationship_ref,
+                        Jsonb({
+                            "provider": "ALPACA_BROKER",
+                            "environment": "SANDBOX",
+                            "status": status,
+                        }),
+                    ),
+                )
+    return read_snapshot(database_url, command_subject=subject)
+
+
+def create_sandbox_provider_transfer(
+    database_url: str,
+    *,
+    command_subject: str,
+    direction: str,
+    amount: Any,
+    bank_link_id: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    subject = _safe_key(command_subject, field="command_subject", max_length=320)
+    key = _safe_key(idempotency_key, field="idempotency_key")
+    transfer_amount = money(amount)
+    transfer_direction = str(direction or "").strip().upper()
+    if transfer_direction not in {"DEPOSIT", "WITHDRAWAL"}:
+        raise ValueError("invalid_transfer_direction")
+
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.cursor() as cur:
+            customer = _customer_row(cur, subject)
+            if not customer:
+                raise ValueError("financial_customer_not_initialized")
+            customer_id = customer[0]
+            provider_row = _provider_account_for_customer(cur, customer_id=customer_id)
+            if not provider_row:
+                raise ValueError("sandbox_provider_account_not_found")
+            provider_account_id, provider_account_ref = provider_row
+            cur.execute(
+                """
+                select provider_relationship_ref
+                from anevum.financial_bank_links
+                where bank_link_id=%s::uuid
+                  and customer_id=%s
+                  and provider_account_id=%s
+                  and provider='ALPACA_BROKER'
+                  and status in ('PENDING','ACTIVE')
+                """,
+                (bank_link_id, customer_id, provider_account_id),
+            )
+            link_row = cur.fetchone()
+            if not link_row:
+                raise ValueError("sandbox_bank_link_not_found")
+            relationship_ref = str(link_row[0])
+            available_account_id, available_ledger_id = _account_ledger(
+                cur,
+                customer_id=customer_id,
+                account_kind="AVAILABLE_CASH",
+            )
+            if transfer_direction == "WITHDRAWAL":
+                available = _ledger_balance(cur, ledger_account_id=available_ledger_id)
+                if available < transfer_amount:
+                    raise ValueError("insufficient_available_cash")
+            transfer_key = f"alpaca-sandbox-transfer:{subject}:{key}"
+            cur.execute(
+                """
+                select provider_reference, amount, direction
+                from anevum.financial_transfers
+                where idempotency_key=%s
+                """,
+                (transfer_key,),
+            )
+            existing = cur.fetchone()
+            if existing:
+                if Decimal(str(existing[1])) != transfer_amount or str(existing[2]) != transfer_direction:
+                    raise ValueError("idempotency_conflict")
+                result = read_snapshot(database_url, command_subject=subject)
+                result["idempotent"] = True
+                return result
+
+    provider = AlpacaBrokerSandboxProvider.from_env()
+    try:
+        transfer = provider.create_transfer(
+            provider_account_ref,
+            {
+                "relationship_id": relationship_ref,
+                "amount": str(transfer_amount),
+                "direction": "INCOMING" if transfer_direction == "DEPOSIT" else "OUTGOING",
+            },
+        )
+    finally:
+        provider.close()
+
+    transfer_ref = _safe_key(transfer.get("id"), field="provider_transfer_ref", max_length=100)
+    provider_status = str(transfer.get("status") or "").strip().upper()
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into anevum.financial_transfers (
+                        idempotency_key, customer_id, financial_account_id,
+                        provider_account_id, direction, provider,
+                        provider_environment, currency, amount, status,
+                        provider_reference, metadata
+                    )
+                    values (%s,%s,%s,%s,%s,'ALPACA_BROKER','SANDBOX',
+                            %s,%s,'PENDING',%s,%s)
+                    on conflict (idempotency_key) do nothing
+                    """,
+                    (
+                        transfer_key,
+                        customer_id,
+                        available_account_id,
+                        provider_account_id,
+                        transfer_direction,
+                        CURRENCY,
+                        transfer_amount,
+                        transfer_ref,
+                        Jsonb({"provider_status": provider_status or None}),
+                    ),
+                )
+                cur.execute(
+                    """
+                    select transfer_id
+                    from anevum.financial_transfers
+                    where idempotency_key=%s
+                    """,
+                    (transfer_key,),
+                )
+                transfer_id = cur.fetchone()[0]
+                cur.execute(
+                    """
+                    insert into anevum.financial_transfer_events (
+                        event_key, transfer_id, event_type, status,
+                        provider_reference, payload
+                    )
+                    values (%s,%s,'provider_transfer_requested','PENDING',%s,%s)
+                    on conflict (event_key) do nothing
+                    """,
+                    (
+                        f"{transfer_ref}:requested",
+                        transfer_id,
+                        transfer_ref,
+                        Jsonb({
+                            "provider": "ALPACA_BROKER",
+                            "environment": "SANDBOX",
+                            "provider_status": provider_status or None,
+                        }),
+                    ),
+                )
+    result = read_snapshot(database_url, command_subject=subject)
+    result["provider_transfer_created"] = True
+    return result
+
+
+def _settle_provider_transfer(
+    cur: psycopg.Cursor[Any],
+    *,
+    transfer_id: Any,
+    transfer_direction: str,
+    amount: Decimal,
+    provider_reference: str,
+    available_ledger_id: Any,
+) -> Any:
+    cur.execute(
+        """
+        select ledger_account_id
+        from anevum.financial_ledger_accounts
+        where account_code='SYSTEM:SANDBOX:CUSTODIAN_CASH:USD'
+          and status='ACTIVE'
+        """
+    )
+    system_row = cur.fetchone()
+    if not system_row:
+        raise ValueError("sandbox_custodian_ledger_missing")
+    system_ledger_id = system_row[0]
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "action": "provider_transfer_settlement",
+        "provider": "ALPACA_BROKER",
+        "environment": "SANDBOX",
+        "provider_reference": provider_reference,
+        "direction": transfer_direction,
+        "amount": str(amount),
+        "currency": CURRENCY,
+    }
+    transaction_id, duplicate = _insert_transaction(
+        cur,
+        transaction_key=f"alpaca-sandbox-settle:{provider_reference}",
+        transaction_type="SANDBOX_PROVIDER_TRANSFER",
+        payload=payload,
+        provider="ALPACA_BROKER",
+        provider_reference=provider_reference,
+        correlation_id=provider_reference,
+    )
+    if not duplicate:
+        if transfer_direction == "DEPOSIT":
+            entries = [
+                (transaction_id, system_ledger_id, 1, "DEBIT", amount, "sandbox provider cash"),
+                (transaction_id, available_ledger_id, 2, "CREDIT", amount, "customer available cash"),
+            ]
+        else:
+            available = _ledger_balance(cur, ledger_account_id=available_ledger_id)
+            if available < amount:
+                raise ValueError("insufficient_available_cash_at_settlement")
+            entries = [
+                (transaction_id, available_ledger_id, 1, "DEBIT", amount, "customer withdrawal"),
+                (transaction_id, system_ledger_id, 2, "CREDIT", amount, "sandbox provider cash release"),
+            ]
+        cur.executemany(
+            """
+            insert into anevum.financial_ledger_entries (
+                transaction_id, ledger_account_id, sequence, side, amount, memo
+            )
+            values (%s,%s,%s,%s,%s,%s)
+            """,
+            entries,
+        )
+    cur.execute(
+        """
+        update anevum.financial_transfers
+        set status='SETTLED',
+            ledger_transaction_id=%s,
+            settled_at=coalesce(settled_at,now()),
+            updated_at=now()
+        where transfer_id=%s
+        """,
+        (transaction_id, transfer_id),
+    )
+    return transaction_id
+
+
+def sync_sandbox_provider_transfers(
+    database_url: str,
+    *,
+    command_subject: str,
+) -> dict[str, Any]:
+    subject = _safe_key(command_subject, field="command_subject", max_length=320)
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.cursor() as cur:
+            customer = _customer_row(cur, subject)
+            if not customer:
+                raise ValueError("financial_customer_not_initialized")
+            customer_id = customer[0]
+            provider_row = _provider_account_for_customer(cur, customer_id=customer_id)
+            if not provider_row:
+                raise ValueError("sandbox_provider_account_not_found")
+            _, provider_account_ref = provider_row
+            cur.execute(
+                """
+                select transfer_id, direction, amount, provider_reference
+                from anevum.financial_transfers
+                where customer_id=%s
+                  and provider='ALPACA_BROKER'
+                  and provider_environment='SANDBOX'
+                  and status='PENDING'
+                  and provider_reference is not null
+                order by created_at asc
+                limit 25
+                """,
+                (customer_id,),
+            )
+            pending = list(cur.fetchall())
+
+    provider = AlpacaBrokerSandboxProvider.from_env()
+    observations: list[tuple[Any, str, Decimal, str, str]] = []
+    try:
+        for transfer_id, direction, amount, provider_reference in pending:
+            remote = provider.get_transfer(provider_account_ref, str(provider_reference))
+            remote_status = str(remote.get("status") or "").strip().upper()
+            observations.append(
+                (
+                    transfer_id,
+                    str(direction),
+                    Decimal(str(amount)),
+                    str(provider_reference),
+                    remote_status,
+                )
+            )
+    finally:
+        provider.close()
+
+    settled = 0
+    failed = 0
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _, available_ledger_id = _account_ledger(
+                    cur,
+                    customer_id=customer_id,
+                    account_kind="AVAILABLE_CASH",
+                )
+                for transfer_id, direction, amount, provider_reference, remote_status in observations:
+                    if remote_status in {"COMPLETE", "COMPLETED", "SETTLED"}:
+                        _settle_provider_transfer(
+                            cur,
+                            transfer_id=transfer_id,
+                            transfer_direction=direction,
+                            amount=amount,
+                            provider_reference=provider_reference,
+                            available_ledger_id=available_ledger_id,
+                        )
+                        local_status = "SETTLED"
+                        settled += 1
+                    elif remote_status in {"CANCELED", "CANCELLED", "REJECTED", "FAILED", "RETURNED"}:
+                        local_status = "CANCELED" if remote_status in {"CANCELED", "CANCELLED"} else "FAILED"
+                        cur.execute(
+                            """
+                            update anevum.financial_transfers
+                            set status=%s, failure_code=%s, updated_at=now()
+                            where transfer_id=%s
+                            """,
+                            (local_status, remote_status, transfer_id),
+                        )
+                        failed += 1
+                    else:
+                        local_status = "PENDING"
+                        cur.execute(
+                            """
+                            update anevum.financial_transfers
+                            set metadata=metadata || %s, updated_at=now()
+                            where transfer_id=%s
+                            """,
+                            (Jsonb({"provider_status": remote_status or None}), transfer_id),
+                        )
+                    cur.execute(
+                        """
+                        insert into anevum.financial_transfer_events (
+                            event_key, transfer_id, event_type, status,
+                            provider_reference, payload
+                        )
+                        values (%s,%s,'provider_transfer_observed',%s,%s,%s)
+                        on conflict (event_key) do nothing
+                        """,
+                        (
+                            f"{provider_reference}:observed:{remote_status or 'UNKNOWN'}",
+                            transfer_id,
+                            local_status,
+                            provider_reference,
+                            Jsonb({"provider_status": remote_status or None}),
+                        ),
+                    )
+    result = read_snapshot(database_url, command_subject=subject)
+    result["sync"] = {
+        "observed": len(observations),
+        "settled": settled,
+        "failed": failed,
+    }
+    return result
+
+
 def read_snapshot(
     database_url: str,
     *,
@@ -706,7 +1302,9 @@ def read_snapshot(
                         "total": "0",
                     },
                     "allocation": None,
+                    "provider": sandbox_provider_status(),
                     "provider_accounts": [],
+                    "bank_links": [],
                     "recent_transfers": [],
                     "external_money_movement_enabled": False,
                     "live_execution_authorized": False,
@@ -786,6 +1384,30 @@ def read_snapshot(
 
             cur.execute(
                 """
+                select bank_link_id,provider,provider_relationship_ref,
+                       bank_account_type,display_name,status,metadata,updated_at
+                from anevum.financial_bank_links
+                where customer_id=%s
+                order by created_at asc
+                """,
+                (customer_id,),
+            )
+            bank_links = [
+                {
+                    "bank_link_id": str(row[0]),
+                    "provider": row[1],
+                    "provider_relationship_ref": row[2],
+                    "bank_account_type": row[3],
+                    "display_name": row[4],
+                    "status": row[5],
+                    "metadata": row[6] or {},
+                    "updated_at": row[7],
+                }
+                for row in cur.fetchall()
+            ]
+
+            cur.execute(
+                """
                 select transfer_id,direction,provider,provider_environment,currency,
                        amount,status,provider_reference,created_at,settled_at
                 from anevum.financial_transfers
@@ -824,7 +1446,9 @@ def read_snapshot(
             "total": str(total),
         },
         "allocation": allocation,
+        "provider": sandbox_provider_status(),
         "provider_accounts": provider_accounts,
+        "bank_links": bank_links,
         "recent_transfers": transfers,
         "external_money_movement_enabled": EXTERNAL_MONEY_MOVEMENT_ENABLED,
         "live_execution_authorized": LIVE_EXECUTION_AUTHORIZED,
@@ -851,6 +1475,48 @@ def handle_financial_action(
             amount=body.get("amount"),
             idempotency_key=body.get("idempotency_key"),
         )
+    if action == "sandbox_create_provider_account":
+        application = body.get("application")
+        if not isinstance(application, dict):
+            raise ValueError("invalid_account_application")
+        return create_sandbox_provider_account(
+            database_url,
+            command_subject=command_subject,
+            application=application,
+        )
+    if action == "sandbox_refresh_provider_account":
+        return refresh_sandbox_provider_account(
+            database_url,
+            command_subject=command_subject,
+        )
+    if action == "sandbox_link_bank":
+        return create_sandbox_bank_link(
+            database_url,
+            command_subject=command_subject,
+            processor_token=body.get("processor_token"),
+            bank_account_type=str(body.get("bank_account_type") or "CHECKING"),
+            nickname=str(body.get("nickname") or "").strip() or None,
+        )
+    if action == "sandbox_provider_transfer":
+        return create_sandbox_provider_transfer(
+            database_url,
+            command_subject=command_subject,
+            direction=str(body.get("direction") or ""),
+            amount=body.get("amount"),
+            bank_link_id=str(body.get("bank_link_id") or ""),
+            idempotency_key=body.get("idempotency_key"),
+        )
+    if action == "sandbox_sync_provider":
+        refreshed = refresh_sandbox_provider_account(
+            database_url,
+            command_subject=command_subject,
+        )
+        if refreshed.get("provider_accounts"):
+            return sync_sandbox_provider_transfers(
+                database_url,
+                command_subject=command_subject,
+            )
+        return refreshed
     if action == "set_rhen_allocation":
         return set_rhen_allocation(
             database_url,
