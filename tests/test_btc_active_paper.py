@@ -296,3 +296,96 @@ def test_negative_vwap_edge_allows_small_below_vwap_tolerance():
     assert signal.action == "buy"
     assert signal.metadata["checks"]["vwap_ok"] is True
     assert Decimal(signal.metadata["vwap_edge_pct"]) < 0
+
+
+
+def test_near_crossover_variant_can_buy_inside_bounded_gap():
+    now = datetime.now(timezone.utc)
+    closes = [
+        Decimal("100.00"),
+        Decimal("99.98"),
+        Decimal("99.96"),
+        Decimal("99.94"),
+        Decimal("99.92"),
+        Decimal("99.90"),
+        Decimal("99.91"),
+        Decimal("99.92"),
+        Decimal("99.94"),
+    ]
+    bars = []
+    for index, close in enumerate(closes):
+        stamp = now - timedelta(minutes=len(closes) - index + 1)
+        bars.append(
+            {
+                "t": stamp.isoformat(),
+                "o": str(close - Decimal("0.01")),
+                "h": str(close + Decimal("0.02")),
+                "l": str(close - Decimal("0.02")),
+                "c": str(close),
+                "v": "10",
+                "vw": "99.95",
+                "n": 5,
+            }
+        )
+
+    strict = CryptoRollingMomentumStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("-0.0005"),
+        min_vwap_edge_pct=Decimal("-0.002"),
+        min_fast_slow_gap_pct=Decimal("0"),
+        stop_pct=Decimal("0.005"),
+        target_pct=Decimal("0.010"),
+        entry_start=time(0, 0),
+        entry_cutoff=time(23, 59),
+        confirmation_symbols=(),
+        min_confirmations=0,
+        regime_window=5,
+        regime_min_confirmations=0,
+        regime_min_return_pct=Decimal("0"),
+    )
+    rebound = CryptoRollingMomentumStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("-0.0005"),
+        min_vwap_edge_pct=Decimal("-0.002"),
+        min_fast_slow_gap_pct=Decimal("-0.0005"),
+        stop_pct=Decimal("0.005"),
+        target_pct=Decimal("0.010"),
+        entry_start=time(0, 0),
+        entry_cutoff=time(23, 59),
+        confirmation_symbols=(),
+        min_confirmations=0,
+        regime_window=5,
+        regime_min_confirmations=0,
+        regime_min_return_pct=Decimal("0"),
+    )
+
+    strict_signal = strict.evaluate(
+        bars=bars,
+        confirmation_bars={},
+        symbol="BTC/USD",
+        has_position=False,
+        order_notional=Decimal("63"),
+        now=now,
+    )
+    rebound_signal = rebound.evaluate(
+        bars=bars,
+        confirmation_bars={},
+        symbol="BTC/USD",
+        has_position=False,
+        order_notional=Decimal("63"),
+        now=now,
+    )
+
+    assert strict_signal.action == "hold"
+    assert strict_signal.metadata["checks"]["fast_above_slow"] is False
+    assert rebound_signal.action == "buy"
+    assert rebound_signal.metadata["checks"]["fast_above_slow"] is True
+    assert Decimal(rebound_signal.metadata["fast_slow_gap_pct"]) < 0
+    assert Decimal(rebound_signal.metadata["fast_slow_gap_pct"]) >= Decimal("-0.0005")
+
+
+def test_default_trend_gap_remains_strict():
+    settings = _config()
+    assert settings.crypto_min_fast_slow_gap_pct == Decimal("0")
