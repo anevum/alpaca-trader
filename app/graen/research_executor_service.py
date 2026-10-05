@@ -3117,8 +3117,21 @@ class GraenResearchExecutor:
                 return await self._finalize(
                     problem=problem,
                     run=run,
-                    status="SUCCEEDED",
+                    status="WAITING",
                     summary=summary,
+                    next_stage=HYPOTHESIS_PLANNER_STAGE,
+                    next_metadata={
+                        "autonomous_loop_id": (
+                            metadata.get("autonomous_loop_id")
+                            or AUTONOMOUS_LOOP_ID
+                        ),
+                        "autonomous_continuation": True,
+                        "last_paper_validated_candidate_id": manifest.hypothesis_id,
+                        "last_paper_validation_activation_id": str(
+                            paper_activation.get("activation_id") or ""
+                        ),
+                        "protected_live_risk_decision_pending": True,
+                    },
                 )
 
             if checkpoint_status not in {"PAPER_COLLECTING", "QUEUED", "ACTIVE"}:
