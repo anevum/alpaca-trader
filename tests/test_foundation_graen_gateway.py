@@ -109,6 +109,25 @@ def test_crypto_promotion_artifact_requires_exact_execution_contract():
     assert crypto_promotion_matches_contract(missing_contract, contract) is False
 
 
+def test_strategy_manifest_shadow_and_paper_are_native_claimable_stages():
+    stages = {
+        "CRYPTO_HYPOTHESIS_PLANNER_V1",
+        "CRYPTO_STRATEGY_MANIFEST_DEVELOPMENT",
+        "CRYPTO_STRATEGY_MANIFEST_VALIDATION",
+        "CRYPTO_STRATEGY_MANIFEST_HOLDOUT",
+        "CRYPTO_STRATEGY_MANIFEST_VELUM",
+        "CRYPTO_STRATEGY_MANIFEST_FORWARD_SHADOW",
+        "CRYPTO_STRATEGY_MANIFEST_PAPER",
+    }
+    assert stages <= RESEARCH_STAGES
+    assert all(_is_native_research_stage(stage) for stage in stages)
+
+
+def test_dependency_and_engineering_wait_states_are_not_claimable():
+    assert "CRYPTO_WAITING_FOR_UNINSPECTED_CORPUS" not in RESEARCH_STAGES
+    assert "CRYPTO_ENGINEERING_REQUIRED" not in RESEARCH_STAGES
+
+
 def test_research_director_is_a_native_claimable_stage():
     stage = "CRYPTO_RESEARCH_DIRECTOR_V1"
     assert stage in RESEARCH_STAGES
