@@ -15,6 +15,7 @@ ACCOUNT_FIELDS = (
     "currency",
     "cash",
     "buying_power",
+    "non_marginable_buying_power",
     "portfolio_value",
     "equity",
     "last_equity",
