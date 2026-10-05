@@ -344,6 +344,7 @@ def tenant_execution_eligibility(
         customer_trading_consent=bool(facts["customer_trading_consent"]),
         customer_bot_enabled=bool(facts["customer_bot_enabled"]),
         iren_fleet_healthy=bool(facts["iren_fleet_healthy"]),
+        tenant_execution_runtime_ready=False,
         live_customer_authority=False,
     )
     return gate_input, evaluate_execution_eligibility(gate_input)
