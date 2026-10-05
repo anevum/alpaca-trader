@@ -708,3 +708,64 @@ def test_process_once_dispatches_forward_shadow_and_paper_to_strategy_lifecycle(
 
     asyncio.run(run_stage(service.STRATEGY_SHADOW_STAGE))
     asyncio.run(run_stage(service.STRATEGY_PAPER_STAGE))
+
+
+
+def test_orphaned_autonomous_validation_burns_evidence_and_returns_to_planner():
+    problem_id = "12121212-1212-1212-1212-121212121212"
+    run_id = "34343434-3434-3434-3434-343434343434"
+
+    class RecoveryGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.blocked = []
+
+        async def block_research_claim(self, **kwargs):
+            self.blocked.append(kwargs)
+            return {"ok": True, "status": "BLOCKED"}
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        gateway = RecoveryGateway()
+        runtime.gateway = gateway
+        result = await runtime._reconcile_orphaned_confirmatory_claim({
+            "problems": [{
+                "problem_id": problem_id,
+                "status": "RUNNING",
+                "metadata": {
+                    "autonomous_loop_id": service.AUTONOMOUS_LOOP_ID,
+                    "research_stage": service.STRATEGY_VALIDATION_STAGE,
+                    "strategy_manifest": {
+                        "hypothesis_id": "AUTO-LL-09",
+                    },
+                },
+            }],
+            "runs": [{
+                "run_id": run_id,
+                "problem_id": problem_id,
+                "status": "RUNNING",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }],
+            "runtime_state": {
+                "metadata": {
+                    "research_executor": {
+                        "active_problem_id": None,
+                    },
+                },
+            },
+        })
+
+        assert result["invalidated_stage"] == service.STRATEGY_VALIDATION_STAGE
+        assert result["candidate_id"] == "AUTO-LL-09"
+        assert result["opened_evidence_burned"] is True
+        assert result["next_stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert gateway.blocked[-1]["run_id"] == run_id
+        assert gateway.queued_stages[-1]["stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert gateway.queued_stages[-1]["metadata"]["sealed_stage_invalidated"] is True
+        assert gateway.queued_stages[-1]["metadata"]["opened_evidence_burned"] is True
+        assert gateway.queued_stages[-1]["metadata"]["falsified_candidate_id"] == "AUTO-LL-09"
+        assert gateway.artifacts[-1]["artifact_type"] == (
+            "CRYPTO_STRATEGY_CONFIRMATORY_ORPHAN_INVALIDATION"
+        )
+
+    asyncio.run(scenario())
