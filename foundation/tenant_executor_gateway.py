@@ -371,6 +371,40 @@ class TenantPaperExecutor:
                 columns = [column.name for column in cur.description]
         return dict(zip(columns, row))
 
+    def _existing_intent(
+        self,
+        *,
+        tenant_id: str,
+        broker_account_id: str,
+        signal: TenantPaperSignal,
+        signal_id: str,
+        side: str,
+    ) -> dict[str, Any] | None:
+        order_intent_id, _client_order_id = deterministic_order_identity(
+            tenant_id=tenant_id,
+            broker_account_id=broker_account_id,
+            strategy_release_id=signal.strategy_release_id,
+            signal_id=signal_id,
+            symbol=signal.symbol,
+            side=side,
+        )
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                select order_intent_id,status,requested_qty,requested_notional,
+                       risk_decision,client_order_id,broker_order_id,
+                       submitted_at,resolved_at,intent_kind
+                from rhen.account_order_intents
+                where order_intent_id=%s
+                """,
+                (order_intent_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            columns = [column.name for column in cur.description]
+        return dict(zip(columns, row))
+
     def _update_intent(
         self,
         order_intent_id: str,
@@ -736,6 +770,65 @@ class TenantPaperExecutor:
                 account=account,
                 positions=positions,
             )
+
+        existing_entry = self._existing_intent(
+            tenant_id=tenant_id,
+            broker_account_id=broker_account_id,
+            signal=signal,
+            signal_id=signal.signal_id,
+            side="BUY",
+        )
+        if existing_entry is not None:
+            existing_status = str(existing_entry.get("status") or "")
+            if existing_status == "RISK_REJECTED":
+                return {
+                    "tenant_id": tenant_id,
+                    "broker_account_id": broker_account_id,
+                    "action": "rejected",
+                    "reasons": list(
+                        dict(existing_entry.get("risk_decision") or {}).get("reasons") or []
+                    ),
+                    "order_intent_id": existing_entry["order_intent_id"],
+                    "replayed": True,
+                }
+            stored_qty = decimal_value(existing_entry.get("requested_qty"))
+            state, order = await self._recover_or_submit(
+                client=client,
+                intent=existing_entry,
+                submit=lambda: client.submit_crypto_market_buy(
+                    symbol=signal.symbol,
+                    qty=str(stored_qty),
+                    client_order_id=str(existing_entry["client_order_id"]),
+                ),
+            )
+            if state in {"ambiguous", "ambiguous_unresolved"}:
+                return {
+                    "tenant_id": tenant_id,
+                    "broker_account_id": broker_account_id,
+                    "action": "blocked",
+                    "reason": "ambiguous_submission_unresolved",
+                    "submission_state": state,
+                    "order_intent_id": existing_entry["order_intent_id"],
+                    "replayed": True,
+                }
+            protection = await self._ensure_protection(
+                client=client,
+                tenant_id=tenant_id,
+                broker_account_id=broker_account_id,
+                signal=signal,
+                buy_intent=existing_entry,
+                buy_order=order,
+            )
+            return {
+                "tenant_id": tenant_id,
+                "broker_account_id": broker_account_id,
+                "action": "reconciled",
+                "submission_state": state,
+                "order": order,
+                "protection": protection,
+                "order_intent_id": existing_entry["order_intent_id"],
+                "replayed": True,
+            }
 
         gate_input, gate = tenant_execution_eligibility(
             self.conn,
