@@ -1737,6 +1737,13 @@ class RhenCoreStore:
                     "family": metadata.get("family"),
                     "mechanism": metadata.get("mechanism"),
                     "campaign_id": metadata.get("campaign_id"),
+                    "target_lane": metadata.get("target_lane"),
+                    "supersedes_strategy_version_id": metadata.get(
+                        "supersedes_strategy_version_id"
+                    ),
+                    "release_requested": bool(
+                        metadata.get("release_requested", False)
+                    ),
                     "updated_at": problem.get("updated_at"),
                     "started_at": problem.get("started_at"),
                     "completed_at": problem.get("completed_at"),
@@ -1806,16 +1813,27 @@ class RhenCoreStore:
             )
 
         candidate = None
-        selected_problem = problems[0] if problems else None
+        active_candidate_states = {"RUNNING", "WAITING", "QUEUED", "BLOCKED"}
+        selected_problem = next(
+            (
+                row
+                for row in problems
+                if str(row.get("status") or "").upper() in active_candidate_states
+                or row.get("release_requested") is True
+            ),
+            None,
+        )
         if selected_problem is not None:
             domain = str(selected_problem.get("domain") or "").upper()
-            lane = (
-                "crypto"
-                if "CRYPTO" in domain
-                else "equities"
-                if "EQUITY" in domain or "STOCK" in domain
-                else "unknown"
-            )
+            lane = str(selected_problem.get("target_lane") or "").lower()
+            if lane not in {"crypto", "equities"}:
+                lane = (
+                    "crypto"
+                    if "CRYPTO" in domain
+                    else "equities"
+                    if "EQUITY" in domain or "STOCK" in domain
+                    else "unknown"
+                )
             selected_run = next(
                 (
                     row
@@ -1840,6 +1858,12 @@ class RhenCoreStore:
                 "updated_at": selected_problem.get("updated_at"),
                 "started_at": selected_problem.get("started_at"),
                 "completed_at": selected_problem.get("completed_at"),
+                "supersedes_strategy_version_id": (
+                    selected_problem.get("supersedes_strategy_version_id")
+                ),
+                "release_requested": bool(
+                    selected_problem.get("release_requested", False)
+                ),
             }
 
         validation = None
@@ -1869,7 +1893,12 @@ class RhenCoreStore:
         if candidate:
             release_status = "HOLD"
             reason = "Candidate has not completed validation."
-            if candidate_status in {"FAILED", "CANCELLED", "BLOCKED"}:
+            supersedes = candidate.get("supersedes_strategy_version_id")
+            if not supersedes:
+                reason = (
+                    "Candidate has no explicit production supersession target."
+                )
+            elif candidate_status in {"FAILED", "CANCELLED", "BLOCKED"}:
                 release_status = "REJECTED"
                 reason = "Candidate research is not eligible for promotion."
             elif same_problem and validation_status == "FAILED":
@@ -1879,6 +1908,7 @@ class RhenCoreStore:
                 candidate_status in {"SUCCEEDED", "COMPLETE", "COMPLETED"}
                 and same_problem
                 and validation_status == "PASSED"
+                and bool(candidate.get("release_requested"))
             ):
                 release_status = "REVIEW"
                 reason = "Research and validation are complete; operator review is required."
@@ -1891,6 +1921,10 @@ class RhenCoreStore:
                 "owner": "IREN",
                 "status": release_status,
                 "reason": reason,
+                "target_lane": (candidate or {}).get("lane"),
+                "target_strategy_version_id": (
+                    (candidate or {}).get("supersedes_strategy_version_id")
+                ),
                 "automatic_promotion": False,
                 "production_authority_changed": False,
             },
