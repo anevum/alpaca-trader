@@ -77,6 +77,7 @@ def test_v15_evaluation_emits_frozen_development_and_holdout_evidence():
         "severe_stress_50bp",
     }
     assert len(result["holdout"]["neighborhood"]["cells"]) == 9
+    assert result["holdout"]["one_bar_execution_delay"]["signal_delay_bars"] == 1
     assert result["research_only"] is True
     assert result["promotion_eligible"] is False
     assert result["execution_authority"] is False
