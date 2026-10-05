@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
+OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR"}
+
 INVENTORY = {
     "RHEN": ("SERVICE", "alpaca-trader", "Live execution; protected trading runtime"),
     "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; broker-isolated research"),
@@ -150,7 +152,10 @@ def topology(observation, state, self_identity):
         "telemetry": {"status": "STALE" if not fresh(evidence.get("last_sent_at"), now, 180) else "DEGRADED" if evidence.get("last_error") or evidence_incident else "RUNNING",
                       "last_success": evidence.get("last_sent_at"), "dropped_count": evidence.get("dropped_count")},
     }
-    required_ids = sorted([*INVENTORY, "IREN"])
+    required_ids = sorted(
+        [service_id for service_id in INVENTORY if service_id not in OPTIONAL_INVENTORY]
+        + ["IREN"]
+    )
     by_id = {row.get("service_id"): row for row in rows}
     inventory_gaps = {}
     for service_id in required_ids:
