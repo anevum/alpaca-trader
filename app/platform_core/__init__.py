@@ -26,6 +26,10 @@ from .reconciliation import (
 )
 
 __all__ = [
+    "TenantEntryRiskDecision",
+    "TenantEntryRiskInput",
+    "TenantPaperSignal",
+    "evaluate_tenant_entry_risk",
     "AlpacaBrokerSandboxProvider",
     "BrokerMoneyProvider",
     "BrokerReconciliationResult",
@@ -44,3 +48,10 @@ __all__ = [
     "evaluate_execution_eligibility",
     "reconciliation_hash",
 ]
+
+from .tenant_execution import (
+    TenantEntryRiskDecision,
+    TenantEntryRiskInput,
+    TenantPaperSignal,
+    evaluate_tenant_entry_risk,
+)
