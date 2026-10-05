@@ -350,6 +350,8 @@ STRATEGY_SHADOW_STAGE = "CRYPTO_STRATEGY_MANIFEST_FORWARD_SHADOW"
 STRATEGY_PAPER_STAGE = "CRYPTO_STRATEGY_MANIFEST_PAPER"
 WAITING_CORPUS_STAGE = "CRYPTO_WAITING_FOR_UNINSPECTED_CORPUS"
 ENGINEERING_REQUIRED_STAGE = "CRYPTO_ENGINEERING_REQUIRED"
+AUTONOMOUS_LOOP_ID = "graen-autonomous-operating-loop-v1"
+AUTONOMOUS_LOOP_BOOTSTRAP_VERSION = 1
 STRATEGY_STAGE_KEYS = {
     HYPOTHESIS_PLANNER_STAGE,
     STRATEGY_DEVELOPMENT_STAGE,
@@ -470,6 +472,14 @@ class GraenResearchExecutor:
         self.research_director = ResearchDirectorClient()
         self.research_director_autorun = _truthy(
             "GRAEN_RESEARCH_DIRECTOR_AUTORUN",
+            False,
+        )
+        self.autonomous_loop_bootstrap = _truthy(
+            "GRAEN_AUTONOMOUS_LOOP_BOOTSTRAP",
+            True,
+        )
+        self.legacy_campaign_bootstrap = _truthy(
+            "GRAEN_LEGACY_CAMPAIGN_BOOTSTRAP",
             False,
         )
         self.callback_base_url = os.getenv("IREN_CALLBACK_BASE_URL", "").strip().rstrip("/")
@@ -6055,6 +6065,119 @@ class GraenResearchExecutor:
                 }
         return None
 
+    async def _ensure_autonomous_loop_seed(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Seed exactly one canonical self-driving research loop.
+
+        The bootstrap creates research work only. It has no broker, source-code,
+        credential, spending, deployment, or live-risk authority.
+        """
+        if not self.autonomous_loop_bootstrap:
+            return None
+
+        for problem in snapshot.get("problems") or []:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            stage = str(metadata.get("research_stage") or "")
+            if metadata.get("autonomous_loop_id") == AUTONOMOUS_LOOP_ID:
+                return None
+            if (
+                problem.get("domain") == PROBLEM_DOMAIN
+                and stage
+                in (
+                    STRATEGY_STAGE_KEYS
+                    | {WAITING_CORPUS_STAGE, ENGINEERING_REQUIRED_STAGE}
+                )
+            ):
+                # Adopt an already-running new-loop problem rather than create
+                # a competing duplicate after an upgrade.
+                return None
+
+        created = await self.gateway.create_problem({
+            "title": "GRAEN Autonomous Crypto Research Loop v1",
+            "statement": (
+                "Continuously discover, falsify, validate, replay, forward-shadow, "
+                "and paper-test reproducible cost-aware crypto strategies using the "
+                "trusted ANEVUM research grammar and frozen scientific gates. "
+                "Escalate only missing software capability or protected live-risk authority."
+            ),
+            "domain": PROBLEM_DOMAIN,
+            "priority": 100,
+            "source": "GRAEN_AUTONOMOUS_OPERATING_LOOP",
+            "requested_by": "ANEVUM",
+            "constraints": {
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "runtime_source_mutation_authorized": False,
+                "runtime_git_write_authorized": False,
+                "runtime_merge_authorized": False,
+                "runtime_deploy_authorized": False,
+                "credential_mutation_authority": False,
+                "spending_authority": False,
+                "production_risk_increase_authority": False,
+                "unrestricted_live_promotion_authority": False,
+            },
+            "success_criteria": {
+                "autonomous_stage_order": [
+                    "HYPOTHESIZE",
+                    "DEVELOPMENT",
+                    "VALIDATION",
+                    "HOLDOUT",
+                    "VELUM",
+                    "FORWARD_SHADOW",
+                    "PAPER",
+                ],
+                "failed_hypotheses_return_to_planner": True,
+                "software_gaps_emit_engineering_required": True,
+                "paper_pass_requires_human_live_risk_decision": True,
+                "service_health_alone_is_insufficient": True,
+            },
+            "metadata": {
+                "autonomous_loop_id": AUTONOMOUS_LOOP_ID,
+                "autonomous_loop_bootstrap_version": AUTONOMOUS_LOOP_BOOTSTRAP_VERSION,
+                "autonomous_continuation": True,
+            },
+        })
+        problem = created.get("problem")
+        if not isinstance(problem, Mapping) or not problem.get("problem_id"):
+            raise RuntimeError("autonomous_loop_bootstrap_problem_unavailable")
+
+        problem_id = str(problem["problem_id"])
+        queued = await self.gateway.queue_research_stage(
+            problem_id=problem_id,
+            stage=HYPOTHESIS_PLANNER_STAGE,
+            metadata={
+                "autonomous_loop_id": AUTONOMOUS_LOOP_ID,
+                "autonomous_loop_bootstrap_version": AUTONOMOUS_LOOP_BOOTSTRAP_VERSION,
+                "autonomous_continuation": True,
+                "bootstrap_source": "canonical_autonomous_operating_loop",
+            },
+        )
+        if not queued.get("problem"):
+            raise RuntimeError("autonomous_loop_bootstrap_queue_failed")
+
+        result = {
+            "seeded": True,
+            "problem_id": problem_id,
+            "autonomous_loop_id": AUTONOMOUS_LOOP_ID,
+            "next_research_stage": HYPOTHESIS_PLANNER_STAGE,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "runtime_source_mutation_authorized": False,
+            "live_execution_authorized": False,
+        }
+        print("GRAEN_AUTONOMOUS_LOOP_BOOTSTRAP", result, flush=True)
+        return result
+
+
     async def _ensure_v10_campaign_seed(
         self,
         snapshot: Mapping[str, Any],
@@ -10296,9 +10419,16 @@ class GraenResearchExecutor:
         v10_transition_recovery = await self._recover_exhausted_v9_into_v10(snapshot)
         if v10_transition_recovery is not None:
             snapshot = await self.gateway.snapshot()
-        v10_campaign_seed = await self._ensure_v10_campaign_seed(snapshot)
-        if v10_campaign_seed is not None:
+
+        autonomous_loop_seed = await self._ensure_autonomous_loop_seed(snapshot)
+        if autonomous_loop_seed is not None:
             snapshot = await self.gateway.snapshot()
+
+        v10_campaign_seed = None
+        if self.legacy_campaign_bootstrap:
+            v10_campaign_seed = await self._ensure_v10_campaign_seed(snapshot)
+            if v10_campaign_seed is not None:
+                snapshot = await self.gateway.snapshot()
         # Research-code promotion is an explicit bounded step in the same
         # deterministic executor loop. Process eligible handoffs without
         # starving unrelated staged research.
@@ -10559,6 +10689,7 @@ class GraenResearchExecutor:
                 "research_promotion": promotion_results,
                 "reconciliation": reconciliation,
                 "v10_transition_recovery": v10_transition_recovery,
+                "autonomous_loop_seed": autonomous_loop_seed,
                 "v10_campaign_seed": v10_campaign_seed,
                 "v10_corpus_recovery": v10_corpus_recovery,
                 "v11_to_v12_recovery": v11_to_v12_recovery,
