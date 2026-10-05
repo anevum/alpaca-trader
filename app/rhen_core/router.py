@@ -25,6 +25,7 @@ MODULES = {
 CORE_PREFIXES = (
     "/v1/events",
     "/v1/trading-report-read",
+    "/v1/trading-public-feed",
     "/v1/trading-reconcile",
     "/v1/graen-gateway",
     "/v1/scheduler-gateway",
