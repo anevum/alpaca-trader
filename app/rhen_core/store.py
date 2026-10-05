@@ -2263,24 +2263,47 @@ class RhenCoreStore:
             for row in order_intents
             if row["client_order_id"] not in resolved_intents
         ]
+        managed = set(managed_symbols)
+        positive_managed_symbols: set[str] = set()
+        for position in broker_positions:
+            symbol = str(position.get("symbol") or "").upper()
+            try:
+                qty = float(position.get("qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if qty > 0 and (not managed or symbol in managed):
+                positive_managed_symbols.add(symbol)
+
         unknown_orders = []
         for order in open_orders:
             client_id = str(order.get("client_order_id") or "")
             if (
-                client_id.startswith("anevum-")
-                and client_id not in known_order_ids
+                not client_id.startswith("anevum-")
+                or client_id in known_order_ids
             ):
-                unknown_orders.append(
-                    {
-                        "id": order.get("id"),
-                        "client_order_id": client_id,
-                        "symbol": order.get("symbol"),
-                        "side": order.get("side"),
-                        "status": order.get("status"),
-                    }
+                continue
+            symbol = str(order.get("symbol") or "").upper()
+            # Standing hard stops are broker-side protection, not new exposure.
+            expected_protective_stop = (
+                symbol in positive_managed_symbols
+                and symbol in filled_buy_symbols
+                and str(order.get("side") or "").lower() == "sell"
+                and client_id.startswith(
+                    f"anevum-{symbol.lower()}-hardstop-"
                 )
+            )
+            if expected_protective_stop:
+                continue
+            unknown_orders.append(
+                {
+                    "id": order.get("id"),
+                    "client_order_id": client_id,
+                    "symbol": order.get("symbol"),
+                    "side": order.get("side"),
+                    "status": order.get("status"),
+                }
+            )
 
-        managed = set(managed_symbols)
         untracked = []
         for position in broker_positions:
             symbol = str(position.get("symbol") or "").upper()

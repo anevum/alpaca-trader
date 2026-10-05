@@ -371,6 +371,110 @@ def test_reconciliation_is_fail_closed_for_unknown_broker_state(
     assert "untracked_positions:1" in evidence["reason"]
 
 
+def test_reconciliation_allows_known_position_with_standing_hardstop(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 5, 14, 0, tzinfo=UTC)
+    client_id = "anevum-tqqq-buy-rhen-abc123"
+    store.ingest_events(
+        [
+            {
+                "event_key": "order-known-buy",
+                "event_type": "broker_order",
+                "occurred_at": (
+                    observed - timedelta(minutes=1)
+                ).isoformat(),
+                "run_id": "run-1",
+                "symbol": "TQQQ",
+                "source": "test",
+                "payload": {
+                    "order": {
+                        "client_order_id": client_id,
+                        "symbol": "TQQQ",
+                        "side": "buy",
+                        "filled_qty": "0.5",
+                    }
+                },
+            },
+        ]
+    )
+
+    result = store.reconcile(
+        {
+            "action": "reconcile",
+            "reconcile": {
+                "run_id": "run-1",
+                "strategy_version_id": "v1",
+                "observed_at": observed.isoformat(),
+                "managed_symbols": ["TQQQ"],
+                "broker_positions": [
+                    {
+                        "symbol": "TQQQ",
+                        "qty": "0.5",
+                        "market_value": "45",
+                    }
+                ],
+                "open_orders": [
+                    {
+                        "id": "hardstop-1",
+                        "client_order_id": "anevum-tqqq-hardstop-rhen-def456",
+                        "symbol": "TQQQ",
+                        "side": "sell",
+                        "status": "new",
+                    }
+                ],
+            },
+        }
+    )
+
+    evidence = result["result"]
+    assert evidence["safe_to_enter"] is True
+    assert evidence["reason"] == "reconciled"
+    assert evidence["unknown_open_orders"] == []
+    assert evidence["untracked_positions"] == []
+
+
+def test_reconciliation_rejects_hardstop_without_known_filled_buy(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 5, 14, 0, tzinfo=UTC)
+
+    result = store.reconcile(
+        {
+            "action": "reconcile",
+            "reconcile": {
+                "run_id": "run-1",
+                "strategy_version_id": "v1",
+                "observed_at": observed.isoformat(),
+                "managed_symbols": ["TQQQ"],
+                "broker_positions": [
+                    {
+                        "symbol": "TQQQ",
+                        "qty": "0.5",
+                        "market_value": "45",
+                    }
+                ],
+                "open_orders": [
+                    {
+                        "id": "hardstop-unknown",
+                        "client_order_id": "anevum-tqqq-hardstop-rhen-def456",
+                        "symbol": "TQQQ",
+                        "side": "sell",
+                        "status": "new",
+                    }
+                ],
+            },
+        }
+    )
+
+    evidence = result["result"]
+    assert evidence["safe_to_enter"] is False
+    assert "unknown_open_orders:1" in evidence["reason"]
+    assert "untracked_positions:1" in evidence["reason"]
+
+
 def test_reconciliation_resolves_known_intent_and_position(
     tmp_path, monkeypatch
 ):
