@@ -2127,6 +2127,11 @@ class GraenResearchExecutor:
     ) -> dict[str, Any]:
         problem_id = str(problem.get("problem_id"))
         run_id = str(run.get("run_id"))
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
         self.active_methodology_version = HYPOTHESIS_PLANNER_METHODOLOGY
 
         snapshot = await self.gateway.snapshot()
@@ -2156,6 +2161,23 @@ class GraenResearchExecutor:
         )
 
         state = str(plan.get("state") or "")
+        resumed_requirement_id = str(
+            metadata.get("engineering_resume_requirement_id") or ""
+        ).strip()
+        if resumed_requirement_id and state != "ENGINEERING_REQUIRED":
+            await self._callback_iren(
+                None,
+                status="SUCCEEDED",
+                result={
+                    "condition": "OPERATING",
+                    "graen_problem_id": problem_id,
+                    "engineering_requirement_resolved": True,
+                    "engineering_requirement_id": resumed_requirement_id,
+                    "resolved_on_source_commit": _source_commit(),
+                    "execution_authority": False,
+                    "live_execution_authorized": False,
+                },
+            )
         if state == "ENGINEERING_REQUIRED":
             manifest = plan.get("manifest")
             manifest_hash = str(plan.get("manifest_hash") or "")
@@ -10463,7 +10485,7 @@ class GraenResearchExecutor:
         now = datetime.now(UTC)
         waiting_until: list[datetime] = []
         expired_waits: list[tuple[str, str]] = []
-        engineering_retries: list[tuple[str, str]] = []
+        engineering_retries: list[tuple[str, str, str | None]] = []
         engineering_required = 0
         current_source_commit = str(_source_commit() or "")
         for row in snapshot.get("problems") or []:
@@ -10484,8 +10506,23 @@ class GraenResearchExecutor:
                     and required_on_commit
                     and current_source_commit != required_on_commit
                 ):
+                    requirement = (
+                        metadata.get("engineering_requirement")
+                        if isinstance(
+                            metadata.get("engineering_requirement"),
+                            Mapping,
+                        )
+                        else {}
+                    )
+                    requirement_id = str(
+                        requirement.get("requirement_id") or ""
+                    ).strip() or None
                     engineering_retries.append(
-                        (str(row.get("problem_id")), resume_stage)
+                        (
+                            str(row.get("problem_id")),
+                            resume_stage,
+                            requirement_id,
+                        )
                     )
                 continue
             if stage != WAITING_CORPUS_STAGE:
@@ -10506,7 +10543,11 @@ class GraenResearchExecutor:
 
         self.engineering_required_count = engineering_required
         self.waiting_dependency_until = min(waiting_until) if waiting_until else None
-        for engineering_problem_id, resume_stage in engineering_retries[:4]:
+        for (
+            engineering_problem_id,
+            resume_stage,
+            requirement_id,
+        ) in engineering_retries[:4]:
             await self.gateway.queue_research_stage(
                 problem_id=engineering_problem_id,
                 stage=resume_stage,
@@ -10514,6 +10555,7 @@ class GraenResearchExecutor:
                     "autonomous_continuation": True,
                     "engineering_dependency_released_at": now.isoformat(),
                     "engineering_resumed_on_source_commit": current_source_commit,
+                    "engineering_resume_requirement_id": requirement_id,
                 },
             )
         if engineering_retries:
