@@ -2302,6 +2302,7 @@ class GraenResearchExecutor:
                 "compiler_profile": plan.get("compiler_profile"),
                 "corpus": plan.get("corpus"),
                 "search_generation": plan.get("search_generation"),
+                "confirmatory_generation": plan.get("confirmatory_generation"),
                 "validation_alpha": plan.get("validation_alpha"),
                 "selection_policy": plan.get("selection_policy"),
                 "planner_artifact_id": decision_artifact_id,
@@ -2323,6 +2324,9 @@ class GraenResearchExecutor:
             "strategy_manifest_hash": str(plan.get("manifest_hash") or ""),
             "strategy_corpus": dict(plan.get("corpus") or {}),
             "strategy_search_generation": int(plan.get("search_generation") or 1),
+            "strategy_confirmatory_generation": int(
+                plan.get("confirmatory_generation") or 1
+            ),
             "strategy_validation_alpha": float(plan.get("validation_alpha") or 0.0),
             "strategy_manifest_artifact_id": manifest_artifact_id,
             "strategy_planner_artifact_id": decision_artifact_id,
@@ -2336,6 +2340,7 @@ class GraenResearchExecutor:
             "manifest_hash": plan.get("manifest_hash"),
             "manifest_artifact_id": manifest_artifact_id,
             "search_generation": plan.get("search_generation"),
+            "confirmatory_generation": plan.get("confirmatory_generation"),
             "validation_alpha": plan.get("validation_alpha"),
             "execution_authority": False,
             "broker_orders_possible": False,
