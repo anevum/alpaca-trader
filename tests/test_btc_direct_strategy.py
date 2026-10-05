@@ -6,115 +6,117 @@ from decimal import Decimal
 from app.btc_direct_strategy import BtcDirectSwingStrategy
 
 
-def _bars(*, reclaim: bool = True):
+def _bars(*, breakout: bool = True):
     strategy = BtcDirectSwingStrategy()
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-    daily = []
-    for index in range(strategy.sma_window_bars + 2):
-        close = Decimal("50000") + Decimal(index * 150)
-        daily.append(
-            {
-                "t": (start + timedelta(days=index)).isoformat(),
-                "o": str(close - Decimal("50")),
-                "h": str(close + Decimal("100")),
-                "l": str(close - Decimal("100")),
-                "c": str(close),
-            }
-        )
-
-    four_hour_start = start + timedelta(days=strategy.sma_window_bars - 8)
     rows = []
-    for index in range(30):
-        close = Decimal("60000") + Decimal(index * 80)
+    for index in range(strategy.long_trend_bars + 15):
+        close = Decimal("50000") + Decimal(index * 40)
         rows.append(
             {
-                "t": (four_hour_start + timedelta(hours=4 * index)).isoformat(),
-                "o": str(close - Decimal("20")),
-                "h": str(close + Decimal("40")),
-                "l": str(close - Decimal("40")),
+                "t": (start + timedelta(hours=index)).isoformat(),
+                "o": str(close - Decimal("15")),
+                "h": str(close + Decimal("20")),
+                "l": str(close - Decimal("25")),
                 "c": str(close),
             }
         )
 
-    if reclaim:
-        baseline = Decimal(rows[-3]["c"])
-        dip_close = baseline * Decimal("0.982")
-        rows[-2] = {
-            "t": rows[-2]["t"],
-            "o": str(dip_close * Decimal("1.003")),
-            "h": str(dip_close * Decimal("1.004")),
-            "l": str(dip_close * Decimal("0.994")),
-            "c": str(dip_close),
-        }
-        reclaim_close = baseline * Decimal("1.004")
+    if not breakout:
+        prior = Decimal(rows[-2]["c"])
+        close = prior + Decimal("5")
         rows[-1] = {
             "t": rows[-1]["t"],
-            "o": str(reclaim_close * Decimal("0.997")),
-            "h": str(reclaim_close * Decimal("1.002")),
-            "l": str(reclaim_close * Decimal("0.996")),
-            "c": str(reclaim_close),
+            "o": str(close - Decimal("5")),
+            "h": str(close + Decimal("10")),
+            "l": str(close - Decimal("15")),
+            "c": str(close),
         }
 
-    now = start + timedelta(days=strategy.sma_window_bars + 4)
-    return rows, daily, now
+    now = start + timedelta(hours=len(rows) + 1)
+    return rows, now
 
 
-def test_direct_btc_strategy_enters_on_completed_pullback_reclaim():
+def test_direct_btc_strategy_enters_on_completed_hourly_breakout():
     strategy = BtcDirectSwingStrategy()
-    bars, daily, now = _bars(reclaim=True)
+    bars, now = _bars(breakout=True)
 
     signal = strategy.evaluate(
         bars=bars,
-        confirmation_bars={"BTC/USD": daily},
+        confirmation_bars={"BTC/USD": bars},
         symbol="BTC/USD",
         has_position=False,
-        order_notional=Decimal("63"),
+        order_notional=Decimal("5"),
         now=now,
     )
 
     assert signal.action == "buy"
     assert signal.symbol == "BTC/USD"
-    assert signal.metadata["strategy_version_id"] == "RHEN-BTC-DIRECT-002"
+    assert signal.metadata["strategy_version_id"] == "RHEN-BTC-DIRECT-003"
+    assert signal.metadata["strategy_family"] == "btc_direct_intraday_breakout"
     assert signal.metadata["research_dependency"] is False
-    assert signal.metadata["timeframe"] == "4Hour"
-    assert signal.metadata["regime_timeframe"] == "1Day"
+    assert signal.metadata["fee_aware"] is True
+    assert signal.metadata["timeframe"] == "1Hour"
+    assert signal.metadata["regime_timeframe"] == "1Hour"
     assert signal.stop_price > 0
     assert signal.take_profit_price > signal.reference_price
 
 
-def test_direct_btc_strategy_holds_without_pullback_reclaim():
+def test_direct_btc_strategy_holds_without_breakout():
     strategy = BtcDirectSwingStrategy()
-    bars, daily, now = _bars(reclaim=False)
+    bars, now = _bars(breakout=False)
 
     signal = strategy.evaluate(
         bars=bars,
-        confirmation_bars={"BTC/USD": daily},
+        confirmation_bars={"BTC/USD": bars},
         symbol="BTC/USD",
         has_position=False,
-        order_notional=Decimal("63"),
+        order_notional=Decimal("5"),
         now=now,
     )
 
     assert signal.action == "hold"
-    assert (
-        "pullback" in signal.reason.lower()
-        or "reclaim" in signal.reason.lower()
-    )
+    assert "breakout" in signal.reason.lower()
 
 
 def test_direct_btc_strategy_is_btc_only():
     strategy = BtcDirectSwingStrategy()
-    bars, daily, now = _bars(reclaim=True)
+    bars, now = _bars(breakout=True)
 
     signal = strategy.evaluate(
         bars=bars,
-        confirmation_bars={"BTC/USD": daily},
+        confirmation_bars={"BTC/USD": bars},
         symbol="ETH/USD",
         has_position=False,
-        order_notional=Decimal("63"),
+        order_notional=Decimal("5"),
         now=now,
     )
 
     assert signal.action == "hold"
     assert "BTC/USD only" in signal.reason
+
+
+def test_direct_btc_strategy_uses_only_completed_hourly_bars():
+    strategy = BtcDirectSwingStrategy()
+    bars, now = _bars(breakout=False)
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    bars.append(
+        {
+            "t": current_hour.isoformat(),
+            "o": "90000",
+            "h": "95000",
+            "l": "89900",
+            "c": "94900",
+        }
+    )
+
+    signal = strategy.evaluate(
+        bars=bars,
+        confirmation_bars={"BTC/USD": bars},
+        symbol="BTC/USD",
+        has_position=False,
+        order_notional=Decimal("5"),
+        now=current_hour + timedelta(minutes=20),
+    )
+
+    assert signal.action == "hold"
