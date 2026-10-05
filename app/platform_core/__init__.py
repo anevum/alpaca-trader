@@ -3,6 +3,11 @@
 from .alpaca_broker_sandbox import AlpacaBrokerSandboxProvider
 from .broker import SecretResolver, TenantAlpacaReadClient, TenantBrokerAccount
 from .money import BrokerMoneyProvider, DisabledBrokerMoneyProvider
+from .lifecycle import (
+    PaperCustomerFacts,
+    derive_paper_customer_lifecycle,
+    paper_funding_projection,
+)
 from .contracts import (
     ExecutionEligibility,
     TradingEligibilityInput,
@@ -21,6 +26,9 @@ __all__ = [
     "BrokerReconciliationResult",
     "DisabledBrokerMoneyProvider",
     "ExecutionEligibility",
+    "PaperCustomerFacts",
+    "derive_paper_customer_lifecycle",
+    "paper_funding_projection",
     "SecretResolver",
     "TenantAlpacaReadClient",
     "TenantBrokerAccount",
