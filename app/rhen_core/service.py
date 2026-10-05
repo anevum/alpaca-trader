@@ -260,46 +260,23 @@ def research_gateway_read(
         default=None,
         alias="x-rhen-research-gateway-token",
     ),
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
 ) -> dict[str, Any]:
+    provided = x_rhen_research_gateway_token or x_anevum_ingest_token
     _require(
-        x_rhen_research_gateway_token,
+        provided,
         "RHEN_RESEARCH_GATEWAY_TOKEN",
+        "TRADING_INGEST_TOKEN",
         "RHEN_CORE_TOKEN",
     )
-    with store.connect() as conn:
-        runs = [
-            dict(row)
-            for row in conn.execute(
-                """select * from research_runs
-                order by created_at desc limit 100"""
-            ).fetchall()
-        ]
-        ledgers = [
-            dict(row)
-            for row in conn.execute(
-                """select * from research_ledgers
-                order by created_at desc limit 100"""
-            ).fetchall()
-        ]
     return {
         "ok": True,
-        "runs": [
-            {
-                "run_key": row["run_key"],
-                "payload": json.loads(row["payload_json"]),
-                "created_at": row["created_at"],
-            }
-            for row in runs
-        ],
-        "search_ledgers": [
-            {
-                "ledger_hash": row["ledger_hash"],
-                "payload": json.loads(row["payload_json"]),
-                "created_at": row["created_at"],
-            }
-            for row in ledgers
-        ],
+        "evidence": store.canonical_evidence(),
         "execution_authority": False,
+        "broker_orders_possible": False,
     }
 
 
@@ -365,6 +342,42 @@ def research_gateway_write(
             "ledger_hash": key,
             "execution_authority": False,
         }
+    if action == "record_run_and_search_ledger":
+        run = body.get("run") if isinstance(body.get("run"), dict) else {}
+        ledger = (
+            body.get("search_ledger")
+            if isinstance(body.get("search_ledger"), dict)
+            else {}
+        )
+        run_key = str(
+            run.get("run_key")
+            or run.get("run_id")
+            or f"run:{hash(json.dumps(run, sort_keys=True, default=str))}"
+        )
+        ledger_key = str(
+            ledger.get("ledger_hash")
+            or f"ledger:{hash(json.dumps(ledger, sort_keys=True, default=str))}"
+        )
+        with store.connect() as conn:
+            conn.execute(
+                """insert or replace into research_runs(
+                    run_key,payload_json,created_at
+                ) values(?,?,?)""",
+                (run_key, json.dumps(run, default=str), now),
+            )
+            conn.execute(
+                """insert or replace into research_ledgers(
+                    ledger_hash,payload_json,created_at
+                ) values(?,?,?)""",
+                (ledger_key, json.dumps(ledger, default=str), now),
+            )
+            conn.commit()
+        return {
+            "ok": True,
+            "run_key": run_key,
+            "ledger_hash": ledger_key,
+            "execution_authority": False,
+        }
     raise HTTPException(status_code=422, detail="invalid_action")
 
 
@@ -379,22 +392,10 @@ def nostra_gateway(
         "NOSTRA_GATEWAY_TOKEN",
         "RHEN_CORE_TOKEN",
     )
-    with store.connect() as conn:
-        counts = {
-            row[0]: row[1]
-            for row in conn.execute(
-                """select kind,count(*)
-                from nostra_records group by kind"""
-            ).fetchall()
-        }
-    return {
-        "ok": True,
-        "research_only": True,
-        "execution_authority": False,
-        "broker_orders_possible": False,
-        "counts": counts,
-        "work": [],
-    }
+    result = store.nostra_work()
+    result["broker_orders_possible"] = False
+    result["live_execution_authorized"] = False
+    return result
 
 
 @app.post("/v1/maintenance/prune")
