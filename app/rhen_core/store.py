@@ -1777,7 +1777,11 @@ class RhenCoreStore:
             payload = _loads(row["payload_json"], {})
             if not isinstance(payload, dict):
                 payload = {}
-            engineering_gate = dict(payload.get("engineering_gate") or {})
+            engineering_gate = (
+                dict(payload.get("engineering_gate") or {})
+                if isinstance(payload.get("engineering_gate"), dict)
+                else {}
+            )
             passed = engineering_gate.get("passed")
             status = (
                 "PASSED"
@@ -1921,7 +1925,11 @@ class RhenCoreStore:
                 "owner": "IREN",
                 "status": release_status,
                 "reason": reason,
-                "target_lane": (candidate or {}).get("lane"),
+                "target_lane": (
+                    (candidate or {}).get("lane")
+                    if (candidate or {}).get("supersedes_strategy_version_id")
+                    else None
+                ),
                 "target_strategy_version_id": (
                     (candidate or {}).get("supersedes_strategy_version_id")
                 ),
