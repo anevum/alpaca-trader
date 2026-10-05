@@ -35,24 +35,26 @@ def _engineering_objective_key(requirement_id: str) -> str | None:
     requirement_id = str(requirement_id or "").strip()
     if not requirement_id:
         return None
-    objective_key = _engineering_objective_key(requirement_id)
-    if objective_key is None:
-        return None
+    safe_id = "".join(
+        ch.lower() if ch.isalnum() else "-"
+        for ch in requirement_id
+    ).strip("-")[:180]
     return "engineering." + safe_id if safe_id else None
 
 
 def _engineering_objective_from_result(result: dict) -> dict | None:
     requirement = result.get("engineering_requirement")
-    if result.get("condition") != "ENGINEERING_REQUIRED" or not isinstance(requirement, dict):
+    if (
+        result.get("condition") != "ENGINEERING_REQUIRED"
+        or not isinstance(requirement, dict)
+    ):
         return None
-    requirement_id = str(requirement.get("requirement_id") or "").strip()
-    if not requirement_id:
+    requirement_id = str(
+        requirement.get("requirement_id") or ""
+    ).strip()
+    objective_key = _engineering_objective_key(requirement_id)
+    if objective_key is None:
         return None
-
-    safe_id = "".join(
-        ch.lower() if ch.isalnum() else "-"
-        for ch in requirement_id
-    ).strip("-")[:180]
     suggested_paths = [
         str(path)
         for path in requirement.get("suggested_paths") or []
@@ -92,7 +94,6 @@ def _engineering_objective_from_result(result: dict) -> dict | None:
             },
         },
     }
-
 
 def _human_decision_objective_from_result(result: dict) -> dict | None:
     if (
