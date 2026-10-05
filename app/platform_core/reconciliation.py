@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from typing import Any
@@ -62,6 +62,22 @@ class BrokerReconciliationResult:
     @property
     def ready(self) -> bool:
         return self.status == "SUCCESS"
+
+    def is_fresh(
+        self,
+        *,
+        max_age_seconds: int = 120,
+        now: datetime | None = None,
+    ) -> bool:
+        if not self.ready:
+            return False
+        if max_age_seconds <= 0:
+            raise ValueError("max_age_seconds must be positive")
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None or reference.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+        age = reference.astimezone(timezone.utc) - self.observed_at.astimezone(timezone.utc)
+        return timedelta(0) <= age <= timedelta(seconds=max_age_seconds)
 
     def to_record(self) -> dict[str, Any]:
         return {
