@@ -369,3 +369,15 @@ def test_recovery_workflows_use_new_job_keys_and_bounded_retry_delays():
         {"session": "2026-10-02"},
     )
     assert old.job_key != recovery.job_key
+
+
+def test_scheduler_blank_tick_interval_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_TICK_SECONDS", "")
+    runtime = SchedulerRuntime()
+    assert runtime.tick_seconds == 30
+
+
+def test_scheduler_invalid_tick_interval_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_TICK_SECONDS", "not-an-integer")
+    runtime = SchedulerRuntime()
+    assert runtime.tick_seconds == 30
