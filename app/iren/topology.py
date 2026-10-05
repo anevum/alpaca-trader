@@ -5,15 +5,42 @@ from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
 INVENTORY = {
-    "RHEN": ("SERVICE", "alpaca-trader", "Live execution; protected trading runtime"),
-    "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; broker-isolated research"),
-    "GRAEN": ("SERVICE", "graen", "Independent mathematical and theoretical research runtime"),
-    "GRAEN_EXECUTOR": ("WORKER", "graen-research-executor", "Independent research executor; no broker-order authority"),
-    "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
-    "RESEARCH_AGENT": ("WORKER", "rhen-research-agent", "Independent evidence-review worker"),
-    "CRYPTO_EDGE": ("WORKER", "rhen-crypto-edge-discovery", "Independent crypto research/shadow service; execution disabled"),
-    "IREN_EXECUTOR": ("SERVICE", "iren-executor", "Bounded IREN execution and GitHub evidence boundary"),
-    "NOSTRA": ("SERVICE", "nostra", "Independent FORWARD forecasting research runtime; research-only evidence authority"),
+    "RHEN": (
+        "SERVICE", "rhen", True,
+        "Unified RHEN runtime; live execution and protected trading authority",
+    ),
+    "VELUM": (
+        "SUBSYSTEM", "VELUM", False,
+        "RHEN-hosted replay and simulation subsystem; no broker-order authority",
+    ),
+    "GRAEN": (
+        "SUBSYSTEM", "GRAEN", False,
+        "RHEN-hosted mathematical and research subsystem",
+    ),
+    "GRAEN_EXECUTOR": (
+        "MODULE", "GRAEN", False,
+        "GRAEN research execution module; no broker-order authority",
+    ),
+    "PREOPEN": (
+        "MODULE", "RHEN", False,
+        "RHEN pre-open observation module",
+    ),
+    "RESEARCH_AGENT": (
+        "MODULE", "GRAEN", False,
+        "GRAEN evidence-review and research-agent module",
+    ),
+    "CRYPTO_EDGE": (
+        "MODULE", "GRAEN", False,
+        "GRAEN crypto research module; execution disabled",
+    ),
+    "IREN_EXECUTOR": (
+        "MODULE", "IREN", False,
+        "IREN bounded execution and GitHub evidence module",
+    ),
+    "NOSTRA": (
+        "SUBSYSTEM", "NOSTRA", False,
+        "RHEN-hosted forecasting subsystem; research-only evidence authority",
+    ),
 }
 
 def bounded_health(name, body):
@@ -83,7 +110,7 @@ def topology(observation, state, self_identity):
     now = datetime.fromisoformat(stamp)
     rows = []
     incidents = state.get("incidents", {})
-    for name, (kind, service_name, scope) in INVENTORY.items():
+    for name, (kind, service_name, independent, scope) in INVENTORY.items():
         health = observation["services"].get(name, {})
         alive = health.get("ok") is True
         ready = alive and not health.get("last_error", False)
@@ -111,7 +138,7 @@ def topology(observation, state, self_identity):
             if not identity.get("deployment_id") and provider_row.get("deployment"):
                 identity["deployment_id"] = provider_row["deployment"]
                 provider_used = True
-        row = ServiceObservation(service_id=name, runtime_kind=kind, independent_runtime=True,
+        row = ServiceObservation(service_id=name, runtime_kind=kind, independent_runtime=independent,
             service_name=service_name, service_version=identity.get("system_version"),
             deployment=identity.get("deployment_id"), revision=identity.get("git_commit"),
             started_at=identity.get("runtime_started_at"), observed_at=stamp,
@@ -126,15 +153,28 @@ def topology(observation, state, self_identity):
             configuration_identity=observation.get("configuration", {}).get("fingerprint") if name == "RHEN" else None,
             observation_source="iren_http_probe+github_railway_status" if provider_used else "iren_http_probe", scope=scope)
         rows.append(row.model_dump())
-    rows.append(ServiceObservation(schema_version="service_heartbeat.v1", service_id="IREN",
-        runtime_kind="SERVICE", independent_runtime=True, service_name="rhen-research-scheduler",
-        service_version=self_identity["version"], deployment=self_identity.get("deployment"),
-        revision=self_identity.get("revision"), started_at=self_identity["started_at"],
-        observed_at=stamp, last_heartbeat_at=stamp, liveness=True, readiness=True, status="IDLE",
+    rows.append(ServiceObservation(
+        schema_version="service_heartbeat.v1",
+        service_id="IREN",
+        runtime_kind="SUBSYSTEM",
+        independent_runtime=False,
+        service_name="IREN",
+        service_version=self_identity["version"],
+        deployment=self_identity.get("deployment"),
+        revision=self_identity.get("revision"),
+        started_at=self_identity["started_at"],
+        observed_at=stamp,
+        last_heartbeat_at=stamp,
+        liveness=True,
+        readiness=True,
+        status="IDLE",
         current_activity=None,
-        last_success=stamp, dependency_state={"durable_state": "commit_required"},
+        last_success=stamp,
+        dependency_state={"durable_state": "RHEN Core"},
         configuration_identity=self_identity["configuration_identity"],
-        observation_source="durable_iren_commit", scope="Independent from RHEN; shares its process with the scheduler").model_dump())
+        observation_source="RHEN unified runtime",
+        scope="RHEN-hosted operating intelligence and scheduler",
+    ).model_dump())
     scheduler = observation.get("scheduler", {})
     scheduler_ok = scheduler.get("configured") is True and not scheduler.get("last_error") and (
         fresh(scheduler.get("last_success_at"), now, 180) or fresh(scheduler.get("started_at"), now, 180))
@@ -155,10 +195,12 @@ def topology(observation, state, self_identity):
     inventory_gaps = {}
     for service_id in required_ids:
         row = by_id.get(service_id) or {}
-        missing = [
-            field for field in ("deployment", "revision")
-            if not row.get(field)
-        ]
+        missing = []
+        if service_id == "RHEN":
+            missing.extend(
+                field for field in ("deployment", "revision")
+                if not row.get(field)
+            )
         if row.get("readiness") is not True:
             missing.append("readiness")
         if missing:
@@ -168,7 +210,7 @@ def topology(observation, state, self_identity):
             "dependencies": dependencies, "required_inventory": required_ids,
             "inventory_complete": inventory_complete, "inventory_gaps": inventory_gaps,
             "inventory_verified_at": stamp if inventory_complete else None,
-            "inventory_source": "runtime self-report plus bounded GitHub/Railway deployment status fallback; fail closed on missing identity"}
+            "inventory_source": "RHEN unified runtime self-report; only RHEN carries independent Railway deployment identity"}
 
 def project_status(saved, now, stale_after=180):
     """Recompute freshness on every read, even while the writer is dead."""
@@ -179,8 +221,7 @@ def project_status(saved, now, stale_after=180):
     if stale:
         state["state"] = "STALE"
         for row in state.get("topology", {}).get("services", []):
-            if row.get("independent_runtime"):
-                row.update(status="STALE", readiness=False, liveness=None)
+            row.update(status="STALE", readiness=False, liveness=None)
         for row in state.get("topology", {}).get("dependencies", {}).values():
             row["status"] = "STALE"
     result["state"] = state
