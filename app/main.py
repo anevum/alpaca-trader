@@ -767,7 +767,7 @@ async def crypto_monitor_loop():
                             "GRAEN/NOSTRA/ADS promotion"
                         ),
                         "execution_class": "BTC_DIRECT_PAPER",
-                        "strategy_version_id": "RHEN-BTC-DIRECT-001",
+                        "strategy_version_id": settings.crypto_strategy_version_id,
                         "live_execution_authorized": False,
                     }
                 else:
@@ -877,6 +877,12 @@ def _runtime_configuration_snapshot() -> dict:
         "crypto_poll_seconds": settings.crypto_poll_seconds,
         "crypto_quote_currencies": sorted(settings.crypto_quote_currencies),
         "crypto_confirmation_symbols": list(settings.crypto_confirmation_symbols),
+        "crypto_strategy_version_id": settings.crypto_strategy_version_id,
+        "crypto_strategy_family": settings.crypto_strategy_family,
+        "crypto_stats_start_at": (
+            settings.crypto_stats_start_at.isoformat()
+            if settings.crypto_stats_start_at else None
+        ),
     }
 
 
