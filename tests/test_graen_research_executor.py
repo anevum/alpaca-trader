@@ -1,6 +1,7 @@
 import asyncio
 
 from app.graen import research_executor_service as service
+from app.research_agent.strategy_grammar import build_manifest, manifest_hash
 
 
 class FakeGateway:
@@ -412,3 +413,120 @@ def test_legacy_campaign_bootstrap_is_disabled_by_default(monkeypatch):
     runtime = service.GraenResearchExecutor()
     assert runtime.autonomous_loop_bootstrap is True
     assert runtime.legacy_campaign_bootstrap is False
+
+
+
+def test_paper_pass_forks_human_decision_and_continues_planner():
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        gateway = FakeGateway()
+        runtime.gateway = gateway
+        runtime.callback_base_url = ""
+        runtime.callback_token = ""
+        runtime.paper_base_url = "http://paper.internal"
+        runtime.paper_token = "p" * 40
+
+        manifest = build_manifest(
+            hypothesis_id="AUTO-PAPER-CONTINUE-01",
+            family="cross_asset_diffusion",
+            mechanism="BTC information diffusion into liquid crypto followers.",
+            information_source="cross_asset_returns",
+            feature="lead_lag_gap",
+            transformation="residualize_btc",
+            regime="dispersion_bucket",
+            trigger="threshold",
+            entry="market_next_bar",
+            exit="time_60m",
+            parameters={
+                "hold_minutes": 60,
+                "scan_minutes": 10,
+                "lookback_minutes": 30,
+                "concentration_limit": 0.70,
+                "leader_symbol": "BTC/USD",
+                "leader_threshold": 0.0035,
+                "lag_gap_threshold": 0.0015,
+                "min_target_return": -0.005,
+                "max_target_return": 0.0035,
+                "min_breadth_positive": 3,
+                "require_btc_nonnegative": False,
+            },
+            symbols=("BTC/USD", "ETH/USD", "SOL/USD"),
+            timeframe="5m",
+            falsification_statement=(
+                "Reject if stressed-cost forward expectancy is nonpositive."
+            ),
+        )
+
+        async def paper_status(_activation_id):
+            return {
+                "checkpoint": {
+                    "status": "PAPER_PASSED",
+                    "live_execution_authorized": False,
+                    "promotion_authorized": False,
+                }
+            }
+
+        runtime._paper_canary_status = paper_status
+        problem = {
+            "problem_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "linked_iren_job_id": None,
+            "metadata": {
+                "research_stage": service.STRATEGY_PAPER_STAGE,
+                "autonomous_loop_id": service.AUTONOMOUS_LOOP_ID,
+                "autonomous_continuation": True,
+                "strategy_manifest": manifest.as_dict(),
+                "strategy_manifest_hash": manifest_hash(manifest),
+                "strategy_corpus": {
+                    "development": [
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-03-01T00:00:00+00:00",
+                    ],
+                    "validation": [
+                        "2026-03-01T00:00:00+00:00",
+                        "2026-04-01T00:00:00+00:00",
+                    ],
+                    "holdout": [
+                        "2026-04-01T00:00:00+00:00",
+                        "2026-05-01T00:00:00+00:00",
+                    ],
+                },
+                "strategy_search_generation": 1,
+                "strategy_validation_alpha": 0.01,
+                "strategy_shadow_activation": {
+                    "activation_id": "shadow-validated-001",
+                },
+                "strategy_shadow_checkpoint": {
+                    "status": "READY_FOR_PAPER",
+                },
+                "strategy_paper_activation": {
+                    "activation_id": "paper-validated-001",
+                },
+            },
+        }
+        result = await runtime._execute_strategy_manifest(
+            problem,
+            {"run_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},
+        )
+
+        assert result["condition"] == "HUMAN_DECISION_REQUIRED"
+        assert result["state"] == "STRATEGY_PAPER_VALIDATED"
+        assert result["live_execution_authority"] is False
+        assert result["live_promotion_authorized"] is False
+        assert result["continuation_queued"] is True
+        assert result["next_research_stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert gateway.completions[-1]["status"] == "WAITING"
+        assert gateway.queued_stages[-1]["stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert (
+            gateway.queued_stages[-1]["metadata"][
+                "protected_live_risk_decision_pending"
+            ]
+            is True
+        )
+        assert (
+            gateway.queued_stages[-1]["metadata"][
+                "last_paper_validated_candidate_id"
+            ]
+            == manifest.hypothesis_id
+        )
+
+    asyncio.run(scenario())
