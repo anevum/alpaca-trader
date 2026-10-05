@@ -1,342 +1,233 @@
-# ANEVUM Core v3 — Runtime Consolidation
+# RHEN v3 — Unified Runtime
 
-Status: PROPOSED / IMPLEMENTATION BRANCH  
-Date: 2026-10-05  
+Status: IMPLEMENTATION / CUTOVER
+Date: 2026-10-05
 Branch: `architecture/anevum-core-v3-20261005`
 
-## Why this redesign exists
+## Decision
 
-The current ANEVUM deployment has too many runtime boundaries for the workload and budget:
+RHEN is the only system/product name.
 
-- RHEN project: 10 long-lived application services plus a scratch CI service.
-- ANEVUM Core project: 4 application services plus PostgreSQL.
-- Most services are built from the same repository and communicate over HTTP.
-- PostgreSQL reached 4.99 GB on a 5 GB volume and crashed during WAL recovery.
-- Railway metrics show PostgreSQL grew from roughly 3.45 GB to 4.99 GB in about 24 hours.
-- `rhen.events` receives large high-frequency decision-cycle JSON that duplicates candidate features and replay context every 15–30 seconds.
+The previous names remain only as internal module aliases during migration:
 
-The architecture problem is therefore not only database capacity. It is write amplification plus deployment fragmentation.
+- IREN -> Control
+- GRAEN -> Research
+- VELUM -> Replay
+- NOSTRA -> Forecast
+- Foundation -> Store/API
+- Research Agent -> Research Worker
 
-Core v3 is an architectural compression. It reuses the existing strategy/research code and removes unnecessary process/service boundaries.
+They are no longer independent top-level systems and are not intended to remain separate Railway services.
 
-## Logical system model
+## Why this rebuild exists
 
-ANEVUM keeps only three top-level logical systems.
+The previous deployment was over-fragmented:
 
-### IREN
+- 10 long-lived RHEN application services plus scratch CI.
+- 4 ANEVUM Core application services plus PostgreSQL.
+- Most services used the same repository and called each other over HTTP.
+- PostgreSQL reached ~4.99 GB on a 5 GB Hobby volume and crashed during WAL recovery.
+- Railway metrics showed growth from ~3.45 GB to ~4.99 GB in roughly 24 hours.
+- High-frequency decision-cycle telemetry repeatedly stored large nested candidate/replay payloads.
 
-Control plane.
+The root failure was architecture, not simply insufficient disk.
 
-Responsibilities:
+## Final Railway topology
 
-- orchestration
-- scheduler
-- incidents and health
-- human approvals
-- GitHub/code-worker coordination
-- Slack operational notifications
-- unified system status
+### One production application service: `RHEN`
 
-IREN does not trade.
+The existing `alpaca-trader` service is converted in place and keeps its existing 5 GB `/data` volume.
 
-### GRAEN
+Inside the RHEN container:
 
-Research and intelligence plane.
+- Execution
+  - Alpaca execution
+  - equities and crypto lanes
+  - positions/orders/fills
+  - risk controls
+  - reconciliation
+  - pre-open/session handling
+- Core
+  - bounded SQLite state/evidence store
+  - canonical gateway APIs
+  - scheduler state
+  - research state
+- Research
+  - strategy evaluation
+  - V15 research executor
+  - crypto edge discovery
+  - forward shadow
+- Replay
+  - deterministic replay/simulation
+- Forecast
+  - baseline and calibration workflows
+- Control
+  - health
+  - incidents
+  - scheduler/orchestration
+  - protected-action gating
+- Research Worker
+  - evidence review/model-assisted research
+- Command/API routing
 
-GRAEN absorbs the former top-level VELUM and NOSTRA roles as internal capabilities:
+The existing `crypto-symbols-ci-20261004` remains a one-shot CI scratch service only.
 
-- Research — hypothesis and strategy evaluation
-- VELUM — replay/simulation engine
-- NOSTRA — forecasting/calibration engine
-- crypto edge discovery
-- candidate forward-shadow observation
-- research-agent workflows
+## Runtime isolation
 
-VELUM and NOSTRA remain named modules in code/UI where useful, but are no longer independent deployment units or top-level subsystems.
+One Railway service does not mean every module receives trading authority.
 
-GRAEN does not trade.
+The supervisor constructs a separate environment for each subprocess:
 
-### RHEN
+- Execution receives the existing broker configuration.
+- Research/Replay/Forecast/Control processes have execution flags forced off.
+- Pure Core processes receive `ALPACA_API_KEY=DISABLED` and `ALPACA_API_SECRET=DISABLED`.
+- Modules that currently require Alpaca only for market-data/replay keep market-data access during the compatibility phase, but execution flags remain disabled.
+- RHEN remains the only externally reachable service.
+- Internal module traffic uses loopback HTTP only.
 
-Execution plane.
+Longer-term cleanup can replace remaining direct market-data credentials with one internal read-only market-data adapter without changing the external topology.
 
-Responsibilities:
+## Storage
 
-- Alpaca credentials
-- market-data acquisition
-- equities and crypto lanes
-- strategy selection
-- paper/canary modes
-- live execution
-- order/fill reconciliation
-- risk controls
-- pre-open/equity session state
-- bounded local evidence spool
-- authenticated read-only market-data gateway for GRAEN
+RHEN v3 uses the existing RHEN 5 GB `/data` volume.
 
-RHEN is the only system allowed to possess broker-order authority.
+Primary store:
 
-## Deployment topology
+`/data/rhen-core.db`
 
-Target always-on topology:
+SQLite configuration:
 
-1. `anevum-core`
-   - IREN
-   - GRAEN
-   - Foundation API/storage
-   - VELUM module
-   - NOSTRA module
-   - scheduler
-   - research agent
-   - crypto edge discovery
-   - forward shadows
-   - reporting/read models
+- WAL mode
+- synchronous=NORMAL
+- foreign keys enabled
+- busy timeout
+- automatic WAL checkpointing
+- one canonical Core writer
 
-2. `rhen`
-   - current `alpaca-trader`
-   - absorbs `btc-canary-001-paper`
-   - absorbs `rhen-preopen-state`
-   - broker execution and reconciliation
-   - market-data gateway
+The failed PostgreSQL database is no longer required for RHEN v3 operation.
 
-3. Persistent Core volume
-   - bounded Core v3 datastore
-   - no raw market-bar archive
-   - no unbounded telemetry archive
+The old PostgreSQL service and its volume are not deleted during cutover.
 
-The public website/Command remains separate from this runtime topology and calls the unified Core API.
+## Storage budget
 
-The existing scratch CI service remains non-production and one-shot only.
+Normal target: < 500 MB
 
-## Services to retire after cutover
+Warning threshold: 500 MB
 
-These become modules/tasks inside `anevum-core`:
+Analytics shedding threshold: 750 MB
 
-- `graen`
-- `graen-research-executor`
-- `rhen-crypto-edge-discovery`
-- `rhen-velum`
-- `rhen-research-scheduler`
-- `rhen-research-agent`
-- `nostra`
-- `foundation-ingest`
-- `foundation-evidence-probe`
-- `foundation-migrator`
-- `iren-executor`
+When the shedding threshold is reached:
 
-These become RHEN modes/modules rather than services:
+- routine analytics are dropped
+- critical execution/order/fill/reconciliation records continue
+- health reports storage pressure
 
-- `btc-canary-001-paper`
-- `rhen-preopen-state`
+The system must never allow routine telemetry to consume the remaining volume.
 
-No service is deleted until its replacement path is proven healthy.
+## Evidence contract
 
-## Storage model
+### Durable
 
-Foundation v3 is a state store, not a raw-event warehouse.
+Keep long-term:
 
-### Keep durably
-
-Indefinite or long-lived:
-
-- strategy definitions and promoted versions
-- broker orders/fills
-- position/reconciliation records
-- incidents and human decisions
-- GRAEN candidate specs and final gate results
-- VELUM replay summaries
-- NOSTRA calibration/evaluation summaries
+- orders
+- fills
+- position lifecycle/reconciliation
+- promoted strategy definitions
+- protected research decisions
+- incidents/human approvals
+- final replay results
 - deployment/source provenance
-- configuration hashes
 
-### Keep temporarily
+### Retained
 
-Bounded retention:
-
-- compact cycle summaries: 7 days
-- candidate observations: 7 days
+- compact decision-cycle summaries: 7 days
+- normalized candidate observations: 7 days
 - position metrics: 14 days
-- raw NOSTRA forecast/snapshot evidence: 30 days
-- routine audit/job execution detail: 30–90 days
+- routine evidence/forecast records: 30 days
 
-### Do not persist
+### Not stored as a warehouse
 
 - raw Alpaca bars that can be fetched again
-- complete scan dictionaries every poll
+- entire scan dictionaries every poll
 - duplicate nested candidate metadata
-- duplicate confirmation/regime structures
-- full replay series when a summary + specification + source hash is enough
-- routine hold/heartbeat events without state change
+- routine heartbeats with no state change
+- full replay time series when a summary/spec/source hash is sufficient
 
-## Evidence compaction
+## Compaction implemented
 
-The current `decision_cycle` event embeds full candidates and duplicated nested replay state each cycle. Core v3 replaces it with:
+A `decision_cycle` no longer persists the full candidate list.
 
-### cycle_summary
+RHEN Core stores:
 
-One compact record per cycle:
+- one compact cycle summary
+- all qualified/selected candidates
+- at most three rejected samples per cycle
+- a reduced feature vector
 
-- timestamp
-- market lane
-- strategy version
-- universe size
-- candidate/qualified/rejected counts
-- selected symbol/action
-- reason codes
-- cycle duration
-- data health
-- configuration hash
+Position metrics are bucketed to five-minute identities instead of producing a new durable row every poll.
 
-### candidate_observation
+## Research/Forecast continuity
 
-Persist only when one of these is true:
+The SQLite Core exposes compatibility routes for:
 
-- candidate qualifies
-- candidate is selected
-- decision state changed
-- rejection reason changed materially
-- candidate is in a bounded top-N research sample
+- evidence ingestion
+- GRAEN/research problem state
+- scheduler ledger
+- research-agent canonical evidence
+- NOSTRA work
+- protected crypto-promotion status
 
-Stored feature vectors are normalized and non-duplicated.
-
-### position_metric
-
-Persist at a coarse interval or on material change, not every execution loop.
-
-## Storage budget enforcement
-
-Core v3 must have a hard storage budget.
-
-Initial target:
-
-- normal working set: under 500 MB
-- warning state: 500 MB
-- analytics shedding threshold: 750 MB
-- critical records continue when analytics are shed
-- never allow normal telemetry to consume the final 20% of the volume
-
-A scheduled storage-maintenance task:
-
-- applies retention
-- checkpoints SQLite/WAL or performs database maintenance
-- compacts rollups
-- records current store size
-- raises an IREN incident before the storage hard limit
-
-## Datastore direction
-
-Preferred Core v3 path: SQLite on the existing spare 5 GB evidence volume.
-
-Why SQLite fits this topology:
-
-- one `anevum-core` service is the only writer
-- RHEN communicates through the Core HTTP API rather than direct database access
-- no distributed writers are required
-- removes an always-on PostgreSQL service
-- removes PostgreSQL WAL/recovery overhead
-- Python ships with SQLite
-- WAL size can be bounded and checkpointed
-- 5 GB is far more than required once evidence is compact and retained
-
-The spare `rhen-evidence-spool-staging` volume currently uses only about 85 MB and can become the Core v3 volume after its current contents are accounted for.
-
-The old PostgreSQL volume is not deleted during migration.
-
-## Security boundaries
-
-Consolidation must not broaden trading authority.
-
-- `rhen` alone holds Alpaca order credentials and execution authority.
-- `anevum-core` does not submit broker orders.
-- GRAEN/IREN receive market data from an authenticated RHEN read API.
-- Research and replay code remains `execution_authority=false`.
-- Live promotion still requires explicit protected-state transition/human authority.
-- GitHub/OpenAI credentials may live in Core because Core has no broker-order path.
-
-## V15 status during migration
-
-V15 remains the current BTC candidate:
+V15 remains frozen as:
 
 `V15-R1-BTC-R2H-BREAKOUT-42-15`
 
-The architecture migration must not change its frozen strategy specification.
+The rebuild does not change its strategy definition.
 
-During Core v3 work:
+V15 remains shadow/paper only until fresh forward evidence and protected promotion requirements are satisfied.
 
-- V15 remains paper/shadow only.
-- no live-money authority is enabled.
-- historical evidence remains valid.
-- forward evidence restarts only when the new Core evidence path is healthy.
+## Safety
 
-## Migration sequence
+During migration:
 
-### Phase 0 — Freeze unsafe expansion
+- live V15 promotion remains disabled
+- research code has no live promotion authority
+- no broker-order authority is granted by Core
+- code-promotion workflow is explicitly gated during store migration
+- legacy services are disabled only after RHEN v3 is healthy
+- legacy services/volumes are not deleted without explicit approval
 
-- no new services
-- no new top-level subsystem names
-- no new raw evidence tables
-- no live V15 promotion during infrastructure migration
+## Validation
 
-### Phase 1 — Stop future storage amplification
+The exact RHEN v3 branch has passed:
 
-- introduce compact telemetry payloads
-- add storage budget/retention policy
-- bound RHEN outbox size
-- separate critical records from analytics
+- full staging suite: 1,208 passed, 8 skipped
+- focused RHEN v3/research/NOSTRA/V15 suite: 54 passed
+- GitHub CI: green
+- Foundation runtime audit: green
 
-### Phase 2 — Build `anevum-core`
+## Cutover sequence
 
-- unified FastAPI entrypoint
-- Foundation v3 storage adapter
-- IREN scheduler/control tasks
-- GRAEN evaluator/research tasks
-- VELUM and NOSTRA internal modules
-- unified health/status endpoint
-
-### Phase 3 — Rebuild active canonical state
-
-Reconstruct only current/essential state from:
-
-- GitHub canonical strategy/specification history
-- Alpaca account/orders/fills/positions
-- surviving RHEN durable spool
-- current runtime configuration
-- promoted GRAEN artifacts that are reproducible from source
-
-Do not import the bloated raw telemetry archive.
-
-### Phase 4 — Parallel verification
-
-- point RHEN shadow evidence to Core v3
-- run Core v3 beside legacy services
-- compare health, order/fill projections, research state, scheduler state
-- verify storage growth remains bounded
-
-### Phase 5 — Collapse services
-
-After verified parity, disable legacy services one by one.
-
-No deletion in this phase.
-
-### Phase 6 — Retire legacy storage
-
-Only after explicit human approval:
-
-- archive any required legacy evidence
-- remove old PostgreSQL service/volume
-- remove obsolete evidence-probe volume attachment if repurposed
-- delete retired Railway services
+1. Merge validated RHEN v3.
+2. Convert existing `alpaca-trader` service in place to the RHEN supervisor.
+3. Keep the existing `/data` volume.
+4. Route all internal persistence/gateways to localhost RHEN Core.
+5. Verify Execution + Core critical health.
+6. Verify Research, Replay, Forecast, Control, and Research Worker module health.
+7. Verify SQLite storage growth and evidence compaction.
+8. Resume V15 isolated forward shadow.
+9. Disable legacy Railway services one by one.
+10. Leave old services and PostgreSQL volume undeleted until explicit retirement approval.
 
 ## Definition of done
 
-Core v3 is complete when:
+The rebuild is operationally complete when:
 
-- ANEVUM has three logical systems: IREN, GRAEN, RHEN.
-- Only `anevum-core` and `rhen` need to be continuously running.
-- VELUM/NOSTRA are internal GRAEN modules.
-- Foundation is internal infrastructure.
-- RHEN is the sole broker-authority boundary.
-- routine telemetry cannot fill persistent storage.
-- total Core storage stays below the defined budget.
-- Command shows one live topology and real module activity.
-- V15 can resume isolated forward shadow through the consolidated path.
+- one production Railway application service, RHEN, is running
+- one persistent RHEN volume is used
+- PostgreSQL is no longer an operational dependency
+- old subsystem services are stopped
+- Command reports real module health from inside RHEN
+- routine telemetry is bounded
+- V15 forward shadow is active through RHEN Core
+- execution authority remains isolated from research/control logic
