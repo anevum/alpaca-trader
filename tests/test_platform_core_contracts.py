@@ -13,6 +13,7 @@ def eligible_input(**overrides):
         "broker_account_status": "ACTIVE",
         "broker_crypto_enabled": True,
         "broker_trading_blocked": False,
+        "broker_trading_scope": True,
         "broker_reconciled": True,
         "allocation_active": True,
         "allocation_positive": True,
@@ -118,3 +119,12 @@ def test_order_identity_rejects_missing_components():
         assert "non-empty" in str(exc)
     else:
         raise AssertionError("missing order identity component was accepted")
+
+
+
+def test_missing_broker_trading_scope_closes_execution_gate():
+    result = evaluate_execution_eligibility(
+        eligible_input(broker_trading_scope=False)
+    )
+    assert result.eligible is False
+    assert result.reasons == ("broker_trading_scope_missing",)
