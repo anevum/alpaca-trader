@@ -113,6 +113,32 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _inspection_payload(
+    artifact_type: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Remove preregistered-but-unopened corpus reservations from exposure.
+
+    The reservation remains durable in the artifact itself. This helper only
+    controls what counts as observed/inspected for future corpus allocation.
+    """
+    result = dict(payload)
+    if str(artifact_type or "") in {
+        "CRYPTO_STRATEGY_MANIFEST_V1",
+        "CRYPTO_STRATEGY_PLANNER_DECISION",
+    }:
+        for key in (
+            "corpus",
+            "development",
+            "validation",
+            "holdout",
+            "corpus_start",
+            "corpus_end",
+        ):
+            result.pop(key, None)
+    return result
+
+
 def _snapshot(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(
@@ -1035,18 +1061,7 @@ def _research_exposure_ledger(
             # Preregistration freezes future corpus boundaries but does not
             # inspect those observations. Mark exposure only when a stage-open
             # or result artifact actually touches the data.
-            payload={
-                key:value
-                for key,value in payload.items()
-                if key not in {
-                    "corpus",
-                    "development",
-                    "validation",
-                    "holdout",
-                    "corpus_start",
-                    "corpus_end",
-                }
-            }
+        payload=_inspection_payload(artifact_name,payload)
         walk(payload,source)
 
     ordered=sorted(intervals)
