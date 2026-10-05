@@ -1,7 +1,12 @@
 """ANEVUM Command Platform Core contracts."""
 
 from .alpaca_broker_sandbox import AlpacaBrokerSandboxProvider
-from .broker import SecretResolver, TenantAlpacaReadClient, TenantBrokerAccount
+from .broker import (
+    SecretResolver,
+    TenantAlpacaPaperExecutionClient,
+    TenantAlpacaReadClient,
+    TenantBrokerAccount,
+)
 from .money import BrokerMoneyProvider, DisabledBrokerMoneyProvider
 from .lifecycle import (
     PaperCustomerFacts,
@@ -30,6 +35,7 @@ __all__ = [
     "derive_paper_customer_lifecycle",
     "paper_funding_projection",
     "SecretResolver",
+    "TenantAlpacaPaperExecutionClient",
     "TenantAlpacaReadClient",
     "TenantBrokerAccount",
     "TenantBrokerReconciler",
