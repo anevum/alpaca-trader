@@ -28,6 +28,16 @@ from foundation.command_iren import (
     project_command,
     read_command_snapshot,
 )
+from foundation.command_platform import (
+    complete_paper_oauth,
+    customer_overview,
+    refresh_paper_broker,
+    resolve_command_session,
+    set_paper_control,
+    start_paper_oauth,
+    update_allocation,
+    update_risk,
+)
 
 
 class EvidenceEvent(BaseModel):
@@ -44,6 +54,40 @@ class EvidenceEvent(BaseModel):
 
 class EvidenceBatch(BaseModel):
     events: list[EvidenceEvent] = Field(min_length=1, max_length=100)
+
+class CommandAllocationRequest(BaseModel):
+    tenant_id: str
+    allocation_fraction: float
+    absolute_cap: float
+
+
+class CommandRiskRequest(BaseModel):
+    tenant_id: str
+    max_position_fraction: float
+    max_gross_exposure_fraction: float
+    max_daily_loss_fraction: float
+    max_drawdown_fraction: float
+    max_concurrent_positions: int
+
+
+class CommandControlRequest(BaseModel):
+    tenant_id: str
+    consent_version: str | None = None
+
+
+class CommandOauthStartRequest(BaseModel):
+    tenant_id: str
+    redirect_uri: str
+
+
+class CommandOauthCallbackRequest(BaseModel):
+    code: str
+    state: str
+
+
+class CommandBrokerRefreshRequest(BaseModel):
+    tenant_id: str
+
 
 
 def canonical_payload_hash(payload: dict[str, Any]) -> str:
@@ -700,6 +744,22 @@ def graen_gateway_post(
     return {"ok": True, **payload}
 
 
+async def require_command_identity(
+    cf_access_jwt_assertion: str | None,
+) -> dict[str, Any]:
+    try:
+        return await verify_access_assertion(
+            cf_access_jwt_assertion,
+            team_domain=os.environ.get("CF_ACCESS_TEAM_DOMAIN", ""),
+            audience=os.environ.get("CF_ACCESS_AUD", ""),
+            allowed_emails="",
+        )
+    except AccessConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AccessAuthorizationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
 async def require_command_access(
     cf_access_jwt_assertion: str | None,
 ) -> dict[str, Any]:
@@ -715,6 +775,251 @@ async def require_command_access(
     except AccessAuthorizationError as exc:
         status = 403 if "not_allowed" in str(exc) else 401
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/v1/command/platform/session")
+async def command_platform_session(
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return resolve_command_session(
+                conn,
+                email=str(identity.get("email") or ""),
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_session_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/command/platform/overview")
+async def command_platform_overview(
+    tenant_id: str,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return customer_overview(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=tenant_id,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_overview_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.put("/v1/command/platform/allocation")
+async def command_platform_allocation(
+    body: CommandAllocationRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return update_allocation(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=body.tenant_id,
+                allocation_fraction=body.allocation_fraction,
+                absolute_cap=body.absolute_cap,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_allocation_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.put("/v1/command/platform/risk")
+async def command_platform_risk(
+    body: CommandRiskRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return update_risk(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=body.tenant_id,
+                max_position_fraction=body.max_position_fraction,
+                max_gross_exposure_fraction=body.max_gross_exposure_fraction,
+                max_daily_loss_fraction=body.max_daily_loss_fraction,
+                max_drawdown_fraction=body.max_drawdown_fraction,
+                max_concurrent_positions=body.max_concurrent_positions,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_risk_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.post("/v1/command/platform/control/pause")
+async def command_platform_pause(
+    body: CommandControlRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return set_paper_control(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=body.tenant_id,
+                enabled=False,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/command/platform/control/resume")
+async def command_platform_resume(
+    body: CommandControlRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return set_paper_control(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=body.tenant_id,
+                enabled=True,
+                consent_version=body.consent_version,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/command/platform/alpaca/oauth/start")
+async def command_platform_oauth_start(
+    body: CommandOauthStartRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return start_paper_oauth(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=body.tenant_id,
+                redirect_uri=body.redirect_uri,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_oauth_start_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.post("/v1/command/platform/alpaca/oauth/callback")
+async def command_platform_oauth_callback(
+    body: CommandOauthCallbackRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return await complete_paper_oauth(
+                conn,
+                database_url=database_url(),
+                email=str(identity.get("email") or ""),
+                code=body.code,
+                state=body.state,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_oauth_callback_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.post("/v1/command/platform/broker/refresh")
+async def command_platform_broker_refresh(
+    body: CommandBrokerRefreshRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return await refresh_paper_broker(
+                conn,
+                database_url=database_url(),
+                email=str(identity.get("email") or ""),
+                tenant_id=body.tenant_id,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_broker_refresh_failed:{type(exc).__name__}",
+        ) from exc
 
 
 @app.get("/v1/command/iren")
