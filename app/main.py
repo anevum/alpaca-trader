@@ -1635,7 +1635,11 @@ def _command_active_strategies() -> list[dict]:
         and settings.execution_authorized
         and not settings.scan_only
     )
-    crypto_lane = bool(settings.crypto_lane_enabled or settings.crypto_execution_enabled)
+
+    crypto_lane = bool(
+        settings.crypto_lane_enabled or settings.crypto_execution_enabled
+    )
+    direct_btc = settings.crypto_execution_mode == "btc_direct_paper"
     crypto_version = str(
         getattr(crypto_strategy, "strategy_version_id", None)
         or settings.crypto_strategy_version_id
@@ -1646,6 +1650,25 @@ def _command_active_strategies() -> list[dict]:
         or settings.crypto_strategy_family
         or crypto_version
     )
+    crypto_execution_authorized = bool(
+        settings.btc_direct_paper_authorized
+        if direct_btc
+        else (
+            crypto_lane
+            and settings.crypto_execution_enabled
+            and settings.execution_authorized
+        )
+    )
+    validated_promotion_ready = bool(
+        runtime_state.crypto_graen_promotion.get("promotion_ready")
+        and settings.crypto_calibration_promoted
+    )
+    crypto_entries_enabled = bool(
+        crypto_execution_authorized
+        and not runtime_state.paused
+        and (direct_btc or validated_promotion_ready)
+    )
+
     return [
         {
             "owner": "RHEN",
@@ -1656,7 +1679,11 @@ def _command_active_strategies() -> list[dict]:
             "trading_mode": settings.trading_mode,
             "execution_enabled": bool(settings.execution_enabled),
             "execution_authorized": equity_execution,
-            "entries_enabled": bool(runtime_state.entries_enabled and equity_execution),
+            "entries_enabled": bool(
+                runtime_state.entries_enabled
+                and equity_execution
+                and not runtime_state.paused
+            ),
         },
         {
             "owner": "RHEN",
@@ -1664,19 +1691,11 @@ def _command_active_strategies() -> list[dict]:
             "strategy_version_id": crypto_version or None,
             "strategy_name": crypto_name,
             "status": "ACTIVE" if crypto_lane else "DISABLED",
-            "trading_mode": (
-                "paper"
-                if settings.crypto_execution_mode == "btc_direct_paper"
-                else settings.trading_mode
-            ),
+            "trading_mode": "paper" if direct_btc else settings.trading_mode,
             "execution_mode": settings.crypto_execution_mode,
             "execution_enabled": bool(settings.crypto_execution_enabled),
-            "execution_authorized": bool(
-                crypto_lane and settings.crypto_execution_enabled
-            ),
-            "entries_enabled": bool(
-                crypto_lane and settings.crypto_execution_enabled
-            ),
+            "execution_authorized": crypto_execution_authorized,
+            "entries_enabled": crypto_entries_enabled,
         },
     ]
 
