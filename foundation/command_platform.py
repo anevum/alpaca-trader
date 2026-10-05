@@ -132,6 +132,7 @@ def _require_tenant_membership(
     email: str,
     tenant_id: str,
     minimum_roles: set[str] | None = None,
+    require_active: bool = False,
 ) -> dict[str, Any]:
     tenant_uuid = _uuid(tenant_id, "tenant_id")
     with conn.cursor() as cur:
@@ -155,6 +156,8 @@ def _require_tenant_membership(
     result = _serialize(dict(zip(columns, row)))
     if minimum_roles and str(result.get("role") or "") not in minimum_roles:
         raise PermissionError("command_tenant_role_insufficient")
+    if require_active and str(result.get("status") or "") != "ACTIVE":
+        raise PermissionError("command_tenant_not_active")
     return result
 
 
@@ -498,7 +501,11 @@ def update_allocation(
     absolute_cap: float,
 ) -> dict[str, Any]:
     _require_tenant_membership(
-        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+        conn,
+        email=email,
+        tenant_id=tenant_id,
+        minimum_roles={"OWNER", "ADMIN"},
+        require_active=True,
     )
     fraction = float(allocation_fraction)
     cap = float(absolute_cap)
@@ -558,7 +565,11 @@ def update_risk(
     max_concurrent_positions: int,
 ) -> dict[str, Any]:
     _require_tenant_membership(
-        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+        conn,
+        email=email,
+        tenant_id=tenant_id,
+        minimum_roles={"OWNER", "ADMIN"},
+        require_active=True,
     )
     position = float(max_position_fraction)
     gross = float(max_gross_exposure_fraction)
@@ -627,7 +638,11 @@ def set_paper_control(
     consent_version: str | None = None,
 ) -> dict[str, Any]:
     _require_tenant_membership(
-        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+        conn,
+        email=email,
+        tenant_id=tenant_id,
+        minimum_roles={"OWNER", "ADMIN"},
+        require_active=True,
     )
     broker = _broker_account(conn, tenant_id=tenant_id)
     if not broker or broker.get("environment") != "PAPER":
@@ -762,7 +777,11 @@ def start_paper_oauth(
     redirect_uri: str,
 ) -> dict[str, Any]:
     member = _require_tenant_membership(
-        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+        conn,
+        email=email,
+        tenant_id=tenant_id,
+        minimum_roles={"OWNER", "ADMIN"},
+        require_active=True,
     )
     client_id = os.environ.get("ALPACA_OAUTH_CLIENT_ID", "").strip()
     if not client_id:
@@ -853,6 +872,13 @@ async def complete_paper_oauth(
         raise ValueError("oauth_state_expired")
     if _email(expected_email) != _email(email):
         raise PermissionError("oauth_identity_mismatch")
+    _require_tenant_membership(
+        conn,
+        email=email,
+        tenant_id=str(tenant_id),
+        minimum_roles={"OWNER", "ADMIN"},
+        require_active=True,
+    )
 
     client_id = os.environ.get("ALPACA_OAUTH_CLIENT_ID", "").strip()
     client_secret = os.environ.get("ALPACA_OAUTH_CLIENT_SECRET", "").strip()
@@ -1016,7 +1042,12 @@ async def refresh_paper_broker(
     email: str,
     tenant_id: str,
 ) -> dict[str, Any]:
-    _require_tenant_membership(conn, email=email, tenant_id=tenant_id)
+    _require_tenant_membership(
+        conn,
+        email=email,
+        tenant_id=tenant_id,
+        require_active=True,
+    )
     broker_row = _broker_account(conn, tenant_id=tenant_id)
     if not broker_row or broker_row.get("environment") != "PAPER":
         raise ValueError("paper_broker_account_required")
@@ -1109,6 +1140,16 @@ def provision_paper_beta_tenant(
             tenant_row = cur.fetchone()
             if tenant_row:
                 tenant_id = tenant_row[0]
+                cur.execute(
+                    """
+                    select 1
+                    from anevum.tenant_memberships
+                    where tenant_id=%s and principal_id=%s
+                    """,
+                    (tenant_id, principal_id),
+                )
+                if not cur.fetchone():
+                    raise ValueError("tenant_key_already_exists")
             else:
                 tenant_id = uuid4()
                 cur.execute(
