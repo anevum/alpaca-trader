@@ -186,7 +186,7 @@ def setup_ready_paper_tenant(conn):
     return tenant_id, broker_account_id, provider_account_id
 
 
-def test_ready_paper_tenant_resolves_to_eligible(conn):
+def test_configured_paper_tenant_remains_blocked_until_executor_deploys(conn):
     tenant_id, broker_account_id, provider_account_id = setup_ready_paper_tenant(conn)
 
     broker = load_tenant_broker_account(
@@ -204,8 +204,8 @@ def test_ready_paper_tenant_resolves_to_eligible(conn):
     )
     assert gate_input.environment == "PAPER"
     assert gate_input.broker_reconciled is True
-    assert result.eligible is True
-    assert result.reasons == ()
+    assert result.eligible is False
+    assert result.reasons == ("tenant_execution_runtime_unavailable",)
 
 
 def test_same_facts_are_not_live_eligible_without_protected_authority(conn):
@@ -263,7 +263,8 @@ def test_cross_tenant_broker_reference_is_rejected_by_database(conn):
         broker_account_id=str(broker_account_id),
     )
     assert gate_input.broker_reconciled is True
-    assert result.eligible is True
+    assert result.eligible is False
+    assert result.reasons == ("tenant_execution_runtime_unavailable",)
 
 
 def test_stale_reconciliation_closes_execution_gate(conn):
@@ -328,4 +329,5 @@ def test_unchanged_snapshot_refreshes_verified_time(conn):
         now=refreshed.observed_at + timedelta(seconds=30),
     )
     assert gate_input.broker_reconciled is True
-    assert result.eligible is True
+    assert result.eligible is False
+    assert result.reasons == ("tenant_execution_runtime_unavailable",)
