@@ -189,10 +189,18 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
     candidate_spec as v14_r2h_candidate_spec,
     evaluate_btc_4h_consensus_transfer as evaluate_v14_r2h_consensus_transfer,
 )
+from graen.crypto.btc_r2h_breakout_v15 import (
+    CAMPAIGN_ID as V15_CAMPAIGN_ID,
+    FAMILY as V15_FAMILY,
+    METHODOLOGY_VERSION as V15_METHODOLOGY_VERSION,
+    campaign_manifest as v15_campaign_manifest,
+    candidate_spec as v15_candidate_spec,
+    evaluate_btc_r2h_breakout as evaluate_v15_r2h_breakout,
+)
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.30.0"
+RUNTIME_VERSION = "graen-research-executor-v1.31.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -326,6 +334,9 @@ V14_STAGE_KEYS = {
     V14_R2H_STAGE,
     V14_R2H_VELUM_STAGE,
 }
+
+V15_STAGE = "CRYPTO_BTC_R2H_BREAKOUT_V15_EVALUATION"
+V15_STAGE_KEYS = {V15_STAGE}
 
 RESEARCH_DIRECTOR_STAGE = "CRYPTO_RESEARCH_DIRECTOR_V1"
 RESEARCH_DIRECTOR_METHODOLOGY = "graen-research-director-v1"
@@ -515,6 +526,7 @@ class GraenResearchExecutor:
                 V14_R2F_METHODOLOGY_VERSION,
                 V14_R2G_METHODOLOGY_VERSION,
                 V14_R2H_METHODOLOGY_VERSION,
+                V15_METHODOLOGY_VERSION,
                 RESEARCH_DIRECTOR_METHODOLOGY,
             ],
             "running": running,
@@ -7091,6 +7103,389 @@ class GraenResearchExecutor:
         )
 
 
+    async def _execute_btc_r2h_breakout_v15(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        stage = str(metadata.get("research_stage") or V15_STAGE)
+        if stage != V15_STAGE:
+            raise RuntimeError(f"unsupported_v15_research_stage:{stage}")
+        self.active_methodology_version = V15_METHODOLOGY_VERSION
+
+        prespec_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V15_R1_PRESPEC",
+            methodology_version=V15_METHODOLOGY_VERSION,
+            content={
+                **v15_campaign_manifest(),
+                "origin_v14_r2h_run_id": metadata.get("v15_origin_v14_r2h_run_id"),
+                "origin_v14_r2h_velum_artifact_id": metadata.get(
+                    "v15_origin_v14_r2h_velum_artifact_id"
+                ),
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_execution_authorized": False,
+            },
+        )
+        prespec_artifact = (
+            prespec_response.get("artifact")
+            if isinstance(prespec_response.get("artifact"), Mapping)
+            else {}
+        )
+
+        rows = await self._fetch_v14_r2e_btc_4h()
+        result = await asyncio.to_thread(evaluate_v15_r2h_breakout, rows)
+        result_response = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="CRYPTO_V15_R1_RESULT",
+            methodology_version=V15_METHODOLOGY_VERSION,
+            content={
+                **result,
+                "prespec_artifact_id": prespec_artifact.get("artifact_id"),
+                "origin_v14_r2h_run_id": metadata.get("v15_origin_v14_r2h_run_id"),
+                "origin_v14_r2h_velum_artifact_id": metadata.get(
+                    "v15_origin_v14_r2h_velum_artifact_id"
+                ),
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_execution_authorized": False,
+            },
+        )
+        result_artifact = (
+            result_response.get("artifact")
+            if isinstance(result_response.get("artifact"), Mapping)
+            else {}
+        )
+        gate = result.get("gate") if isinstance(result.get("gate"), Mapping) else {}
+        holdout = (
+            result.get("holdout")
+            if isinstance(result.get("holdout"), Mapping)
+            else {}
+        )
+        scenarios = (
+            holdout.get("scenarios")
+            if isinstance(holdout.get("scenarios"), Mapping)
+            else {}
+        )
+        stressed = (
+            scenarios.get("taker_stress_30bp")
+            if isinstance(scenarios.get("taker_stress_30bp"), Mapping)
+            else {}
+        )
+        severe = (
+            scenarios.get("severe_stress_50bp")
+            if isinstance(scenarios.get("severe_stress_50bp"), Mapping)
+            else {}
+        )
+        delayed = (
+            holdout.get("one_bar_execution_delay")
+            if isinstance(holdout.get("one_bar_execution_delay"), Mapping)
+            else {}
+        )
+        neighborhood = (
+            holdout.get("neighborhood")
+            if isinstance(holdout.get("neighborhood"), Mapping)
+            else {}
+        )
+        passed = bool(gate.get("passed"))
+        spec = v15_candidate_spec().to_dict()
+
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary={
+                "state": (
+                    "V15_R1_HOLDOUT_PASS_READY_FOR_ISOLATED_FORWARD_PAPER"
+                    if passed
+                    else "V15_R1_HOLDOUT_FAIL"
+                ),
+                "status": (
+                    "BTC_R2H_BREAKOUT_HOLDOUT_PASS"
+                    if passed
+                    else "BTC_R2H_BREAKOUT_HOLDOUT_REJECTED"
+                ),
+                "decision": (
+                    "START_ISOLATED_FORWARD_PAPER"
+                    if passed
+                    else "KEEP_R2H_CANARY_AND_CONTINUE_RESEARCH"
+                ),
+                "campaign_id": V15_CAMPAIGN_ID,
+                "candidate_id": spec.get("candidate_id"),
+                "candidate_family": V15_FAMILY,
+                "candidate_spec": spec,
+                "result_artifact_id": result_artifact.get("artifact_id"),
+                "evidence_role": "FROZEN_EXECUTION_OVERLAY_LATER_HOLDOUT",
+                "underlying_r2h_family_independently_pristine": False,
+                "holdout_parameters_frozen": True,
+                "stressed_30bp_entry_count": stressed.get("entry_count"),
+                "stressed_30bp_total_return": stressed.get("total_return"),
+                "stressed_30bp_sharpe": stressed.get("sharpe"),
+                "stressed_30bp_max_drawdown": stressed.get("max_drawdown"),
+                "severe_50bp_total_return": severe.get("total_return"),
+                "one_bar_delay_total_return": delayed.get("total_return"),
+                "one_bar_delay_sharpe": delayed.get("sharpe"),
+                "neighborhood_positive_return_share": neighborhood.get(
+                    "positive_return_share"
+                ),
+                "paper_canary_eligible": passed,
+                "next_action": (
+                    "RUN_V15_FORWARD_SHADOW_OR_ISOLATED_PAPER"
+                    if passed
+                    else "DO_NOT_PROMOTE_V15"
+                ),
+                "promotion_eligible": False,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "crypto_execution_enabled": False,
+                "live_execution_authorized": False,
+            },
+        )
+
+
+    async def _recover_v14_r2h_velum_pass_into_v15(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Advance a completed R2H engineering replay into the frozen V15 overlay."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        artifacts = snapshot.get("artifacts") or []
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+            if any(
+                isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("artifact_type") == "CRYPTO_V15_R1_RESULT"
+                for row in artifacts
+            ):
+                continue
+
+            matching = [
+                row
+                for row in runs
+                if isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("methodology_version") == V14_R2H_METHODOLOGY_VERSION
+                and isinstance(row.get("result_summary"), Mapping)
+                and row.get("result_summary", {}).get("state")
+                == "V14_R2H_VELUM_PASS"
+                and row.get("result_summary", {}).get("decision")
+                == "ACTIVATE_4H_FORWARD_SHADOW"
+            ]
+            if not matching:
+                continue
+            origin = max(matching, key=lambda row: str(row.get("started_at") or ""))
+            origin_summary = (
+                origin.get("result_summary")
+                if isinstance(origin.get("result_summary"), Mapping)
+                else {}
+            )
+            queued = await self.gateway.queue_research_stage(
+                problem_id=problem_id,
+                stage=V15_STAGE,
+                metadata={
+                    "v15_campaign_id": V15_CAMPAIGN_ID,
+                    "v15_origin_v14_r2h_run_id": str(origin.get("run_id") or "") or None,
+                    "v15_origin_v14_r2h_velum_artifact_id": origin_summary.get(
+                        "velum_artifact_id"
+                    ),
+                    "v15_candidate_spec": v15_candidate_spec().to_dict(),
+                    "r2h_forward_paper_preserved": True,
+                },
+            )
+            if not queued.get("problem"):
+                raise RuntimeError("v15_stage_queue_failed")
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "candidate_id": v15_candidate_spec().candidate_id,
+                "next_research_stage": V15_STAGE,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_execution_authorized": False,
+            }
+            print("GRAEN_V14_R2H_TO_V15", result, flush=True)
+            return result
+        return None
+
+
+    async def _recover_v15_pass_into_forward_shadow(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Activate V15 in its dedicated broker-proof forward shadow slot."""
+        problems = snapshot.get("problems") or []
+        runs = snapshot.get("runs") or []
+        artifacts = snapshot.get("artifacts") or []
+        candidate_id = v15_candidate_spec().candidate_id
+
+        for problem in problems:
+            if not isinstance(problem, Mapping):
+                continue
+            if (
+                problem.get("status") != "WAITING"
+                or problem.get("domain") != PROBLEM_DOMAIN
+            ):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("research_stage"):
+                continue
+            problem_id = str(problem.get("problem_id") or "")
+
+            if any(
+                isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("artifact_type")
+                == "CRYPTO_V15_R1_FORWARD_SHADOW_ACTIVATION"
+                and (
+                    not isinstance(row.get("content"), Mapping)
+                    or row.get("content", {}).get("candidate_id")
+                    == candidate_id
+                )
+                for row in artifacts
+            ):
+                continue
+
+            matching = [
+                row
+                for row in runs
+                if isinstance(row, Mapping)
+                and str(row.get("problem_id") or "") == problem_id
+                and row.get("methodology_version") == V15_METHODOLOGY_VERSION
+                and isinstance(row.get("result_summary"), Mapping)
+                and row.get("result_summary", {}).get("state")
+                == "V15_R1_HOLDOUT_PASS_READY_FOR_ISOLATED_FORWARD_PAPER"
+                and row.get("result_summary", {}).get("decision")
+                == "START_ISOLATED_FORWARD_PAPER"
+            ]
+            if not matching:
+                continue
+
+            if not self.shadow_configured:
+                diagnostic = {
+                    "recovered": False,
+                    "problem_id": problem_id,
+                    "state": "V15_FORWARD_SHADOW_WAITING_FOR_SERVICE",
+                    "candidate_id": candidate_id,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "live_execution_authorized": False,
+                }
+                print("GRAEN_V15_SHADOW_WAIT", diagnostic, flush=True)
+                return diagnostic
+
+            origin = max(
+                matching,
+                key=lambda row: str(row.get("started_at") or ""),
+            )
+            origin_run_id = str(origin.get("run_id") or "")
+            origin_summary = (
+                origin.get("result_summary")
+                if isinstance(origin.get("result_summary"), Mapping)
+                else {}
+            )
+            spec = origin_summary.get("candidate_spec")
+            if not isinstance(spec, Mapping) or spec.get("candidate_id") != candidate_id:
+                spec = v15_candidate_spec().to_dict()
+
+            activation = await self._activate_forward_shadow(
+                problem_id=problem_id,
+                graen_run_id=origin_run_id,
+                campaign_id=V15_CAMPAIGN_ID,
+                epoch_index=0,
+                generation=1,
+                candidate_methodology=V15_METHODOLOGY_VERSION,
+                candidate_spec=spec,
+                velum_artifact_id=str(
+                    origin_summary.get("result_artifact_id") or ""
+                ),
+                evidence_phase="FORWARD_SHADOW",
+            )
+            artifact_response = await self.gateway.record_artifact(
+                problem_id=problem_id,
+                run_id=origin_run_id or None,
+                artifact_type="CRYPTO_V15_R1_FORWARD_SHADOW_ACTIVATION",
+                methodology_version=V15_METHODOLOGY_VERSION,
+                content={
+                    "campaign_id": V15_CAMPAIGN_ID,
+                    "candidate_id": candidate_id,
+                    "candidate_spec": dict(spec),
+                    "activation": activation,
+                    "evidence_role": (
+                        "FRESH_FORWARD_4H_OPERATIONAL_CONFIRMATION_ONLY"
+                    ),
+                    "historical_holdout_counts_as_fresh": False,
+                    "starts_flat_after_activation": True,
+                    "promotion_authorized": False,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                    "live_execution_authorized": False,
+                    "source_commit": _source_commit(),
+                    "deployment_id": _deployment_id(),
+                },
+            )
+            artifact = (
+                artifact_response.get("artifact")
+                if isinstance(artifact_response.get("artifact"), Mapping)
+                else {}
+            )
+            result = {
+                "recovered": True,
+                "problem_id": problem_id,
+                "candidate_id": candidate_id,
+                "activation_id": (
+                    activation.get("activation_id")
+                    or (activation.get("activation") or {}).get("activation_id")
+                ),
+                "activation_artifact_id": artifact.get("artifact_id"),
+                "evidence_role": (
+                    "FRESH_FORWARD_4H_OPERATIONAL_CONFIRMATION_ONLY"
+                ),
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_execution_authorized": False,
+            }
+            print("GRAEN_V15_SHADOW_ACTIVATED", result, flush=True)
+            return result
+        return None
+
+
     async def _recover_v14_r2h_pass_into_velum(
         self,
         snapshot: Mapping[str, Any],
@@ -9008,6 +9403,17 @@ class GraenResearchExecutor:
         )
         if v14_r2h_velum_recovery is not None:
             snapshot = await self.gateway.snapshot()
+        v15_recovery = await self._recover_v14_r2h_velum_pass_into_v15(snapshot)
+        if v15_recovery is not None:
+            snapshot = await self.gateway.snapshot()
+        v15_shadow_recovery = await self._recover_v15_pass_into_forward_shadow(
+            snapshot
+        )
+        if (
+            v15_shadow_recovery is not None
+            and v15_shadow_recovery.get("recovered")
+        ):
+            snapshot = await self.gateway.snapshot()
         v14_r2d_to_r2e_recovery = await self._recover_v14_r2d_fail_into_r2e(snapshot)
         if v14_r2d_to_r2e_recovery is not None:
             snapshot = await self.gateway.snapshot()
@@ -9051,6 +9457,14 @@ class GraenResearchExecutor:
                 "phase": promotion_state.get("phase"),
                 "blocked_reason": promotion_state.get("blocked_reason"),
             })
+        staged_v15 = any(
+            isinstance(row, Mapping)
+            and row.get("status") == "WAITING"
+            and row.get("domain") == PROBLEM_DOMAIN
+            and isinstance(row.get("metadata"), Mapping)
+            and row.get("metadata", {}).get("research_stage") in V15_STAGE_KEYS
+            for row in (snapshot.get("problems") or [])
+        )
         staged_v14_r2h = any(
             isinstance(row, Mapping)
             and row.get("status") == "WAITING"
@@ -9189,7 +9603,9 @@ class GraenResearchExecutor:
             for row in (snapshot.get("problems") or [])
         )
         self.active_methodology_version = (
-            V14_R2H_METHODOLOGY_VERSION
+            V15_METHODOLOGY_VERSION
+            if staged_v15
+            else V14_R2H_METHODOLOGY_VERSION
             if staged_v14_r2h
             else V14_R2G_METHODOLOGY_VERSION
             if staged_v14_r2g
@@ -9258,6 +9674,8 @@ class GraenResearchExecutor:
                 "v14_r2f_to_r2g_recovery": v14_r2f_to_r2g_recovery,
                 "v14_r2h_faststart_recovery": v14_r2h_faststart_recovery,
                 "v14_r2h_velum_recovery": v14_r2h_velum_recovery,
+                "v15_recovery": v15_recovery,
+                "v15_shadow_recovery": v15_shadow_recovery,
                 "r2h_velum_transport_recovery": r2h_velum_transport_recovery,
                 "v14_r2d_to_r2e_recovery": v14_r2d_to_r2e_recovery,
                 "v14_r2c_to_r2d_recovery": v14_r2c_to_r2d_recovery,
@@ -9286,6 +9704,8 @@ class GraenResearchExecutor:
         try:
             if str(metadata.get("research_stage", "")).startswith("CRYPTO_COMPILED_"):
                 return await self._execute_compiled_hypothesis(problem, run)
+            if metadata.get("research_stage") == V15_STAGE:
+                return await self._execute_btc_r2h_breakout_v15(problem, run)
             if metadata.get("research_stage") in {
                 V14_R2H_STAGE,
                 V14_R2H_VELUM_STAGE,

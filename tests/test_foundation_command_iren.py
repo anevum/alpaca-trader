@@ -277,6 +277,32 @@ class _CanaryCursor:
                     {"current_return_pct": "0.0125"},
                 ),
             ],
+            [
+                (
+                    datetime(2026, 10, 4, 18, 35, tzinfo=timezone.utc),
+                    {
+                        "activity": {
+                            "side": "buy",
+                            "price": "121000.00",
+                            "qty": "0.000011",
+                        }
+                    },
+                ),
+            ],
+            [
+                (
+                    datetime(2026, 10, 4, 19, 0, tzinfo=timezone.utc),
+                    {"current_return_pct": "-0.0040"},
+                ),
+                (
+                    datetime(2026, 10, 4, 20, 0, tzinfo=timezone.utc),
+                    {"current_return_pct": "0.0180"},
+                ),
+                (
+                    datetime(2026, 10, 4, 21, 14, tzinfo=timezone.utc),
+                    {"current_return_pct": "0.0125"},
+                ),
+            ],
         ])
 
     def __enter__(self):
@@ -338,7 +364,12 @@ def test_btc_canary_activity_is_compact_read_only_projection():
     assert result["signal"]["sma_window_bars"] == 1500
     assert result["recent_cycles"][0]["action"] == "hold"
     assert result["return_history"][0]["return_pct"] == "0.0125"
-    assert len(conn.cur.calls) == 6
+    assert result["aggressive_70"]["status"] == "OPEN_POSITION"
+    assert result["aggressive_70"]["broker_orders_created"] is False
+    assert result["aggressive_70"]["live_execution_authorized"] is False
+    assert result["aggressive_70"]["best_observed_equity"] is not None
+    assert result["aggressive_70"]["worst_observed_equity"] is not None
+    assert len(conn.cur.calls) == 8
     assert all(query.lstrip().lower().startswith("select") for query, _ in conn.cur.calls)
 
 
