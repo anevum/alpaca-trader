@@ -49,7 +49,10 @@ _ROUTE_SYSTEM = {
     "rhen-alerts": "RHEN",
 }
 
-_PREFIX_RE = re.compile(r"^:(?:anevum|rhen):\s*", re.IGNORECASE)
+_PREFIX_RE = re.compile(
+    r"^:(?:anevum|rhen|iren|graen|nostra|velum)(?:_[a-z0-9_]+)?:\\s*",
+    re.IGNORECASE,
+)
 
 
 def infer_system(text: str, *, route: str | None = None) -> str:
@@ -137,6 +140,9 @@ def infer_semantic_emoji(
             return STATUS_EMOJI["ACTIVE"]
         return "◆"
 
+    if any(token in upper for token in ("LIVE", "ONLINE", "MARKET OPEN", "MARKET CLOSED", "RUNNING", "STARTED", "STARTING")):
+        return STATUS_EMOJI["ACTIVE"]
+
     explicit_module = module_from_text(text)
     if explicit_module:
         return MODULE_EMOJI[explicit_module]
@@ -163,8 +169,6 @@ def infer_semantic_emoji(
         return MODULE_EMOJI["WORKER"]
     if "COMMAND" in upper:
         return MODULE_EMOJI["COMMAND"]
-    if any(token in upper for token in ("LIVE", "ONLINE", "MARKET OPEN", "MARKET CLOSED", "RUNNING", "STARTED", "STARTING")):
-        return STATUS_EMOJI["ACTIVE"]
 
     state = (iren_state or infer_iren_state(text) or "").upper()
     if state == "HEALTHY":
