@@ -1196,7 +1196,7 @@ class RhenCoreStore:
                         "data_status": "compact_core_v3",
                     },
                     "research_attribution": {},
-                    "missing_model_ids": ["nostra-zero-return-baseline-v1"],
+                    "missing_model_ids": ["zero_return"],
                 }
             )
 
@@ -1250,7 +1250,7 @@ class RhenCoreStore:
             "schema_version": "rhen-core-nostra-work-v1",
             "generated_at": current.isoformat(),
             "forecast_horizon_minutes": 10,
-            "baseline_model_id": "nostra-zero-return-baseline-v1",
+            "baseline_model_id": "zero_return",
             "research_only": True,
             "execution_authority": False,
             "forecast_candidates": forecast_candidates[:200],
