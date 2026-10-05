@@ -76,3 +76,11 @@ def test_oauth_callback_reconciliation_reads_envelope_in_same_transaction():
     callback = PLATFORM[callback_start:refresh_start]
     assert "DatabaseEnvelopeSecretResolver(" in callback
     assert "connection=conn" in callback
+
+
+def test_strategy_assignment_is_operator_only():
+    route = '/v1/command/platform/admin/strategy-assignment'
+    assert route in SERVICE
+    segment = SERVICE[SERVICE.index(route):]
+    assert "require_command_access" in segment[:1800]
+    assert "assign_paper_strategy_release" in segment[:2200]
