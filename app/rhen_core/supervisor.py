@@ -156,8 +156,12 @@ def _child_env(spec: ProcessSpec) -> dict[str, str]:
     if spec.name != "execution":
         env.update(DISABLED_EXECUTION)
     if spec.name in PURE_CORE:
-        env["ALPACA_API_KEY"] = "DISABLED"
-        env["ALPACA_API_SECRET"] = "DISABLED"
+        # Pure control/research modules must not inherit broker or execution
+        # administration credentials. Empty means absent to downstream guards;
+        # placeholder strings such as "DISABLED" are still truthy secrets.
+        env["ALPACA_API_KEY"] = ""
+        env["ALPACA_API_SECRET"] = ""
+        env["ADMIN_TOKEN"] = ""
 
     env["PORT"] = str(spec.port)
     env["RHEN_UNIFIED_RUNTIME"] = "true"
