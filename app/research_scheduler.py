@@ -189,6 +189,8 @@ class ResearchReportScheduler:
     async def _crypto_promotion_tick(self, now: datetime | None = None) -> None:
         if not getattr(self.settings, "crypto_lane_enabled", False):
             return
+        if not getattr(self.settings, "crypto_research_enabled", False):
+            return
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         if (
             self.last_crypto_promotion_at is not None
@@ -237,6 +239,8 @@ class ResearchReportScheduler:
 
     async def _crypto_forward_tick(self, now: datetime | None = None) -> None:
         if not getattr(self.settings, "crypto_lane_enabled", False):
+            return
+        if not getattr(self.settings, "crypto_research_enabled", False):
             return
         if not getattr(self.event_sink, "enabled", False):
             return
