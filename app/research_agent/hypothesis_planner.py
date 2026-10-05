@@ -61,6 +61,12 @@ def select_uninspected_corpus(
     now: datetime,
     earliest: datetime = datetime(2024, 1, 1, tzinfo=UTC),
 ) -> dict[str, Any]:
+    """Allocate reusable search data plus untouched confirmatory data.
+
+    DEVELOPMENT is explicitly a search sandbox and may be reused across
+    hypotheses. VALIDATION and HOLDOUT are confirmatory and must remain
+    untouched until their stage is actually opened.
+    """
     if exposure.get("complete") is not True:
         return {
             "available": False,
@@ -69,38 +75,66 @@ def select_uninspected_corpus(
         }
 
     now = now.astimezone(UTC)
-    total_days = sum(CORPUS_DAYS.values())
     intervals = _intervals(exposure)
-    # Keep one complete UTC day between the confirmatory corpus and now.
+
+    development_start = earliest.astimezone(UTC)
+    development_end = development_start + timedelta(
+        days=CORPUS_DAYS["development"]
+    )
+    if development_end >= now - timedelta(days=1):
+        return {
+            "available": False,
+            "reason": "development_search_sandbox_not_yet_complete",
+            "next_eligible_at": development_end.isoformat(),
+        }
+
+    validation_days = CORPUS_DAYS["validation"]
+    holdout_days = CORPUS_DAYS["holdout"]
+    confirmatory_days = validation_days + holdout_days
+
+    # Keep one complete UTC day between the newest confirmatory observation and
+    # wall clock. Search backward in weekly steps for an entirely untouched
+    # 60-day confirmatory block. Merely preregistering a block does not expose it.
     end = datetime(now.year, now.month, now.day, tzinfo=UTC) - timedelta(days=1)
     step = timedelta(days=7)
-
-    while end - timedelta(days=total_days) >= earliest:
-        start = end - timedelta(days=total_days)
+    while end - timedelta(days=confirmatory_days) >= development_end:
+        start = end - timedelta(days=confirmatory_days)
         overlaps = any(start < right and left < end for left, right in intervals)
         if not overlaps:
-            validation_start = start + timedelta(days=CORPUS_DAYS["development"])
-            holdout_start = validation_start + timedelta(days=CORPUS_DAYS["validation"])
+            holdout_start = start + timedelta(days=validation_days)
             return {
                 "available": True,
-                "reason": "untouched_contiguous_corpus_found",
-                "development": [start.isoformat(), validation_start.isoformat()],
-                "validation": [validation_start.isoformat(), holdout_start.isoformat()],
+                "reason": "reusable_development_and_untouched_confirmatory_corpus_found",
+                "development": [
+                    development_start.isoformat(),
+                    development_end.isoformat(),
+                ],
+                "validation": [start.isoformat(), holdout_start.isoformat()],
                 "holdout": [holdout_start.isoformat(), end.isoformat()],
-                "corpus_start": start.isoformat(),
+                "corpus_start": development_start.isoformat(),
                 "corpus_end": end.isoformat(),
+                "development_reusable_search_sandbox": True,
+                "confirmatory_untouched_at_freeze": True,
                 "exposure_interval_count": len(intervals),
             }
         end -= step
 
     latest = max((right for _, right in intervals), default=now)
-    next_eligible = max(now + timedelta(days=7), latest + timedelta(days=total_days))
+    next_eligible = max(
+        now + timedelta(days=7),
+        latest + timedelta(days=confirmatory_days),
+    )
     return {
         "available": False,
-        "reason": "no_complete_uninspected_120_day_corpus",
+        "reason": "no_complete_uninspected_60_day_confirmatory_corpus",
         "next_eligible_at": next_eligible.isoformat(),
         "latest_inspected_end": latest.isoformat(),
         "exposure_interval_count": len(intervals),
+        "development": [
+            development_start.isoformat(),
+            development_end.isoformat(),
+        ],
+        "development_reusable_search_sandbox": True,
     }
 
 
