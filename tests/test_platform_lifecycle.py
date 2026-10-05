@@ -84,3 +84,16 @@ def test_restricted_tenant_never_projects_ready():
     assert result["state"] == "RESTRICTED"
     assert result["setup_ready"] is False
     assert result["execution_ready"] is False
+
+
+def test_margin_buying_power_alone_does_not_count_as_crypto_funding():
+    projection = paper_funding_projection(
+        {
+            "equity": "1000",
+            "cash": "0",
+            "buying_power": "2000",
+            "non_marginable_buying_power": "0",
+        }
+    )
+    assert projection["funded"] is False
+    assert projection["available_for_crypto"] == "0"
