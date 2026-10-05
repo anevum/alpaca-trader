@@ -9,6 +9,7 @@ import psycopg
 
 from foundation.iren_gateway import iren_read
 from foundation.iren_work_gateway import command_create, snapshot
+from foundation.report_read import _btc_aggressive_70_projection
 
 
 UTC = timezone.utc
@@ -404,6 +405,34 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         )
         recent_evidence_rows = cur.fetchall()
 
+        cur.execute(
+            """
+            select occurred_at, payload
+            from rhen.events
+            where run_id = %s
+              and strategy_version_id = %s
+              and event_type = 'broker_fill'
+            order by occurred_at asc, event_id asc
+            limit 5000
+            """,
+            (run_id, "BTC-CANARY-001"),
+        )
+        fill_rows = cur.fetchall()
+
+        cur.execute(
+            """
+            select occurred_at, payload
+            from rhen.events
+            where run_id = %s
+              and strategy_version_id = %s
+              and event_type = 'position_metrics'
+            order by occurred_at asc, event_id asc
+            limit 5000
+            """,
+            (run_id, "BTC-CANARY-001"),
+        )
+        all_position_rows = cur.fetchall()
+
     decision_at, decision_payload = decision if decision else (None, {})
     comparison = (
         dict(decision_payload.get("comparison_context") or {})
@@ -509,6 +538,27 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     recent_cycles.reverse()
     return_history.reverse()
 
+    fill_events = [
+        {
+            "occurred_at": stamp(occurred_at),
+            "payload": dict(payload or {}),
+        }
+        for occurred_at, payload in fill_rows
+    ]
+    all_returns = [
+        decimal_value(dict(payload or {}).get("current_return_pct"))
+        for _occurred_at, payload in all_position_rows
+    ]
+    all_returns = [value for value in all_returns if value is not None]
+    current_return = decimal_value(position_payload.get("current_return_pct"))
+    aggressive_70 = _btc_aggressive_70_projection(
+        fill_events=fill_events,
+        position_open=position_open,
+        current_return=current_return,
+        max_favorable_return=max(all_returns) if all_returns else None,
+        max_adverse_return=min(all_returns) if all_returns else None,
+    )
+
     return {
         "available": True,
         "run_id": run_id,
@@ -557,6 +607,7 @@ def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         },
         "recent_cycles": recent_cycles,
         "return_history": return_history,
+        "aggressive_70": aggressive_70,
     }
 
 

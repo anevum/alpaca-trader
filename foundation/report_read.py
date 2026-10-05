@@ -11,6 +11,161 @@ import psycopg
 
 NY = ZoneInfo("America/New_York")
 
+AGGRESSIVE_70_INITIAL_EQUITY = Decimal("70")
+AGGRESSIVE_70_ALLOCATION_PCT = Decimal("0.90")
+AGGRESSIVE_70_TAKER_FEE_PCT = Decimal("0.0025")
+AGGRESSIVE_70_MAX_DRAWDOWN_PCT = Decimal("0.20")
+AGGRESSIVE_70_STOP_PCT = Decimal("0.05")
+
+
+def _btc_aggressive_70_projection(
+    *,
+    fill_events: list[dict[str, Any]],
+    position_open: bool,
+    current_return: Decimal | None,
+    max_favorable_return: Decimal | None,
+    max_adverse_return: Decimal | None,
+) -> dict[str, Any]:
+    """Scale canonical canary fills/signals onto a bounded $70 shadow bankroll.
+
+    This is deliberately a capital-policy experiment, not a second broker book.
+    It uses the exact forward canary evidence while keeping broker execution and
+    strategy validation uncontaminated.
+    """
+
+    def fill_value(activity: dict[str, Any], key: str) -> Decimal | None:
+        value = activity.get(key)
+        if value in (None, ""):
+            return None
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def net_round_trip_return(gross_return: Decimal) -> Decimal:
+        # Canary entries/exits are market orders, so model the current tier-1
+        # Alpaca taker fee on both sides in addition to observed fill prices.
+        multiplier = (
+            (Decimal("1") - AGGRESSIVE_70_TAKER_FEE_PCT)
+            * (Decimal("1") + gross_return)
+            * (Decimal("1") - AGGRESSIVE_70_TAKER_FEE_PCT)
+        )
+        return multiplier - Decimal("1")
+
+    completed_trade_returns: list[Decimal] = []
+    open_entry_price: Decimal | None = None
+    open_qty = Decimal("0")
+    open_cost = Decimal("0")
+
+    for event in fill_events:
+        activity = dict((event.get("payload") or {}).get("activity") or {})
+        side = str(activity.get("side") or "").strip().lower()
+        price = fill_value(activity, "price") or fill_value(
+            activity, "filled_avg_price"
+        )
+        qty = fill_value(activity, "qty") or fill_value(activity, "filled_qty")
+        if price is None:
+            continue
+
+        if side == "buy":
+            effective_qty = qty or Decimal("1")
+            open_cost += price * effective_qty
+            open_qty += effective_qty
+            open_entry_price = open_cost / open_qty
+        elif side == "sell" and open_entry_price is not None:
+            gross_return = price / open_entry_price - Decimal("1")
+            completed_trade_returns.append(net_round_trip_return(gross_return))
+            open_entry_price = None
+            open_qty = Decimal("0")
+            open_cost = Decimal("0")
+
+    realized_equity = AGGRESSIVE_70_INITIAL_EQUITY
+    peak_equity = realized_equity
+    max_drawdown = Decimal("0")
+    for trade_return in completed_trade_returns:
+        deployed = realized_equity * AGGRESSIVE_70_ALLOCATION_PCT
+        idle = realized_equity - deployed
+        realized_equity = idle + deployed * (Decimal("1") + trade_return)
+        peak_equity = max(peak_equity, realized_equity)
+        if peak_equity > 0:
+            max_drawdown = max(
+                max_drawdown,
+                (peak_equity - realized_equity) / peak_equity,
+            )
+
+    target_notional = realized_equity * AGGRESSIVE_70_ALLOCATION_PCT
+    current_equity = realized_equity
+    open_net_return: Decimal | None = None
+    if position_open and current_return is not None:
+        open_net_return = net_round_trip_return(current_return)
+        current_equity = (
+            realized_equity - target_notional
+            + target_notional * (Decimal("1") + open_net_return)
+        )
+        peak_equity = max(peak_equity, current_equity)
+        if peak_equity > 0:
+            max_drawdown = max(
+                max_drawdown,
+                (peak_equity - current_equity) / peak_equity,
+            )
+
+    def projected_equity(value: Decimal | None) -> str | None:
+        if value is None:
+            return None
+        net_return = net_round_trip_return(value)
+        equity = (
+            realized_equity - target_notional
+            + target_notional * (Decimal("1") + net_return)
+        )
+        return str(equity.quantize(Decimal("0.0001")))
+
+    campaign_return = (
+        current_equity / AGGRESSIVE_70_INITIAL_EQUITY - Decimal("1")
+        if AGGRESSIVE_70_INITIAL_EQUITY > 0
+        else Decimal("0")
+    )
+    campaign_pnl = current_equity - AGGRESSIVE_70_INITIAL_EQUITY
+    kill_switch_equity = AGGRESSIVE_70_INITIAL_EQUITY * (
+        Decimal("1") - AGGRESSIVE_70_MAX_DRAWDOWN_PCT
+    )
+    status = (
+        "KILL_SWITCH"
+        if current_equity <= kill_switch_equity
+        else "OPEN_POSITION"
+        if position_open
+        else "READY"
+    )
+
+    return {
+        "campaign_id": "BTC-AGGRO70-001",
+        "mode": "SHADOW_PAPER_CAPITAL_POLICY",
+        "broker_orders_created": False,
+        "live_execution_authorized": False,
+        "strategy_source": "BTC-CANARY-001",
+        "initial_equity": str(AGGRESSIVE_70_INITIAL_EQUITY),
+        "target_allocation_pct": str(AGGRESSIVE_70_ALLOCATION_PCT),
+        "target_notional": str(target_notional.quantize(Decimal("0.0001"))),
+        "modeled_taker_fee_pct_per_side": str(AGGRESSIVE_70_TAKER_FEE_PCT),
+        "stop_pct": str(AGGRESSIVE_70_STOP_PCT),
+        "max_campaign_drawdown_pct": str(AGGRESSIVE_70_MAX_DRAWDOWN_PCT),
+        "kill_switch_equity": str(kill_switch_equity),
+        "completed_trades": len(completed_trade_returns),
+        "realized_equity": str(realized_equity.quantize(Decimal("0.0001"))),
+        "current_equity": str(current_equity.quantize(Decimal("0.0001"))),
+        "current_pnl": str(campaign_pnl.quantize(Decimal("0.0001"))),
+        "campaign_return_pct": str(campaign_return),
+        "open_trade_net_return_pct": (
+            str(open_net_return) if open_net_return is not None else None
+        ),
+        "best_observed_equity": projected_equity(max_favorable_return),
+        "worst_observed_equity": projected_equity(max_adverse_return),
+        "max_drawdown_pct": str(max_drawdown),
+        "status": status,
+        "sample_sufficient": len(completed_trade_returns) >= 20,
+    }
+
+
 
 def _as_dt(value: Any) -> datetime | None:
     if value in (None, ""):
@@ -299,6 +454,13 @@ def _btc_canary_run_evidence(
         "protective_order_events": len(protection_orders),
         "active_protective_orders": active_protection,
         "latest_account_snapshot": latest_account,
+        "aggressive_70": _btc_aggressive_70_projection(
+            fill_events=fill_events,
+            position_open=position_open,
+            current_return=latest_return,
+            max_favorable_return=max_favorable_return,
+            max_adverse_return=max_adverse_return,
+        ),
     }
 
 
