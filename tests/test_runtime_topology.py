@@ -251,3 +251,17 @@ asyncio.run(scenario())
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
+
+
+def test_optional_unified_modules_do_not_block_required_inventory():
+    obs = observation()
+    result, _ = reduce_state({}, obs, service.POLICY)
+    projected = topology(
+        obs,
+        result,
+        service.IrenController().runtime_identity,
+    )
+    assert "PREOPEN" not in projected["required_inventory"]
+    assert "IREN_EXECUTOR" not in projected["required_inventory"]
+    assert "PREOPEN" not in projected["inventory_gaps"]
+    assert "IREN_EXECUTOR" not in projected["inventory_gaps"]
