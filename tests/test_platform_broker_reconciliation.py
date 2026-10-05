@@ -177,3 +177,60 @@ def test_secret_resolver_failure_is_sanitized_before_persistence():
     assert result.status == "FAILED"
     assert "actual-secret-value-should-never-escape" not in (result.error_detail or "")
     assert "secret resolution failed" in (result.error_detail or "").lower()
+
+
+
+def test_reconciliation_discards_unapproved_account_and_order_fields():
+    resolver = FakeSecretResolver("token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/account":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "alpaca-account-1",
+                    "account_number": "SHOULD-NOT-PERSIST",
+                    "status": "ACTIVE",
+                    "trading_blocked": False,
+                    "equity": "100.00",
+                    "unexpected_private_field": "discard-me",
+                },
+            )
+        if request.url.path == "/v2/positions":
+            return httpx.Response(
+                200,
+                json=[{
+                    "symbol": "BTCUSD",
+                    "qty": "0.01",
+                    "unexpected_private_field": "discard-me",
+                }],
+            )
+        if request.url.path == "/v2/orders":
+            return httpx.Response(
+                200,
+                json=[{
+                    "id": "order-1",
+                    "client_order_id": "anevum-rhen-test",
+                    "status": "filled",
+                    "unexpected_private_field": "discard-me",
+                }],
+            )
+        raise AssertionError(request.url.path)
+
+    client = TenantAlpacaReadClient(
+        account_config(),
+        resolver,
+        transport=httpx.MockTransport(handler),
+    )
+    result = run(TenantBrokerReconciler(account_config(), client).reconcile())
+    encoded = json.dumps(result.to_record(), default=str)
+
+    assert result.ready is True
+    assert "SHOULD-NOT-PERSIST" not in encoded
+    assert "unexpected_private_field" not in encoded
+    assert result.account_snapshot == {
+        "id": "alpaca-account-1",
+        "status": "ACTIVE",
+        "equity": "100.00",
+        "trading_blocked": False,
+    }
