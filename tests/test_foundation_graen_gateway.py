@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from foundation.graen_gateway import (
     RESEARCH_STAGES,
     _hash,
+    _inspection_payload,
     _is_native_research_stage,
     _obj,
     _status,
@@ -22,6 +23,37 @@ def test_status_contract():
 def test_object_value_is_fail_closed():
     assert _obj({"x":1}) == {"x":1}
     assert _obj(["x"]) == {}
+
+
+def test_preregistered_strategy_corpus_is_not_marked_inspected():
+    payload = {
+        "manifest_hash": "a" * 64,
+        "corpus": {
+            "development": ["2024-01-01T00:00:00Z", "2024-03-01T00:00:00Z"],
+            "validation": ["2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z"],
+            "holdout": ["2026-09-01T00:00:00Z", "2026-10-01T00:00:00Z"],
+        },
+        "corpus_start": "2024-01-01T00:00:00Z",
+        "corpus_end": "2026-10-01T00:00:00Z",
+        "research_only": True,
+    }
+    cleaned = _inspection_payload("CRYPTO_STRATEGY_MANIFEST_V1", payload)
+    assert cleaned["manifest_hash"] == "a" * 64
+    assert cleaned["research_only"] is True
+    assert "corpus" not in cleaned
+    assert "corpus_start" not in cleaned
+    assert "corpus_end" not in cleaned
+
+    opened = _inspection_payload(
+        "CRYPTO_STRATEGY_STAGE_OPENED",
+        {
+            "stage": "VALIDATION",
+            "start": "2026-08-01T00:00:00Z",
+            "end": "2026-09-01T00:00:00Z",
+        },
+    )
+    assert opened["start"] == "2026-08-01T00:00:00Z"
+    assert opened["end"] == "2026-09-01T00:00:00Z"
 
 
 def test_runtime_contract_versionless_and_execution_neutral():
