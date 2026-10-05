@@ -143,13 +143,13 @@ class BtcDirectSwingStrategy:
         history = completed[:-1]
         closes = [row["c"] for row in completed]
 
-        fast = self._ema(closes[-self.fast_trend_bars :], self.fast_trend_bars)
+        fast = self._ema(closes, self.fast_trend_bars)
         medium = self._ema(
             closes[-self.medium_trend_bars :],
             self.medium_trend_bars,
         )
-        slow = self._ema(closes[-self.slow_trend_bars :], self.slow_trend_bars)
-        long = self._ema(closes[-self.long_trend_bars :], self.long_trend_bars)
+        slow = self._ema(closes, self.slow_trend_bars)
+        long = self._ema(closes, self.long_trend_bars)
 
         trend_long = bool(fast > medium > slow > long)
 
