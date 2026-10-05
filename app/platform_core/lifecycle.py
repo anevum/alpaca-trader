@@ -39,10 +39,15 @@ def paper_funding_projection(
     equity = _decimal(row.get("equity"))
     cash = _decimal(row.get("cash"))
     buying_power = _decimal(row.get("buying_power"))
+    non_marginable_buying_power = _decimal(row.get("non_marginable_buying_power"))
+    available_for_crypto = (
+        non_marginable_buying_power
+        if non_marginable_buying_power is not None
+        else cash
+    )
 
-    evidence = [value for value in (equity, cash, buying_power) if value is not None]
-    funded = any(value > 0 for value in evidence)
-    known = bool(evidence)
+    known = available_for_crypto is not None
+    funded = bool(available_for_crypto is not None and available_for_crypto > 0)
 
     return {
         "source": "ALPACA",
@@ -52,6 +57,16 @@ def paper_funding_projection(
         "equity": str(equity) if equity is not None else None,
         "cash": str(cash) if cash is not None else None,
         "buying_power": str(buying_power) if buying_power is not None else None,
+        "non_marginable_buying_power": (
+            str(non_marginable_buying_power)
+            if non_marginable_buying_power is not None
+            else None
+        ),
+        "available_for_crypto": (
+            str(available_for_crypto)
+            if available_for_crypto is not None
+            else None
+        ),
         "observed_at": observed_at,
         "external_money_movement_enabled": False,
     }
