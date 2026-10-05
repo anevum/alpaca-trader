@@ -41,7 +41,11 @@ def _services() -> dict:
                 "last_sent_at": STAMP_TEXT,
                 "strategy_version_id": POLICY["expected_strategy"],
             },
-            "crypto": {"execution_enabled": False},
+            "crypto": {
+                "execution_enabled": False,
+                "execution_mode": "btc_direct_live_signal",
+                "broker_writes_allowed": False,
+            },
         }),
         "VELUM": bounded_health("VELUM", {
             "ok": True,
