@@ -150,3 +150,9 @@ def test_primary_shadow_updates_still_update_canonical_pointer():
     assert metadata["forward_shadow"] == r2f
     assert metadata["forward_shadows"][r2f["candidate_id"]] == r2f
     assert "forward_shadow_comparison" not in metadata
+
+
+def test_btc_v15_r2h_breakout_is_native_claimable_research_only_stage():
+    stage = "CRYPTO_BTC_R2H_BREAKOUT_V15_EVALUATION"
+    assert stage in RESEARCH_STAGES
+    assert _is_native_research_stage(stage) is True
