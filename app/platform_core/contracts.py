@@ -22,6 +22,7 @@ class TradingEligibilityInput:
     broker_account_status: str
     broker_crypto_enabled: bool
     broker_trading_blocked: bool
+    broker_trading_scope: bool
     broker_reconciled: bool
     allocation_active: bool
     allocation_positive: bool
@@ -64,6 +65,8 @@ def evaluate_execution_eligibility(
         reasons.append("broker_crypto_not_enabled")
     if value.broker_trading_blocked:
         reasons.append("broker_trading_blocked")
+    if not value.broker_trading_scope:
+        reasons.append("broker_trading_scope_missing")
     if not value.broker_reconciled:
         reasons.append("broker_not_reconciled")
     if not value.allocation_active or not value.allocation_positive:
