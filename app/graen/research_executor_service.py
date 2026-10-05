@@ -6023,6 +6023,65 @@ class GraenResearchExecutor:
                 worker_id=self.worker_id,
                 error=error,
             )
+            if stage in {
+                STRATEGY_VALIDATION_STAGE,
+                STRATEGY_HOLDOUT_STAGE,
+            }:
+                manifest = (
+                    metadata.get("strategy_manifest")
+                    if isinstance(metadata.get("strategy_manifest"), Mapping)
+                    else {}
+                )
+                candidate_id = str(
+                    manifest.get("hypothesis_id")
+                    or metadata.get("candidate_id")
+                    or ""
+                )
+                await self.gateway.record_artifact(
+                    problem_id=problem_id,
+                    run_id=run_id,
+                    artifact_type="CRYPTO_STRATEGY_CONFIRMATORY_ORPHAN_INVALIDATION",
+                    methodology_version=STRATEGY_RUNNER_VERSION,
+                    content={
+                        "candidate_id": candidate_id or None,
+                        "invalidated_run_id": run_id,
+                        "invalidated_stage": stage,
+                        "reason": error,
+                        "opened_evidence_burned": True,
+                        "candidate_falsified": True,
+                        "execution_authority": False,
+                        "live_execution_authorized": False,
+                    },
+                )
+                await self.gateway.queue_research_stage(
+                    problem_id=problem_id,
+                    stage=HYPOTHESIS_PLANNER_STAGE,
+                    metadata={
+                        "autonomous_loop_id": (
+                            metadata.get("autonomous_loop_id")
+                            or AUTONOMOUS_LOOP_ID
+                        ),
+                        "autonomous_continuation": True,
+                        "invalidated_run_id": run_id,
+                        "invalidated_research_stage": stage,
+                        "research_integrity_incident": (
+                            "SEALED_STAGE_EXECUTION_ORPHANED"
+                        ),
+                        "sealed_stage_invalidated": True,
+                        "opened_evidence_burned": True,
+                        "falsified_candidate_id": candidate_id or None,
+                        "next_action": "GENERATE_NEXT_HYPOTHESIS",
+                    },
+                )
+                return {
+                    "problem_id": problem_id,
+                    "run_id": run_id,
+                    "invalidated_stage": stage,
+                    "candidate_id": candidate_id or None,
+                    "opened_evidence_burned": True,
+                    "next_stage": HYPOTHESIS_PLANNER_STAGE,
+                }
+
             await self.gateway.queue_research_stage(
                 problem_id=problem_id,
                 stage="RESEARCH_IMPLEMENTATION_REQUIRED",
