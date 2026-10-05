@@ -971,7 +971,7 @@ def create_sandbox_provider_transfer(
                 """
                 select provider_relationship_ref
                 from anevum.financial_bank_links
-                where bank_link_id=%s::uuid
+                where bank_link_id::text=%s
                   and customer_id=%s
                   and provider_account_id=%s
                   and provider='ALPACA_BROKER'
