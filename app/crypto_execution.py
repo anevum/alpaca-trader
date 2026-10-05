@@ -524,26 +524,33 @@ class CryptoExecutionEngine:
             *owned_symbols,
         ]))
         if direct_btc:
-            bootstrap = not self._direct_btc_history
-            lookback_minutes = (
-                int(getattr(self.strategy, "required_history_minutes", 270 * 24 * 60))
-                if bootstrap
-                else 72 * 60
-            )
-            fresh_bars, quotes = await asyncio.gather(
-                self.market_data.bars_many(
-                    data_symbols,
-                    timeframe=getattr(self.strategy, "timeframe", "1Hour"),
-                    lookback_minutes=lookback_minutes,
+            bars_request = self.market_data.bars_many(
+                data_symbols,
+                timeframe=getattr(self.strategy, "timeframe", "4Hour"),
+                lookback_minutes=int(
+                    getattr(
+                        self.strategy,
+                        "required_history_minutes",
+                        14 * 24 * 60,
+                    )
                 ),
-                self.market_data.latest_quotes(active_symbols),
             )
-            bars = {
-                "BTC/USD": self._merge_direct_btc_history(
-                    fresh_bars.get("BTC/USD", [])
-                )
-            }
-            regime_bars = {}
+            regime_request = self.market_data.bars_many(
+                ["BTC/USD"],
+                timeframe=getattr(self.strategy, "regime_timeframe", "1Day"),
+                lookback_minutes=int(
+                    getattr(
+                        self.strategy,
+                        "regime_history_minutes",
+                        270 * 24 * 60,
+                    )
+                ),
+            )
+            bars, quotes, regime_bars = await asyncio.gather(
+                bars_request,
+                self.market_data.latest_quotes(active_symbols),
+                regime_request,
+            )
         else:
             bars, quotes = await asyncio.gather(
                 self.market_data.bars_many(data_symbols),
