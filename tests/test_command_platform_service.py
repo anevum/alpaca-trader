@@ -84,3 +84,21 @@ def test_strategy_assignment_is_operator_only():
     segment = SERVICE[SERVICE.index(route):]
     assert "require_command_access" in segment[:1800]
     assert "assign_paper_strategy_release" in segment[:2200]
+
+
+def test_customer_projection_routes_use_tenant_identity_boundary():
+    for route in (
+        '/v1/command/account',
+        '/v1/command/overview',
+        '/v1/command/trading',
+        '/v1/command/money',
+        '/v1/command/activity',
+    ):
+        assert route in SERVICE
+        segment = SERVICE[SERVICE.index(route):]
+        assert "require_command_identity" in segment[:1800]
+    assert "customer_account_projection" in SERVICE
+    assert "customer_overview_projection" in SERVICE
+    assert "customer_trading_projection" in SERVICE
+    assert "customer_money_projection" in SERVICE
+    assert "customer_activity_projection" in SERVICE
