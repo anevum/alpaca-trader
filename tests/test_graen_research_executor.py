@@ -331,3 +331,84 @@ def test_active_confirmatory_claim_is_not_reconciled():
         assert gateway.queued_stages == []
 
     asyncio.run(scenario())
+
+
+
+def test_autonomous_loop_bootstrap_is_exactly_once_and_research_only():
+    class BootstrapGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.problem = None
+
+        async def snapshot(self):
+            return {
+                "problems": [self.problem] if self.problem else [],
+                "runs": [],
+            }
+
+        async def create_problem(self, payload):
+            self.created_problems.append(payload)
+            self.problem = {
+                "problem_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "status": "QUEUED",
+                "domain": payload["domain"],
+                "metadata": dict(payload.get("metadata") or {}),
+            }
+            return {"ok": True, "problem": dict(self.problem)}
+
+        async def queue_research_stage(self, **kwargs):
+            self.queued_stages.append(kwargs)
+            self.problem = {
+                **self.problem,
+                "status": "WAITING",
+                "metadata": {
+                    **dict(self.problem.get("metadata") or {}),
+                    "research_stage": kwargs["stage"],
+                    **dict(kwargs.get("metadata") or {}),
+                },
+            }
+            return {"ok": True, "problem": dict(self.problem)}
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        gateway = BootstrapGateway()
+        runtime.gateway = gateway
+
+        first = await runtime._ensure_autonomous_loop_seed(
+            await gateway.snapshot()
+        )
+        second = await runtime._ensure_autonomous_loop_seed(
+            await gateway.snapshot()
+        )
+
+        assert first["seeded"] is True
+        assert first["autonomous_loop_id"] == service.AUTONOMOUS_LOOP_ID
+        assert first["next_research_stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert first["execution_authority"] is False
+        assert first["runtime_source_mutation_authorized"] is False
+        assert first["live_execution_authorized"] is False
+        assert second is None
+
+        assert len(gateway.created_problems) == 1
+        created = gateway.created_problems[0]
+        assert created["priority"] == 100
+        assert created["constraints"]["execution_authority"] is False
+        assert created["constraints"]["runtime_source_mutation_authorized"] is False
+        assert created["constraints"]["spending_authority"] is False
+        assert created["constraints"]["production_risk_increase_authority"] is False
+        assert created["constraints"]["unrestricted_live_promotion_authority"] is False
+        assert len(gateway.queued_stages) == 1
+        assert gateway.queued_stages[0]["stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert (
+            gateway.queued_stages[0]["metadata"]["autonomous_loop_id"]
+            == service.AUTONOMOUS_LOOP_ID
+        )
+
+    asyncio.run(scenario())
+
+
+def test_legacy_campaign_bootstrap_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("GRAEN_LEGACY_CAMPAIGN_BOOTSTRAP", raising=False)
+    runtime = service.GraenResearchExecutor()
+    assert runtime.autonomous_loop_bootstrap is True
+    assert runtime.legacy_campaign_bootstrap is False
