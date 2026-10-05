@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 import pytest
 
 from app.config import Settings
 from app.crypto_execution import CryptoExecutionEngine
+from app.crypto_layer import CryptoRollingMomentumStrategy
 from app.state import RuntimeState
 from app.strategy import Signal
 
@@ -227,3 +228,71 @@ def test_active_paper_refuses_to_trade_without_explicit_acknowledgement():
     assert result["action"] == "blocked"
     assert "not explicitly authorized" in result["reason"]
     assert broker.buy_calls == []
+
+
+
+def test_active_paper_confirmation_gates_can_be_observation_only():
+    settings = _config(
+        CRYPTO_MIN_CONFIRMATIONS="0",
+        CRYPTO_REGIME_MIN_CONFIRMATIONS="0",
+    )
+    assert settings.crypto_min_confirmations == 0
+    assert settings.crypto_regime_min_confirmations == 0
+
+
+def test_negative_vwap_edge_allows_small_below_vwap_tolerance():
+    now = datetime.now(timezone.utc)
+    bars = []
+    closes = [
+        Decimal("99.80"),
+        Decimal("99.84"),
+        Decimal("99.88"),
+        Decimal("99.90"),
+        Decimal("99.92"),
+        Decimal("99.94"),
+        Decimal("99.96"),
+        Decimal("99.98"),
+        Decimal("100.00"),
+    ]
+    for index, close in enumerate(closes):
+        stamp = now - timedelta(minutes=len(closes) - index + 1)
+        bars.append(
+            {
+                "t": stamp.isoformat(),
+                "o": str(close - Decimal("0.01")),
+                "h": str(close + Decimal("0.02")),
+                "l": str(close - Decimal("0.02")),
+                "c": str(close),
+                "v": "10",
+                "vw": "100.10",
+                "n": 5,
+            }
+        )
+
+    strategy = CryptoRollingMomentumStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("0"),
+        min_vwap_edge_pct=Decimal("-0.002"),
+        stop_pct=Decimal("0.005"),
+        target_pct=Decimal("0.010"),
+        entry_start=time(0, 0),
+        entry_cutoff=time(23, 59),
+        confirmation_symbols=(),
+        min_confirmations=0,
+        regime_window=5,
+        regime_min_confirmations=0,
+        regime_min_return_pct=Decimal("0"),
+    )
+    signal = strategy.evaluate(
+        bars=bars,
+        confirmation_bars={},
+        symbol="BTC/USD",
+        has_position=False,
+        order_notional=Decimal("63"),
+        now=now,
+    )
+
+    assert signal.action == "buy"
+    assert signal.metadata["checks"]["vwap_ok"] is True
+    assert Decimal(signal.metadata["vwap_edge_pct"]) < 0
