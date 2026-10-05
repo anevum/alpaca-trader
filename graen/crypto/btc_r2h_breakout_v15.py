@@ -89,10 +89,10 @@ def campaign_manifest() -> dict[str, Any]:
         "signal_rule": (
             "Use completed 4-hour bars only. Regime is long when prior close has "
             "positive 1080-bar momentum OR is above the 1500-bar SMA. While flat, "
-            "enter long only when the prior close is above the preceding 42-bar high. "
-            "While long, exit when the prior close is below the preceding 15-bar low "
-            "or the R2H regime turns flat. A fixed 5% entry catastrophe stop is also "
-            "modeled as a risk boundary."
+            "enter at the next 4-hour bar open only when the prior close is above the "
+            "preceding 42-bar high. While long, exit at the next 4-hour bar open when "
+            "the prior close is below the preceding 15-bar low or the R2H regime turns "
+            "flat. A fixed 5% entry catastrophe stop is also modeled as a risk boundary."
         ),
         "cost_scenarios": dict(COST_SCENARIOS),
         "evidence_role": "FROZEN_DEVELOPMENT_THEN_LATER_HOLDOUT",
@@ -252,43 +252,58 @@ def _simulate(
             bars, signal_index, exit_bars
         )
 
-        in_window = True
         bar_return = 0.0
+        was_long = position == 1.0
+        current_open = float(bars[index]["open"])
+        current_low = float(bars[index]["low"])
 
-        if position == 0.0 and regime_long and breakout:
-            position = 1.0
-            entry_price = closes[signal_index]
-            if in_window:
-                entries += 1
-                turnover += 1.0
-                bar_return -= cost_per_turnover
-
-        if position == 1.0 and (not regime_long or breakdown):
-            realized = closes[index] / closes[index - 1] - 1.0
+        if was_long and (not regime_long or breakdown):
+            # The regime/channel decision is known only after the prior bar
+            # closes. Exit at the next tradable 4-hour bar open, never at the
+            # signal close.
+            realized = current_open / closes[index - 1] - 1.0
             position = 0.0
             entry_price = 0.0
-            if in_window:
+            exits += 1
+            turnover += 1.0
+            bar_return += realized - cost_per_turnover
+        elif not was_long and regime_long and breakout:
+            # Breakout is confirmed on the prior completed bar. Enter at this
+            # bar's open so the simulation cannot use the already-known close.
+            position = 1.0
+            entry_price = current_open
+            entries += 1
+            turnover += 1.0
+            bar_return -= cost_per_turnover
+
+            stop_price = entry_price * (1.0 - stop_pct)
+            if current_low <= stop_price:
+                exit_price = min(stop_price, current_open)
+                realized = exit_price / entry_price - 1.0
+                position = 0.0
+                entry_price = 0.0
                 exits += 1
+                stop_hits += 1
                 turnover += 1.0
                 bar_return += realized - cost_per_turnover
-        elif position == 1.0:
+            else:
+                bar_return += closes[index] / entry_price - 1.0
+        elif was_long:
             stop_price = entry_price * (1.0 - stop_pct)
-            if float(bars[index]["low"]) <= stop_price:
-                exit_price = min(stop_price, float(bars[index]["open"]))
+            if current_low <= stop_price:
+                exit_price = min(stop_price, current_open)
                 realized = exit_price / closes[index - 1] - 1.0
                 position = 0.0
                 entry_price = 0.0
-                if in_window:
-                    exits += 1
-                    stop_hits += 1
-                    turnover += 1.0
-                    bar_return += realized - cost_per_turnover
-            elif in_window:
+                exits += 1
+                stop_hits += 1
+                turnover += 1.0
+                bar_return += realized - cost_per_turnover
+            else:
                 bar_return += closes[index] / closes[index - 1] - 1.0
 
-        if in_window:
-            returns.append(bar_return)
-            positions.append(position)
+        returns.append(bar_return)
+        positions.append(position)
 
     return {
         "entry_lookback_bars": entry_bars,
