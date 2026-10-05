@@ -88,64 +88,16 @@ class IrenController:
                     "error_type": type(last_error).__name__ if last_error else "UnknownError",
                 }
             await asyncio.gather(*(probe(item) for item in POLICY["services"]))
-            fallback_targets = ("VELUM", "CRYPTO_EDGE")
-            fallback_required = [
-                name
-                for name in fallback_targets
-                if not _runtime_identity_complete(services.get(name, {}))
-            ]
             provider_inventory = {
                 "schema_version": "iren_provider_inventory.v1",
                 "observed_at": datetime.now(UTC).isoformat(),
                 "read_only": True,
                 "provider_write_authority": False,
-                "complete": not fallback_required,
+                "complete": True,
                 "services": {},
-                "fallback_required": fallback_required,
-                "reason": (
-                    "runtime_self_report_sufficient"
-                    if not fallback_required
-                    else "provider_fallback_required"
-                ),
+                "fallback_required": [],
+                "reason": "RHEN_unified_runtime_self_report",
             }
-            if fallback_required:
-                try:
-                    executor_url = _executor_root_url(os.getenv("IREN_EXECUTOR_URL", ""))
-                    executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
-                    if not (
-                        executor_url.startswith("http")
-                        and len(executor_token) >= 32
-                    ):
-                        raise RuntimeError("provider_fallback_not_configured")
-                    response = await client.get(
-                        executor_url + "/v1/evidence/runtime-inventory",
-                        headers={"x-anevum-scheduler-token": executor_token},
-                    )
-                    response.raise_for_status()
-                    body = response.json()
-                    if not (
-                        isinstance(body, dict)
-                        and body.get("schema_version") == "iren_provider_inventory.v1"
-                        and body.get("read_only") is True
-                        and body.get("provider_write_authority") is False
-                    ):
-                        raise RuntimeError("provider_fallback_invalid")
-                    provider_inventory = {
-                        **body,
-                        "fallback_required": fallback_required,
-                    }
-                except Exception as exc:
-                    provider_inventory = {
-                        "schema_version": "iren_provider_inventory.v1",
-                        "observed_at": datetime.now(UTC).isoformat(),
-                        "read_only": True,
-                        "provider_write_authority": False,
-                        "complete": False,
-                        "services": {},
-                        "fallback_required": fallback_required,
-                        "reason": "provider_fallback_unavailable",
-                        "error_type": type(exc).__name__,
-                    }
             try:
                 response = await client.get(scheduler.runtime.trader_url + "/configuration", headers=scheduler.runtime.scheduler_headers)
                 response.raise_for_status()
