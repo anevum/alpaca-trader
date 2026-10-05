@@ -109,14 +109,14 @@ class FakeMarketData:
 
 
 class AlwaysBuyStrategy:
-    hard_stop_pct = Decimal("0.03")
-    take_profit_pct = Decimal("0.05")
-    max_hold_minutes = 4320
+    hard_stop_pct = Decimal("0.025")
+    take_profit_pct = Decimal("0.03")
+    max_hold_minutes = 1440
     manages_position_exits = False
-    timeframe = "4Hour"
-    required_history_minutes = 14 * 24 * 60
-    regime_timeframe = "1Day"
-    regime_history_minutes = 100 * 24 * 60
+    timeframe = "1Hour"
+    required_history_minutes = 35 * 24 * 60
+    regime_timeframe = "1Hour"
+    regime_history_minutes = 35 * 24 * 60
 
     def evaluate(
         self,
@@ -134,8 +134,8 @@ class AlwaysBuyStrategy:
             symbol=symbol,
             notional=order_notional,
             reference_price=Decimal("50000"),
-            stop_price=Decimal("48500"),
-            take_profit_price=Decimal("52500"),
+            stop_price=Decimal("48750"),
+            take_profit_price=Decimal("51500"),
             reason="synthetic live-signal verifier",
             metadata={"market": "crypto", "session_model": "24x7"},
         )
@@ -171,8 +171,8 @@ def live_signal_settings():
     settings.crypto_stop_limit_buffer_pct = Decimal("0.0025")
     settings.max_total_position_notional = Decimal("1000")
     settings.max_daily_loss = Decimal("100")
-    settings.crypto_strategy_version_id = "RHEN-BTC-DIRECT-002"
-    settings.crypto_strategy_family = "btc_direct_pullback"
+    settings.crypto_strategy_version_id = "RHEN-BTC-DIRECT-003"
+    settings.crypto_strategy_family = "btc_direct_intraday_breakout"
     assert settings.execution_authorized
     assert settings.btc_direct_live_signal_authorized
     return settings
