@@ -113,6 +113,30 @@ def test_crypto_replay_settings_are_isolated_from_equity_symbols(monkeypatch):
     assert cfg.scan_symbols == ("BTC/USD", "SOL/USD")
 
 
+def test_crypto_replay_blank_env_uses_crypto_defaults_not_equity_symbols(monkeypatch):
+    cfg = Settings(
+        ALLOWED_SYMBOLS="SPY,QQQ,SMH",
+        SCAN_SYMBOLS="SPY",
+        CONFIRMATION_SYMBOLS="QQQ,SMH",
+        CRYPTO_ALWAYS_INCLUDE="BTC/USD,ETH/USD,SOL/USD",
+        CRYPTO_CONFIRMATION_SYMBOLS="BTC/USD,ETH/USD",
+        STRATEGY_NAME="rolling_momentum_vwap",
+        MAX_DAILY_ORDERS=20,
+        MAX_CONCURRENT_POSITIONS=5,
+        MAX_NEW_ENTRIES_PER_CYCLE=2,
+        MAX_TOTAL_POSITION_NOTIONAL="100",
+    )
+    monkeypatch.setenv("VELUM_CRYPTO_SYMBOLS", "")
+    monkeypatch.setenv("VELUM_CRYPTO_CONFIRMATION_SYMBOLS", "")
+
+    crypto = _crypto_settings(cfg)
+
+    assert crypto.scan_symbols == ("BTC/USD", "ETH/USD", "SOL/USD")
+    assert crypto.confirmation_symbols == ("BTC/USD", "ETH/USD")
+    assert "SPY" not in crypto.scan_symbols
+    assert "QQQ" not in crypto.confirmation_symbols
+
+
 def test_velum_runtime_declares_no_broker_order_authority():
     runtime = VelumRuntime(settings())
     status = runtime.status()
