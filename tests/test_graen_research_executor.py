@@ -649,3 +649,62 @@ def test_engineering_wait_releases_after_new_source_deployment(monkeypatch):
         assert runtime.engineering_required_count == 0
 
     asyncio.run(scenario())
+
+
+
+def test_process_once_dispatches_forward_shadow_and_paper_to_strategy_lifecycle():
+    async def run_stage(stage):
+        problem_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+        run_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+        class StageGateway(FakeGateway):
+            async def snapshot(self):
+                return {
+                    "problems": [{
+                        "problem_id": problem_id,
+                        "status": "WAITING",
+                        "domain": service.PROBLEM_DOMAIN,
+                        "priority": 100,
+                        "metadata": {
+                            "autonomous_loop_id": service.AUTONOMOUS_LOOP_ID,
+                            "autonomous_continuation": True,
+                            "research_stage": stage,
+                        },
+                    }],
+                    "runs": [],
+                    "artifacts": [],
+                    "runtime_state": {},
+                }
+
+            async def claim_research_problem(self, **kwargs):
+                return {
+                    "problem": {
+                        "problem_id": problem_id,
+                        "status": "RUNNING",
+                        "domain": service.PROBLEM_DOMAIN,
+                        "linked_iren_job_id": None,
+                        "metadata": {
+                            "autonomous_loop_id": service.AUTONOMOUS_LOOP_ID,
+                            "autonomous_continuation": True,
+                            "research_stage": stage,
+                        },
+                    },
+                    "run": {"run_id": run_id},
+                }
+
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = StageGateway()
+        called = []
+
+        async def execute(problem, run):
+            called.append((problem["metadata"]["research_stage"], run["run_id"]))
+            return {"claimed": True, "stage": stage}
+
+        runtime._execute_strategy_manifest = execute
+        result = await runtime.process_once()
+
+        assert result == {"claimed": True, "stage": stage}
+        assert called == [(stage, run_id)]
+
+    asyncio.run(run_stage(service.STRATEGY_SHADOW_STAGE))
+    asyncio.run(run_stage(service.STRATEGY_PAPER_STAGE))
