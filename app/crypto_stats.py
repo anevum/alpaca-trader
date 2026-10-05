@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -30,12 +31,29 @@ def crypto_trade_stats(
     *,
     strategy_version_id: str,
     strategy_family: str,
+    start_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a broker-derived crypto scorecard from filled RHEN crypto orders.
 
     The direct BTC runtime allows one crypto position at a time, so average-cost
     inventory accounting is deterministic and sufficient for the live scorecard.
     """
+    start_utc = start_at.astimezone(timezone.utc) if start_at else None
+
+    def in_window(order: dict[str, Any]) -> bool:
+        if start_utc is None:
+            return True
+        raw = _filled_at(order)
+        if not raw:
+            return False
+        try:
+            stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if stamp.tzinfo is None:
+            return False
+        return stamp.astimezone(timezone.utc) >= start_utc
+
     filled = [
         order
         for order in orders
@@ -43,6 +61,7 @@ def crypto_trade_stats(
         and str(order.get("status") or "").lower() == "filled"
         and _d(order.get("filled_qty")) > 0
         and _d(order.get("filled_avg_price")) > 0
+        and in_window(order)
     ]
     filled.sort(key=_filled_at)
 
@@ -156,6 +175,7 @@ def crypto_trade_stats(
         "source": "alpaca_broker_orders",
         "strategy_version_id": strategy_version_id,
         "strategy_family": strategy_family,
+        "start_at": start_utc.isoformat() if start_utc else None,
         "filled_orders": len(filled),
         "filled_entries": sum(
             1 for order in filled if str(order.get("side") or "").lower() == "buy"
