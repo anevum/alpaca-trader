@@ -1024,13 +1024,29 @@ def _research_exposure_ledger(
             str(artifact_id),
         ])
         payload=_obj(content)
-        if str(artifact_type or "") in {
+        artifact_name=str(artifact_type or "")
+        if artifact_name in {
             "CRYPTO_STRATEGY_MANIFEST_V1",
             "CRYPTO_STRATEGY_PLANNER_DECISION",
         }:
             candidate_hash=str(payload.get("manifest_hash") or "")
             if len(candidate_hash)==64:
                 strategy_manifest_hashes.add(candidate_hash)
+            # Preregistration freezes future corpus boundaries but does not
+            # inspect those observations. Mark exposure only when a stage-open
+            # or result artifact actually touches the data.
+            payload={
+                key:value
+                for key,value in payload.items()
+                if key not in {
+                    "corpus",
+                    "development",
+                    "validation",
+                    "holdout",
+                    "corpus_start",
+                    "corpus_end",
+                }
+            }
         walk(payload,source)
 
     ordered=sorted(intervals)
