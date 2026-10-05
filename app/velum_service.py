@@ -134,13 +134,13 @@ def _build_equity_strategy(settings: Settings):
 
 
 def _crypto_settings(settings: Settings) -> Settings:
-    symbols = os.getenv(
-        "VELUM_CRYPTO_SYMBOLS",
-        ",".join(settings.crypto_always_include),
-    )
-    confirmations = os.getenv(
-        "VELUM_CRYPTO_CONFIRMATION_SYMBOLS",
-        ",".join(settings.crypto_confirmation_symbols),
+    configured_symbols = os.getenv("VELUM_CRYPTO_SYMBOLS", "").strip()
+    configured_confirmations = os.getenv(
+        "VELUM_CRYPTO_CONFIRMATION_SYMBOLS", ""
+    ).strip()
+    symbols = configured_symbols or ",".join(settings.crypto_always_include)
+    confirmations = configured_confirmations or ",".join(
+        settings.crypto_confirmation_symbols
     )
     return settings.model_copy(
         update={
