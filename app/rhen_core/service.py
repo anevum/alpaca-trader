@@ -276,39 +276,21 @@ def scheduler_gateway_write(
     if action == "complete":
         return store.scheduler_complete(body)
     if action == "iren_read":
-        value, revision = store.get_kv("iren", "state", {})
-        return {
-            "ok": True,
-            "state": value or {},
-            "revision": revision,
-        }
+        return store.iren_read()
     if action == "iren_commit":
-        state = dict(body.get("state") or {})
-        revision = store.set_kv("iren", "state", state)
-        return {
-            "ok": True,
-            "state": state,
-            "revision": revision,
-        }
+        return store.iren_commit(body)
     if action in {
         "iren_notifications_claim",
         "iren_notification_complete",
     }:
-        return {
-            "ok": True,
-            "events": [],
-            "claimed": False,
-        }
-    store.set_kv(
-        "iren_work",
-        str(body.get("job_id") or body.get("job_key") or action),
-        body,
+        return store.iren_notification_action(action, body)
+    work = store.iren_work_action(action, body)
+    if work is not None:
+        return work
+    raise HTTPException(
+        status_code=422,
+        detail="unsupported_scheduler_gateway_action",
     )
-    return {
-        "ok": True,
-        "status": "RECORDED",
-        "execution_authority": False,
-    }
 
 
 @app.get("/v1/research-agent-gateway")
