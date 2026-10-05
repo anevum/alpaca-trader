@@ -220,6 +220,12 @@ class Settings(BaseSettings):
         default=Decimal("0.008"), alias="CRYPTO_MAX_VWAP_EXTENSION_PCT"
     )
     crypto_regime_window: int = Field(default=5, alias="CRYPTO_REGIME_WINDOW")
+    crypto_min_confirmations: int = Field(
+        default=1, alias="CRYPTO_MIN_CONFIRMATIONS"
+    )
+    crypto_regime_min_confirmations: int = Field(
+        default=1, alias="CRYPTO_REGIME_MIN_CONFIRMATIONS"
+    )
     crypto_regime_min_return_pct: Decimal = Field(
         default=Decimal("0"), alias="CRYPTO_REGIME_MIN_RETURN_PCT"
     )
@@ -691,6 +697,12 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_VOLATILITY_LOOKBACK_BARS must be between 3 and 1440")
         if not 1 <= self.crypto_regime_window <= 240:
             raise ValueError("CRYPTO_REGIME_WINDOW must be between 1 and 240")
+        if not 0 <= self.crypto_min_confirmations <= 10:
+            raise ValueError("CRYPTO_MIN_CONFIRMATIONS must be between 0 and 10")
+        if not 0 <= self.crypto_regime_min_confirmations <= 10:
+            raise ValueError(
+                "CRYPTO_REGIME_MIN_CONFIRMATIONS must be between 0 and 10"
+            )
         if not 1 <= self.crypto_max_quote_age_seconds <= 300:
             raise ValueError("CRYPTO_MAX_QUOTE_AGE_SECONDS must be between 1 and 300")
         if self.crypto_min_quoted_depth < 0 or self.crypto_min_trade_activity < 0:
