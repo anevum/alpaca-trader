@@ -226,12 +226,23 @@ risk-reducing exits.
 
 ### Stage B - Alpaca Broker Sandbox
 
-- provider adapter;
-- sandbox account opening/KYC contract;
-- tokenized bank-link contract;
-- simulated transfer lifecycle;
-- provider webhook ingestion;
-- reconciliation.
+Implementation status: PARTIAL / CODE COMPLETE FOR CORE SANDBOX FLOWS.
+
+Implemented:
+- hard-locked Alpaca Broker Sandbox adapter;
+- sandbox account create/read contract;
+- tokenized ACH bank-link contract;
+- virtual ACH transfer creation;
+- provider transfer status sync;
+- provider-settlement posting into the double-entry ledger;
+- Command provider/account/link/transfer read models;
+- mock adapter tests and isolated PostgreSQL settlement tests.
+
+Still intentionally held:
+- raw KYC onboarding form in Command;
+- provider webhook/event-stream ingestion;
+- automatic IREN financial reconciliation incidents;
+- any production Broker API or real-money path.
 
 ### Stage C - closed internal beta
 
