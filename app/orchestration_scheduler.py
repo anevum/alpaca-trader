@@ -384,7 +384,25 @@ class SchedulerRuntime:
     def research_headers(self) -> dict[str, str]:
         return {"x-rhen-agent-admin-token": self.research_token}
 
+    @property
+    def enabled(self) -> bool:
+        raw = os.getenv("RHEN_CANONICAL_SCHEDULER_ENABLED")
+        if raw is None:
+            return True
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
     async def start(self) -> None:
+        if not self.enabled:
+            print(
+                json.dumps(
+                    {
+                        "event": "scheduler_disabled",
+                        "reason": "RHEN_CANONICAL_SCHEDULER_ENABLED=false",
+                    }
+                ),
+                flush=True,
+            )
+            return
         if self.task is None:
             self.task = asyncio.create_task(self._run(), name="anevum-canonical-scheduler")
 
