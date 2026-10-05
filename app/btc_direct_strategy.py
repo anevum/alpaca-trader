@@ -16,9 +16,11 @@ class BtcDirectSwingStrategy:
 
     strategy_family = "btc_direct_swing"
     strategy_version_id = "RHEN-BTC-DIRECT-001"
-    timeframe = "1Hour"
+    timeframe = "4Hour"
     signal_timeframe = "4Hour"
-    required_history_minutes = 270 * 24 * 60
+    required_history_minutes = 14 * 24 * 60
+    regime_timeframe = "1Day"
+    regime_history_minutes = 270 * 24 * 60
     manages_position_exits = True
 
     momentum_lookback_bars = 180
@@ -199,8 +201,11 @@ class BtcDirectSwingStrategy:
                 reason="BTC direct position already open; channel exit manages risk",
             )
 
-        del confirmation_bars
-        state = self._state(bars, bars, now)
+        state = self._state(
+            bars,
+            confirmation_bars.get("BTC/USD", []),
+            now,
+        )
         metadata = {
             "market": "crypto",
             "session_model": "24x7",
@@ -208,6 +213,7 @@ class BtcDirectSwingStrategy:
             "strategy_version_id": self.strategy_version_id,
             "timeframe": self.signal_timeframe,
             "source_timeframe": self.timeframe,
+            "regime_timeframe": self.regime_timeframe,
             "execution_model": "completed_4h_signal_then_next_available_market_execution",
             "research_dependency": False,
             "state": {
