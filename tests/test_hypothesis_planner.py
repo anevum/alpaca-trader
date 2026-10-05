@@ -61,6 +61,7 @@ def test_planner_uses_complete_manifest_history_not_only_recent_snapshot():
             "complete": True,
             "inspected_intervals": [],
             "strategy_manifest_hashes": [],
+            "strategy_validation_tests_opened": 0,
         },
         now=datetime(2026, 10, 4, 18, 0, tzinfo=UTC),
     )
@@ -73,13 +74,32 @@ def test_planner_uses_complete_manifest_history_not_only_recent_snapshot():
             "complete": True,
             "inspected_intervals": [],
             "strategy_manifest_hashes": [first_hash],
+            "strategy_validation_tests_opened": 0,
         },
         now=datetime(2026, 10, 4, 18, 0, tzinfo=UTC),
     )
     assert second["state"] == "READY"
     assert second["manifest_hash"] != first_hash
     assert second["search_generation"] == 2
-    assert second["validation_alpha"] < first["validation_alpha"]
+    assert second["confirmatory_generation"] == 1
+    assert second["validation_alpha"] == first["validation_alpha"]
+
+    third = plan_next(
+        {"artifacts": []},
+        {
+            "complete": True,
+            "inspected_intervals": [],
+            "strategy_manifest_hashes": [
+                first_hash,
+                second["manifest_hash"],
+            ],
+            "strategy_validation_tests_opened": 1,
+        },
+        now=datetime(2026, 10, 4, 18, 0, tzinfo=UTC),
+    )
+    assert third["search_generation"] == 3
+    assert third["confirmatory_generation"] == 2
+    assert third["validation_alpha"] < second["validation_alpha"]
 
 
 def test_catalog_exhaustion_is_engineering_boundary_not_parameter_recycling():
