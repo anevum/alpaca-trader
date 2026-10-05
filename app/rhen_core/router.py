@@ -10,6 +10,18 @@ from fastapi.responses import JSONResponse, Response
 EXECUTION_URL = "http://127.0.0.1:8101"
 CORE_URL = "http://127.0.0.1:8102"
 
+MODULE_TARGETS = {
+    "graen": "http://127.0.0.1:8110",
+    "graen_research": "http://127.0.0.1:8111",
+    "crypto_research": "http://127.0.0.1:8112",
+    "velum": "http://127.0.0.1:8113",
+    "research_agent": "http://127.0.0.1:8114",
+    "nostra": "http://127.0.0.1:8115",
+    "iren": "http://127.0.0.1:8116",
+    "iren_executor": "http://127.0.0.1:8117",
+    "preopen": "http://127.0.0.1:8118",
+}
+
 MODULES = {
     "graen": "http://127.0.0.1:8110/health",
     "graen_research": "http://127.0.0.1:8111/health",
@@ -35,6 +47,31 @@ CORE_PREFIXES = (
 )
 
 app = FastAPI(title="RHEN", version="3.0.0")
+
+def _target_for(route: str) -> str:
+    if (
+        route == "/core"
+        or route.startswith("/core/")
+        or route.startswith(CORE_PREFIXES)
+    ):
+        return CORE_URL
+    if route.startswith("/v1/graen"):
+        return MODULE_TARGETS["graen"]
+    if route.startswith("/v1/research-agent") or route in {
+        "/v1/readiness/public",
+        "/v1/theory/public",
+    }:
+        return MODULE_TARGETS["research_agent"]
+    if route.startswith("/v1/nostra"):
+        return MODULE_TARGETS["nostra"]
+    if route.startswith("/v1/iren"):
+        return MODULE_TARGETS["iren"]
+    if route.startswith("/v1/velum"):
+        return MODULE_TARGETS["velum"]
+    if route.startswith("/v1/preopen"):
+        return MODULE_TARGETS["preopen"]
+    return EXECUTION_URL
+
 
 
 async def _probe(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
@@ -96,13 +133,7 @@ async def core_status() -> Response:
 )
 async def proxy(path: str, request: Request) -> Response:
     route = "/" + path
-    target = (
-        CORE_URL
-        if route == "/core"
-        or route.startswith("/core/")
-        or route.startswith(CORE_PREFIXES)
-        else EXECUTION_URL
-    )
+    target = _target_for(route)
     if route == "/core":
         route = "/"
     elif route.startswith("/core/"):
