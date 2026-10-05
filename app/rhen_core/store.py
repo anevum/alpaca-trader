@@ -444,6 +444,874 @@ class RhenCoreStore:
             return default, 0
         return _loads(row[0], default), int(row[1])
 
+    @staticmethod
+    def _iren_work_default() -> dict[str, Any]:
+        return {
+            "objectives": [],
+            "jobs": [],
+            "job_events": [],
+            "commands": [],
+            "settings": {
+                "autopilot_enabled": False,
+                "autopilot_max_jobs_per_day": 3,
+                "model_execution_authorized": False,
+                "updated_by": "RHEN",
+                "updated_at": None,
+            },
+        }
+
+    def _iren_work_state(self) -> dict[str, Any]:
+        value, _ = self.get_kv(
+            "iren_work", "state", self._iren_work_default()
+        )
+        state = (
+            dict(value)
+            if isinstance(value, dict)
+            else self._iren_work_default()
+        )
+        defaults = self._iren_work_default()
+        for key in ("objectives", "jobs", "job_events", "commands"):
+            if not isinstance(state.get(key), list):
+                state[key] = list(defaults[key])
+        if not isinstance(state.get("settings"), dict):
+            state["settings"] = dict(defaults["settings"])
+        return state
+
+    def _save_iren_work_state(self, state: dict[str, Any]) -> int:
+        state["objectives"] = list(state.get("objectives") or [])[-250:]
+        state["jobs"] = list(state.get("jobs") or [])[-250:]
+        state["job_events"] = list(state.get("job_events") or [])[-500:]
+        state["commands"] = list(state.get("commands") or [])[-200:]
+        return self.set_kv("iren_work", "state", state)
+
+    @staticmethod
+    def _iren_event(
+        state: dict[str, Any],
+        job: dict[str, Any],
+        event_type: str,
+        event: dict[str, Any] | None = None,
+    ) -> None:
+        state.setdefault("job_events", []).append(
+            {
+                "event_id": str(uuid4()),
+                "job_id": job.get("job_id"),
+                "event_type": event_type,
+                "event": dict(event or {}),
+                "created_at": _iso(),
+                "owner_system": job.get("owner_system"),
+                "objective_key": job.get("objective_key"),
+                "title": job.get("title"),
+                "job_type": job.get("job_type"),
+            }
+        )
+
+    @staticmethod
+    def _lease_expired(value: Any) -> bool:
+        if not value:
+            return True
+        try:
+            stamp = datetime.fromisoformat(
+                str(value).replace("Z", "+00:00")
+            )
+        except ValueError:
+            return True
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        return stamp <= datetime.now(UTC)
+
+    def iren_read(self) -> dict[str, Any]:
+        value, revision = self.get_kv("iren", "control", {})
+        envelope = dict(value) if isinstance(value, dict) else {}
+        return {
+            "ok": True,
+            "state": dict(envelope.get("state") or {}),
+            "revision": revision,
+            "observation_key": envelope.get("observation_key"),
+            "observed_at": envelope.get("observed_at"),
+        }
+
+    def iren_commit(self, body: dict[str, Any]) -> dict[str, Any]:
+        state = body.get("state")
+        if not isinstance(state, dict):
+            raise ValueError("invalid_iren_state")
+        expected = int(body.get("expected_revision") or 0)
+        observation_key = str(body.get("observation_key") or "").strip()
+        if not observation_key:
+            raise ValueError("invalid_iren_observation_key")
+        observed_at = str(
+            state.get("observed_at")
+            or body.get("observed_at")
+            or ""
+        ).strip()
+        if not observed_at:
+            raise ValueError("invalid_iren_observed_at")
+        with self._lock, self.connect() as conn:
+            row = conn.execute(
+                """select value_json,revision from kv_state
+                where namespace='iren' and key='control'"""
+            ).fetchone()
+            current = _loads(row["value_json"], {}) if row else {}
+            revision = int(row["revision"]) if row else 0
+            if current.get("observation_key") == observation_key:
+                return {
+                    "ok": True,
+                    "committed": True,
+                    "idempotent": True,
+                    "revision": revision,
+                }
+            if revision != expected:
+                return {
+                    "ok": True,
+                    "committed": False,
+                    "conflict": True,
+                    "revision": revision,
+                }
+            previous_at = current.get("observed_at")
+            if previous_at:
+                previous = datetime.fromisoformat(
+                    str(previous_at).replace("Z", "+00:00")
+                )
+                proposed = datetime.fromisoformat(
+                    observed_at.replace("Z", "+00:00")
+                )
+                if previous.tzinfo is None:
+                    previous = previous.replace(tzinfo=UTC)
+                if proposed.tzinfo is None:
+                    proposed = proposed.replace(tzinfo=UTC)
+                if proposed <= previous:
+                    raise ValueError("invalid_iren_observation")
+            revision += 1
+            envelope = {
+                "state": state,
+                "observation_key": observation_key,
+                "observed_at": observed_at,
+            }
+            now = _iso()
+            conn.execute(
+                """insert into kv_state(
+                    namespace,key,value_json,revision,updated_at
+                ) values('iren','control',?,?,?)
+                on conflict(namespace,key) do update set
+                    value_json=excluded.value_json,
+                    revision=excluded.revision,
+                    updated_at=excluded.updated_at""",
+                (_json(envelope), revision, now),
+            )
+            conn.commit()
+
+        events = [
+            dict(event)
+            for event in (body.get("events") or [])
+            if isinstance(event, dict)
+        ]
+        if events:
+            with self._lock:
+                queue, _ = self.get_kv(
+                    "iren", "notifications", []
+                )
+                rows = list(queue or [])
+                existing = {
+                    str(row.get("event_key") or "")
+                    for row in rows
+                    if isinstance(row, dict)
+                }
+                for event in events:
+                    event_key = str(event.get("event_key") or "")
+                    if not event_key or event_key in existing:
+                        continue
+                    rows.append(
+                        {
+                            "event_key": event_key,
+                            "event": event,
+                            "delivery_status": "pending",
+                            "attempts": 0,
+                            "owner": None,
+                            "lease_until": None,
+                            "created_at": now,
+                        }
+                    )
+                self.set_kv("iren", "notifications", rows[-250:])
+        return {
+            "ok": True,
+            "committed": True,
+            "revision": revision,
+        }
+
+    def iren_notification_action(
+        self, action: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self._lock:
+            queue, _ = self.get_kv("iren", "notifications", [])
+            rows = [
+                dict(row)
+                for row in (queue or [])
+                if isinstance(row, dict)
+            ]
+            now = datetime.now(UTC)
+            if action == "iren_notifications_claim":
+                owner = str(body.get("owner") or "").strip()
+                if not owner:
+                    raise ValueError("invalid_iren_owner")
+                claimed = []
+                for row in rows:
+                    if len(claimed) >= 10:
+                        break
+                    if str(row.get("delivery_status") or "").startswith(
+                        "delivered:"
+                    ):
+                        continue
+                    if int(row.get("attempts") or 0) >= 3:
+                        continue
+                    lease = row.get("lease_until")
+                    if lease and not self._lease_expired(lease):
+                        continue
+                    row["owner"] = owner
+                    row["attempts"] = int(row.get("attempts") or 0) + 1
+                    row["lease_until"] = (
+                        now + timedelta(seconds=120)
+                    ).isoformat()
+                    claimed.append(dict(row.get("event") or {}))
+                self.set_kv("iren", "notifications", rows[-250:])
+                return {"ok": True, "events": claimed}
+            if action == "iren_notification_complete":
+                event_key = str(body.get("event_key") or "")
+                owner = str(body.get("owner") or "")
+                updated = False
+                for row in rows:
+                    if (
+                        str(row.get("event_key") or "") == event_key
+                        and str(row.get("owner") or "") == owner
+                    ):
+                        row["delivery_status"] = str(
+                            body.get("delivery_status") or ""
+                        )[:200]
+                        row["owner"] = None
+                        row["lease_until"] = None
+                        updated = True
+                        break
+                self.set_kv("iren", "notifications", rows[-250:])
+                return {"ok": True, "updated": updated}
+        raise ValueError("invalid_iren_notification_action")
+
+    def iren_work_action(
+        self, action: str, body: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        supported = {
+            "iren_work_snapshot",
+            "iren_command_create",
+            "iren_commands_claim",
+            "iren_command_complete",
+            "iren_job_create",
+            "iren_jobs_claim",
+            "iren_job_update",
+            "iren_settings_update",
+            "iren_objective_update",
+            "iren_handoff_prepare",
+            "iren_handoff_associate",
+            "iren_handoff_verify",
+            "iren_handoff_evidence",
+            "iren_handoff_supersede",
+        }
+        if action not in supported:
+            return None
+        with self._lock:
+            state = self._iren_work_state()
+            now = _iso()
+
+            if action == "iren_work_snapshot":
+                return _loads(_json(state), self._iren_work_default())
+
+            if action == "iren_command_create":
+                text = str(body.get("command_text") or "").strip()[:4000]
+                if not text:
+                    raise ValueError("invalid_iren_command")
+                command = {
+                    "command_id": str(uuid4()),
+                    "command_text": text,
+                    "source": str(body.get("source") or "iren")[:40],
+                    "requested_by": str(
+                        body.get("requested_by") or "operator"
+                    )[:160],
+                    "status": "QUEUED",
+                    "context": dict(body.get("context") or {}),
+                    "result": {},
+                    "linked_job_id": None,
+                    "owner": None,
+                    "lease_until": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                }
+                state["commands"].append(command)
+                self._save_iren_work_state(state)
+                return {"ok": True, "command": dict(command)}
+
+            if action == "iren_commands_claim":
+                owner = str(body.get("owner") or "").strip()[:120]
+                if not owner:
+                    raise ValueError("invalid_iren_command_owner")
+                limit = max(1, min(20, int(body.get("limit") or 5)))
+                claimed = []
+                for command in sorted(
+                    state["commands"],
+                    key=lambda row: str(row.get("created_at") or ""),
+                ):
+                    if len(claimed) >= limit:
+                        break
+                    status = str(command.get("status") or "")
+                    claimable = status == "QUEUED" or (
+                        status == "PROCESSING"
+                        and self._lease_expired(command.get("lease_until"))
+                    )
+                    if not claimable:
+                        continue
+                    command["status"] = "PROCESSING"
+                    command["owner"] = owner
+                    command["lease_until"] = (
+                        datetime.now(UTC) + timedelta(seconds=120)
+                    ).isoformat()
+                    command["updated_at"] = now
+                    claimed.append(dict(command))
+                self._save_iren_work_state(state)
+                return {"ok": True, "commands": claimed}
+
+            if action == "iren_command_complete":
+                command_id = str(body.get("command_id") or "")
+                status = str(body.get("status") or "").upper()
+                if status not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                    raise ValueError("invalid_iren_command_completion")
+                command = next(
+                    (
+                        row
+                        for row in state["commands"]
+                        if str(row.get("command_id") or "") == command_id
+                    ),
+                    None,
+                )
+                if command is None:
+                    raise ValueError("iren_command_not_found")
+                command.update(
+                    status=status,
+                    result=dict(body.get("response") or {}),
+                    linked_job_id=body.get("linked_job_id"),
+                    owner=None,
+                    lease_until=None,
+                    updated_at=now,
+                    completed_at=now,
+                )
+                self._save_iren_work_state(state)
+                return {"ok": True, "command": dict(command)}
+
+            if action == "iren_job_create":
+                value = body.get("job")
+                if not isinstance(value, dict):
+                    raise ValueError("invalid_iren_job")
+                status = str(value.get("status") or "QUEUED").upper()
+                if status not in {
+                    "QUEUED", "WAITING", "BLOCKED", "NEEDS_APPROVAL"
+                }:
+                    raise ValueError("invalid_iren_job")
+                job = {
+                    "job_id": str(uuid4()),
+                    "objective_key": value.get("objective_key"),
+                    "title": str(value.get("title") or "")[:240],
+                    "instructions": str(
+                        value.get("instructions") or ""
+                    )[:12000],
+                    "owner_system": str(
+                        value.get("owner_system") or "IREN"
+                    )[:80],
+                    "job_type": str(
+                        value.get("job_type") or "AGENT_WORK"
+                    )[:80],
+                    "status": status,
+                    "priority": int(value.get("priority") or 0),
+                    "protected_action": bool(
+                        value.get("protected_action")
+                    ),
+                    "requires_human": bool(value.get("requires_human")),
+                    "requested_by": str(
+                        value.get("requested_by") or "IREN"
+                    )[:160],
+                    "requested_via": str(
+                        value.get("requested_via") or "iren"
+                    )[:40],
+                    "claimed_by": None,
+                    "lease_until": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "result": {},
+                    "error": {},
+                    "metadata": dict(value.get("metadata") or {}),
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                if not job["title"]:
+                    raise ValueError("invalid_iren_job")
+                state["jobs"].append(job)
+                self._iren_event(state, job, "CREATED", {"source": "IREN"})
+                self._save_iren_work_state(state)
+                return {"ok": True, "job": dict(job)}
+
+            if action == "iren_jobs_claim":
+                owner = str(body.get("owner") or "").strip()[:120]
+                if not owner:
+                    raise ValueError("invalid_iren_job_owner")
+                limit = max(1, min(10, int(body.get("limit") or 3)))
+                candidates = sorted(
+                    state["jobs"],
+                    key=lambda row: (
+                        -int(row.get("priority") or 0),
+                        str(row.get("created_at") or ""),
+                    ),
+                )
+                claimed = []
+                for job in candidates:
+                    if len(claimed) >= limit:
+                        break
+                    status = str(job.get("status") or "")
+                    claimable = status == "QUEUED" or (
+                        status == "RUNNING"
+                        and self._lease_expired(job.get("lease_until"))
+                    )
+                    if not claimable:
+                        continue
+                    job["status"] = "RUNNING"
+                    job["claimed_by"] = owner
+                    job["lease_until"] = (
+                        datetime.now(UTC) + timedelta(seconds=300)
+                    ).isoformat()
+                    job["started_at"] = job.get("started_at") or now
+                    job["updated_at"] = now
+                    claimed.append(dict(job))
+                self._save_iren_work_state(state)
+                return {"ok": True, "jobs": claimed}
+
+            if action == "iren_job_update":
+                job_id = str(body.get("job_id") or "")
+                status = str(body.get("status") or "").upper()
+                if status not in {
+                    "QUEUED", "RUNNING", "WAITING", "BLOCKED",
+                    "NEEDS_APPROVAL", "SUCCEEDED", "FAILED", "CANCELLED",
+                }:
+                    raise ValueError("invalid_iren_job_update")
+                job = next(
+                    (
+                        row for row in state["jobs"]
+                        if str(row.get("job_id") or "") == job_id
+                    ),
+                    None,
+                )
+                if job is None or job.get("job_type") == "CODEX_HANDOFF":
+                    raise ValueError("iren_job_not_found")
+                terminal = status in {"SUCCEEDED", "FAILED", "CANCELLED"}
+                job.update(
+                    status=status,
+                    result=dict(body.get("result") or {}),
+                    error=dict(body.get("error") or {}),
+                    claimed_by=None,
+                    lease_until=None,
+                    updated_at=now,
+                )
+                if terminal:
+                    job["completed_at"] = now
+                self._iren_event(
+                    state,
+                    job,
+                    status,
+                    {
+                        "result": job["result"],
+                        "error": job["error"],
+                    },
+                )
+                self._save_iren_work_state(state)
+                return {"ok": True, "job": dict(job)}
+
+            if action == "iren_settings_update":
+                requested = (
+                    body.get("settings")
+                    if isinstance(body.get("settings"), dict)
+                    else {}
+                )
+                settings = state["settings"]
+                if isinstance(requested.get("autopilot_enabled"), bool):
+                    settings["autopilot_enabled"] = requested[
+                        "autopilot_enabled"
+                    ]
+                if requested.get("autopilot_max_jobs_per_day") is not None:
+                    settings["autopilot_max_jobs_per_day"] = max(
+                        1,
+                        min(
+                            12,
+                            int(
+                                requested[
+                                    "autopilot_max_jobs_per_day"
+                                ]
+                            ),
+                        ),
+                    )
+                if isinstance(
+                    requested.get("model_execution_authorized"), bool
+                ):
+                    settings["model_execution_authorized"] = requested[
+                        "model_execution_authorized"
+                    ]
+                settings["updated_by"] = str(
+                    body.get("updated_by") or "IREN"
+                )[:160]
+                settings["updated_at"] = now
+                self._save_iren_work_state(state)
+                return {"ok": True, "settings": dict(settings)}
+
+            if action == "iren_objective_update":
+                key = str(body.get("objective_key") or "")
+                status = str(body.get("status") or "").upper()
+                if status not in {
+                    "LOCKED", "ACTIVE", "BLOCKED", "READY",
+                    "COMPLETE", "FUTURE", "OBSOLETE",
+                }:
+                    raise ValueError("invalid_iren_objective_update")
+                objective = next(
+                    (
+                        row for row in state["objectives"]
+                        if str(row.get("objective_key") or "") == key
+                    ),
+                    None,
+                )
+                if objective is None:
+                    raise ValueError("iren_objective_not_found")
+                objective["status"] = status
+                objective["updated_at"] = now
+                if status == "COMPLETE":
+                    objective["completed_at"] = now
+                self._save_iren_work_state(state)
+                return {"ok": True, "objective": dict(objective)}
+
+            if action == "iren_handoff_prepare":
+                from app.iren.codex_handoff import package_for
+                from app.iren.work import dependencies_complete
+                key = str(body.get("objective_key") or "")
+                objective = next(
+                    (
+                        row for row in state["objectives"]
+                        if str(row.get("objective_key") or "") == key
+                    ),
+                    None,
+                )
+                if (
+                    objective is None
+                    or objective.get("status") not in {"READY", "ACTIVE"}
+                ):
+                    raise ValueError("objective_not_executable")
+                if not dependencies_complete(
+                    objective, state["objectives"]
+                ):
+                    raise ValueError("objective_dependencies_incomplete")
+                control = self.iren_read().get("state") or {}
+                job_id = str(uuid4())
+                package = package_for(
+                    objective,
+                    handoff_id=job_id,
+                    command_id=body.get("command_id"),
+                    main_sha=str(body.get("main_sha") or ""),
+                    control=control,
+                )
+                for previous in state["jobs"]:
+                    if (
+                        previous.get("objective_key") == key
+                        and previous.get("job_type") == "CODEX_HANDOFF"
+                        and previous.get("status") == "WAITING"
+                    ):
+                        prior = dict(previous.get("result") or {})
+                        prior_package = dict(prior.get("package") or {})
+                        if (
+                            prior_package.get("base_sha")
+                            == package.get("base_sha")
+                            and prior_package.get("objective_identity")
+                            == package.get("objective_identity")
+                        ):
+                            return {
+                                "ok": True,
+                                "job": dict(previous),
+                                "reused": True,
+                            }
+                        if (
+                            prior.get("association")
+                            or prior.get("handoff_status") != "PREPARED"
+                        ):
+                            raise ValueError(
+                                "in_progress_handoff_requires_explicit_supersession"
+                            )
+                        prior.update(
+                            handoff_status="SUPERSEDED",
+                            superseded_by=job_id,
+                        )
+                        previous.update(
+                            status="CANCELLED",
+                            result=prior,
+                            completed_at=now,
+                            updated_at=now,
+                        )
+                        self._iren_event(
+                            state,
+                            previous,
+                            "SUPERSEDED",
+                            {"superseded_by": job_id},
+                        )
+                result = {
+                    "handoff_status": "PREPARED",
+                    "package": package,
+                    "association": None,
+                    "verification": {
+                        "verified": False,
+                        "blockers": ["implementation_not_submitted"],
+                    },
+                }
+                job = {
+                    "job_id": job_id,
+                    "objective_key": key,
+                    "title": objective.get("title"),
+                    "instructions": objective.get("description") or "",
+                    "owner_system": "IREN",
+                    "job_type": "CODEX_HANDOFF",
+                    "status": "WAITING",
+                    "priority": 100,
+                    "protected_action": False,
+                    "requires_human": False,
+                    "requested_by": str(
+                        body.get("requested_by") or "IREN"
+                    )[:160],
+                    "requested_via": "codex",
+                    "claimed_by": None,
+                    "lease_until": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "result": result,
+                    "error": {},
+                    "metadata": {
+                        "success_criteria": objective.get(
+                            "success_criteria"
+                        ),
+                        "source_command_id": body.get("command_id"),
+                    },
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                state["jobs"].append(job)
+                self._iren_event(
+                    state,
+                    job,
+                    "PREPARED",
+                    {
+                        "package_digest": package.get("package_digest"),
+                        "base_sha": package.get("base_sha"),
+                    },
+                )
+                self._save_iren_work_state(state)
+                return {"ok": True, "job": dict(job), "reused": False}
+
+            handoff_id = str(body.get("handoff_id") or "")
+            job = next(
+                (
+                    row for row in state["jobs"]
+                    if str(row.get("job_id") or "") == handoff_id
+                    and row.get("job_type") == "CODEX_HANDOFF"
+                ),
+                None,
+            )
+            if action == "iren_handoff_evidence":
+                handoffs = [
+                    row for row in state["jobs"]
+                    if row.get("job_type") == "CODEX_HANDOFF"
+                ]
+                return {
+                    "ok": True,
+                    "command_contract": {
+                        "schema_version": "iren_command.v2",
+                        "state": (
+                            self.iren_read().get("state") or {}
+                        ).get("state"),
+                        "handoff_count": len(handoffs),
+                        "copyable_prompts": all(
+                            bool(
+                                (
+                                    (row.get("result") or {}).get(
+                                        "package"
+                                    )
+                                    or {}
+                                ).get("prompt")
+                            )
+                            for row in handoffs
+                        ),
+                    },
+                    "migrations": [],
+                    "health": {
+                        "ok": True,
+                        "revision": os.getenv(
+                            "RAILWAY_GIT_COMMIT_SHA"
+                        ),
+                        "deployment": os.getenv(
+                            "RAILWAY_DEPLOYMENT_ID"
+                        ),
+                        "codex_handoff": "v1",
+                    },
+                }
+            if job is None:
+                raise ValueError("iren_handoff_not_found")
+            result = dict(job.get("result") or {})
+            if action == "iren_handoff_associate":
+                number = body.get("pr_number")
+                if type(number) is not int or number < 1:
+                    raise ValueError("invalid_pull_request")
+                package = dict(result.get("package") or {})
+                candidate = {
+                    "repository": package.get(
+                        "repository", "anevum/rhen"
+                    ),
+                    "pr_number": number,
+                }
+                existing = result.get("association")
+                if existing and existing != candidate:
+                    raise ValueError("github_association_ambiguous")
+                result.update(
+                    association=candidate,
+                    handoff_status="IN_PROGRESS",
+                    verification={
+                        "verified": False,
+                        "blockers": [
+                            "github_association_pending_verification"
+                        ],
+                    },
+                )
+                job["result"] = result
+                job["updated_at"] = now
+                self._iren_event(state, job, "ASSOCIATED", candidate)
+                self._save_iren_work_state(state)
+                return {"ok": True, "job": dict(job)}
+
+            if action == "iren_handoff_supersede":
+                if result.get("handoff_status") in {
+                    "VERIFIED", "FAILED", "SUPERSEDED"
+                }:
+                    raise ValueError("handoff_terminal")
+                result.update(
+                    handoff_status="SUPERSEDED",
+                    superseded_reason="explicit_operator_request",
+                )
+                job.update(
+                    status="CANCELLED",
+                    result=result,
+                    updated_at=now,
+                    completed_at=now,
+                )
+                self._iren_event(
+                    state,
+                    job,
+                    "SUPERSEDED",
+                    {"reason": "explicit_operator_request"},
+                )
+                self._save_iren_work_state(state)
+                return {"ok": True, "job": dict(job)}
+
+            if action == "iren_handoff_verify":
+                from app.iren.codex_handoff import (
+                    TERMINAL,
+                    verification,
+                )
+                from app.iren.work import (
+                    criteria_satisfied,
+                    dependencies_complete,
+                )
+                if result.get("handoff_status") in TERMINAL:
+                    return {"ok": True, "job": dict(job)}
+                package = dict(result.get("package") or {})
+                if (
+                    str(body.get("package_digest") or "")
+                    != str(package.get("package_digest") or "")
+                ):
+                    raise ValueError("handoff_revision_conflict")
+                objective = next(
+                    (
+                        row for row in state["objectives"]
+                        if row.get("objective_key")
+                        == job.get("objective_key")
+                    ),
+                    None,
+                )
+                if objective is None:
+                    raise ValueError("iren_objective_not_found")
+                control = self.iren_read().get("state") or {}
+                evidence = verification(
+                    package,
+                    body.get("github") or {},
+                    control,
+                    body.get("observations") or {},
+                    body.get("migrations") or [],
+                )
+                if objective.get("status") not in {"READY", "ACTIVE"}:
+                    evidence["verified"] = False
+                    evidence["handoff_status"] = "VERIFYING"
+                    evidence.setdefault("blockers", []).append(
+                        "objective_not_executable"
+                    )
+                if not dependencies_complete(
+                    objective, state["objectives"]
+                ):
+                    evidence["verified"] = False
+                    evidence["handoff_status"] = "VERIFYING"
+                    evidence.setdefault("blockers", []).append(
+                        "objective_dependencies_incomplete"
+                    )
+                complete = bool(evidence.get("verified")) and (
+                    criteria_satisfied(
+                        objective.get("success_criteria") or {},
+                        evidence.get("criteria") or {},
+                    )
+                )
+                result.update(
+                    handoff_status=evidence.get(
+                        "handoff_status", "VERIFYING"
+                    ),
+                    verification=evidence,
+                )
+                if (body.get("github") or {}).get("association_valid"):
+                    result["association"] = {
+                        "repository": package.get(
+                            "repository", "anevum/rhen"
+                        ),
+                        "pr_number": (
+                            body.get("github") or {}
+                        ).get("pr_number"),
+                    }
+                job.update(
+                    status="SUCCEEDED" if complete else "WAITING",
+                    result=result,
+                    updated_at=now,
+                )
+                if complete:
+                    job["completed_at"] = now
+                    objective["status"] = "COMPLETE"
+                    objective["updated_at"] = now
+                    objective["completed_at"] = now
+                self._iren_event(
+                    state,
+                    job,
+                    "VERIFIED" if complete else "VERIFICATION_OBSERVED",
+                    {
+                        "status": result.get("handoff_status"),
+                        "blockers": evidence.get("blockers") or [],
+                        "criteria": evidence.get("criteria") or {},
+                    },
+                )
+                self._save_iren_work_state(state)
+                return {
+                    "ok": True,
+                    "job": dict(job),
+                    "objective_completed": complete,
+                }
+
+        raise ValueError("invalid_iren_work_action")
+
     def graen_snapshot(self) -> dict[str, Any]:
         with self.connect() as conn:
             problems = [
