@@ -717,6 +717,8 @@ class CryptoExecutionEngine:
                 "BTC live-account signal mode is not explicitly authorized"
             )
             return {"action": "blocked", "reason": self.state.crypto_last_decision}
+        if live_signal:
+            self.state.crypto_pending_approval = None
 
         account, positions, open_orders, recent_orders = await asyncio.gather(
             self.client.account(),
