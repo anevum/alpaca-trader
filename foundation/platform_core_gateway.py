@@ -216,6 +216,7 @@ def tenant_execution_eligibility(
             select
                 t.status as tenant_status,
                 b.environment,
+                b.provider_account_id,
                 b.account_status as broker_account_status,
                 b.crypto_enabled,
                 b.trading_blocked,
@@ -297,7 +298,16 @@ def tenant_execution_eligibility(
     broker_reconciled = False
     if reconciliation and reconciliation.get("status") == "SUCCESS":
         observed_at = reconciliation.get("observed_at")
-        if isinstance(observed_at, datetime):
+        identity_matches = (
+            str(reconciliation.get("environment") or "").upper()
+            == str(facts["environment"] or "").upper()
+            and str(reconciliation.get("provider") or "").upper() == "ALPACA"
+            and str(reconciliation.get("provider_account_id_expected") or "")
+            == str(facts["provider_account_id"] or "")
+            and str(reconciliation.get("provider_account_id_observed") or "")
+            == str(facts["provider_account_id"] or "")
+        )
+        if identity_matches and isinstance(observed_at, datetime):
             observed = observed_at
             if observed.tzinfo is None or observed.utcoffset() is None:
                 observed = observed.replace(tzinfo=timezone.utc)
