@@ -141,18 +141,32 @@ def build_hypothesis_graph(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 candidate_memory_state = "FALSIFIED"
             elif "PAPER_VALIDATED" in upper_state or "PAPER_PASS" in upper_state:
                 candidate_memory_state = "PAPER_VALIDATED"
-            elif "PAPER" in upper_stage:
+            elif upper_state in {
+                "PAPER_ADAPTER_REQUIRED",
+                "PAPER_AUTHORIZATION_REQUIRED",
+            }:
+                candidate_memory_state = "ENGINEERING_REQUIRED"
+            elif (
+                "PAPER_CANARY" in upper_state
+                or "READY_FOR_PAPER" in upper_state
+                or "PAPER" in upper_stage
+            ):
                 candidate_memory_state = "PAPER"
-            elif "SHADOW" in upper_stage:
+            elif "FORWARD_SHADOW" in upper_state or "SHADOW" in upper_stage:
                 candidate_memory_state = "SHADOW"
-            elif "VELUM" in upper_stage:
+            elif (
+                "HOLDOUT_PASSED" in upper_state
+                or "READY_FOR_VELUM" in upper_state
+                or "VELUM" in upper_stage
+            ):
                 candidate_memory_state = "VELUM"
-            elif "HOLDOUT" in upper_stage:
+            elif "VALIDATION_PASSED" in upper_state or "HOLDOUT" in upper_stage:
                 candidate_memory_state = "HOLDOUT"
-            elif "VALIDATION" in upper_stage:
+            elif "DEVELOPMENT_PASSED" in upper_state or "VALIDATION" in upper_stage:
                 candidate_memory_state = "VALIDATING"
             elif (
-                "DEVELOPMENT" in upper_stage
+                "MANIFEST_FROZEN" in upper_state
+                or "DEVELOPMENT" in upper_stage
                 or str(candidate_latest.get("status") or "").upper() == "RUNNING"
             ):
                 candidate_memory_state = "ACTIVE"
