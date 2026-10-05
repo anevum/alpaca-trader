@@ -513,7 +513,7 @@ class Settings(BaseSettings):
     @property
     def btc_active_paper_authorized(self) -> bool:
         return (
-            self.crypto_execution_mode == "experimental_active_paper"
+            self.crypto_execution_mode in {"experimental_active_paper", "btc_direct_paper"}
             and self.crypto_lane_enabled
             and self.crypto_execution_enabled
             and self.btc_active_paper_acknowledge == "YES"
@@ -663,18 +663,23 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_POLL_SECONDS must be between 15 and 300")
         if not 60 <= self.crypto_lookback_minutes <= 1440:
             raise ValueError("CRYPTO_LOOKBACK_MINUTES must be between 60 and 1440")
-        if self.crypto_execution_mode not in {"validated", "experimental_active_paper"}:
+        if self.crypto_execution_mode not in {
+            "validated",
+            "experimental_active_paper",
+            "btc_direct_paper",
+        }:
             raise ValueError(
-                "CRYPTO_EXECUTION_MODE must be validated or experimental_active_paper"
+                "CRYPTO_EXECUTION_MODE must be validated, experimental_active_paper, "
+                "or btc_direct_paper"
             )
-        if self.crypto_execution_mode == "experimental_active_paper":
+        if self.crypto_execution_mode in {"experimental_active_paper", "btc_direct_paper"}:
             if self.trading_mode != "paper":
                 raise ValueError(
-                    "experimental_active_paper is hard-gated to TRADING_MODE=paper"
+                    "BTC paper execution modes are hard-gated to TRADING_MODE=paper"
                 )
             if self.live_trading or self.acknowledge_live == "YES":
                 raise ValueError(
-                    "experimental_active_paper cannot enable live trading authority"
+                    "BTC paper execution modes cannot enable live trading authority"
                 )
         if self.crypto_lane_enabled and not self.crypto_quote_currencies:
             raise ValueError("CRYPTO_QUOTE_CURRENCIES cannot be empty")
