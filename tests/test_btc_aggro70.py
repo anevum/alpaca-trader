@@ -91,3 +91,16 @@ def test_aggressive_70_has_bounded_loss_policy():
     assert result["max_campaign_drawdown_pct"] == "0.20"
     assert result["kill_switch_equity"] == "56.00"
     assert Decimal(result["current_equity"]) > Decimal("56")
+
+
+def test_aggressive_70_is_projected_into_command_and_forward_report():
+    import inspect
+
+    from foundation import command_iren, report_read
+
+    command_source = inspect.getsource(command_iren._btc_canary_activity)
+    report_source = inspect.getsource(report_read._btc_canary_run_evidence)
+
+    assert "_btc_aggressive_70_projection(" in command_source
+    assert '"aggressive_70": aggressive_70' in command_source
+    assert '"aggressive_70": _btc_aggressive_70_projection(' in report_source
