@@ -472,6 +472,29 @@ def set_rhen_allocation(
                 )
                 cur.fetchall()
 
+                request_transaction_key = f"rhen-allocation:{subject}:{key}"
+                cur.execute(
+                    """
+                    select metadata
+                    from anevum.financial_ledger_transactions
+                    where transaction_key=%s
+                    """,
+                    (request_transaction_key,),
+                )
+                prior_request = cur.fetchone()
+                if prior_request:
+                    prior_meta = prior_request[0] or {}
+                    if (
+                        str(prior_meta.get("target_amount")) != str(target)
+                        or str(prior_meta.get("execution_mode")) != mode
+                        or (prior_meta.get("strategy_version_id") or None) != strategy
+                    ):
+                        raise ValueError("idempotency_conflict")
+                    result = read_snapshot(database_url, command_subject=subject)
+                    result["idempotent"] = True
+                    result["transaction_key"] = request_transaction_key
+                    return result
+
                 available = _ledger_balance(cur, ledger_account_id=available_ledger_id)
                 current = _ledger_balance(cur, ledger_account_id=rhen_ledger_id)
                 delta = target - current
@@ -491,7 +514,7 @@ def set_rhen_allocation(
                     "external_execution_enabled": False,
                     "live_execution_authorized": False,
                 }
-                transaction_key = f"rhen-allocation:{subject}:{key}"
+                transaction_key = request_transaction_key
                 duplicate = False
                 if delta != 0:
                     transaction_id, duplicate = _insert_transaction(
@@ -552,7 +575,24 @@ def set_rhen_allocation(
                             entries,
                         )
                 else:
-                    transaction_key = f"rhen-allocation-noop:{subject}:{key}"
+                    # A no-op target still needs an idempotency marker. Store it as
+                    # an audit-only request, not as a ledger transaction with no entries.
+                    cur.execute(
+                        """
+                        insert into anevum.audit_log (
+                            actor_type, actor_id, system_key, action, object_type,
+                            object_id, correlation_id, details
+                        )
+                        values ('COMMAND_USER',%s,'FINANCE','finance.set_rhen_allocation_noop',
+                                'rhen_allocation_request',%s,%s,%s)
+                        """,
+                        (
+                            subject,
+                            str(rhen_account_id),
+                            key,
+                            Jsonb(payload),
+                        ),
+                    )
 
                 cur.execute(
                     """
