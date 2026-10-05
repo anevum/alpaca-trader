@@ -27,6 +27,7 @@ from .crypto_layer import (
     CryptoScanner,
     CryptoUniverse,
 )
+from .btc_direct_strategy import BtcDirectSwingStrategy
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
@@ -93,7 +94,10 @@ scanner = ReadOnlyScanner(
     universe=universe,
 )
 crypto_market_data = CryptoMarketDataClient(settings)
-crypto_strategy = CryptoRollingMomentumStrategy(
+crypto_strategy = (
+    BtcDirectSwingStrategy()
+    if settings.crypto_execution_mode == "btc_direct_paper"
+    else CryptoRollingMomentumStrategy(
     fast_window=settings.crypto_fast_window,
     slow_window=settings.crypto_slow_window,
     min_momentum_pct=settings.crypto_min_momentum_pct,
@@ -119,6 +123,7 @@ crypto_strategy = CryptoRollingMomentumStrategy(
     regime_version=settings.crypto_regime_version,
     execution_adapter_version=settings.crypto_execution_adapter_version,
     feature_volatility_lookback=settings.crypto_volatility_lookback_bars,
+)
 )
 crypto_universe = CryptoUniverse(
     settings, client, crypto_market_data, runtime_state
@@ -744,14 +749,28 @@ async def crypto_monitor_loop():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
                 runtime_state.begin_crypto_cycle(uuid4().hex)
-                runtime_state.crypto_graen_promotion = (
-                    await fetch_crypto_promotion_status(settings)
-                )
+                if settings.crypto_execution_mode == "btc_direct_paper":
+                    runtime_state.crypto_graen_promotion = {
+                        "status": "DIRECT_EXECUTION",
+                        "promotion_ready": False,
+                        "reason": (
+                            "RHEN BTC direct paper mode does not depend on "
+                            "GRAEN/NOSTRA/ADS promotion"
+                        ),
+                        "execution_class": "BTC_DIRECT_PAPER",
+                        "strategy_version_id": "RHEN-BTC-DIRECT-001",
+                        "live_execution_authorized": False,
+                    }
+                else:
+                    runtime_state.crypto_graen_promotion = (
+                        await fetch_crypto_promotion_status(settings)
+                    )
                 result = await crypto_engine.run_once()
                 print(
                     "CRYPTO_EXECUTION_CYCLE",
                     {
                         "execution_enabled": settings.crypto_execution_enabled,
+                        "execution_mode": settings.crypto_execution_mode,
                         "action": result.get("action"),
                         "symbol": result.get("symbol"),
                         "reason": result.get("reason"),
@@ -862,6 +881,9 @@ async def lifespan(app: FastAPI):
             "execution_enabled": settings.execution_enabled,
             "bot_armed": settings.bot_armed,
             "live_trading": settings.live_trading,
+            "crypto_only_runtime": settings.crypto_only_runtime,
+            "crypto_execution_mode": settings.crypto_execution_mode,
+            "crypto_research_enabled": settings.crypto_research_enabled,
             "strategy_name": settings.strategy_name,
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
@@ -993,7 +1015,19 @@ async def lifespan(app: FastAPI):
             },
         )
 
-    if settings.credentials_configured and not settings.scan_only:
+    equity_task: asyncio.Task | None = None
+    slack_market_task: asyncio.Task | None = None
+    research_started = False
+
+    if settings.crypto_only_runtime:
+        runtime_state.set_reconciliation(
+            {
+                "safe_to_enter": False,
+                "reason": "equity runtime disabled on dedicated crypto service",
+            },
+            startup=True,
+        )
+    elif settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
         await reconcile_broker_state(startup=True, force=True)
     elif settings.scan_only:
@@ -1005,16 +1039,22 @@ async def lifespan(app: FastAPI):
         runtime_state.startup_reconciled = True
         runtime_state.reconciliation_safe = False
 
-    await research_reports.start()
-    task = asyncio.create_task(monitor_loop())
+    if not settings.crypto_only_runtime:
+        await research_reports.start()
+        research_started = True
+        equity_task = asyncio.create_task(monitor_loop())
+        slack_market_task = asyncio.create_task(slack_market_observer_loop())
+
     crypto_task = asyncio.create_task(crypto_monitor_loop())
-    slack_market_task = asyncio.create_task(slack_market_observer_loop())
     yield
     _stop.set()
-    await task
+    if equity_task is not None:
+        await equity_task
     await crypto_task
-    await slack_market_task
-    await research_reports.stop()
+    if slack_market_task is not None:
+        await slack_market_task
+    if research_started:
+        await research_reports.stop()
     event_sink.emit(
         event_type="runtime_stop",
         correlation_id=uuid4().hex,

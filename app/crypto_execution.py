@@ -39,7 +39,7 @@ class CryptoExecutionEngine:
         settings: Settings,
         client: AlpacaClient,
         market_data: CryptoMarketDataClient,
-        strategy: CryptoRollingMomentumStrategy,
+        strategy: Any,
         state: RuntimeState,
         universe: CryptoUniverse,
         ledger: TradingEventSink | None = None,
@@ -51,6 +51,23 @@ class CryptoExecutionEngine:
         self.state = state
         self.universe = universe
         self.ledger = ledger
+        self._direct_btc_history: list[dict[str, Any]] = []
+
+    def _direct_btc_mode(self) -> bool:
+        return self.settings.crypto_execution_mode == "btc_direct_paper"
+
+    def _merge_direct_btc_history(
+        self,
+        fresh: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows: dict[str, dict[str, Any]] = {}
+        for row in [*self._direct_btc_history, *fresh]:
+            stamp = str(row.get("t") or row.get("timestamp") or "")
+            if stamp:
+                rows[stamp] = row
+        ordered = [rows[key] for key in sorted(rows)]
+        self._direct_btc_history = ordered[-7000:]
+        return self._direct_btc_history
 
     @staticmethod
     def _is_crypto_symbol(symbol: str) -> bool:
@@ -234,9 +251,10 @@ class CryptoExecutionEngine:
                 "reason": "crypto position protection inputs unavailable",
             }
 
-        stop = self._price(
-            entry * (Decimal("1") - self.settings.crypto_stop_pct)
+        stop_pct = _d(
+            getattr(self.strategy, "hard_stop_pct", self.settings.crypto_stop_pct)
         )
+        stop = self._price(entry * (Decimal("1") - stop_pct))
         limit = self._price(
             stop * (Decimal("1") - self.settings.crypto_stop_limit_buffer_pct)
         )
@@ -373,6 +391,7 @@ class CryptoExecutionEngine:
         recent_orders: list[dict[str, Any]],
         bars: dict[str, list[dict[str, Any]]],
         now: datetime,
+        regime_bars: dict[str, list[dict[str, Any]]] | None = None,
     ) -> list[dict[str, Any]]:
         owned = self._owned_symbols(positions, recent_orders)
         results: list[dict[str, Any]] = []
@@ -395,10 +414,19 @@ class CryptoExecutionEngine:
                 if entry_time is not None else None
             )
             return_pct = (current - entry) / entry
+            stop_pct = _d(
+                getattr(self.strategy, "hard_stop_pct", self.settings.crypto_stop_pct)
+            )
             exit_reason = None
-            if return_pct <= -self.settings.crypto_stop_pct:
+            if return_pct <= -stop_pct:
                 exit_reason = (
                     f"crypto software stop triggered at {return_pct:.6f}"
+                )
+            elif bool(getattr(self.strategy, "manages_position_exits", False)):
+                exit_reason = self.strategy.position_exit_reason(
+                    bars.get(symbol, []),
+                    (regime_bars or {}).get(symbol, []),
+                    now=now,
                 )
             elif return_pct >= self.settings.crypto_target_pct:
                 exit_reason = (
@@ -422,8 +450,12 @@ class CryptoExecutionEngine:
                         "current_price": str(current),
                         "current_return_pct": str(return_pct),
                         "held_minutes": held_minutes,
-                        "risk_stop_pct": str(self.settings.crypto_stop_pct),
-                        "target_pct": str(self.settings.crypto_target_pct),
+                        "risk_stop_pct": str(stop_pct),
+                        "target_pct": (
+                            None
+                            if bool(getattr(self.strategy, "manages_position_exits", False))
+                            else str(self.settings.crypto_target_pct)
+                        ),
                         "source": "crypto_live_position_snapshot",
                     },
                     correlation_id=self.state.crypto_current_correlation_id,
@@ -457,6 +489,14 @@ class CryptoExecutionEngine:
         if not self.settings.crypto_lane_enabled:
             self.state.crypto_last_decision = "crypto lane disabled"
             return {"action": "hold", "reason": self.state.crypto_last_decision}
+
+        direct_btc = self._direct_btc_mode()
+        if direct_btc and not self.settings.btc_direct_paper_authorized:
+            self.state.crypto_last_decision = (
+                "BTC direct paper execution is not explicitly authorized"
+            )
+            return {"action": "blocked", "reason": self.state.crypto_last_decision}
+
         account, positions, open_orders, recent_orders = await asyncio.gather(
             self.client.account(),
             self.client.positions(),
@@ -464,7 +504,11 @@ class CryptoExecutionEngine:
             self.client.recent_orders(limit=100),
         )
 
-        active_symbols = list(await self.universe.active_symbols(now=now))
+        active_symbols = (
+            ["BTC/USD"]
+            if direct_btc
+            else list(await self.universe.active_symbols(now=now))
+        )
         owned_symbols = self._owned_symbols(positions, recent_orders)
         crypto_positions = self._crypto_positions(positions)
         self.state.crypto_active_positions = len(crypto_positions)
@@ -476,13 +520,43 @@ class CryptoExecutionEngine:
         self.state.crypto_execution_healthy = True
         data_symbols = list(dict.fromkeys([
             *active_symbols,
-            *self.settings.crypto_confirmation_symbols,
+            *([] if direct_btc else self.settings.crypto_confirmation_symbols),
             *owned_symbols,
         ]))
-        bars, quotes = await asyncio.gather(
-            self.market_data.bars_many(data_symbols),
-            self.market_data.latest_quotes(active_symbols),
-        )
+        if direct_btc:
+            bars_request = self.market_data.bars_many(
+                data_symbols,
+                timeframe=getattr(self.strategy, "timeframe", "4Hour"),
+                lookback_minutes=int(
+                    getattr(
+                        self.strategy,
+                        "required_history_minutes",
+                        14 * 24 * 60,
+                    )
+                ),
+            )
+            regime_request = self.market_data.bars_many(
+                ["BTC/USD"],
+                timeframe=getattr(self.strategy, "regime_timeframe", "1Day"),
+                lookback_minutes=int(
+                    getattr(
+                        self.strategy,
+                        "regime_history_minutes",
+                        270 * 24 * 60,
+                    )
+                ),
+            )
+            bars, quotes, regime_bars = await asyncio.gather(
+                bars_request,
+                self.market_data.latest_quotes(active_symbols),
+                regime_request,
+            )
+        else:
+            bars, quotes = await asyncio.gather(
+                self.market_data.bars_many(data_symbols),
+                self.market_data.latest_quotes(active_symbols),
+            )
+            regime_bars = {}
 
         managed = await self._manage_positions(
             account,
@@ -491,6 +565,7 @@ class CryptoExecutionEngine:
             recent_orders,
             bars,
             now,
+            regime_bars=regime_bars,
         )
         if any(item.get("action") == "submitted" and item.get("order") for item in managed):
             self.state.crypto_last_decision = "crypto position management submitted an order"
@@ -505,23 +580,28 @@ class CryptoExecutionEngine:
         for symbol in active_symbols:
             signal = self.strategy.evaluate(
                 bars=bars.get(symbol, []),
-                confirmation_bars={
-                    confirmation: bars.get(confirmation, [])
-                    for confirmation in self.settings.crypto_confirmation_symbols
-                },
+                confirmation_bars=(
+                    regime_bars
+                    if direct_btc
+                    else {
+                        confirmation: bars.get(confirmation, [])
+                        for confirmation in self.settings.crypto_confirmation_symbols
+                    }
+                ),
                 symbol=symbol,
                 has_position=symbol in owned_symbols,
                 order_notional=self.settings.crypto_order_notional,
                 now=now,
             )
             quote = quotes.get(symbol, {})
-            signal = enrich_crypto_signal_market_state(
-                signal,
-                bars=bars.get(symbol, []),
-                quote=quote,
-                now=now,
-                settings=self.settings,
-            )
+            if not direct_btc:
+                signal = enrich_crypto_signal_market_state(
+                    signal,
+                    bars=bars.get(symbol, []),
+                    quote=quote,
+                    now=now,
+                    settings=self.settings,
+                )
             self.state.crypto_last_market_data_at = now
             bid = _d(quote.get("bp"))
             ask = _d(quote.get("ap"))
@@ -533,7 +613,30 @@ class CryptoExecutionEngine:
             )
             signal.metadata["market"] = "crypto"
             signal.metadata["session_model"] = "24x7"
+            if direct_btc:
+                signal.metadata["execution_class"] = "BTC_DIRECT_PAPER"
+                signal.metadata["live_execution_authorized"] = False
             raw_features = dict((signal.metadata.get("feature_state") or {}).get("raw") or {})
+            if direct_btc:
+                quote_stamp = quote.get("t")
+                quote_age_ms = None
+                if quote_stamp:
+                    try:
+                        quote_at = datetime.fromisoformat(
+                            str(quote_stamp).replace("Z", "+00:00")
+                        ).astimezone(NY)
+                        quote_age_ms = max(
+                            (now - quote_at).total_seconds() * 1000,
+                            0,
+                        )
+                    except ValueError:
+                        quote_age_ms = None
+                raw_features = {
+                    "quote_age_ms": quote_age_ms,
+                    "available_depth": str(
+                        min(_d(quote.get("bs")), _d(quote.get("as")))
+                    ),
+                }
             signal.metadata["market_quality"] = {
                 "bid": str(bid) if bid > 0 else None,
                 "ask": str(ask) if ask > 0 else None,
@@ -614,26 +717,27 @@ class CryptoExecutionEngine:
         prepared: list[tuple[Signal, Decimal, str, dict[str, str] | None]] = []
         errors: list[dict[str, str]] = []
         for signal in buy_signals:
-            if not bool(self.state.crypto_graen_promotion.get("promotion_ready")):
-                errors.append({
-                    "symbol": signal.symbol,
-                    "reason": "crypto GRAEN promotion gate not satisfied",
-                })
-                continue
-            if not self.settings.crypto_calibration_promoted:
-                errors.append({
-                    "symbol": signal.symbol,
-                    "reason": "crypto ADS calibration has not been promoted",
-                })
-                continue
-            ads_state = dict((signal.metadata or {}).get("ads_crypto") or {})
-            ads_score = ads_state.get("score")
-            if ads_score is None or Decimal(str(ads_score)) < self.settings.crypto_ads_threshold:
-                errors.append({
-                    "symbol": signal.symbol,
-                    "reason": "crypto ADS threshold not satisfied",
-                })
-                continue
+            if not direct_btc:
+                if not bool(self.state.crypto_graen_promotion.get("promotion_ready")):
+                    errors.append({
+                        "symbol": signal.symbol,
+                        "reason": "crypto GRAEN promotion gate not satisfied",
+                    })
+                    continue
+                if not self.settings.crypto_calibration_promoted:
+                    errors.append({
+                        "symbol": signal.symbol,
+                        "reason": "crypto ADS calibration has not been promoted",
+                    })
+                    continue
+                ads_state = dict((signal.metadata or {}).get("ads_crypto") or {})
+                ads_score = ads_state.get("score")
+                if ads_score is None or Decimal(str(ads_score)) < self.settings.crypto_ads_threshold:
+                    errors.append({
+                        "symbol": signal.symbol,
+                        "reason": "crypto ADS threshold not satisfied",
+                    })
+                    continue
             latest_exit = self._latest_exit(recent_orders, signal.symbol)
             if (
                 latest_exit is not None
@@ -770,6 +874,8 @@ class CryptoExecutionEngine:
 
         self.state.crypto_last_execution_context = {
             "decision_at": now.isoformat(),
+            "execution_mode": self.settings.crypto_execution_mode,
+            "execution_class": "BTC_DIRECT_PAPER" if direct_btc else "VALIDATED",
             "active_universe": active_symbols,
             "owned_symbols": sorted(owned_symbols),
             "entries_24h": entries_24h,

@@ -160,6 +160,18 @@ class Settings(BaseSettings):
     crypto_execution_enabled: bool = Field(
         default=False, alias="CRYPTO_EXECUTION_ENABLED"
     )
+    crypto_execution_mode: str = Field(
+        default="validated", alias="CRYPTO_EXECUTION_MODE"
+    )
+    crypto_only_runtime: bool = Field(
+        default=False, alias="CRYPTO_ONLY_RUNTIME"
+    )
+    crypto_research_enabled: bool = Field(
+        default=False, alias="CRYPTO_RESEARCH_ENABLED"
+    )
+    btc_direct_paper_acknowledge: str = Field(
+        default="NO", alias="I_ACKNOWLEDGE_BTC_DIRECT_PAPER"
+    )
     crypto_location: str = Field(default="us", alias="CRYPTO_LOCATION")
     crypto_universe_size: int = Field(default=12, alias="CRYPTO_UNIVERSE_SIZE")
     crypto_universe_refresh_seconds: int = Field(
@@ -496,6 +508,18 @@ class Settings(BaseSettings):
         return self.paper_execution_authorized or self.live_execution_authorized
 
     @property
+    def btc_direct_paper_authorized(self) -> bool:
+        return (
+            self.crypto_execution_mode == "btc_direct_paper"
+            and self.crypto_lane_enabled
+            and self.crypto_execution_enabled
+            and self.btc_direct_paper_acknowledge == "YES"
+            and self.paper_execution_authorized
+            and not self.live_trading
+            and self.acknowledge_live != "YES"
+        )
+
+    @property
     def session_cash_flow_adjustment(self) -> SessionCashFlow | None:
         return SessionCashFlow.from_json(self.session_cash_flow_adjustment_raw)
 
@@ -637,6 +661,17 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_POLL_SECONDS must be between 15 and 300")
         if not 60 <= self.crypto_lookback_minutes <= 1440:
             raise ValueError("CRYPTO_LOOKBACK_MINUTES must be between 60 and 1440")
+        if self.crypto_execution_mode not in {"validated", "btc_direct_paper"}:
+            raise ValueError(
+                "CRYPTO_EXECUTION_MODE must be validated or btc_direct_paper"
+            )
+        if self.crypto_execution_mode == "btc_direct_paper":
+            if self.trading_mode != "paper":
+                raise ValueError("btc_direct_paper is hard-gated to TRADING_MODE=paper")
+            if self.live_trading or self.acknowledge_live == "YES":
+                raise ValueError(
+                    "btc_direct_paper cannot enable live trading authority"
+                )
         if self.crypto_lane_enabled and not self.crypto_quote_currencies:
             raise ValueError("CRYPTO_QUOTE_CURRENCIES cannot be empty")
         if self.crypto_lane_enabled and not self.crypto_confirmation_symbols:
