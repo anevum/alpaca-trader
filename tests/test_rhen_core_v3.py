@@ -332,6 +332,75 @@ def test_crypto_evidence_report_uses_compact_candidates_and_outcomes(
     assert candidate["forward_outcomes"]["10"]["status"] == "complete"
 
 
+def test_public_live_feed_uses_core_activity_without_private_trade_fields(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime.now(UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "runtime-public-feed",
+                "event_type": "runtime_start",
+                "occurred_at": (observed - timedelta(seconds=20)).isoformat(),
+                "run_id": "run-public",
+                "strategy_version_id": "v-public",
+                "source": "test",
+                "payload": {
+                    "strategy_name": "rolling_momentum_vwap",
+                    "trading_mode": "live",
+                },
+            },
+            {
+                "event_key": "scan-public-feed",
+                "event_type": "decision_cycle",
+                "occurred_at": (observed - timedelta(seconds=5)).isoformat(),
+                "run_id": "run-public",
+                "strategy_version_id": "v-public",
+                "symbol": "SECRET",
+                "source": "test",
+                "payload": {
+                    "cycle_key": "cycle-public",
+                    "market_session": "regular",
+                    "cycle_outcome": "hold",
+                    "data_status": "ready",
+                    "candidates": [],
+                },
+            },
+            {
+                "event_key": "account-public-feed",
+                "event_type": "account_snapshot",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-public",
+                "strategy_version_id": "v-public",
+                "source": "test",
+                "payload": {
+                    "equity": "123.45",
+                    "cash": "77.00",
+                    "buying_power": "154.00",
+                },
+            },
+        ]
+    )
+
+    feed = store.public_live_feed(now=observed)
+    encoded = json.dumps(feed)
+
+    assert feed["ok"] is True
+    assert feed["live"] is True
+    assert feed["source"] == "rhen-core-sqlite"
+    assert feed["telemetry"]["scan_events_10m"] == 1
+    assert feed["systems"]["RHEN"]["runtime_state"] == "OBSERVING"
+    assert feed["operational"]["latest_scan"]["market_session"] == "regular"
+    assert feed["performance"]["account_return_pct"] == 0.0
+    assert "SECRET" not in encoded
+    assert "123.45" not in encoded
+    assert "77.00" not in encoded
+    assert "154.00" not in encoded
+    assert "symbols" in feed["disclosure"]["excluded_fields"]
+    assert "dollar_values" in feed["disclosure"]["excluded_fields"]
+
+
 def test_reconciliation_is_fail_closed_for_unknown_broker_state(
     tmp_path, monkeypatch
 ):

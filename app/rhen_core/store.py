@@ -1013,6 +1013,484 @@ class RhenCoreStore:
         ]
 
 
+    def public_live_feed(
+        self, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """Return the aggregate-only public projection consumed by anevum.com."""
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        cutoff_10m = current - timedelta(minutes=10)
+        cutoff_60m = current - timedelta(minutes=60)
+        cutoff_2h = current - timedelta(hours=2)
+
+        def stamp(value: Any) -> datetime | None:
+            try:
+                parsed = datetime.fromisoformat(
+                    str(value or "").replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+
+        recent = self._event_rows(limit=5000, newest_first=True)
+        dated = [
+            (event, stamp(event.get("occurred_at")))
+            for event in recent
+        ]
+        recent_2h = [
+            event for event, observed in dated
+            if observed is not None and observed >= cutoff_2h
+        ]
+        recent_60m = [
+            event for event, observed in dated
+            if observed is not None and observed >= cutoff_60m
+        ]
+        recent_10m = [
+            event for event, observed in dated
+            if observed is not None and observed >= cutoff_10m
+        ]
+
+        latest_event = recent[0] if recent else None
+        latest_event_at = stamp(
+            latest_event.get("occurred_at") if latest_event else None
+        )
+        freshness = (
+            max(0.0, (current - latest_event_at).total_seconds())
+            if latest_event_at is not None
+            else None
+        )
+        live = freshness is not None and freshness < 120.0
+
+        scan_types = {"scan", "decision_cycle"}
+        execution_types = {
+            "execution", "broker_order", "broker_fill", "exit"
+        }
+        scan_events_10m = sum(
+            event.get("event_type") in scan_types for event in recent_10m
+        )
+        execution_events_2h = sum(
+            event.get("event_type") in execution_types
+            for event in recent_2h
+        )
+        reconciliations_2h = sum(
+            event.get("event_type") == "reconciliation"
+            for event in recent_2h
+        )
+        errors_2h = sum(
+            event.get("event_type") in {
+                "runtime_error", "crypto_runtime_error"
+            }
+            for event in recent_2h
+        )
+        symbols_10m = len(
+            {
+                str(event.get("symbol") or "").upper()
+                for event in recent_10m
+                if event.get("symbol")
+            }
+        )
+
+        event_labels = {
+            "scan": ("observe", "Scanner cycle evaluated the market universe."),
+            "decision_cycle": (
+                "decide",
+                "Decision engine evaluated the market universe.",
+            ),
+            "allocation": (
+                "decide",
+                "Allocation engine evaluated available capacity.",
+            ),
+            "signal": (
+                "decide",
+                "Decision engine evaluated a qualified setup.",
+            ),
+            "order_intent": (
+                "risk",
+                "Risk gate evaluated an execution intent.",
+            ),
+            "execution": (
+                "execute",
+                "Execution subsystem recorded market activity.",
+            ),
+            "broker_order": (
+                "execute",
+                "Broker interface recorded an order lifecycle event.",
+            ),
+            "broker_fill": (
+                "execute",
+                "Broker interface recorded a fill event.",
+            ),
+            "exit": (
+                "execute",
+                "Position lifecycle recorded an exit event.",
+            ),
+            "reconciliation": (
+                "learn",
+                "Broker state and canonical state were reconciled.",
+            ),
+            "runtime_start": ("system", "RHEN unified runtime started."),
+            "runtime_stop": ("system", "RHEN unified runtime stopped."),
+            "runtime_error": (
+                "warning",
+                "Runtime reported an operational exception.",
+            ),
+            "crypto_runtime_error": (
+                "warning",
+                "Crypto runtime reported an operational exception.",
+            ),
+        }
+        public_types = set(event_labels)
+        public_events = []
+        for event in recent_2h:
+            event_type = str(event.get("event_type") or "")
+            if event_type not in public_types:
+                continue
+            kind, label = event_labels[event_type]
+            public_events.append(
+                {
+                    "at": event.get("occurred_at"),
+                    "type": event_type,
+                    "kind": kind,
+                    "label": label,
+                }
+            )
+            if len(public_events) >= 28:
+                break
+
+        latest_scan = next(
+            (
+                event
+                for event in recent
+                if event.get("event_type") in scan_types
+            ),
+            None,
+        )
+        latest_scan_payload = (
+            dict(latest_scan.get("payload") or {})
+            if latest_scan else {}
+        )
+        operational_scan = (
+            {
+                "observed_at": latest_scan.get("occurred_at"),
+                "market_session": latest_scan_payload.get("market_session"),
+                "cycle_outcome": (
+                    latest_scan_payload.get("cycle_outcome")
+                    or latest_scan_payload.get("status")
+                ),
+                "data_status": latest_scan_payload.get("data_status"),
+                "degraded": bool(
+                    latest_scan_payload.get("degraded", False)
+                ),
+            }
+            if latest_scan
+            else None
+        )
+
+        buckets: dict[str, int] = {}
+        for event in recent_60m:
+            observed = stamp(event.get("occurred_at"))
+            if observed is None:
+                continue
+            minute = observed.minute - (observed.minute % 10)
+            bucket = observed.replace(
+                minute=minute, second=0, microsecond=0
+            ).isoformat()
+            buckets[bucket] = buckets.get(bucket, 0) + 1
+        activity = [
+            {"at": key, "count": buckets[key]}
+            for key in sorted(buckets)
+        ]
+
+        runtime_event = next(
+            (
+                event
+                for event in recent
+                if event.get("event_type") == "runtime_start"
+            ),
+            None,
+        )
+        runtime_payload = dict(
+            (runtime_event or {}).get("payload") or {}
+        )
+        strategy_version = str(
+            (runtime_event or {}).get("strategy_version_id")
+            or os.getenv("STRATEGY_VERSION_ID", "")
+            or "RHEN-CURRENT"
+        )
+        strategy_name = str(
+            runtime_payload.get("strategy_name")
+            or runtime_payload.get("strategy")
+            or os.getenv("STRATEGY_NAME", "")
+            or strategy_version
+        )
+        active_strategy = {
+            "version_id": strategy_version,
+            "strategy_name": strategy_name,
+            "environment": (
+                os.getenv("RAILWAY_ENVIRONMENT_NAME")
+                or "production"
+            ),
+            "status": "RUNNING" if live else "STALE",
+            "activated_at": (
+                (runtime_event or {}).get("occurred_at")
+                or current.isoformat()
+            ),
+        }
+
+        with self.connect() as conn:
+            account_rows = conn.execute(
+                """select occurred_at,payload_json from events
+                where event_type='account_snapshot'
+                order by occurred_at asc limit 5000"""
+            ).fetchall()
+            problem_row = conn.execute(
+                """select status,body_json,metadata_json,updated_at
+                from graen_problems
+                order by
+                  case status
+                    when 'RUNNING' then 0
+                    when 'WAITING' then 1
+                    when 'QUEUED' then 2
+                    else 3
+                  end,
+                  updated_at desc
+                limit 1"""
+            ).fetchone()
+
+        performance_points: list[tuple[str, float]] = []
+        for row in account_rows:
+            payload = _loads(row["payload_json"], {})
+            try:
+                equity = float(payload.get("equity"))
+            except (TypeError, ValueError):
+                continue
+            if equity > 0:
+                performance_points.append((row["occurred_at"], equity))
+
+        if performance_points:
+            baseline = performance_points[0][1]
+            peak = baseline
+            max_drawdown = 0.0
+            curve = []
+            for observed_at, equity in performance_points:
+                peak = max(peak, equity)
+                if peak > 0:
+                    max_drawdown = max(
+                        max_drawdown,
+                        (peak - equity) / peak * 100.0,
+                    )
+                curve.append(
+                    {
+                        "at": observed_at,
+                        "return_pct": (
+                            (equity / baseline - 1.0) * 100.0
+                            if baseline > 0 else None
+                        ),
+                    }
+                )
+            if len(curve) > 72:
+                step = max(1, len(curve) // 72)
+                sampled = curve[::step]
+                if sampled[-1] != curve[-1]:
+                    sampled.append(curve[-1])
+                curve = sampled
+            latest_equity = performance_points[-1][1]
+            performance = {
+                "methodology_version": "PUBLIC-PERFORMANCE-CORE-v1",
+                "basis": "canonical_account_snapshot_events",
+                "status": "TRACKING",
+                "sample_state": "EARLY_SAMPLE",
+                "tracking_started_at": performance_points[0][0],
+                "last_observed_at": performance_points[-1][0],
+                "snapshot_count": len(performance_points),
+                "closed_trades": None,
+                "wins": None,
+                "losses": None,
+                "win_rate_pct": None,
+                "account_return_pct": (
+                    (latest_equity / baseline - 1.0) * 100.0
+                    if baseline > 0 else None
+                ),
+                "realized_return_pct": None,
+                "max_drawdown_pct": max_drawdown,
+                "curve": curve,
+                "limitations": [
+                    "Only normalized account performance is public.",
+                    "Dollar values, symbols, prices, quantities, orders, fills, and strategy thresholds are excluded.",
+                ],
+            }
+        else:
+            performance = {
+                "methodology_version": "PUBLIC-PERFORMANCE-CORE-v1",
+                "basis": "canonical_account_snapshot_events",
+                "status": "AWAITING_CANONICAL_SAMPLE",
+                "sample_state": "AWAITING_LIVE_SAMPLE",
+                "tracking_started_at": None,
+                "last_observed_at": None,
+                "snapshot_count": 0,
+                "closed_trades": None,
+                "wins": None,
+                "losses": None,
+                "win_rate_pct": None,
+                "account_return_pct": None,
+                "realized_return_pct": None,
+                "max_drawdown_pct": None,
+                "curve": [],
+                "limitations": [
+                    "No normalized account sample is available yet.",
+                    "Dollar values, symbols, prices, quantities, orders, fills, and strategy thresholds are excluded.",
+                ],
+            }
+
+        research_status = None
+        research_focus = None
+        research_updated_at = None
+        if problem_row:
+            problem_body = _loads(problem_row["body_json"], {})
+            problem_meta = _loads(problem_row["metadata_json"], {})
+            research_status = str(problem_row["status"] or "UNKNOWN")
+            research_focus = str(
+                problem_body.get("title")
+                or problem_body.get("statement")
+                or problem_body.get("domain")
+                or problem_meta.get("research_stage")
+                or "Current RHEN research problem"
+            )
+            research_updated_at = problem_row["updated_at"]
+
+        common_observed = (
+            latest_event.get("occurred_at")
+            if latest_event else current.isoformat()
+        )
+        health = "HEALTHY" if live else "STALE"
+        systems = {
+            "RHEN": {
+                "runtime_state": (
+                    "OBSERVING" if scan_events_10m else "READY"
+                ),
+                "health_state": health,
+                "tracking_state": (
+                    "LIVE_TELEMETRY" if live else "STALE"
+                ),
+                "observed_at": (
+                    (latest_scan or {}).get("occurred_at")
+                    or common_observed
+                ),
+                "independent_runtime": False,
+                "activity": (
+                    "Market-universe scanning is active."
+                    if scan_events_10m
+                    else "Unified runtime online; awaiting a fresh market scan."
+                ),
+            },
+            "IREN": {
+                "runtime_state": "READY" if live else "STALE",
+                "health_state": health,
+                "tracking_state": "CANONICAL_CONTROL_STATE",
+                "observed_at": common_observed,
+                "independent_runtime": False,
+                "activity": "Supervising the unified RHEN runtime.",
+            },
+            "GRAEN": {
+                "runtime_state": (
+                    "RESEARCHING"
+                    if research_status == "RUNNING"
+                    else "READY"
+                ),
+                "health_state": health,
+                "tracking_state": research_status or "READY",
+                "observed_at": common_observed,
+                "independent_runtime": False,
+                "activity": (
+                    research_focus
+                    if research_status == "RUNNING" and research_focus
+                    else "Research module ready; no active run exposed."
+                ),
+            },
+            "VELUM": {
+                "runtime_state": "READY" if live else "STALE",
+                "health_state": health,
+                "tracking_state": "READY",
+                "observed_at": common_observed,
+                "independent_runtime": False,
+                "activity": "Replay module ready; no active replay exposed.",
+            },
+            "NOSTRA": {
+                "runtime_state": "READY" if live else "STALE",
+                "health_state": health,
+                "tracking_state": "READY",
+                "observed_at": common_observed,
+                "independent_runtime": False,
+                "activity": "Forecast module ready; no active forecast exposed.",
+            },
+        }
+
+        return {
+            "ok": True,
+            "generated_at": current.isoformat(),
+            "source": "rhen-core-sqlite",
+            "live": live,
+            "state": "LIVE" if live else "STALE",
+            "freshness_seconds": freshness,
+            "systems": systems,
+            "active_strategy": active_strategy,
+            "strategy_history": [],
+            "telemetry": {
+                "events_60m": len(recent_60m),
+                "scan_events_10m": scan_events_10m,
+                "symbols_10m": symbols_10m,
+                "execution_events_2h": execution_events_2h,
+                "reconciliations_2h": reconciliations_2h,
+                "errors_2h": errors_2h,
+            },
+            "activity": activity,
+            "events": public_events,
+            "operational": {"latest_scan": operational_scan},
+            "research": {
+                "current_focus": research_focus,
+                "current_status": research_status,
+                "last_updated_at": research_updated_at,
+                "next_direction": None,
+                "completed_decisions": [],
+                "active_questions": [],
+                "latest_daily": None,
+                "latest_weekly": None,
+                "latest_weekly_summary": None,
+                "evidence": {
+                    "candidate_forward_outcomes": [],
+                    "live_offline_comparison": [],
+                    "analytics_only": True,
+                },
+                "limitations": [
+                    "Public research projection is aggregate-only."
+                ],
+                "journal": [],
+            },
+            "performance": performance,
+            "disclosure": {
+                "level": "aggregate_only",
+                "public_fields": [
+                    "health",
+                    "freshness",
+                    "aggregate_event_counts",
+                    "normalized_performance",
+                    "sanitized_activity",
+                ],
+                "excluded_fields": [
+                    "symbols",
+                    "dollar_values",
+                    "prices",
+                    "quantities",
+                    "orders",
+                    "fills",
+                    "strategy_thresholds",
+                    "credentials",
+                ],
+            },
+        }
+
+
     def canonical_evidence(self) -> dict[str, Any]:
         with self.connect() as conn:
             runtime_row = conn.execute(

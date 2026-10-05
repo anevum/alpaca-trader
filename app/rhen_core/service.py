@@ -149,6 +149,11 @@ def ingest_events(
 
 
 
+@app.get("/v1/trading-public-feed")
+def trading_public_feed() -> dict[str, Any]:
+    return store.public_live_feed()
+
+
 @app.get("/v1/trading-report-read")
 def trading_report_read(
     request: Request,
