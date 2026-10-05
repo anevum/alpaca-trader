@@ -9,8 +9,6 @@ from uuid import uuid4
 
 import httpx
 
-from foundation.outbox import DurableEventOutbox, FoundationShadowSink
-
 from .config import Settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .research_agent.ads002 import (
@@ -41,16 +39,6 @@ class TradingEventSink:
         self.last_reconcile_at: datetime | None = None
         self.sent_count = 0
         self.dropped_count = 0
-        self.foundation_sink: FoundationShadowSink | None = None
-        self.foundation_task: asyncio.Task | None = None
-        self.foundation_last_error: str | None = None
-        self.foundation_delivered_count = 0
-        if bool(getattr(settings, "foundation_shadow_enabled", False)):
-            self.foundation_sink = FoundationShadowSink(
-                outbox=DurableEventOutbox(settings.foundation_outbox_path),
-                ingest_url=settings.foundation_ingest_url,
-                ingest_token=getattr(settings, "foundation_ingest_token", ""),
-            )
 
     @property
     def enabled(self) -> bool:
@@ -60,10 +48,6 @@ class TradingEventSink:
             and self.settings.trading_run_id
             and self.settings.strategy_version_id
         )
-
-    @property
-    def foundation_enabled(self) -> bool:
-        return self.foundation_sink is not None
 
     def _owns_broker_order(self, order: dict[str, Any]) -> bool:
         client_order_id = str(order.get("client_order_id") or "")
@@ -215,21 +199,7 @@ class TradingEventSink:
             "last_error": self.last_error,
             "run_id": self.settings.trading_run_id or None,
             "strategy_version_id": self.settings.strategy_version_id or None,
-            "foundation": {
-                "enabled": self.foundation_enabled,
-                "delivered_count": self.foundation_delivered_count,
-                "last_error": self.foundation_last_error,
-                "outbox": (
-                    self.foundation_sink.outbox.stats()
-                    if self.foundation_sink is not None
-                    else {
-                        "queued": 0,
-                        "leased": 0,
-                        "max_attempts": 0,
-                        "oldest_created_at": None,
-                    }
-                ),
-            },
+            "canonical_store": "RHEN Core",
             "run_started_at": (
                 self.settings.trading_run_started_at.isoformat()
                 if self.settings.trading_run_started_at
@@ -240,8 +210,6 @@ class TradingEventSink:
     async def start(self) -> None:
         if self.enabled and self.task is None:
             self.task = asyncio.create_task(self._run())
-        if self.foundation_enabled and self.foundation_task is None:
-            self.foundation_task = asyncio.create_task(self._run_foundation())
 
     async def stop(self) -> None:
         self.stop_event.set()
@@ -251,12 +219,6 @@ class TradingEventSink:
             except asyncio.TimeoutError:
                 self.task.cancel()
             self.task = None
-        if self.foundation_task is not None:
-            try:
-                await asyncio.wait_for(self.foundation_task, timeout=5)
-            except asyncio.TimeoutError:
-                self.foundation_task.cancel()
-            self.foundation_task = None
 
     def _event(
         self,
@@ -277,19 +239,9 @@ class TradingEventSink:
             "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat(),
             "symbol": symbol or None,
             "correlation_id": correlation_id,
-            "source": "alpaca-trader",
+            "source": "RHEN",
             "payload": payload or {},
         }
-
-    def _mirror_foundation(self, event: dict[str, Any]) -> None:
-        if self.foundation_sink is None:
-            return
-        try:
-            self.foundation_sink.enqueue(event)
-            self.foundation_last_error = None
-        except Exception as exc:
-            # Shadow persistence must never alter live execution behavior.
-            self.foundation_last_error = f"{type(exc).__name__}: {exc}"
 
     def emit(
         self,
@@ -301,7 +253,7 @@ class TradingEventSink:
         occurred_at: str | None = None,
         event_key: str | None = None,
     ) -> None:
-        if not self.enabled and not self.foundation_enabled:
+        if not self.enabled:
             return
         event = self._event(
             event_type=event_type,
@@ -311,9 +263,6 @@ class TradingEventSink:
             occurred_at=occurred_at,
             event_key=event_key,
         )
-        self._mirror_foundation(event)
-        if not self.enabled:
-            return
         try:
             self.queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -331,7 +280,7 @@ class TradingEventSink:
         event_key: str | None = None,
     ) -> bool:
         """Persist before a new entry. Protective exits never depend on this path."""
-        if not self.enabled and not self.foundation_enabled:
+        if not self.enabled:
             return True
         event = self._event(
             event_type=event_type,
@@ -341,9 +290,6 @@ class TradingEventSink:
             occurred_at=occurred_at,
             event_key=event_key,
         )
-        self._mirror_foundation(event)
-        if not self.enabled:
-            return True
         async with httpx.AsyncClient(timeout=5.0) as http:
             for attempt in range(3):
                 if await self._send_batch(http, [event]):
@@ -1748,28 +1694,6 @@ class TradingEventSink:
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return False
-
-    async def _run_foundation(self) -> None:
-        assert self.foundation_sink is not None
-        flush_seconds = float(
-            getattr(self.settings, "foundation_flush_seconds", 1.0)
-        )
-        batch_size = int(getattr(self.settings, "foundation_batch_size", 50))
-        while not self.stop_event.is_set():
-            result = await self.foundation_sink.flush_once(limit=batch_size)
-            if result.get("ok"):
-                self.foundation_last_error = None
-                self.foundation_delivered_count += int(result.get("delivered") or 0)
-                sleep_for = flush_seconds if result.get("empty") else 0.05
-            else:
-                self.foundation_last_error = str(
-                    result.get("error") or "foundation delivery failed"
-                )
-                sleep_for = flush_seconds
-            try:
-                await asyncio.wait_for(self.stop_event.wait(), timeout=sleep_for)
-            except asyncio.TimeoutError:
-                pass
 
     async def _run(self) -> None:
         async with httpx.AsyncClient(timeout=5.0) as http:
