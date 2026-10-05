@@ -522,6 +522,27 @@ class RhenCoreStore:
     def iren_read(self) -> dict[str, Any]:
         value, revision = self.get_kv("iren", "control", {})
         envelope = dict(value) if isinstance(value, dict) else {}
+        if revision == 0:
+            legacy, legacy_revision = self.get_kv("iren", "state", {})
+            if legacy_revision and isinstance(legacy, dict) and legacy:
+                observed_at = legacy.get("observed_at")
+                envelope = {
+                    "state": legacy,
+                    "observation_key": (
+                        "legacy-rhen-core:"
+                        + _hash(
+                            {
+                                "revision": legacy_revision,
+                                "observed_at": observed_at,
+                                "state": legacy.get("state"),
+                            }
+                        )
+                    ),
+                    "observed_at": observed_at,
+                }
+                revision = self.set_kv(
+                    "iren", "control", envelope
+                )
         return {
             "ok": True,
             "state": dict(envelope.get("state") or {}),
