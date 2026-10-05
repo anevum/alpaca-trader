@@ -726,3 +726,83 @@ def test_weekly_range_read_rejects_invalid_period(tmp_path, monkeypatch):
     )
 
     assert report == {"ok": False, "error": "invalid_period"}
+
+
+def test_iren_work_queue_is_durable_in_rhen_core(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+
+    created = store.iren_work_action(
+        "iren_command_create",
+        {
+            "command_text": "status",
+            "source": "command",
+            "requested_by": "operator@example.com",
+        },
+    )
+    command_id = created["command"]["command_id"]
+    assert created["command"]["status"] == "QUEUED"
+
+    claimed = store.iren_work_action(
+        "iren_commands_claim",
+        {"owner": "iren-work-engine", "limit": 5},
+    )
+    assert [row["command_id"] for row in claimed["commands"]] == [command_id]
+    assert claimed["commands"][0]["status"] == "PROCESSING"
+
+    completed = store.iren_work_action(
+        "iren_command_complete",
+        {
+            "command_id": command_id,
+            "status": "SUCCEEDED",
+            "response": {"message": "RHEN native IREN is healthy."},
+        },
+    )
+    assert completed["command"]["status"] == "SUCCEEDED"
+
+    job = store.iren_work_action(
+        "iren_job_create",
+        {
+            "job": {
+                "title": "Verify runtime",
+                "job_type": "CONTROL_VERIFY",
+                "owner_system": "IREN",
+                "status": "QUEUED",
+            }
+        },
+    )["job"]
+    claimed_jobs = store.iren_work_action(
+        "iren_jobs_claim",
+        {"owner": "iren-work-engine", "limit": 3},
+    )
+    assert claimed_jobs["jobs"][0]["job_id"] == job["job_id"]
+    assert claimed_jobs["jobs"][0]["status"] == "RUNNING"
+
+    updated = store.iren_work_action(
+        "iren_job_update",
+        {
+            "job_id": job["job_id"],
+            "status": "SUCCEEDED",
+            "result": {"verified": True},
+        },
+    )
+    assert updated["job"]["status"] == "SUCCEEDED"
+
+    restored = RhenCoreStore(store.path).iren_work_snapshot()
+    assert restored["commands"][0]["command_id"] == command_id
+    assert restored["commands"][0]["status"] == "SUCCEEDED"
+    assert restored["jobs"][0]["job_id"] == job["job_id"]
+    assert restored["jobs"][0]["status"] == "SUCCEEDED"
+    assert restored["job_events"]
+
+
+def test_iren_work_queue_rejects_blank_command(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    try:
+        store.iren_work_action(
+            "iren_command_create",
+            {"command_text": "   "},
+        )
+    except ValueError as exc:
+        assert str(exc) == "command_required"
+    else:
+        raise AssertionError("blank IREN commands must be rejected")
