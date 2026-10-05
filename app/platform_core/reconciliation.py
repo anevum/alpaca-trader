@@ -8,6 +8,90 @@ from typing import Any
 
 from .broker import TenantAlpacaReadClient, TenantBrokerAccount
 
+ACCOUNT_FIELDS = (
+    "id",
+    "status",
+    "crypto_status",
+    "currency",
+    "cash",
+    "buying_power",
+    "portfolio_value",
+    "equity",
+    "last_equity",
+    "long_market_value",
+    "short_market_value",
+    "initial_margin",
+    "maintenance_margin",
+    "trading_blocked",
+    "transfers_blocked",
+    "account_blocked",
+    "pattern_day_trader",
+    "daytrade_count",
+)
+
+POSITION_FIELDS = (
+    "asset_id",
+    "symbol",
+    "exchange",
+    "asset_class",
+    "side",
+    "qty",
+    "avg_entry_price",
+    "market_value",
+    "cost_basis",
+    "unrealized_pl",
+    "unrealized_plpc",
+    "current_price",
+    "lastday_price",
+    "change_today",
+)
+
+ORDER_FIELDS = (
+    "id",
+    "client_order_id",
+    "created_at",
+    "updated_at",
+    "submitted_at",
+    "filled_at",
+    "expired_at",
+    "canceled_at",
+    "failed_at",
+    "replaced_at",
+    "replaced_by",
+    "replaces",
+    "asset_id",
+    "symbol",
+    "asset_class",
+    "notional",
+    "qty",
+    "filled_qty",
+    "filled_avg_price",
+    "order_class",
+    "order_type",
+    "type",
+    "side",
+    "time_in_force",
+    "limit_price",
+    "stop_price",
+    "status",
+)
+
+
+def _allowlist(payload: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: payload[field] for field in fields if field in payload}
+
+
+def safe_account_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    return _allowlist(payload, ACCOUNT_FIELDS)
+
+
+def safe_positions_snapshot(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_allowlist(item, POSITION_FIELDS) for item in payload if isinstance(item, dict)]
+
+
+def safe_orders_snapshot(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_allowlist(item, ORDER_FIELDS) for item in payload if isinstance(item, dict)]
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(
@@ -136,15 +220,16 @@ class TenantBrokerReconciler:
                     error_detail="observed Alpaca account id does not match tenant broker account",
                 )
 
-            positions = await self.client.positions_snapshot()
-            open_orders = await self.client.open_orders_snapshot()
-            recent_orders = await self.client.recent_orders_snapshot()
+            safe_account = safe_account_snapshot(account)
+            positions = safe_positions_snapshot(await self.client.positions_snapshot())
+            open_orders = safe_orders_snapshot(await self.client.open_orders_snapshot())
+            recent_orders = safe_orders_snapshot(await self.client.recent_orders_snapshot())
 
             digest = reconciliation_hash(
                 tenant_id=self.account.tenant_id,
                 broker_account_id=self.account.broker_account_id,
                 provider_account_id=observed_id,
-                account_snapshot=account,
+                account_snapshot=safe_account,
                 positions_snapshot=positions,
                 open_orders_snapshot=open_orders,
                 recent_orders_snapshot=recent_orders,
@@ -158,7 +243,7 @@ class TenantBrokerReconciler:
                 provider_account_id_expected=expected_id,
                 provider_account_id_observed=observed_id,
                 observed_at=observed_at,
-                account_snapshot=account,
+                account_snapshot=safe_account,
                 positions_snapshot=positions,
                 open_orders_snapshot=open_orders,
                 recent_orders_snapshot=recent_orders,
