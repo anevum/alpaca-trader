@@ -222,3 +222,63 @@ This consolidation preserves the autonomous GRAEN/VELUM/IREN research and releas
 pipeline and the isolated BTC paper-canary program. It changes product boundaries, not
 research authority or live-risk gates.
 
+
+
+## Paper onboarding lifecycle v2
+
+Command Paper Beta derives customer setup state from canonical facts. The lifecycle is
+a projection and does not mutate tenant authorization state merely to make the UI look
+ready.
+
+Derived sequence:
+
+REGISTERED / ACTIVE tenant authorization
+-> BROKER_SETUP_REQUIRED
+-> BROKER_PENDING
+-> FUNDING_REQUIRED
+-> TRADING_CONFIGURATION_REQUIRED
+-> READY
+-> ACTIVE
+
+Blocking tenant states such as RESTRICTED, BROKER_BLOCKED, PAYMENT_PAST_DUE,
+RISK_HALTED, SYSTEM_HALTED, CLOSING, and CLOSED override the derived setup sequence.
+
+Paper funding is read from the latest successful Alpaca reconciliation. ANEVUM does not
+create a parallel customer cash balance. For crypto readiness, non-marginable buying
+power is used when Alpaca supplies it; otherwise broker cash is used. Generic margin
+buying power alone does not satisfy the crypto funding gate.
+
+After a successful paper OAuth connection or manual broker refresh, Platform Core may
+attach an existing paper-capable strategy release. Assignment is deliberately
+fail-closed:
+
+- if COMMAND_PAPER_DEFAULT_STRATEGY_RELEASE_ID names an eligible release, use it;
+- if exactly one paper-capable release exists, it may be assigned automatically;
+- if multiple eligible releases exist and no explicit default is configured, do not
+  guess.
+
+An operator can resolve the ambiguous case through the protected
+POST /v1/command/platform/admin/strategy-assignment endpoint. That endpoint can select
+only an existing PAPER_PASSED, APPROVED, CANARY, or STABLE release. It cannot create,
+promote, or modify a release and it grants no customer live authority.
+
+A customer can therefore complete paper setup through Command without hand-editing
+PostgreSQL:
+
+invite/provision tenant
+-> connect Alpaca Paper
+-> reconcile broker state
+-> confirm broker-owned paper funds
+-> choose RHEN allocation
+-> choose account risk limits
+-> receive/assign a paper-capable release
+-> accept paper automation consent
+-> READY
+
+READY means the customer/account configuration is complete. ACTIVE is reserved for the
+state where the canonical tenant execution gate actually passes.
+
+Platform Core v1 still hard-codes tenant_execution_runtime_ready=false because the
+account-isolated RHEN tenant executor has not yet been deployed. A fully configured
+paper customer can therefore truthfully reach READY while execution remains closed with
+tenant_execution_runtime_unavailable.
