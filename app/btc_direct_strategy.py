@@ -16,7 +16,8 @@ class BtcDirectSwingStrategy:
 
     strategy_family = "btc_direct_swing"
     strategy_version_id = "RHEN-BTC-DIRECT-001"
-    timeframe = "4Hour"
+    timeframe = "1Hour"
+    signal_timeframe = "4Hour"
     required_history_minutes = 270 * 24 * 60
     manages_position_exits = True
 
@@ -42,14 +43,13 @@ class BtcDirectSwingStrategy:
         return stamp.astimezone(timezone.utc)
 
     def _completed(self, bars: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+        """Aggregate hourly Alpaca bars into completed UTC-aligned 4-hour bars."""
         now_utc = now.astimezone(timezone.utc)
-        by_stamp: dict[datetime, dict[str, Any]] = {}
+        buckets: dict[datetime, dict[str, Any]] = {}
         for bar in bars:
             try:
                 stamp = self._timestamp(bar)
             except (TypeError, ValueError):
-                continue
-            if stamp + timedelta(hours=4) > now_utc:
                 continue
             open_ = self._d(bar.get("o", bar.get("open")))
             high = self._d(bar.get("h", bar.get("high")))
@@ -59,14 +59,38 @@ class BtcDirectSwingStrategy:
                 continue
             if high < low or high < max(open_, close) or low > min(open_, close):
                 continue
-            by_stamp[stamp] = {
-                "t": stamp,
-                "o": open_,
-                "h": high,
-                "l": low,
-                "c": close,
-            }
-        return [by_stamp[key] for key in sorted(by_stamp)]
+
+            bucket = stamp.replace(
+                hour=stamp.hour - (stamp.hour % 4),
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            current = buckets.get(bucket)
+            if current is None:
+                buckets[bucket] = {
+                    "t": bucket,
+                    "o": open_,
+                    "h": high,
+                    "l": low,
+                    "c": close,
+                    "_last": stamp,
+                }
+            else:
+                current["h"] = max(current["h"], high)
+                current["l"] = min(current["l"], low)
+                if stamp >= current["_last"]:
+                    current["c"] = close
+                    current["_last"] = stamp
+
+        completed: list[dict[str, Any]] = []
+        for bucket in sorted(buckets):
+            if bucket + timedelta(hours=4) > now_utc:
+                continue
+            row = dict(buckets[bucket])
+            row.pop("_last", None)
+            completed.append(row)
+        return completed
 
     @staticmethod
     def _mean(values: list[Decimal]) -> Decimal:
@@ -151,7 +175,8 @@ class BtcDirectSwingStrategy:
             "session_model": "24x7",
             "strategy_family": self.strategy_family,
             "strategy_version_id": self.strategy_version_id,
-            "timeframe": self.timeframe,
+            "timeframe": self.signal_timeframe,
+            "source_timeframe": self.timeframe,
             "execution_model": "completed_4h_signal_then_next_available_market_execution",
             "research_dependency": False,
             "state": {
