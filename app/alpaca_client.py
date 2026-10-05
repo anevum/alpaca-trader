@@ -243,6 +243,26 @@ class AlpacaClient:
             },
         )
 
+    async def portfolio_history(
+        self,
+        *,
+        period: str = "1D",
+        timeframe: str = "5Min",
+        intraday_reporting: str = "continuous",
+        pnl_reset: str = "no_reset",
+    ) -> dict[str, Any]:
+        result = await self._request(
+            "GET",
+            "/v2/account/portfolio/history",
+            params={
+                "period": period,
+                "timeframe": timeframe,
+                "intraday_reporting": intraday_reporting,
+                "pnl_reset": pnl_reset,
+            },
+        )
+        return result if isinstance(result, dict) else {}
+
     async def transfer_activities(
         self,
         *,
