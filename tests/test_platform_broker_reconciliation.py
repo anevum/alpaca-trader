@@ -158,3 +158,22 @@ def test_http_failure_becomes_non_ready_reconciliation_evidence():
     assert result.status == "FAILED"
     assert result.error_code == "broker_reconciliation_failed"
     assert "503" in (result.error_detail or "")
+
+
+
+def test_secret_resolver_failure_is_sanitized_before_persistence():
+    class LeakyResolver:
+        def resolve(self, secret_reference: str) -> str:
+            raise RuntimeError("actual-secret-value-should-never-escape")
+
+    client = TenantAlpacaReadClient(
+        account_config(),
+        LeakyResolver(),
+        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+    )
+    result = run(TenantBrokerReconciler(account_config(), client).reconcile())
+
+    assert result.ready is False
+    assert result.status == "FAILED"
+    assert "actual-secret-value-should-never-escape" not in (result.error_detail or "")
+    assert "secret resolution failed" in (result.error_detail or "").lower()
