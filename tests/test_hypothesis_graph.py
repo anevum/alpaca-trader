@@ -184,3 +184,43 @@ def test_direct_planner_engineering_requirement_is_retained_in_graph():
     assert node["engineering_requirement"]["requirement_id"] == requirement[
         "requirement_id"
     ]
+
+
+
+def test_confirmatory_orphan_marks_candidate_falsified_in_memory():
+    graph = build_hypothesis_graph({
+        "problems": [{
+            "problem_id": "loop-orphan",
+            "problem_key": "loop-orphan-key",
+            "title": "GRAEN Autonomous Crypto Research Loop v1",
+            "domain": "CRYPTO_STRATEGY_RESEARCH",
+            "status": "WAITING",
+            "created_at": "2026-10-04T20:00:00Z",
+            "updated_at": "2026-10-04T22:00:00Z",
+            "metadata": {
+                "autonomous_loop_id": "graen-autonomous-operating-loop-v1",
+                "research_stage": "CRYPTO_HYPOTHESIS_PLANNER_V1",
+                "falsified_candidate_id": "AUTO-LL-09",
+            },
+        }],
+        "runs": [{
+            "problem_id": "loop-orphan",
+            "status": "WAITING",
+            "started_at": "2026-10-04T21:00:00Z",
+            "completed_at": "2026-10-04T21:05:00Z",
+            "result_summary": {
+                "state": "STRATEGY_DEVELOPMENT_PASSED",
+                "decision": "CONTINUE_RESEARCH",
+                "candidate_id": "AUTO-LL-09",
+                "candidate_family": "cross_asset_diffusion",
+            },
+        }],
+        "artifacts": [],
+    })
+
+    node = graph["nodes"][0]
+    assert node["hypothesis_id"] == "AUTO-LL-09"
+    assert node["state"] == "FALSIFIED"
+    assert "sealed_confirmatory_stage_execution_orphaned" in node[
+        "failure_reasons"
+    ]
