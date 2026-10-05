@@ -7193,6 +7193,11 @@ class GraenResearchExecutor:
             if isinstance(scenarios.get("severe_stress_50bp"), Mapping)
             else {}
         )
+        delayed = (
+            holdout.get("one_bar_execution_delay")
+            if isinstance(holdout.get("one_bar_execution_delay"), Mapping)
+            else {}
+        )
         neighborhood = (
             holdout.get("neighborhood")
             if isinstance(holdout.get("neighborhood"), Mapping)
@@ -7234,6 +7239,8 @@ class GraenResearchExecutor:
                 "stressed_30bp_sharpe": stressed.get("sharpe"),
                 "stressed_30bp_max_drawdown": stressed.get("max_drawdown"),
                 "severe_50bp_total_return": severe.get("total_return"),
+                "one_bar_delay_total_return": delayed.get("total_return"),
+                "one_bar_delay_sharpe": delayed.get("sharpe"),
                 "neighborhood_positive_return_share": neighborhood.get(
                     "positive_return_share"
                 ),
