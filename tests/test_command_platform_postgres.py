@@ -10,6 +10,8 @@ from foundation.command_platform import (
     DatabaseEnvelopeSecretResolver,
     PAPER_BETA_KEY_VERSION,
     _encrypt_token,
+    _ensure_default_paper_strategy_assignment,
+    customer_overview,
     provision_paper_beta_tenant,
     resolve_command_session,
     start_paper_oauth,
@@ -218,3 +220,123 @@ def test_inactive_tenant_remains_readable_but_cannot_start_oauth(conn):
             tenant_id=created["tenant_id"],
             redirect_uri="https://anevum.com/api/command/platform/alpaca/callback",
         )
+
+
+
+def test_default_paper_release_assignment_requires_no_database_hand_edit(conn):
+    created = provision_paper_beta_tenant(
+        conn,
+        customer_email="release@example.test",
+        display_name="Release Beta",
+        created_by="owner@anevum.test",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into anevum.broker_accounts(
+                tenant_id,provider,provider_account_id,environment,
+                account_status,crypto_enabled,trading_blocked,withdrawals_blocked
+            )
+            values(%s,'ALPACA',%s,'PAPER','ACTIVE',true,false,false)
+            returning broker_account_id
+            """,
+            (created["tenant_id"], f"paper-{uuid4()}"),
+        )
+        broker_id = str(cur.fetchone()[0])
+        release_id = f"paper-release-{uuid4()}"
+        cur.execute(
+            """
+            insert into anevum.strategy_releases(
+                strategy_release_id,strategy_key,semantic_version,channel,
+                lifecycle_state,source_commit,strategy_hash,configuration_hash,
+                risk_policy_version,evidence
+            )
+            values(%s,'RHEN-BTC','0.0.1-paper','INTERNAL','PAPER_PASSED',
+                   'test-commit','strategy-hash','config-hash','risk-v1','{}'::jsonb)
+            """,
+            (release_id,),
+        )
+
+    assigned = _ensure_default_paper_strategy_assignment(
+        conn,
+        tenant_id=created["tenant_id"],
+        broker_account_id=broker_id,
+    )
+
+    assert assigned is not None
+    assert assigned["strategy_release_id"] == release_id
+    assert assigned["lifecycle_state"] == "PAPER_PASSED"
+
+
+def test_customer_overview_derives_funding_and_lifecycle_from_alpaca_snapshot(conn):
+    created = provision_paper_beta_tenant(
+        conn,
+        customer_email="funding@example.test",
+        display_name="Funding Beta",
+        created_by="owner@anevum.test",
+    )
+    provider_account_id = f"paper-{uuid4()}"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into anevum.broker_accounts(
+                tenant_id,provider,provider_account_id,environment,
+                account_status,crypto_enabled,trading_blocked,withdrawals_blocked
+            )
+            values(%s,'ALPACA',%s,'PAPER','ACTIVE',true,false,false)
+            returning broker_account_id
+            """,
+            (created["tenant_id"], provider_account_id),
+        )
+        broker_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            insert into anevum.broker_authorizations(
+                broker_account_id,authorization_kind,secret_reference,
+                scopes,status,issued_at,last_validated_at
+            )
+            values(%s,'OAUTH',%s,'["trading"]'::jsonb,'ACTIVE',now(),now())
+            """,
+            (broker_id, f"db-envelope://{uuid4()}"),
+        )
+        cur.execute(
+            """
+            insert into anevum.broker_reconciliations(
+                tenant_id,broker_account_id,status,environment,provider,
+                provider_account_id_expected,provider_account_id_observed,
+                observed_at,account_snapshot,positions_snapshot,
+                open_orders_snapshot,recent_orders_snapshot,snapshot_hash
+            )
+            values(%s,%s,'SUCCESS','PAPER','ALPACA',%s,%s,now(),
+                   %s,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,%s)
+            """,
+            (
+                created["tenant_id"],
+                broker_id,
+                provider_account_id,
+                provider_account_id,
+                psycopg.types.json.Jsonb({
+                    "equity": "100000",
+                    "cash": "100000",
+                    "buying_power": "200000",
+                }),
+                f"snapshot-{uuid4()}",
+            ),
+        )
+
+    overview = customer_overview(
+        conn,
+        email="funding@example.test",
+        tenant_id=created["tenant_id"],
+    )
+
+    assert overview["schema_version"] == "command_customer.v2"
+    assert overview["funding"]["source"] == "ALPACA"
+    assert overview["funding"]["funded"] is True
+    assert overview["funding"]["equity"] == "100000"
+    assert overview["lifecycle"]["state"] == "TRADING_CONFIGURATION_REQUIRED"
+    funding_step = next(
+        step for step in overview["onboarding"]["steps"]
+        if step["key"] == "funding"
+    )
+    assert funding_step["complete"] is True
