@@ -14,6 +14,7 @@ from app.iren.core import fresh, reduce_state
 from app.iren.service import (
     IrenController,
     _engineering_objective_from_result,
+    _engineering_objective_key,
     _human_decision_objective_from_result,
     _runtime_identity_complete,
     app,
@@ -105,6 +106,131 @@ def test_paper_pass_becomes_protected_live_risk_decision():
     assert objective["metadata"]["automatic_risk_increase"] is False
     assert objective["success_criteria"]["explicit_human_decision"] is True
     assert objective["metadata"]["paper_checkpoint"]["status"] == "PAPER_PASSED"
+
+
+def test_unlinked_autonomous_escalations_create_iren_objectives(monkeypatch):
+    monkeypatch.setattr(scheduler.runtime, "token", "z" * 40)
+
+    async def scenario():
+        original_gateway = controller.gateway
+        gateway = AsyncMock(side_effect=[
+            {"objective": {"objective_key": "engineering.eng-auto-1"}},
+            {"objective": {"objective_key": "decision.live-risk.auto-paper-01"}},
+        ])
+        controller.gateway = gateway
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                engineering = await client.post(
+                    "/v1/iren/escalations",
+                    headers={"x-anevum-scheduler-token": "z" * 40},
+                    json={
+                        "source": "GRAEN",
+                        "result": {
+                            "condition": "ENGINEERING_REQUIRED",
+                            "graen_problem_id": "problem-1",
+                            "engineering_requirement": {
+                                "requirement_id": "ENG-AUTO-1",
+                                "title": "Extend trusted research primitive",
+                                "reason": "Missing primitive.",
+                                "handoff_prompt": "Implement the frozen capability.",
+                                "suggested_paths": [
+                                    "app/research_agent/strategy_grammar.py"
+                                ],
+                            },
+                        },
+                    },
+                )
+                human = await client.post(
+                    "/v1/iren/escalations",
+                    headers={"x-anevum-scheduler-token": "z" * 40},
+                    json={
+                        "source": "GRAEN",
+                        "result": {
+                            "condition": "HUMAN_DECISION_REQUIRED",
+                            "candidate_id": "AUTO-PAPER-01",
+                            "protected_decision": {
+                                "decision_type": "LIVE_RISK_CHARTER",
+                                "candidate_id": "AUTO-PAPER-01",
+                                "requested_action": "Review exact paper survivor.",
+                                "risk_increase_authorized": False,
+                            },
+                        },
+                    },
+                )
+        finally:
+            controller.gateway = original_gateway
+
+        assert engineering.status_code == 200
+        assert engineering.json()["protected_authority_granted"] is False
+        assert engineering.json()["actions"][0]["action"] == (
+            "engineering_objective_created"
+        )
+        assert human.status_code == 200
+        assert human.json()["protected_authority_granted"] is False
+        assert human.json()["actions"][0]["action"] == (
+            "human_decision_objective_created"
+        )
+        first_call = gateway.await_args_list[0]
+        assert first_call.args[0] == "iren_objective_create"
+        assert first_call.kwargs["objective"]["metadata"][
+            "manual_software_required"
+        ] is True
+        second_call = gateway.await_args_list[1]
+        assert second_call.kwargs["objective"]["protected_action"] is True
+
+    asyncio.run(scenario())
+
+
+def test_verified_engineering_resolution_uses_exact_objective_identity(monkeypatch):
+    monkeypatch.setattr(scheduler.runtime, "token", "y" * 40)
+
+    async def scenario():
+        original_gateway = controller.gateway
+        gateway = AsyncMock(return_value={
+            "objective": {
+                "objective_key": "engineering.eng-auto-2",
+                "status": "COMPLETE",
+            }
+        })
+        controller.gateway = gateway
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/v1/iren/escalations",
+                    headers={"x-anevum-scheduler-token": "y" * 40},
+                    json={
+                        "source": "GRAEN",
+                        "result": {
+                            "condition": "OPERATING",
+                            "engineering_requirement_resolved": True,
+                            "engineering_requirement_id": "ENG-AUTO-2",
+                            "resolved_on_source_commit": "new-commit",
+                            "execution_authority": False,
+                        },
+                    },
+                )
+        finally:
+            controller.gateway = original_gateway
+
+        assert response.status_code == 200
+        assert response.json()["protected_authority_granted"] is False
+        assert _engineering_objective_key("ENG-AUTO-2") == (
+            "engineering.eng-auto-2"
+        )
+        call = gateway.await_args
+        assert call.args[0] == "iren_objective_update"
+        assert call.kwargs == {
+            "objective_key": "engineering.eng-auto-2",
+            "status": "COMPLETE",
+        }
+
+    asyncio.run(scenario())
 
 
 def test_runtime_identity_complete_requires_revision_and_deployment():
