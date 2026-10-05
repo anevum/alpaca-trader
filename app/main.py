@@ -1464,6 +1464,206 @@ async def resume_paper(authorization: str | None = Header(default=None)):
     return {"paused": False}
 
 
+async def _rhen_internal_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+) -> dict:
+    token = str(settings.trading_ingest_token or "").strip()
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail="RHEN internal control token is not configured",
+        )
+    headers = {"x-anevum-scheduler-token": token}
+    if ":8102/" in url:
+        headers = {
+            "x-anevum-ingest-token": token,
+            "x-graen-gateway-token": token,
+        }
+    async with httpx.AsyncClient(timeout=15.0) as internal:
+        response = await internal.request(
+            method,
+            url,
+            headers=headers,
+            json=payload,
+        )
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=503,
+            detail="RHEN internal control plane is unavailable",
+        )
+    body = response.json()
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=503,
+            detail="RHEN internal control response is invalid",
+        )
+    return body
+
+
+async def _command_iren_projection() -> dict:
+    status_body, work_body, graen_body = await asyncio.gather(
+        _rhen_internal_json("http://127.0.0.1:8116/v1/iren/status"),
+        _rhen_internal_json("http://127.0.0.1:8116/v1/iren/work"),
+        _rhen_internal_json("http://127.0.0.1:8102/v1/graen-gateway"),
+    )
+    control = (
+        dict(status_body.get("state"))
+        if isinstance(status_body.get("state"), dict)
+        else {}
+    )
+    incident_map = (
+        control.get("incidents")
+        if isinstance(control.get("incidents"), dict)
+        else {}
+    )
+    incidents = [
+        {
+            "key": key,
+            "severity": value.get("severity"),
+            "reason": value.get("reason"),
+            "opened_at": value.get("opened_at"),
+        }
+        for key, value in incident_map.items()
+        if isinstance(value, dict) and value.get("status") == "OPEN"
+    ]
+    objectives = list(work_body.get("objectives") or [])
+    jobs = list(work_body.get("jobs") or [])
+    commands = list(work_body.get("commands") or [])
+    job_events = list(work_body.get("job_events") or [])
+    summary = (
+        dict(work_body.get("summary"))
+        if isinstance(work_body.get("summary"), dict)
+        else {}
+    )
+    handoffs = [
+        {
+            **dict(row.get("result") or {}),
+            "handoff_id": row.get("job_id"),
+            "objective_key": row.get("objective_key"),
+        }
+        for row in jobs
+        if row.get("job_type") == "CODEX_HANDOFF"
+        and isinstance(row.get("result"), dict)
+    ]
+    next_action = summary.get("next_action")
+    if handoffs:
+        execution_mode = "codex/manual software"
+    elif isinstance(next_action, dict) and (
+        next_action.get("protected_action")
+        or next_action.get("requires_human")
+    ):
+        execution_mode = "protected/requires Devon"
+    elif isinstance(next_action, dict) and str(
+        next_action.get("job_type") or ""
+    ).upper() in {"SOFTWARE_BUILD", "CODEX_HANDOFF"}:
+        execution_mode = "codex/manual software"
+    else:
+        execution_mode = "deterministic"
+
+    current_state = str(control.get("state") or "UNKNOWN")
+    topology = (
+        control.get("topology")
+        if isinstance(control.get("topology"), dict)
+        else None
+    )
+    baseline = (
+        control.get("configuration_baseline")
+        if isinstance(control.get("configuration_baseline"), dict)
+        else {}
+    )
+    return {
+        "schema_version": "iren_command.v2",
+        "work_schema_version": "iren_work.v1",
+        "revision": status_body.get("revision"),
+        "observed_at": control.get("observed_at"),
+        "stale": bool(status_body.get("stale", True)),
+        "state": current_state,
+        "topology": topology,
+        "incidents": incidents,
+        "scheduler": control.get("scheduler"),
+        "research": {
+            "graen_problems": list(graen_body.get("problems") or []),
+            "graen_runs": list(graen_body.get("runs") or []),
+            "velum_replays": [],
+            "graen_runtime": graen_body.get("runtime"),
+        },
+        "action_required": (
+            bool(status_body.get("stale", True))
+            or current_state != "HEALTHY"
+            or bool(incidents)
+        ),
+        "configuration_identity": baseline.get("fingerprint"),
+        "work": {
+            "objective_count": len(objectives),
+            "objectives_complete": sum(
+                1
+                for row in objectives
+                if str(row.get("status") or "").upper() == "COMPLETE"
+            ),
+            "active_jobs": sum(
+                1
+                for row in jobs
+                if str(row.get("status") or "").upper()
+                in {"QUEUED", "RUNNING", "WAITING", "BLOCKED", "NEEDS_APPROVAL"}
+            ),
+            "blocked_objectives": sum(
+                1
+                for row in objectives
+                if str(row.get("status") or "").upper() == "BLOCKED"
+            ),
+            "requires_human": sum(
+                1
+                for row in jobs
+                if row.get("requires_human") is True
+                or str(row.get("status") or "").upper() == "NEEDS_APPROVAL"
+            ),
+            "next_action": next_action,
+            "execution_mode": execution_mode,
+            "handoffs": handoffs,
+            "objectives": objectives,
+            "jobs": jobs,
+            "job_events": job_events,
+            "commands": commands,
+        },
+    }
+
+
+@app.get("/v1/command/iren")
+async def command_iren_status(
+    authorization: str | None = Header(default=None),
+):
+    await require_command_admin(authorization)
+    return await _command_iren_projection()
+
+
+@app.post("/v1/command/iren", status_code=202)
+async def command_iren_create(
+    body: dict,
+    authorization: str | None = Header(default=None),
+):
+    identity = await require_command_admin(authorization)
+    command = str(body.get("command") or "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="command_required")
+    created = await _rhen_internal_json(
+        "http://127.0.0.1:8116/v1/iren/commands",
+        method="POST",
+        payload={
+            "command": command,
+            "source": "command",
+            "requested_by": identity.get("email") or "operator",
+        },
+    )
+    return {
+        "schema_version": "iren_command.v2",
+        "accepted": True,
+        "command": created.get("command") or created,
+    }
+
+
 @app.get("/v1/command/session")
 async def command_session(authorization: str | None = Header(default=None)):
     identity = await require_command_admin(authorization)
