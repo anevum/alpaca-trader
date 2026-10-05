@@ -417,27 +417,39 @@ class CryptoExecutionEngine:
             stop_pct = _d(
                 getattr(self.strategy, "hard_stop_pct", self.settings.crypto_stop_pct)
             )
+            target_pct = _d(
+                getattr(self.strategy, "take_profit_pct", self.settings.crypto_target_pct)
+            )
+            strategy_max_hold_minutes = int(
+                getattr(
+                    self.strategy,
+                    "max_hold_minutes",
+                    self.settings.crypto_max_hold_minutes,
+                )
+                or 0
+            )
             exit_reason = None
             if return_pct <= -stop_pct:
                 exit_reason = (
                     f"crypto software stop triggered at {return_pct:.6f}"
+                )
+            elif target_pct > 0 and return_pct >= target_pct:
+                exit_reason = (
+                    f"crypto target triggered at {return_pct:.6f}"
+                )
+            elif (
+                strategy_max_hold_minutes > 0
+                and held_minutes is not None
+                and held_minutes >= strategy_max_hold_minutes
+            ):
+                exit_reason = (
+                    f"crypto max hold reached at {held_minutes:.1f} minutes"
                 )
             elif bool(getattr(self.strategy, "manages_position_exits", False)):
                 exit_reason = self.strategy.position_exit_reason(
                     bars.get(symbol, []),
                     (regime_bars or {}).get(symbol, []),
                     now=now,
-                )
-            elif return_pct >= self.settings.crypto_target_pct:
-                exit_reason = (
-                    f"crypto target triggered at {return_pct:.6f}"
-                )
-            elif (
-                held_minutes is not None
-                and held_minutes >= self.settings.crypto_max_hold_minutes
-            ):
-                exit_reason = (
-                    f"crypto max hold reached at {held_minutes:.1f} minutes"
                 )
 
             if self.ledger is not None:
@@ -451,11 +463,7 @@ class CryptoExecutionEngine:
                         "current_return_pct": str(return_pct),
                         "held_minutes": held_minutes,
                         "risk_stop_pct": str(stop_pct),
-                        "target_pct": (
-                            None
-                            if bool(getattr(self.strategy, "manages_position_exits", False))
-                            else str(self.settings.crypto_target_pct)
-                        ),
+                        "target_pct": str(target_pct) if target_pct > 0 else None,
                         "source": "crypto_live_position_snapshot",
                     },
                     correlation_id=self.state.crypto_current_correlation_id,
