@@ -31,7 +31,12 @@ from foundation.command_iren import (
 from foundation.command_platform import (
     assign_paper_strategy_release,
     complete_paper_oauth,
+    customer_account_projection,
+    customer_activity_projection,
+    customer_money_projection,
     customer_overview,
+    customer_overview_projection,
+    customer_trading_projection,
     refresh_paper_broker,
     resolve_command_session,
     provision_paper_beta_tenant,
@@ -1091,6 +1096,141 @@ async def command_platform_broker_refresh(
         raise HTTPException(
             status_code=503,
             detail=f"command_platform_broker_refresh_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/command/account")
+async def command_customer_account(
+    tenant_id: str,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return customer_account_projection(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=tenant_id,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_account_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/command/overview")
+async def command_customer_overview(
+    tenant_id: str,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return customer_overview_projection(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=tenant_id,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_overview_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/command/trading")
+async def command_customer_trading(
+    tenant_id: str,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return customer_trading_projection(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=tenant_id,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_trading_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/command/money")
+async def command_customer_money(
+    tenant_id: str,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return customer_money_projection(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=tenant_id,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_money_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/command/activity")
+async def command_customer_activity(
+    tenant_id: str,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_identity(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return customer_activity_projection(
+                conn,
+                email=str(identity.get("email") or ""),
+                tenant_id=tenant_id,
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_activity_failed:{type(exc).__name__}",
         ) from exc
 
 
