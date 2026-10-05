@@ -28,7 +28,10 @@ def observation(seconds=0):
         "source_commit": "synthetic-commit",
         "services": {
             "RHEN": {"ok": True, "startup_reconciled": True, "reconciliation_safe": True,
-                "strategy_version_id": POLICY["expected_strategy"], "crypto_execution_enabled": False,
+                "strategy_version_id": POLICY["expected_strategy"],
+                "crypto_execution_enabled": False,
+                "crypto_execution_mode": "btc_direct_live_signal",
+                "crypto_broker_writes_allowed": False,
                 "persistence": {"enabled": True, "last_sent_at": stamp, "dropped_count": 0}},
             "VELUM": {"ok": True, "broker_orders_possible": False},
             "PREOPEN": {"ok": True},
@@ -93,7 +96,6 @@ def test_determinism_and_no_input_mutation():
 
 
 @pytest.mark.parametrize("field,value,key", [
-    ("crypto_execution_enabled", True, "safety.crypto_execution"),
     ("strategy_version_id", "unapproved", "safety.strategy_identity"),
     ("reconciliation_safe", False, "safety.reconciliation_safe"),
     ("startup_reconciled", None, "safety.startup_reconciled"),
@@ -104,6 +106,24 @@ def test_protected_failures_open_immediately(field, value, key):
     state, events = reduce_state({}, obs, POLICY)
     assert state["state"] == "ATTENTION_REQUIRED"
     assert any(e["key"] == key and e["transition"] == "OPEN" for e in events)
+
+
+def test_approval_only_crypto_is_healthy_but_broker_write_authority_is_critical():
+    obs = observation()
+    obs["services"]["RHEN"]["crypto_execution_enabled"] = True
+    obs["services"]["RHEN"]["crypto_execution_mode"] = "btc_direct_live_signal"
+    obs["services"]["RHEN"]["crypto_broker_writes_allowed"] = False
+    state, events = reduce_state({}, obs, POLICY)
+    assert state["state"] == "HEALTHY"
+    assert not any(e["key"] == "safety.crypto_execution" for e in events)
+
+    obs = observation(60)
+    obs["services"]["RHEN"]["crypto_execution_enabled"] = True
+    obs["services"]["RHEN"]["crypto_execution_mode"] = "btc_direct_live_signal"
+    obs["services"]["RHEN"]["crypto_broker_writes_allowed"] = True
+    state, events = reduce_state(state, obs, POLICY)
+    assert state["state"] == "ATTENTION_REQUIRED"
+    assert any(e["key"] == "safety.crypto_execution" for e in events)
 
 
 def test_warning_hysteresis_recovery_restart_and_recurrence():
@@ -190,6 +210,38 @@ def test_rolling_restart_does_not_count_an_extra_observation():
         c.observe.assert_not_awaited()
         assert c.revision == 9 and c.state["state"] == "DEGRADED"
     asyncio.run(scenario())
+
+
+def test_disabled_scheduler_does_not_raise_stale_or_legacy_workflow_incidents():
+    obs = observation(1000)
+    obs["scheduler"] = {
+        "enabled": False,
+        "configured": False,
+        "last_error": False,
+        "last_success_at": None,
+        "started_at": observation()["observed_at"],
+    }
+    obs["runs"] = [{
+        "workflow_id": "rhen.research.daily",
+        "scheduled_at": observation()["observed_at"],
+        "status": "FAILED",
+    }]
+    state, events = reduce_state({}, obs, POLICY)
+    assert state["state"] == "HEALTHY"
+    assert "scheduler.stale" not in state["incidents"]
+    assert "workflow.rhen.research.daily" not in state["incidents"]
+    assert events == []
+
+
+def test_policy_version_change_rebaselines_protected_configuration():
+    old_policy = dict(POLICY)
+    old_policy["version"] = "iren-control-v2.0.0"
+    state, _ = reduce_state({}, observation(), old_policy)
+    changed = observation(60)
+    changed["configuration"]["fingerprint"] = "rebuilt-rhen-v3"
+    state, events = reduce_state(state, changed, POLICY)
+    assert state["configuration_baseline"]["fingerprint"] == "rebuilt-rhen-v3"
+    assert not any(e["key"] == "configuration.drift" for e in events)
 
 
 def test_scheduler_staleness_and_expired_lease():
