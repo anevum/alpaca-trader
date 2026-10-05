@@ -222,6 +222,13 @@ def tenant_execution_eligibility(
                 b.account_status as broker_account_status,
                 b.crypto_enabled,
                 b.trading_blocked,
+                exists (
+                    select 1
+                    from anevum.broker_authorizations ba
+                    where ba.broker_account_id=b.broker_account_id
+                      and ba.status='ACTIVE'
+                      and ba.scopes ? 'trading'
+                ) as broker_trading_scope,
                 coalesce((
                     select e.status
                     from anevum.entitlements e
@@ -327,6 +334,7 @@ def tenant_execution_eligibility(
         broker_account_status=str(facts["broker_account_status"]),
         broker_crypto_enabled=bool(facts["crypto_enabled"]),
         broker_trading_blocked=bool(facts["trading_blocked"]),
+        broker_trading_scope=bool(facts["broker_trading_scope"]),
         broker_reconciled=broker_reconciled,
         allocation_active=bool(facts["allocation_active"]),
         allocation_positive=bool(facts["allocation_positive"]),
