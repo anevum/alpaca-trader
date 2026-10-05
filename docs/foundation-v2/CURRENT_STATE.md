@@ -1,6 +1,6 @@
-# Foundation v2 current state — 2026-10-02
+# Foundation v2 current state — 2026-10-04
 
-Status: Access-only code deployed; final end-to-end sign-off remains open.
+Status: Runtime cutover complete and operational. Foundation v2 is now locked infrastructure; remaining items are owner-only evidence or non-runtime cleanup.
 
 ## Canonical runtime
 
@@ -104,3 +104,60 @@ These are evidence/authorization boundaries, not runtime cutover defects:
 4. The retained Supabase project remains untouched. Deletion is not authorized and is not required for the running Foundation v2 architecture.
 
 Runtime cutover status: **COMPLETE** for canonical GitHub main -> Railway compute -> Railway PostgreSQL with Cloudflare Access at the private edge. Final zero-dependency sign-off remains **PENDING OWNER/VALUE EVIDENCE** only.
+
+
+## 2026-10-04 closeout
+
+Foundation v2 has completed its engineering closeout. The canonical runtime remains:
+
+GitHub main -> Railway compute -> Foundation -> Railway PostgreSQL.
+
+Cloudflare remains the public/private edge and Access identity layer. Alpaca, Slack and OpenAI remain intentional integrations. Supabase is not part of the canonical operational runtime.
+
+### Live runtime verification
+
+Fresh Railway verification on 2026-10-04 found:
+
+- ANEVUM Core: 5/5 services online, zero active warnings, zero active criticals and zero recent failures across Foundation/PostgreSQL/NOSTRA.
+- RHEN production: the current production fleet is online, including alpaca-trader, research agent, pre-open state, research scheduler, VELUM, crypto edge discovery, IREN executor, GRAEN, GRAEN research executor and the BTC paper canary.
+- Foundation ingest is actively receiving and returning HTTP 200 for /v1/events, /v1/scheduler-gateway, /v1/graen-gateway, /v1/trading-reconcile, /v1/crypto-promotion-status and /v1/trading-report-read.
+- Foundation ingest memory over the latest sampled hour remained approximately 0.46-0.66 GB, with average CPU approximately 11%; the previous multi-gigabyte report-read memory excursion has not recurred in the sampled post-repair window.
+- Both ANEVUM Core and RHEN report no actual staged configuration changes. Railway still surfaces stale empty environment-patch workflow records with zero changes; these are non-runtime bookkeeping artifacts and must not be treated as undeployed configuration.
+
+### Runtime dependency audit
+
+A fresh variable-name audit across the active ANEVUM Core and RHEN services found no SUPABASE-named runtime variables.
+
+Railway OAuth still redacts variable values, so this remains a name-and-runtime-behavior audit rather than a cryptographic zero-dependency proof for arbitrary generic URL/token values.
+
+`COMMAND_AUTH_MODE` was removed from alpaca-trader after staged-change inspection confirmed that the patch contained only that variable deletion. The resulting production redeploy completed successfully, the service returned HTTP 200 health checks, and the variable is no longer present in the Railway variable-name inventory.
+
+### Locked Foundation v2 status
+
+The following are now treated as locked decisions:
+
+1. Foundation v2 is the canonical data/evidence spine.
+2. Railway PostgreSQL is the canonical operational store.
+3. Supabase fallback/dual-runtime logic must not be restored.
+4. Cloudflare Access remains the private edge for Command/private APIs.
+5. Foundation is not to be redesigned as part of crypto-strategy iteration.
+6. GRAEN, VELUM, NOSTRA, IREN and RHEN should consume Foundation through the current contracts rather than creating new parallel stores.
+7. Trading/research strategy changes must not be mixed into Foundation maintenance unless an actual Foundation defect is demonstrated.
+
+### Remaining non-blocking closeout items
+
+These items do not block Foundation v2 operation:
+
+- The ANEVUM Core Railway environment is still named `staging` even though it serves canonical production consumers. Renaming is cosmetic and should be done only through a supported environment-rename path that does not recreate resources or alter environment IDs.
+- Owner-browser confirmation of Command/session/topology and a harmless IREN enqueue remains a human acceptance check, not an engineering runtime blocker.
+- Railway OAuth value redaction prevents a final exhaustive inspection of arbitrary generic variable values.
+- The retained Supabase project remains untouched; deletion is separately authorized work and is not required for Foundation v2.
+
+Foundation v2 engineering status: **CLOSED / OPERATIONAL / LOCKED**.
+
+Development priority should now move above the Foundation layer: GRAEN/VELUM/NOSTRA research quality, crypto strategy validation, paper-canary evidence and eventual RHEN promotion gates.
+
+
+### Final post-closeout verification
+
+After the obsolete auth variable was removed, alpaca-trader redeployed successfully on canonical main. Runtime provenance reported the new main commit, application startup completed, and /health returned HTTP 200. The observed runtime configuration preserved existing execution/strategy settings; crypto execution remained disabled. No Foundation, broker, strategy, or research authority was changed as part of the closeout.
