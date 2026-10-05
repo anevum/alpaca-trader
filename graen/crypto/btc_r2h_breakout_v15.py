@@ -12,6 +12,7 @@ METHODOLOGY_VERSION = "graen-btc-r2h-breakout-v15-r1"
 CAMPAIGN_ID = "v15-r1-btc-r2h-breakout"
 FAMILY = "btc_r2h_regime_donchian_breakout"
 SYMBOL = "BTC/USD"
+UNIVERSE = (SYMBOL,)
 BAR_TIMEFRAME = "4Hour"
 BARS_PER_YEAR = 6 * 365
 
@@ -53,6 +54,26 @@ class BtcR2hBreakoutSpec:
 
 def candidate_spec() -> BtcR2hBreakoutSpec:
     return BtcR2hBreakoutSpec()
+
+
+def spec_from_dict(payload: Mapping[str, Any]) -> BtcR2hBreakoutSpec:
+    try:
+        spec = BtcR2hBreakoutSpec(
+            candidate_id=str(payload["candidate_id"]),
+            symbol=str(payload["symbol"]),
+            timeframe=str(payload["timeframe"]),
+            regime_momentum_bars=int(payload["regime_momentum_bars"]),
+            regime_sma_bars=int(payload["regime_sma_bars"]),
+            entry_lookback_bars=int(payload["entry_lookback_bars"]),
+            exit_lookback_bars=int(payload["exit_lookback_bars"]),
+            hard_stop_pct=float(payload["hard_stop_pct"]),
+            concentration_limit=float(payload.get("concentration_limit", 1.0)),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("v15_candidate_spec_invalid") from exc
+    if spec != candidate_spec():
+        raise ValueError("v15_candidate_spec_not_frozen")
+    return spec
 
 
 def campaign_manifest() -> dict[str, Any]:
