@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.graen import research_executor_service as service
 from graen.crypto.btc_r2h_breakout_v15 import (
     ENTRY_LOOKBACK_BARS,
     EXIT_LOOKBACK_BARS,
@@ -97,3 +99,65 @@ def test_v15_rejects_insufficient_history():
                 ]
             }
         )
+
+
+class _Gateway:
+    configured = True
+
+    def __init__(self):
+        self.queued = []
+
+    async def queue_research_stage(self, **kwargs):
+        self.queued.append(kwargs)
+        return {"ok": True, "problem": {"problem_id": kwargs["problem_id"]}}
+
+
+def test_r2h_velum_pass_queues_v15_without_execution_authority():
+    async def scenario():
+        problem_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        origin_run_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": problem_id,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": origin_run_id,
+                    "problem_id": problem_id,
+                    "status": "WAITING",
+                    "started_at": "2026-10-04T16:50:45+00:00",
+                    "methodology_version": service.V14_R2H_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "state": "V14_R2H_VELUM_PASS",
+                        "decision": "ACTIVATE_4H_FORWARD_SHADOW",
+                        "velum_artifact_id": "artifact-r2h-velum",
+                    },
+                }
+            ],
+            "artifacts": [],
+        }
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = _Gateway()
+
+        result = await runtime._recover_v14_r2h_velum_pass_into_v15(snapshot)
+
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.V15_STAGE
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["live_execution_authorized"] is False
+        assert runtime.gateway.queued[-1]["stage"] == service.V15_STAGE
+        metadata = runtime.gateway.queued[-1]["metadata"]
+        assert metadata["v15_campaign_id"] == service.V15_CAMPAIGN_ID
+        assert metadata["v15_origin_v14_r2h_run_id"] == origin_run_id
+        assert metadata["v15_origin_v14_r2h_velum_artifact_id"] == "artifact-r2h-velum"
+        assert metadata["v15_candidate_spec"]["candidate_id"] == (
+            "V15-R1-BTC-R2H-BREAKOUT-42-15"
+        )
+
+    asyncio.run(scenario())
