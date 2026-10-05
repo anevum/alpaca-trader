@@ -182,13 +182,14 @@ def validate_crypto_buy(
     entries_24h: int,
     *,
     entry_symbols: set[str] | None = None,
+    require_execution_authorized: bool = True,
 ) -> RiskDecision:
     symbol = symbol.upper()
     if not settings.crypto_lane_enabled:
         return RiskDecision(False, "crypto lane is disabled")
     if not settings.crypto_execution_enabled:
         return RiskDecision(False, "crypto execution is disabled")
-    if not settings.execution_authorized:
+    if require_execution_authorized and not settings.execution_authorized:
         return RiskDecision(False, "account execution is not authorized")
     blocked = _account_can_trade(account)
     if blocked:
@@ -259,10 +260,12 @@ def validate_crypto_sell_to_flat(
     symbol: str,
     account: dict[str, Any],
     position: dict[str, Any] | None,
+    *,
+    require_execution_authorized: bool = True,
 ) -> RiskDecision:
     if not settings.crypto_lane_enabled:
         return RiskDecision(False, "crypto lane is disabled")
-    if not settings.execution_authorized:
+    if require_execution_authorized and not settings.execution_authorized:
         return RiskDecision(False, "account execution is not authorized")
     blocked = _account_can_trade(account)
     if blocked:
