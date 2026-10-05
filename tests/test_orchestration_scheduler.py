@@ -371,6 +371,22 @@ def test_recovery_workflows_use_new_job_keys_and_bounded_retry_delays():
     assert old.job_key != recovery.job_key
 
 
+def test_scheduler_disable_flag_prevents_background_task(monkeypatch):
+    monkeypatch.setenv("RHEN_CANONICAL_SCHEDULER_ENABLED", "false")
+    runtime = SchedulerRuntime()
+
+    asyncio.run(runtime.start())
+
+    assert runtime.enabled is False
+    assert runtime.task is None
+
+
+def test_scheduler_defaults_enabled_when_flag_is_unset(monkeypatch):
+    monkeypatch.delenv("RHEN_CANONICAL_SCHEDULER_ENABLED", raising=False)
+    runtime = SchedulerRuntime()
+    assert runtime.enabled is True
+
+
 def test_scheduler_blank_tick_interval_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("SCHEDULER_TICK_SECONDS", "")
     runtime = SchedulerRuntime()
