@@ -5,6 +5,7 @@ import json
 
 from app.rhen_core.store import RhenCoreStore
 from app.rhen_core.supervisor import ProcessSpec, _child_env
+from app.rhen_core.router import _target_for
 
 
 UTC = timezone.utc
@@ -14,6 +15,125 @@ def _store(tmp_path, monkeypatch):
     monkeypatch.setenv("RHEN_CORE_STORAGE_WARNING_MB", "500")
     monkeypatch.setenv("RHEN_CORE_STORAGE_SHED_MB", "750")
     return RhenCoreStore(tmp_path / "rhen-core.db")
+
+
+def test_iren_control_state_is_compare_and_set_and_idempotent(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 5, 17, 0, tzinfo=UTC).isoformat()
+    state = {"state": "HEALTHY", "observed_at": observed}
+
+    first = store.iren_commit(
+        {
+            "expected_revision": 0,
+            "observation_key": "obs-1",
+            "state": state,
+            "events": [],
+        }
+    )
+    assert first["committed"] is True
+    assert first["revision"] == 1
+
+    duplicate = store.iren_commit(
+        {
+            "expected_revision": 0,
+            "observation_key": "obs-1",
+            "state": state,
+            "events": [],
+        }
+    )
+    assert duplicate["committed"] is True
+    assert duplicate["idempotent"] is True
+    assert duplicate["revision"] == 1
+
+    conflict = store.iren_commit(
+        {
+            "expected_revision": 0,
+            "observation_key": "obs-2",
+            "state": {
+                "state": "HEALTHY",
+                "observed_at": (
+                    datetime(2026, 10, 5, 17, 1, tzinfo=UTC)
+                ).isoformat(),
+            },
+            "events": [],
+        }
+    )
+    assert conflict["committed"] is False
+    assert conflict["conflict"] is True
+    assert conflict["revision"] == 1
+
+
+def test_iren_read_adopts_legacy_rhen_core_state(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 5, 17, 0, tzinfo=UTC).isoformat()
+    store.set_kv(
+        "iren",
+        "state",
+        {"state": "HEALTHY", "observed_at": observed},
+    )
+
+    adopted = store.iren_read()
+    reread = store.iren_read()
+
+    assert adopted["revision"] == 1
+    assert adopted["state"]["state"] == "HEALTHY"
+    assert adopted["observed_at"] == observed
+    assert adopted["observation_key"].startswith("legacy-rhen-core:")
+    assert reread == adopted
+
+
+def test_iren_command_lifecycle_is_durable_in_rhen_core(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    created = store.iren_work_action(
+        "iren_command_create",
+        {
+            "command_text": "Current IREN status",
+            "source": "command",
+            "requested_by": "operator",
+        },
+    )
+    command_id = created["command"]["command_id"]
+
+    claimed = store.iren_work_action(
+        "iren_commands_claim",
+        {"owner": "iren-work-engine-codex-v1", "limit": 5},
+    )
+    assert [row["command_id"] for row in claimed["commands"]] == [
+        command_id
+    ]
+    assert claimed["commands"][0]["status"] == "PROCESSING"
+
+    completed = store.iren_work_action(
+        "iren_command_complete",
+        {
+            "command_id": command_id,
+            "status": "SUCCEEDED",
+            "response": {"message": "RHEN Core is current."},
+        },
+    )
+    assert completed["command"]["status"] == "SUCCEEDED"
+
+    snapshot = store.iren_work_action("iren_work_snapshot", {})
+    row = next(
+        item
+        for item in snapshot["commands"]
+        if item["command_id"] == command_id
+    )
+    assert row["result"]["message"] == "RHEN Core is current."
+
+
+def test_unified_router_uses_rhen_for_public_subsystem_paths():
+    assert _target_for("/v1/trading-public-feed").endswith(":8102")
+    assert _target_for("/v1/readiness/public").endswith(":8114")
+    assert _target_for("/v1/theory/public").endswith(":8114")
+    assert _target_for("/v1/graen/status").endswith(":8110")
+    assert _target_for("/v1/nostra/status").endswith(":8115")
+    assert _target_for("/v1/iren/status").endswith(":8116")
+    assert _target_for("/v1/command/status").endswith(":8101")
 
 
 def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
