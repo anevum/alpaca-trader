@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from foundation.command_platform import (
     DatabaseEnvelopeSecretResolver,
@@ -315,7 +316,7 @@ def test_customer_overview_derives_funding_and_lifecycle_from_alpaca_snapshot(co
                 broker_id,
                 provider_account_id,
                 provider_account_id,
-                psycopg.types.json.Jsonb({
+                Jsonb({
                     "equity": "100000",
                     "cash": "100000",
                     "buying_power": "200000",
