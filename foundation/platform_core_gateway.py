@@ -187,12 +187,118 @@ def latest_broker_reconciliation(
 
 
 
+
+def record_tenant_executor_heartbeat(
+    conn: psycopg.Connection[Any],
+    *,
+    runtime_id: str,
+    source_commit: str,
+    deployment_id: str | None,
+    status: str = "READY",
+    capabilities: dict[str, Any] | None = None,
+    started_at: datetime | None = None,
+    heartbeat_at: datetime | None = None,
+) -> dict[str, Any]:
+    runtime_key = str(runtime_id or "").strip()
+    commit = str(source_commit or "").strip()
+    normalized_status = str(status or "").upper()
+    if not runtime_key:
+        raise ValueError("runtime_id_required")
+    if not commit:
+        raise ValueError("source_commit_required")
+    if normalized_status not in {"READY", "DRAINING", "ERROR", "OFFLINE"}:
+        raise ValueError("invalid_tenant_executor_status")
+
+    heartbeat = heartbeat_at or datetime.now(timezone.utc)
+    start = started_at or heartbeat
+    for value, name in ((heartbeat, "heartbeat_at"), (start, "started_at")):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"{name} must be timezone-aware")
+
+    capability_payload = {
+        "tenant_isolation": True,
+        "crypto_spot": True,
+        "paper_only": True,
+        **(capabilities or {}),
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into anevum.tenant_execution_runtimes(
+                runtime_id,environment,status,source_commit,deployment_id,
+                capabilities,started_at,heartbeat_at,updated_at
+            )
+            values(%s,'PAPER',%s,%s,%s,%s,%s,%s,now())
+            on conflict(runtime_id) do update
+            set status=excluded.status,
+                source_commit=excluded.source_commit,
+                deployment_id=excluded.deployment_id,
+                capabilities=excluded.capabilities,
+                heartbeat_at=excluded.heartbeat_at,
+                updated_at=now()
+            returning runtime_id,environment,status,source_commit,deployment_id,
+                      capabilities,started_at,heartbeat_at,updated_at
+            """,
+            (
+                runtime_key,
+                normalized_status,
+                commit,
+                deployment_id,
+                Jsonb(capability_payload),
+                start.astimezone(timezone.utc),
+                heartbeat.astimezone(timezone.utc),
+            ),
+        )
+        row = cur.fetchone()
+        columns = [column.name for column in cur.description]
+    return dict(zip(columns, row))
+
+
+def tenant_executor_runtime_ready(
+    conn: psycopg.Connection[Any],
+    *,
+    environment: str = "PAPER",
+    max_age_seconds: int = 60,
+    now: datetime | None = None,
+) -> bool:
+    if max_age_seconds <= 0:
+        raise ValueError("max_age_seconds must be positive")
+    normalized_environment = str(environment or "").upper()
+    if normalized_environment != "PAPER":
+        return False
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None or reference.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    reference = reference.astimezone(timezone.utc)
+    floor = reference - timedelta(seconds=max_age_seconds)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select exists (
+                select 1
+                from anevum.tenant_execution_runtimes r
+                where r.environment='PAPER'
+                  and r.status='READY'
+                  and r.heartbeat_at >= %s
+                  and r.heartbeat_at <= %s
+                  and coalesce((r.capabilities->>'tenant_isolation')::boolean,false)
+                  and coalesce((r.capabilities->>'crypto_spot')::boolean,false)
+                  and coalesce((r.capabilities->>'paper_only')::boolean,false)
+            )
+            """,
+            (floor, reference),
+        )
+        return bool(cur.fetchone()[0])
+
+
 def tenant_execution_eligibility(
     conn: psycopg.Connection[Any],
     *,
     tenant_id: str,
     broker_account_id: str,
     max_reconciliation_age_seconds: int = 120,
+    max_executor_heartbeat_age_seconds: int = 60,
     now: datetime | None = None,
 ) -> tuple[TradingEligibilityInput, ExecutionEligibility]:
     """Resolve canonical database facts into the fail-closed execution gate.
@@ -204,6 +310,8 @@ def tenant_execution_eligibility(
 
     if max_reconciliation_age_seconds <= 0:
         raise ValueError("max_reconciliation_age_seconds must be positive")
+    if max_executor_heartbeat_age_seconds <= 0:
+        raise ValueError("max_executor_heartbeat_age_seconds must be positive")
 
     tenant_uuid = _uuid(tenant_id, "tenant_id")
     broker_uuid = _uuid(broker_account_id, "broker_account_id")
@@ -344,7 +452,12 @@ def tenant_execution_eligibility(
         customer_trading_consent=bool(facts["customer_trading_consent"]),
         customer_bot_enabled=bool(facts["customer_bot_enabled"]),
         iren_fleet_healthy=bool(facts["iren_fleet_healthy"]),
-        tenant_execution_runtime_ready=False,
+        tenant_execution_runtime_ready=tenant_executor_runtime_ready(
+            conn,
+            environment=str(facts["environment"]),
+            max_age_seconds=max_executor_heartbeat_age_seconds,
+            now=reference,
+        ),
         live_customer_authority=False,
     )
     return gate_input, evaluate_execution_eligibility(gate_input)
