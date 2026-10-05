@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
@@ -1617,8 +1617,309 @@ class RhenCoreStore:
             )
         return result
 
+    def _weekly_inputs(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, Any]:
+        try:
+            start = date.fromisoformat(start_date)
+            end = date.fromisoformat(end_date)
+        except ValueError as exc:
+            raise ValueError("invalid_period") from exc
+        if start > end:
+            raise ValueError("invalid_period")
+
+        recent = self._event_rows(limit=50000, newest_first=False)
+        events = []
+        for event in recent:
+            session = self._session_date(str(event.get("occurred_at") or ""))
+            if session is None:
+                continue
+            parsed = date.fromisoformat(session)
+            if start <= parsed <= end:
+                events.append(event)
+
+        by_type: dict[str, list[dict[str, Any]]] = {}
+        for event in events:
+            by_type.setdefault(event["event_type"], []).append(event)
+
+        daily_reports = list(by_type.get("research_daily_report", []))
+        daily_reports.sort(
+            key=lambda row: str((row.get("payload") or {}).get("session") or "")
+        )
+        sessions = sorted(
+            {
+                str((row.get("payload") or {}).get("session"))
+                for row in daily_reports
+                if (row.get("payload") or {}).get("session")
+            }
+        )
+
+        def counts(event_type: str, name: str) -> list[dict[str, Any]]:
+            grouped: dict[str, int] = {}
+            for event in by_type.get(event_type, []):
+                session = self._session_date(
+                    str(event.get("occurred_at") or "")
+                ) or "unknown"
+                grouped[session] = grouped.get(session, 0) + 1
+            return [
+                {"session": session, name: value}
+                for session, value in sorted(grouped.items())
+            ]
+
+        order_intents = counts("order_intent", "order_intents")
+        intent_entries: dict[str, int] = {}
+        for event in by_type.get("order_intent", []):
+            session = self._session_date(
+                str(event.get("occurred_at") or "")
+            ) or "unknown"
+            intent = (event.get("payload") or {}).get("intent") or {}
+            if str(intent.get("side") or "").lower() == "buy":
+                intent_entries[session] = intent_entries.get(session, 0) + 1
+        order_intents_by_session = [
+            {
+                **row,
+                "entry_intents": intent_entries.get(
+                    str(row.get("session") or ""),
+                    0,
+                ),
+            }
+            for row in order_intents
+        ]
+
+        with self.connect() as conn:
+            candidate_rows = conn.execute(
+                """select * from candidates
+                order by observed_at asc limit 50000"""
+            ).fetchall()
+        candidate_grouped: dict[str, dict[str, int]] = {}
+        rejection_grouped: dict[tuple[str, str], int] = {}
+        for row in candidate_rows:
+            session = self._session_date(str(row["observed_at"] or ""))
+            if session is None:
+                continue
+            parsed = date.fromisoformat(session)
+            if not (start <= parsed <= end):
+                continue
+            lane = str(row["market_lane"] or "").lower()
+            if lane == "crypto":
+                continue
+            bucket = candidate_grouped.setdefault(
+                session,
+                {
+                    "evaluated": 0,
+                    "qualified": 0,
+                    "rejected": 0,
+                    "signals": 0,
+                    "partial_backfill": 0,
+                },
+            )
+            bucket["evaluated"] += 1
+            if bool(row["qualified"]):
+                bucket["qualified"] += 1
+            else:
+                bucket["rejected"] += 1
+                reason = str(row["reason"] or "unspecified")
+                key = (session, reason)
+                rejection_grouped[key] = rejection_grouped.get(key, 0) + 1
+            if str(row["action"] or "").lower() not in {"", "hold", "none"}:
+                bucket["signals"] += 1
+
+        candidate_by_session = [
+            {"session": session, **values}
+            for session, values in sorted(candidate_grouped.items())
+        ]
+        rejection_reasons = [
+            {"session": session, "reason": reason, "count": count}
+            for (session, reason), count in sorted(rejection_grouped.items())
+        ]
+
+        equity_grouped: dict[str, list[dict[str, Any]]] = {}
+        drawdowns: list[float] = []
+        for event in by_type.get("account_snapshot", []):
+            session = self._session_date(
+                str(event.get("occurred_at") or "")
+            ) or "unknown"
+            equity_grouped.setdefault(session, []).append(event)
+            try:
+                drawdowns.append(
+                    float((event.get("payload") or {}).get("drawdown_pct"))
+                )
+            except (TypeError, ValueError):
+                pass
+        account_equity_by_session = []
+        for session, rows in sorted(equity_grouped.items()):
+            rows.sort(key=lambda row: str(row.get("occurred_at") or ""))
+            account_equity_by_session.append(
+                {
+                    "session": session,
+                    "starting_equity": (
+                        rows[0].get("payload") or {}
+                    ).get("equity"),
+                    "ending_equity": (
+                        rows[-1].get("payload") or {}
+                    ).get("equity"),
+                }
+            )
+
+        outcome_status: dict[str, int] = {}
+        horizon_status: dict[int, dict[str, int]] = {}
+        for event in by_type.get("candidate_forward_outcome", []):
+            payload = event.get("payload") or {}
+            status = str(payload.get("status") or "unknown")
+            outcome_status[f"{status}_rows"] = (
+                outcome_status.get(f"{status}_rows", 0) + 1
+            )
+            try:
+                horizon = int(payload.get("horizon_minutes"))
+            except (TypeError, ValueError):
+                continue
+            bucket = horizon_status.setdefault(
+                horizon,
+                {"complete": 0, "pending": 0, "failed": 0},
+            )
+            if status in bucket:
+                bucket[status] += 1
+        forward_outcomes_by_horizon = [
+            {"horizon_minutes": horizon, **values}
+            for horizon, values in sorted(horizon_status.items())
+        ]
+
+        live_offline: dict[tuple[str, str], int] = {}
+        for event in by_type.get("live_offline_comparison", []):
+            payload = event.get("payload") or {}
+            session = str(
+                payload.get("session")
+                or self._session_date(str(event.get("occurred_at") or ""))
+                or "unknown"
+            )
+            state = str(payload.get("match_state") or "UNKNOWN")
+            key = (session, state)
+            live_offline[key] = live_offline.get(key, 0) + 1
+
+        runtime_instances = [
+            {
+                "run_id": event.get("run_id"),
+                "strategy_version_id": event.get("strategy_version_id"),
+                "started_at": event.get("occurred_at"),
+                "metadata": event.get("payload") or {},
+            }
+            for event in by_type.get("runtime_start", [])[-10:]
+        ]
+        incidents = []
+        for event in by_type.get("runtime_error", []):
+            payload = event.get("payload") or {}
+            incidents.append(
+                {
+                    "incident_type": "runtime_error",
+                    "severity": "error",
+                    "session": self._session_date(
+                        str(event.get("occurred_at") or "")
+                    ),
+                    "message": payload.get("message")
+                    or payload.get("error")
+                    or "runtime_error",
+                    "resolved_at": None,
+                }
+            )
+        for event in by_type.get("reconciliation", []):
+            payload = event.get("payload") or {}
+            if payload.get("safe_to_enter") is False:
+                incidents.append(
+                    {
+                        "incident_type": "reconciliation_mismatch",
+                        "severity": "error",
+                        "session": self._session_date(
+                            str(event.get("occurred_at") or "")
+                        ),
+                        "message": payload.get("reason")
+                        or "reconciliation_mismatch",
+                        "resolved_at": None,
+                    }
+                )
+
+        strategy_versions = sorted(
+            {
+                str(event.get("strategy_version_id"))
+                for event in events
+                if event.get("strategy_version_id")
+            }
+        )
+        run_ids = sorted(
+            {
+                str(event.get("run_id"))
+                for event in events
+                if event.get("run_id")
+            }
+        )
+        data_cutoff = max(
+            (str(event.get("ingested_at") or "") for event in events),
+            default=None,
+        )
+        return {
+            "daily_reports": daily_reports,
+            "earliest_daily_session": sessions[0] if sessions else None,
+            "data_cutoff": data_cutoff,
+            "strategy_versions": [
+                {"version_id": value} for value in strategy_versions
+            ],
+            "runs": [{"run_id": value} for value in run_ids],
+            "runtime_instances": runtime_instances,
+            "account_equity_by_session": account_equity_by_session,
+            "account_weekly_drawdown": {
+                "max_drawdown_pct": max(drawdowns) if drawdowns else None
+            },
+            "orders_by_session": counts("broker_order", "orders"),
+            "order_intents_by_session": order_intents_by_session,
+            "fills_by_session": counts("broker_fill", "fills"),
+            "candidate_by_session": candidate_by_session,
+            "positions": [],
+            "incidents": incidents,
+            "forward_outcome_status": outcome_status,
+            "forward_outcomes": [],
+            "forward_outcomes_by_horizon": forward_outcomes_by_horizon,
+            "rejection_reasons": rejection_reasons,
+            "gate_rates": [],
+            "operational_by_session": [],
+            "canonical_period_summary": {},
+            "live_offline": [],
+            "live_offline_summary": [
+                {
+                    "session": session,
+                    "match_state": state,
+                    "count": count,
+                }
+                for (session, state), count in sorted(live_offline.items())
+            ],
+            "duplicate_checks": {},
+            "warnings": [
+                "RHEN Core v3 weekly inputs are derived from bounded SQLite "
+                "events and normalized candidates; deep legacy warehouse "
+                "projections are intentionally not recreated."
+            ],
+        }
+
     def report_read(self, params: dict[str, str]) -> dict[str, Any]:
         latest = params.get("latest")
+        start_date = params.get("start")
+        end_date = params.get("end")
+        if start_date or end_date:
+            if not start_date or not end_date:
+                return {"ok": False, "error": "invalid_period"}
+            try:
+                inputs = self._weekly_inputs(
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            except ValueError:
+                return {"ok": False, "error": "invalid_period"}
+            return {
+                "ok": True,
+                "report_version": "rhen-weekly-v1.2",
+                "inputs": inputs,
+            }
         if latest == "graen_shadow":
             return self._shadow_report(params.get("shadow_candidate_id"))
 
