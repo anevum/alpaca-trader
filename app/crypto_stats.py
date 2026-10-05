@@ -32,6 +32,7 @@ def crypto_trade_stats(
     strategy_version_id: str,
     strategy_family: str,
     start_at: datetime | None = None,
+    include_manual_btc: bool = False,
 ) -> dict[str, Any]:
     """Build a broker-derived crypto scorecard from filled RHEN crypto orders.
 
@@ -54,10 +55,17 @@ def crypto_trade_stats(
             return False
         return stamp.astimezone(timezone.utc) >= start_utc
 
+    def eligible_order(order: dict[str, Any]) -> bool:
+        if _crypto_bot_order(order):
+            return True
+        if not include_manual_btc:
+            return False
+        return str(order.get("symbol") or "").upper() == "BTC/USD"
+
     filled = [
         order
         for order in orders
-        if _crypto_bot_order(order)
+        if eligible_order(order)
         and str(order.get("status") or "").lower() == "filled"
         and _d(order.get("filled_qty")) > 0
         and _d(order.get("filled_avg_price")) > 0
@@ -176,6 +184,7 @@ def crypto_trade_stats(
         "strategy_version_id": strategy_version_id,
         "strategy_family": strategy_family,
         "start_at": start_utc.isoformat() if start_utc else None,
+        "manual_btc_orders_included": include_manual_btc,
         "filled_orders": len(filled),
         "filled_entries": sum(
             1 for order in filled if str(order.get("side") or "").lower() == "buy"

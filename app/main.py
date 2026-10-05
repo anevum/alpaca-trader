@@ -97,7 +97,10 @@ scanner = ReadOnlyScanner(
 crypto_market_data = CryptoMarketDataClient(settings)
 crypto_strategy = (
     BtcDirectSwingStrategy()
-    if settings.crypto_execution_mode == "btc_direct_paper"
+    if settings.crypto_execution_mode in {
+        "btc_direct_paper",
+        "btc_direct_live_signal",
+    }
     else CryptoRollingMomentumStrategy(
     fast_window=settings.crypto_fast_window,
     slow_window=settings.crypto_slow_window,
@@ -349,6 +352,9 @@ async def command_snapshot() -> dict:
         strategy_version_id=settings.crypto_strategy_version_id,
         strategy_family=settings.crypto_strategy_family,
         start_at=settings.crypto_stats_start_at,
+        include_manual_btc=(
+            settings.crypto_execution_mode == "btc_direct_live_signal"
+        ),
     )
     entry_count = engine._entry_orders_today(recent_orders)
     equity = Decimal(str(account.get("equity", "0")))
@@ -400,6 +406,7 @@ async def command_snapshot() -> dict:
         },
         "account_history": account_history,
         "crypto_stats": crypto_stats,
+        "crypto_approval": runtime_state.crypto_pending_approval,
         "strategy": {
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
@@ -758,17 +765,32 @@ async def crypto_monitor_loop():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
                 runtime_state.begin_crypto_cycle(uuid4().hex)
-                if settings.crypto_execution_mode == "btc_direct_paper":
+                if settings.crypto_execution_mode in {
+                    "btc_direct_paper",
+                    "btc_direct_live_signal",
+                }:
+                    live_signal = (
+                        settings.crypto_execution_mode == "btc_direct_live_signal"
+                    )
                     runtime_state.crypto_graen_promotion = {
-                        "status": "DIRECT_EXECUTION",
+                        "status": (
+                            "LIVE_SIGNAL"
+                            if live_signal
+                            else "DIRECT_EXECUTION"
+                        ),
                         "promotion_ready": False,
                         "reason": (
-                            "RHEN BTC direct paper mode does not depend on "
+                            "RHEN BTC direct runtime does not depend on "
                             "GRAEN/NOSTRA/ADS promotion"
                         ),
-                        "execution_class": "BTC_DIRECT_PAPER",
+                        "execution_class": (
+                            "BTC_DIRECT_LIVE_SIGNAL"
+                            if live_signal
+                            else "BTC_DIRECT_PAPER"
+                        ),
                         "strategy_version_id": settings.crypto_strategy_version_id,
                         "live_execution_authorized": False,
+                        "broker_writes_allowed": not live_signal,
                     }
                 else:
                     runtime_state.crypto_graen_promotion = (
@@ -1173,6 +1195,7 @@ async def health():
             "last_error": runtime_state.crypto_last_error,
             "last_execution_at": runtime_state.crypto_last_execution_at,
             "execution_context": runtime_state.crypto_last_execution_context,
+            "pending_approval": runtime_state.crypto_pending_approval,
             "risk": {
                 "order_notional": str(settings.crypto_order_notional),
                 "max_order_notional": str(settings.crypto_max_order_notional),
@@ -1554,6 +1577,9 @@ async def crypto_stats_endpoint(authorization: str | None = Header(default=None)
                 strategy_version_id=settings.crypto_strategy_version_id,
                 strategy_family=settings.crypto_strategy_family,
                 start_at=settings.crypto_stats_start_at,
+                include_manual_btc=(
+                    settings.crypto_execution_mode == "btc_direct_live_signal"
+                ),
             ),
             "runtime": {
                 "last_decision": runtime_state.crypto_last_decision,
@@ -1561,6 +1587,10 @@ async def crypto_stats_endpoint(authorization: str | None = Header(default=None)
                 "last_order": runtime_state.crypto_last_order,
                 "last_error": runtime_state.crypto_last_error,
                 "last_execution_at": runtime_state.crypto_last_execution_at,
+                "pending_approval": runtime_state.crypto_pending_approval,
+                "broker_writes_allowed": (
+                    settings.crypto_execution_mode != "btc_direct_live_signal"
+                ),
             },
         }
     except Exception as exc:

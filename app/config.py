@@ -533,6 +533,17 @@ class Settings(BaseSettings):
         )
 
     @property
+    def btc_direct_live_signal_authorized(self) -> bool:
+        return (
+            self.crypto_execution_mode == "btc_direct_live_signal"
+            and self.crypto_lane_enabled
+            and self.crypto_execution_enabled
+            and self.trading_mode == "live"
+            and self.bot_armed
+            and self.credentials_configured
+        )
+
+    @property
     def session_cash_flow_adjustment(self) -> SessionCashFlow | None:
         return SessionCashFlow.from_json(self.session_cash_flow_adjustment_raw)
 
@@ -674,9 +685,14 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_POLL_SECONDS must be between 15 and 300")
         if not 60 <= self.crypto_lookback_minutes <= 1440:
             raise ValueError("CRYPTO_LOOKBACK_MINUTES must be between 60 and 1440")
-        if self.crypto_execution_mode not in {"validated", "btc_direct_paper"}:
+        if self.crypto_execution_mode not in {
+            "validated",
+            "btc_direct_paper",
+            "btc_direct_live_signal",
+        }:
             raise ValueError(
-                "CRYPTO_EXECUTION_MODE must be validated or btc_direct_paper"
+                "CRYPTO_EXECUTION_MODE must be validated, btc_direct_paper, "
+                "or btc_direct_live_signal"
             )
         if self.crypto_execution_mode == "btc_direct_paper":
             if self.trading_mode != "paper":
@@ -684,6 +700,11 @@ class Settings(BaseSettings):
             if self.live_trading or self.acknowledge_live == "YES":
                 raise ValueError(
                     "btc_direct_paper cannot enable live trading authority"
+                )
+        if self.crypto_execution_mode == "btc_direct_live_signal":
+            if self.trading_mode != "live":
+                raise ValueError(
+                    "btc_direct_live_signal requires TRADING_MODE=live"
                 )
         if self.crypto_lane_enabled and not self.crypto_quote_currencies:
             raise ValueError("CRYPTO_QUOTE_CURRENCIES cannot be empty")
@@ -727,7 +748,10 @@ class Settings(BaseSettings):
             )
         crypto_max_hold_limit = (
             10080
-            if self.crypto_execution_mode == "btc_direct_paper"
+            if self.crypto_execution_mode in {
+                "btc_direct_paper",
+                "btc_direct_live_signal",
+            }
             else 1440
         )
         if not 1 <= self.crypto_max_hold_minutes <= crypto_max_hold_limit:

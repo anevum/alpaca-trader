@@ -51,6 +51,7 @@ class RuntimeState:
     crypto_last_error: str | None = None
     crypto_last_execution_at: datetime | None = None
     crypto_last_execution_context: dict[str, Any] = field(default_factory=dict)
+    crypto_pending_approval: dict[str, Any] | None = None
     crypto_last_scan_at: datetime | None = None
     crypto_last_market_data_at: datetime | None = None
     crypto_scanner_healthy: bool = False

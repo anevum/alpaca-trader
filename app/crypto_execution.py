@@ -54,7 +54,13 @@ class CryptoExecutionEngine:
         self._direct_btc_history: list[dict[str, Any]] = []
 
     def _direct_btc_mode(self) -> bool:
-        return self.settings.crypto_execution_mode == "btc_direct_paper"
+        return self.settings.crypto_execution_mode in {
+            "btc_direct_paper",
+            "btc_direct_live_signal",
+        }
+
+    def _live_signal_mode(self) -> bool:
+        return self.settings.crypto_execution_mode == "btc_direct_live_signal"
 
     def _merge_direct_btc_history(
         self,
@@ -203,6 +209,66 @@ class CryptoExecutionEngine:
         ]
         stamps = [stamp for stamp in stamps if stamp is not None]
         return max(stamps) if stamps else None
+
+    @classmethod
+    def _latest_account_fill(
+        cls,
+        orders: list[dict[str, Any]],
+        symbol: str,
+        side: str,
+    ) -> datetime | None:
+        normalized = symbol.upper()
+        stamps = [
+            cls._stamp(order)
+            for order in orders
+            if str(order.get("symbol", "")).upper() == normalized
+            and str(order.get("side", "")).lower() == side.lower()
+            and str(order.get("status", "")).lower() == "filled"
+        ]
+        stamps = [stamp for stamp in stamps if stamp is not None]
+        return max(stamps) if stamps else None
+
+    @classmethod
+    def _account_entries_24h(
+        cls,
+        orders: list[dict[str, Any]],
+        now: datetime,
+        symbol: str = "BTC/USD",
+    ) -> int:
+        floor = now - timedelta(hours=24)
+        count = 0
+        for order in orders:
+            if str(order.get("symbol", "")).upper() != symbol.upper():
+                continue
+            if str(order.get("side", "")).lower() != "buy":
+                continue
+            if str(order.get("status", "")).lower() != "filled":
+                continue
+            stamp = cls._stamp(order)
+            if stamp is not None and stamp >= floor:
+                count += 1
+        return count
+
+    @staticmethod
+    def _account_protective_order(
+        open_orders: list[dict[str, Any]],
+        symbol: str,
+    ) -> dict[str, Any] | None:
+        normalized = symbol.upper()
+        for order in open_orders:
+            if str(order.get("symbol", "")).upper() != normalized:
+                continue
+            if str(order.get("side", "")).lower() != "sell":
+                continue
+            if str(order.get("status", "")).lower() in {
+                "canceled", "expired", "rejected", "filled"
+            }:
+                continue
+            order_type = str(order.get("type") or "").lower()
+            if order_type in {"stop", "stop_limit", "trailing_stop"} or order.get("stop_price"):
+                return order
+        return None
+
 
     @classmethod
     def _protective_order(
@@ -383,6 +449,144 @@ class CryptoExecutionEngine:
             "order": order,
         }
 
+    async def _review_live_positions(
+        self,
+        account: dict[str, Any],
+        positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+        recent_orders: list[dict[str, Any]],
+        bars: dict[str, list[dict[str, Any]]],
+        now: datetime,
+        regime_bars: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Create manual-action tickets for live BTC positions without broker writes."""
+        results: list[dict[str, Any]] = []
+        for position in self._crypto_positions(positions):
+            symbol = str(position.get("symbol", "")).upper()
+            if symbol != "BTC/USD":
+                continue
+
+            entry = _d(position.get("avg_entry_price"))
+            current = _d(position.get("current_price"))
+            if current <= 0:
+                symbol_bars = bars.get(symbol, [])
+                if symbol_bars:
+                    current = _d(symbol_bars[-1].get("c"))
+            qty = _d(position.get("qty"))
+            if entry <= 0 or current <= 0 or qty <= 0:
+                continue
+
+            entry_time = self._latest_account_fill(
+                recent_orders, symbol, "buy"
+            )
+            held_minutes = (
+                max((now - entry_time).total_seconds() / 60, 0)
+                if entry_time is not None else None
+            )
+            return_pct = (current - entry) / entry
+            stop_pct = _d(
+                getattr(self.strategy, "hard_stop_pct", self.settings.crypto_stop_pct)
+            )
+            target_pct = _d(
+                getattr(self.strategy, "take_profit_pct", self.settings.crypto_target_pct)
+            )
+            max_hold = int(
+                getattr(
+                    self.strategy,
+                    "max_hold_minutes",
+                    self.settings.crypto_max_hold_minutes,
+                )
+                or 0
+            )
+
+            exit_reason = None
+            if return_pct <= -stop_pct:
+                exit_reason = f"crypto software stop triggered at {return_pct:.6f}"
+            elif target_pct > 0 and return_pct >= target_pct:
+                exit_reason = f"crypto target triggered at {return_pct:.6f}"
+            elif max_hold > 0 and held_minutes is not None and held_minutes >= max_hold:
+                exit_reason = f"crypto max hold reached at {held_minutes:.1f} minutes"
+            elif bool(getattr(self.strategy, "manages_position_exits", False)):
+                exit_reason = self.strategy.position_exit_reason(
+                    bars.get(symbol, []),
+                    (regime_bars or {}).get(symbol, []),
+                    now=now,
+                )
+
+            if exit_reason:
+                decision = validate_crypto_sell_to_flat(
+                    self.settings,
+                    symbol,
+                    account,
+                    position,
+                    require_execution_authorized=False,
+                )
+                if not decision.allowed:
+                    results.append({
+                        "action": "hold",
+                        "symbol": symbol,
+                        "reason": decision.reason,
+                    })
+                    continue
+                ticket = {
+                    "ticket_id": f"btc-live-exit-{uuid4().hex[:12]}",
+                    "status": "PENDING_APPROVAL",
+                    "ticket_type": "EXIT",
+                    "market": "crypto",
+                    "symbol": symbol,
+                    "side": "sell",
+                    "qty": str(qty),
+                    "reference_price": str(current),
+                    "entry_price": str(entry),
+                    "current_return_pct": str(return_pct),
+                    "reason": exit_reason,
+                    "strategy_version_id": self.settings.crypto_strategy_version_id,
+                    "strategy_family": self.settings.crypto_strategy_family,
+                    "generated_at": now.isoformat(),
+                    "broker_write_performed": False,
+                    "manual_action_required": True,
+                }
+                self.state.crypto_pending_approval = ticket
+                results.append({"action": "pending_approval", "ticket": ticket})
+                continue
+
+            protective = self._account_protective_order(open_orders, symbol)
+            if protective is None:
+                stop = self._price(entry * (Decimal("1") - stop_pct))
+                limit = self._price(
+                    stop * (Decimal("1") - self.settings.crypto_stop_limit_buffer_pct)
+                )
+                ticket = {
+                    "ticket_id": f"btc-live-protect-{uuid4().hex[:12]}",
+                    "status": "PENDING_APPROVAL",
+                    "ticket_type": "PROTECT",
+                    "market": "crypto",
+                    "symbol": symbol,
+                    "side": "sell",
+                    "qty": str(qty),
+                    "order_type": "stop_limit",
+                    "stop_price": str(stop),
+                    "limit_price": str(limit),
+                    "entry_price": str(entry),
+                    "current_price": str(current),
+                    "current_return_pct": str(return_pct),
+                    "reason": "live BTC position has no protective stop order",
+                    "strategy_version_id": self.settings.crypto_strategy_version_id,
+                    "strategy_family": self.settings.crypto_strategy_family,
+                    "generated_at": now.isoformat(),
+                    "broker_write_performed": False,
+                    "manual_action_required": True,
+                }
+                self.state.crypto_pending_approval = ticket
+                results.append({"action": "pending_approval", "ticket": ticket})
+            else:
+                results.append({
+                    "action": "protected",
+                    "symbol": symbol,
+                    "protective_order_id": protective.get("id"),
+                })
+        return results
+
     async def _manage_positions(
         self,
         account: dict[str, Any],
@@ -499,11 +703,22 @@ class CryptoExecutionEngine:
             return {"action": "hold", "reason": self.state.crypto_last_decision}
 
         direct_btc = self._direct_btc_mode()
-        if direct_btc and not self.settings.btc_direct_paper_authorized:
+        live_signal = self._live_signal_mode()
+        if (
+            self.settings.crypto_execution_mode == "btc_direct_paper"
+            and not self.settings.btc_direct_paper_authorized
+        ):
             self.state.crypto_last_decision = (
                 "BTC direct paper execution is not explicitly authorized"
             )
             return {"action": "blocked", "reason": self.state.crypto_last_decision}
+        if live_signal and not self.settings.btc_direct_live_signal_authorized:
+            self.state.crypto_last_decision = (
+                "BTC live-account signal mode is not explicitly authorized"
+            )
+            return {"action": "blocked", "reason": self.state.crypto_last_decision}
+        if live_signal:
+            self.state.crypto_pending_approval = None
 
         account, positions, open_orders, recent_orders = await asyncio.gather(
             self.client.account(),
@@ -519,6 +734,10 @@ class CryptoExecutionEngine:
         )
         owned_symbols = self._owned_symbols(positions, recent_orders)
         crypto_positions = self._crypto_positions(positions)
+        live_position_symbols = {
+            str(position.get("symbol", "")).upper()
+            for position in crypto_positions
+        }
         self.state.crypto_active_positions = len(crypto_positions)
         self.state.crypto_aggregate_exposure = str(sum(
             (abs(_d(position.get("market_value"))) for position in crypto_positions),
@@ -529,7 +748,7 @@ class CryptoExecutionEngine:
         data_symbols = list(dict.fromkeys([
             *active_symbols,
             *([] if direct_btc else self.settings.crypto_confirmation_symbols),
-            *owned_symbols,
+            *(live_position_symbols if live_signal else owned_symbols),
         ]))
         if direct_btc:
             bars_request = self.market_data.bars_many(
@@ -566,15 +785,39 @@ class CryptoExecutionEngine:
             )
             regime_bars = {}
 
-        managed = await self._manage_positions(
-            account,
-            positions,
-            open_orders,
-            recent_orders,
-            bars,
-            now,
-            regime_bars=regime_bars,
+        managed = (
+            await self._review_live_positions(
+                account,
+                positions,
+                open_orders,
+                recent_orders,
+                bars,
+                now,
+                regime_bars=regime_bars,
+            )
+            if live_signal
+            else await self._manage_positions(
+                account,
+                positions,
+                open_orders,
+                recent_orders,
+                bars,
+                now,
+                regime_bars=regime_bars,
+            )
         )
+        if live_signal and any(
+            item.get("action") == "pending_approval" for item in managed
+        ):
+            self.state.crypto_last_decision = (
+                "live BTC position requires manual approval action"
+            )
+            return {
+                "action": "pending_approval",
+                "reason": self.state.crypto_last_decision,
+                "results": managed,
+                "ticket": self.state.crypto_pending_approval,
+            }
         if any(item.get("action") == "submitted" and item.get("order") for item in managed):
             self.state.crypto_last_decision = "crypto position management submitted an order"
             return {
@@ -597,7 +840,11 @@ class CryptoExecutionEngine:
                     }
                 ),
                 symbol=symbol,
-                has_position=symbol in owned_symbols,
+                has_position=(
+                    symbol in live_position_symbols
+                    if live_signal
+                    else symbol in owned_symbols
+                ),
                 order_notional=self.settings.crypto_order_notional,
                 now=now,
             )
@@ -622,8 +869,13 @@ class CryptoExecutionEngine:
             signal.metadata["market"] = "crypto"
             signal.metadata["session_model"] = "24x7"
             if direct_btc:
-                signal.metadata["execution_class"] = "BTC_DIRECT_PAPER"
+                signal.metadata["execution_class"] = (
+                    "BTC_DIRECT_LIVE_SIGNAL"
+                    if live_signal
+                    else "BTC_DIRECT_PAPER"
+                )
                 signal.metadata["live_execution_authorized"] = False
+                signal.metadata["broker_writes_allowed"] = not live_signal
             raw_features = dict((signal.metadata.get("feature_state") or {}).get("raw") or {})
             if direct_btc:
                 quote_stamp = quote.get("t")
@@ -721,7 +973,11 @@ class CryptoExecutionEngine:
                 buy_signals.append(signal)
 
         self.state.record_crypto_scan(scan, at=now)
-        entries_24h = self._entries_24h(recent_orders, now)
+        entries_24h = (
+            self._account_entries_24h(recent_orders, now)
+            if live_signal
+            else self._entries_24h(recent_orders, now)
+        )
         prepared: list[tuple[Signal, Decimal, str, dict[str, str] | None]] = []
         errors: list[dict[str, str]] = []
         for signal in buy_signals:
@@ -746,7 +1002,11 @@ class CryptoExecutionEngine:
                         "reason": "crypto ADS threshold not satisfied",
                     })
                     continue
-            latest_exit = self._latest_exit(recent_orders, signal.symbol)
+            latest_exit = (
+                self._latest_account_fill(recent_orders, signal.symbol, "sell")
+                if live_signal
+                else self._latest_exit(recent_orders, signal.symbol)
+            )
             if (
                 latest_exit is not None
                 and (now - latest_exit).total_seconds()
@@ -762,6 +1022,7 @@ class CryptoExecutionEngine:
                 positions,
                 entries_24h + len(prepared),
                 entry_symbols=set(active_symbols),
+                require_execution_authorized=not live_signal,
             )
             if not decision.allowed:
                 errors.append({"symbol": signal.symbol, "reason": decision.reason})
@@ -776,7 +1037,7 @@ class CryptoExecutionEngine:
                 continue
             client_order_id = self._client_order_id(signal.symbol, "buy")
             refs = None
-            if self.ledger is not None:
+            if not live_signal and self.ledger is not None:
                 try:
                     setattr(signal, "_evidence_decision_scan", scan)
                     refs = await self.ledger.persist_entry_intent(
@@ -811,6 +1072,48 @@ class CryptoExecutionEngine:
             }
         else:
             signal, qty, client_order_id, refs = prepared[0]
+            if live_signal:
+                ticket = {
+                    "ticket_id": f"btc-live-entry-{uuid4().hex[:12]}",
+                    "status": "PENDING_APPROVAL",
+                    "ticket_type": "ENTRY",
+                    "market": "crypto",
+                    "symbol": signal.symbol,
+                    "side": "buy",
+                    "order_type": "market",
+                    "notional": str(self.settings.crypto_order_notional),
+                    "qty": str(qty),
+                    "reference_price": str(signal.reference_price),
+                    "stop_price": str(signal.stop_price),
+                    "target_price": str(signal.take_profit_price),
+                    "reason": signal.reason,
+                    "strategy_version_id": self.settings.crypto_strategy_version_id,
+                    "strategy_family": self.settings.crypto_strategy_family,
+                    "generated_at": now.isoformat(),
+                    "expires_at": (now + timedelta(minutes=15)).isoformat(),
+                    "market_quality": (signal.metadata or {}).get("market_quality"),
+                    "broker_write_performed": False,
+                    "manual_action_required": True,
+                }
+                self.state.crypto_pending_approval = ticket
+                self.state.crypto_last_decision = (
+                    "BTC entry signal ready for manual approval"
+                )
+                result = {
+                    "action": "pending_approval",
+                    "symbol": signal.symbol,
+                    "reason": self.state.crypto_last_decision,
+                    "ticket": ticket,
+                }
+                self.state.crypto_last_execution_context = {
+                    "execution_mode": "btc_direct_live_signal",
+                    "execution_class": "BTC_DIRECT_LIVE_SIGNAL",
+                    "broker_writes_allowed": False,
+                    "manual_action_required": True,
+                }
+                self.state.crypto_last_signal = scan.get(signal.symbol)
+                self.state.crypto_last_execution_at = now
+                return result
             try:
                 order = await self.client.submit_crypto_market_buy(
                     symbol=signal.symbol,
