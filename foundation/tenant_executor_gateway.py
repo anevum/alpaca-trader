@@ -830,11 +830,15 @@ class TenantPaperExecutor:
                 "replayed": True,
             }
 
+        gate_now = max(
+            now.astimezone(timezone.utc),
+            reconciliation.observed_at.astimezone(timezone.utc),
+        )
         gate_input, gate = tenant_execution_eligibility(
             self.conn,
             tenant_id=tenant_id,
             broker_account_id=broker_account_id,
-            now=now,
+            now=gate_now,
         )
         if not gate.eligible:
             intent = self._intent(
