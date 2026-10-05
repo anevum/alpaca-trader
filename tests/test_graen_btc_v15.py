@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +18,7 @@ from graen.crypto.btc_r2h_breakout_v15 import (
     campaign_manifest,
     candidate_spec,
     evaluate_btc_r2h_breakout,
+    spec_from_dict,
 )
 
 UTC = timezone.utc
@@ -107,10 +109,19 @@ class _Gateway:
 
     def __init__(self):
         self.queued = []
+        self.artifacts = []
 
     async def queue_research_stage(self, **kwargs):
         self.queued.append(kwargs)
         return {"ok": True, "problem": {"problem_id": kwargs["problem_id"]}}
+
+    async def record_artifact(self, **kwargs):
+        self.artifacts.append(kwargs)
+        return {
+            "artifact": {
+                "artifact_id": f"artifact-{len(self.artifacts)}"
+            }
+        }
 
 
 def test_r2h_velum_pass_queues_v15_without_execution_authority():
@@ -160,5 +171,100 @@ def test_r2h_velum_pass_queues_v15_without_execution_authority():
         assert metadata["v15_candidate_spec"]["candidate_id"] == (
             "V15-R1-BTC-R2H-BREAKOUT-42-15"
         )
+
+    asyncio.run(scenario())
+
+
+
+def test_v15_spec_parser_rejects_parameter_mutation():
+    frozen = candidate_spec().to_dict()
+    assert spec_from_dict(frozen) == candidate_spec()
+
+    altered = dict(frozen)
+    altered["entry_lookback_bars"] = 41
+    with pytest.raises(ValueError, match="v15_candidate_spec_not_frozen"):
+        spec_from_dict(altered)
+
+
+def test_v15_pass_activates_only_broker_proof_forward_shadow():
+    async def scenario():
+        problem_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+        run_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+        spec = candidate_spec().to_dict()
+        snapshot = {
+            "problems": [
+                {
+                    "problem_id": problem_id,
+                    "status": "WAITING",
+                    "domain": service.PROBLEM_DOMAIN,
+                    "metadata": {},
+                }
+            ],
+            "runs": [
+                {
+                    "run_id": run_id,
+                    "problem_id": problem_id,
+                    "status": "WAITING",
+                    "started_at": "2026-10-05T11:00:00+00:00",
+                    "methodology_version": service.V15_METHODOLOGY_VERSION,
+                    "result_summary": {
+                        "state": (
+                            "V15_R1_HOLDOUT_PASS_READY_FOR_"
+                            "ISOLATED_FORWARD_PAPER"
+                        ),
+                        "decision": "START_ISOLATED_FORWARD_PAPER",
+                        "candidate_spec": spec,
+                        "result_artifact_id": "artifact-v15-result",
+                    },
+                }
+            ],
+            "artifacts": [],
+        }
+        runtime = service.GraenResearchExecutor()
+        runtime.gateway = _Gateway()
+        runtime.shadow_base_url = "http://shadow"
+        runtime.shadow_token = "x" * 32
+        runtime._activate_forward_shadow = AsyncMock(
+            return_value={
+                "activation": {
+                    "activation_id": "activation-v15-shadow"
+                },
+                "duplicate": False,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "promotion_authorized": False,
+            }
+        )
+
+        result = await runtime._recover_v15_pass_into_forward_shadow(
+            snapshot
+        )
+
+        assert result["recovered"] is True
+        assert result["candidate_id"] == spec["candidate_id"]
+        assert result["activation_id"] == "activation-v15-shadow"
+        assert result["execution_authority"] is False
+        assert result["broker_orders_possible"] is False
+        assert result["live_execution_authorized"] is False
+
+        runtime._activate_forward_shadow.assert_awaited_once()
+        kwargs = runtime._activate_forward_shadow.await_args.kwargs
+        assert kwargs["candidate_methodology"] == (
+            service.V15_METHODOLOGY_VERSION
+        )
+        assert kwargs["candidate_spec"] == spec
+        assert kwargs["evidence_phase"] == "FORWARD_SHADOW"
+
+        artifact = runtime.gateway.artifacts[-1]
+        assert artifact["artifact_type"] == (
+            "CRYPTO_V15_R1_FORWARD_SHADOW_ACTIVATION"
+        )
+        content = artifact["content"]
+        assert content["starts_flat_after_activation"] is True
+        assert content["historical_holdout_counts_as_fresh"] is False
+        assert content["promotion_authorized"] is False
+        assert content["execution_authority"] is False
+        assert content["broker_orders_possible"] is False
+        assert content["live_execution_authorized"] is False
 
     asyncio.run(scenario())
