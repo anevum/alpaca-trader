@@ -142,6 +142,55 @@ def test_operator_projection_routes_evidence_incident_to_foundation():
 
 
 
+def test_command_projection_promotes_human_decision_to_canonical_operating_state():
+    snapshot = {
+        "control": {
+            "revision": 13,
+            "state": {
+                "state": "HEALTHY",
+                "observed_at": "2026-10-04T22:00:00+00:00",
+                "topology": {"services": [], "dependencies": {}},
+                "incidents": {},
+                "configuration_baseline": {"fingerprint": "sha256:test"},
+            },
+        },
+        "research": {
+            "operating_summary": {
+                "condition": "RESEARCHING",
+                "productivity": "PRODUCTIVE",
+                "engineering_required": 0,
+                "next_autonomous_action": "Continue research.",
+            }
+        },
+        "work": {
+            "objectives": [{
+                "objective_key": "decision.live-risk.auto-paper-01",
+                "title": "Review live-risk charter",
+                "status": "READY",
+                "protected_action": True,
+                "metadata": {
+                    "classification": "HUMAN_DECISION_REQUIRED",
+                    "job_type": "HUMAN_DECISION",
+                },
+            }],
+            "jobs": [],
+            "commands": [],
+        },
+    }
+
+    projected = project_command(
+        snapshot,
+        now=datetime(2026, 10, 4, 22, 1, 0, tzinfo=timezone.utc),
+    )
+
+    assert projected["state"] == "HEALTHY"
+    assert projected["operating_state"] == "HUMAN_DECISION_REQUIRED"
+    assert projected["action_required"] is True
+    assert projected["operator"]["state"] == "HUMAN_DECISION_REQUIRED"
+    assert projected["research"]["operating_summary"]["human_decision_required"] == 1
+    assert "protected" in projected["operator"]["message"].lower()
+
+
 def test_command_projection_preserves_durable_job_events():
     snapshot = {
         "control": {
