@@ -7,33 +7,34 @@ from app.btc_direct_strategy import BtcDirectSwingStrategy
 
 
 def _bars(*, breakout: bool = True):
-    strategy = BtcDirectSwingStrategy()
-    total = strategy.sma_window_bars + 2
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    total_hours = 260 * 24
     rows = []
-    for index in range(total):
-        close = Decimal("50000") + Decimal(index * 10)
+    for index in range(total_hours):
+        close = Decimal("50000") + (Decimal(index) / Decimal("100"))
         rows.append(
             {
-                "t": (start + timedelta(hours=4 * index)).isoformat(),
-                "o": str(close - Decimal("5")),
-                "h": str(close + Decimal("5")),
-                "l": str(close - Decimal("10")),
+                "t": (start + timedelta(hours=index)).isoformat(),
+                "o": str(close - Decimal("1")),
+                "h": str(close + Decimal("2")),
+                "l": str(close - Decimal("2")),
                 "c": str(close),
             }
         )
+
     if breakout:
-        prior_high = max(Decimal(row["h"]) for row in rows[-43:-1])
-        rows[-1]["c"] = str(prior_high + Decimal("100"))
-        rows[-1]["h"] = str(prior_high + Decimal("110"))
-        rows[-1]["o"] = str(prior_high + Decimal("90"))
-        rows[-1]["l"] = str(prior_high + Decimal("80"))
-    else:
-        rows[-1]["c"] = rows[-2]["c"]
-        rows[-1]["h"] = str(Decimal(rows[-2]["h"]) + Decimal("1"))
-        rows[-1]["o"] = rows[-2]["o"]
-        rows[-1]["l"] = rows[-2]["l"]
-    now = start + timedelta(hours=4 * (total + 2))
+        prior_high = max(Decimal(row["h"]) for row in rows[-(42 * 4 + 4):-4])
+        for offset in range(4):
+            close = prior_high + Decimal("100") + Decimal(offset)
+            rows[-4 + offset] = {
+                "t": rows[-4 + offset]["t"],
+                "o": str(close - Decimal("1")),
+                "h": str(close + Decimal("2")),
+                "l": str(close - Decimal("2")),
+                "c": str(close),
+            }
+
+    now = start + timedelta(hours=total_hours + 1)
     return rows, now
 
 
@@ -54,6 +55,8 @@ def test_direct_btc_strategy_enters_only_on_completed_breakout():
     assert signal.symbol == "BTC/USD"
     assert signal.metadata["strategy_version_id"] == "RHEN-BTC-DIRECT-001"
     assert signal.metadata["research_dependency"] is False
+    assert signal.metadata["timeframe"] == "4Hour"
+    assert signal.metadata["source_timeframe"] == "1Hour"
     assert signal.stop_price > 0
     assert signal.take_profit_price == 0
 
