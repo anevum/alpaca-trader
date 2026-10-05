@@ -24,8 +24,16 @@ def observation(seconds=0):
     return {"observed_at": stamp, "services": {
         "RHEN": {"ok": True, "startup_reconciled": True, "reconciliation_safe": True,
           "strategy_version_id": service.POLICY["expected_strategy"], "crypto_execution_enabled": False,
+          "runtime_provenance": {"git_commit": "a" * 40, "deployment_id": "rhen-deploy", "runtime_started_at": stamp},
           "persistence": {"enabled": True, "last_sent_at": stamp, "dropped_count": 0}},
-        "GRAEN": {"ok": True, "running": True}, "VELUM": {"ok": True, "running": False}, "PREOPEN": {"ok": True}},
+        "GRAEN": {"ok": True, "running": True},
+        "VELUM": {"ok": True, "running": False},
+        "PREOPEN": {"ok": True},
+        "GRAEN_EXECUTOR": {"ok": True},
+        "RESEARCH_AGENT": {"ok": True},
+        "CRYPTO_EDGE": {"ok": True},
+        "IREN_EXECUTOR": {"ok": True},
+        "NOSTRA": {"ok": True}},
         "configuration": {"fingerprint": "synthetic"}, "runs": [],
         "scheduler": {"configured": True, "last_error": False, "last_success_at": stamp}}
 
@@ -39,23 +47,36 @@ def state(seconds=0):
 def test_stale_and_future_heartbeat(seconds):
     result = project_status({"state": state()}, STAMP + timedelta(seconds=seconds))
     assert result["stale"] and result["state"]["state"] == "STALE"
-    assert all(x["status"] == "STALE" for x in result["state"]["topology"]["services"] if x["independent_runtime"])
+    assert all(x["status"] == "STALE" for x in result["state"]["topology"]["services"])
 
 def test_missing_heartbeat():
     assert project_status({"state": {}}, STAMP)["stale"]
 
-def test_nostra_is_independent_runtime_and_workers_can_be_idle():
-    rows = {r["service_id"]: r for r in state()["topology"]["services"]}
-    assert rows["NOSTRA"]["runtime_kind"] == "SERVICE"
-    assert rows["NOSTRA"]["independent_runtime"] is True
-    assert rows["NOSTRA"]["service_name"] == "nostra"
+def test_rhen_is_the_only_independent_runtime_and_modules_can_be_idle():
+    snapshot = state()["topology"]
+    rows = {r["service_id"]: r for r in snapshot["services"]}
+    independent = [
+        row["service_id"]
+        for row in snapshot["services"]
+        if row["independent_runtime"]
+    ]
+    assert independent == ["RHEN"]
+    assert rows["RHEN"]["runtime_kind"] == "SERVICE"
+    assert rows["RHEN"]["service_name"] == "rhen"
+    assert rows["NOSTRA"]["runtime_kind"] == "SUBSYSTEM"
+    assert rows["NOSTRA"]["independent_runtime"] is False
+    assert rows["NOSTRA"]["service_name"] == "NOSTRA"
+    assert rows["VELUM"]["service_name"] == "VELUM"
+    assert rows["GRAEN"]["service_name"] == "GRAEN"
+    assert rows["IREN"]["service_name"] == "IREN"
     assert rows["VELUM"]["status"] == "IDLE"
     assert rows["GRAEN"]["status"] == "IDLE"
     assert rows["RHEN"]["status"] == "IDLE"
     assert rows["IREN"]["status"] == "IDLE"
     assert rows["IREN"]["schema_version"] == "service_heartbeat.v1"
-    assert rows["RHEN"]["deployment"] is None  # Never invent provider identity.
-    assert rows["RHEN"]["observation_source"] == "iren_http_probe"
+    assert rows["RHEN"]["deployment"] == "rhen-deploy"
+    assert rows["RHEN"]["revision"] == "a" * 40
+    assert snapshot["inventory_complete"] is True
 
 
 def test_running_requires_explicit_activity_evidence():
