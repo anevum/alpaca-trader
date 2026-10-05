@@ -348,7 +348,7 @@ def test_crypto_forward_tick_executes_with_utc_timestamp():
     state = State()
     event_sink = SimpleNamespace(enabled=True)
     scheduler = ResearchReportScheduler(
-        SimpleNamespace(crypto_lane_enabled=True),
+        SimpleNamespace(crypto_lane_enabled=True, crypto_research_enabled=True),
         SimpleNamespace(),
         SimpleNamespace(),
         state,
@@ -386,7 +386,7 @@ def test_crypto_promotion_tick_fails_closed_from_durable_evidence():
 
     state = State()
     scheduler = ResearchReportScheduler(
-        SimpleNamespace(crypto_lane_enabled=True),
+        SimpleNamespace(crypto_lane_enabled=True, crypto_research_enabled=True),
         SimpleNamespace(),
         SimpleNamespace(),
         state,
