@@ -48,6 +48,7 @@ def hypothesis_identity(problem: Mapping[str, Any]) -> str:
         metadata.get("candidate_id")
         or metadata.get("hypothesis_id")
         or metadata.get("campaign_id")
+        or metadata.get("autonomous_loop_id")
         or problem.get("problem_key")
         or problem.get("problem_id")
     )
@@ -91,11 +92,151 @@ def build_hypothesis_graph(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         latest = problem_runs[-1] if problem_runs else {}
         summary = latest.get("result_summary") if isinstance(latest.get("result_summary"), Mapping) else {}
         promotion = metadata.get("code_promotion") if isinstance(metadata.get("code_promotion"), Mapping) else {}
-        requirement = (
+        direct_requirement = (
+            metadata.get("engineering_requirement")
+            if isinstance(metadata.get("engineering_requirement"), Mapping)
+            else None
+        )
+        requirement = direct_requirement or (
             promotion.get("engineering_requirement")
             if isinstance(promotion.get("engineering_requirement"), Mapping)
             else None
         )
+
+        candidate_runs: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for candidate_run in problem_runs:
+            candidate_summary = (
+                candidate_run.get("result_summary")
+                if isinstance(candidate_run.get("result_summary"), Mapping)
+                else {}
+            )
+            candidate_id = _text(candidate_summary.get("candidate_id"))
+            if candidate_id:
+                candidate_runs[candidate_id].append(candidate_run)
+
+        for candidate_id, grouped_runs in sorted(candidate_runs.items()):
+            candidate_latest = grouped_runs[-1]
+            candidate_summary = (
+                candidate_latest.get("result_summary")
+                if isinstance(candidate_latest.get("result_summary"), Mapping)
+                else {}
+            )
+            candidate_state = _text(
+                candidate_summary.get("state")
+                or candidate_summary.get("status")
+            )
+            candidate_decision = _text(candidate_summary.get("decision"))
+            candidate_next_stage = _text(
+                candidate_summary.get("next_research_stage")
+            )
+            upper_state = candidate_state.upper()
+            upper_stage = candidate_next_stage.upper()
+            if (
+                "REJECT" in upper_state
+                or "FAIL" in upper_state
+                or "NO_DEVELOPMENT_SURVIVOR" in upper_state
+                or candidate_decision.upper()
+                in {"REJECT", "REJECTED", "NEEDS_NEW_HYPOTHESIS_ENGINE"}
+            ):
+                candidate_memory_state = "FALSIFIED"
+            elif "PAPER_VALIDATED" in upper_state or "PAPER_PASS" in upper_state:
+                candidate_memory_state = "PAPER_VALIDATED"
+            elif "PAPER" in upper_stage:
+                candidate_memory_state = "PAPER"
+            elif "SHADOW" in upper_stage:
+                candidate_memory_state = "SHADOW"
+            elif "VELUM" in upper_stage:
+                candidate_memory_state = "VELUM"
+            elif "HOLDOUT" in upper_stage:
+                candidate_memory_state = "HOLDOUT"
+            elif "VALIDATION" in upper_stage:
+                candidate_memory_state = "VALIDATING"
+            elif (
+                "DEVELOPMENT" in upper_stage
+                or str(candidate_latest.get("status") or "").upper() == "RUNNING"
+            ):
+                candidate_memory_state = "ACTIVE"
+            else:
+                candidate_memory_state = "COMPLETED"
+
+            candidate_reasons: list[str] = []
+            for key in ("reasons", "reason_codes", "gate_reason_codes"):
+                value = candidate_summary.get(key)
+                if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                    candidate_reasons.extend(
+                        _text(v) for v in value if _text(v)
+                    )
+            if candidate_summary.get("error"):
+                candidate_reasons.append(
+                    _text(candidate_summary.get("error"))
+                )
+            for reason in candidate_reasons:
+                failure_reasons[reason] += 1
+
+            candidate_family = _text(
+                candidate_summary.get("candidate_family")
+                or metadata.get("candidate_family")
+                or metadata.get("family")
+            )
+            if candidate_family:
+                family_counts[candidate_family] += 1
+            candidate_mechanism = _text(
+                candidate_summary.get("mechanism")
+                or metadata.get("mechanism")
+            )
+            manifest_hash_value = _text(
+                candidate_summary.get("manifest_hash")
+            )
+            candidate_datasets = sorted({
+                _text((row.get("input_snapshot") or {}).get("dataset_id"))
+                for row in grouped_runs
+                if isinstance(row.get("input_snapshot"), Mapping)
+                and _text((row.get("input_snapshot") or {}).get("dataset_id"))
+            })
+            candidate_node = {
+                "hypothesis_id": candidate_id,
+                "problem_id": problem_id,
+                "title": problem.get("title"),
+                "family": candidate_family or None,
+                "mechanism": candidate_mechanism or None,
+                "state": candidate_memory_state,
+                "research_stage": candidate_next_stage or None,
+                "run_count": len(grouped_runs),
+                "dataset_ids": candidate_datasets,
+                "parents": [],
+                "latest_result_state": candidate_state or None,
+                "latest_decision": candidate_decision or None,
+                "failure_reasons": candidate_reasons,
+                "engineering_requirement": None,
+                "created_at": (
+                    grouped_runs[0].get("created_at")
+                    or grouped_runs[0].get("started_at")
+                    or problem.get("created_at")
+                ),
+                "updated_at": (
+                    candidate_latest.get("completed_at")
+                    or candidate_latest.get("started_at")
+                    or problem.get("updated_at")
+                ),
+                "last_run_at": (
+                    candidate_latest.get("completed_at")
+                    or candidate_latest.get("started_at")
+                ),
+                "artifact_count": 0,
+            }
+            candidate_node["fingerprint"] = _hash({
+                "hypothesis_id": candidate_id,
+                "family": candidate_family,
+                "mechanism": candidate_mechanism,
+                "manifest_hash": manifest_hash_value,
+            })
+            nodes.append(candidate_node)
+
+        # Candidate-tagged runs are the permanent hypothesis memory for the
+        # self-driving loop. Keep an additional control node only when the
+        # problem itself carries a current engineering requirement.
+        if candidate_runs and requirement is None:
+            continue
 
         hypothesis_id = hypothesis_identity(problem)
         family = _text(
