@@ -1747,7 +1747,11 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
         )
 
     release_gate["target_lane"] = (
-        target.get("lane") if target else target_lane or None
+        target.get("lane")
+        if target
+        else target_lane
+        if declared_target
+        else None
     )
     release_gate["target_strategy_version_id"] = (
         target.get("strategy_version_id") if target else declared_target or None
