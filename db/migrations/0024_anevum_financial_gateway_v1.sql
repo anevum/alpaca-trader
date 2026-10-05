@@ -102,6 +102,25 @@ create table if not exists anevum.financial_ledger_entries (
 create index if not exists financial_ledger_entries_account_idx
     on anevum.financial_ledger_entries (ledger_account_id, entry_id);
 
+create table if not exists anevum.financial_bank_links (
+    bank_link_id uuid primary key default gen_random_uuid(),
+    customer_id uuid not null references anevum.financial_customers(customer_id),
+    provider_account_id uuid not null references anevum.financial_provider_accounts(provider_account_id),
+    provider text not null,
+    provider_relationship_ref text not null,
+    bank_account_type text,
+    display_name text,
+    status text not null default 'PENDING'
+        check (status in ('PENDING','ACTIVE','DISABLED','CLOSED')),
+    metadata jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique (provider, provider_relationship_ref)
+);
+
+create index if not exists financial_bank_links_customer_idx
+    on anevum.financial_bank_links (customer_id, created_at desc);
+
 create table if not exists anevum.financial_transfers (
     transfer_id uuid primary key default gen_random_uuid(),
     idempotency_key text not null unique,
