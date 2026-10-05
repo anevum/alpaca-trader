@@ -216,6 +216,9 @@ class Settings(BaseSettings):
     crypto_min_vwap_edge_pct: Decimal = Field(
         default=Decimal("0"), alias="CRYPTO_MIN_VWAP_EDGE_PCT"
     )
+    crypto_min_fast_slow_gap_pct: Decimal = Field(
+        default=Decimal("0"), alias="CRYPTO_MIN_FAST_SLOW_GAP_PCT"
+    )
     crypto_max_vwap_extension_pct: Decimal = Field(
         default=Decimal("0.008"), alias="CRYPTO_MAX_VWAP_EXTENSION_PCT"
     )
