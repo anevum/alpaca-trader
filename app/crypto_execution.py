@@ -725,6 +725,18 @@ class CryptoExecutionEngine:
                 "reason": self.state.crypto_last_decision,
                 "errors": errors,
             }
+            if active_paper:
+                result["entry_diagnostics"] = [
+                    {
+                        "symbol": symbol,
+                        "action": payload.get("action"),
+                        "reason": payload.get("reason"),
+                        "checks": dict(
+                            (payload.get("metadata") or {}).get("checks") or {}
+                        ),
+                    }
+                    for symbol, payload in scan.items()
+                ]
         else:
             signal, qty, client_order_id, refs = prepared[0]
             try:
