@@ -17,6 +17,11 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from psycopg.types.json import Jsonb
 
 from app.platform_core.broker import TenantAlpacaReadClient, TenantBrokerAccount
+from app.platform_core.lifecycle import (
+    PaperCustomerFacts,
+    derive_paper_customer_lifecycle,
+    paper_funding_projection,
+)
 from app.platform_core.reconciliation import TenantBrokerReconciler
 from foundation.platform_core_gateway import (
     latest_broker_reconciliation,
@@ -293,6 +298,98 @@ def _strategy_assignment(
     return _serialize(dict(zip(columns, row)))
 
 
+def _ensure_default_paper_strategy_assignment(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+    broker_account_id: str,
+    assigned_by: str = "platform-paper-beta",
+) -> dict[str, Any] | None:
+    """Assign the best existing paper-capable release if none is active.
+
+    This never creates or promotes a strategy release. It only consumes release
+    state already produced by the protected research/release pipeline.
+    """
+
+    current = _strategy_assignment(
+        conn,
+        tenant_id=tenant_id,
+        broker_account_id=broker_account_id,
+    )
+    if current:
+        return current
+
+    tenant_uuid = _uuid(tenant_id, "tenant_id")
+    broker_uuid = _uuid(broker_account_id, "broker_account_id")
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select strategy_release_id
+                from anevum.strategy_releases
+                where lifecycle_state in (
+                    'PAPER_PASSED','APPROVED','CANARY','STABLE'
+                )
+                order by
+                    case lifecycle_state
+                        when 'STABLE' then 0
+                        when 'CANARY' then 1
+                        when 'APPROVED' then 2
+                        when 'PAPER_PASSED' then 3
+                        else 4
+                    end,
+                    created_at desc
+                limit 1
+                """
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            release_id = str(row[0])
+
+            cur.execute(
+                """
+                insert into anevum.tenant_strategy_assignments(
+                    tenant_id,broker_account_id,strategy_release_id,status,assigned_by
+                )
+                select %s,%s,%s,'ACTIVE',%s
+                where not exists (
+                    select 1
+                    from anevum.tenant_strategy_assignments
+                    where tenant_id=%s
+                      and broker_account_id=%s
+                      and status='ACTIVE'
+                )
+                returning assignment_id
+                """,
+                (
+                    tenant_uuid,
+                    broker_uuid,
+                    release_id,
+                    assigned_by,
+                    tenant_uuid,
+                    broker_uuid,
+                ),
+            )
+            inserted = cur.fetchone()
+            if inserted:
+                _audit(
+                    cur,
+                    tenant_id=tenant_uuid,
+                    email=assigned_by,
+                    action="PAPER_STRATEGY_ASSIGNED",
+                    object_type="strategy_release",
+                    object_id=release_id,
+                    payload={"broker_account_id": str(broker_uuid)},
+                )
+
+    return _strategy_assignment(
+        conn,
+        tenant_id=tenant_id,
+        broker_account_id=broker_account_id,
+    )
+
+
 def _activity(
     conn: psycopg.Connection[Any],
     *,
@@ -369,15 +466,17 @@ def customer_overview(
     ) if broker_id else None
 
     eligibility = None
+    gate_reasons: list[str] = []
     if broker_id:
         gate_input, gate_result = tenant_execution_eligibility(
             conn,
             tenant_id=tenant_id,
             broker_account_id=broker_id,
         )
+        gate_reasons = list(gate_result.reasons)
         eligibility = {
             "eligible": gate_result.eligible,
-            "reasons": list(gate_result.reasons),
+            "reasons": gate_reasons,
             "environment": gate_input.environment,
             "live_customer_authority": gate_input.live_customer_authority,
         }
@@ -404,6 +503,34 @@ def customer_overview(
             positions = list(row[1] or [])
             orders = [*(row[2] or []), *(row[3] or [])][:50]
 
+    funding = paper_funding_projection(
+        account,
+        observed_at=(reconciliation or {}).get("observed_at"),
+    )
+
+    lifecycle = derive_paper_customer_lifecycle(
+        PaperCustomerFacts(
+            tenant_status=str(member.get("status") or "REGISTERED"),
+            broker_connected=bool(
+                broker is not None and str(broker.get("environment") or "") == "PAPER"
+            ),
+            broker_active=bool(
+                broker is not None and str(broker.get("account_status") or "").upper() == "ACTIVE"
+            ),
+            reconciliation_success=bool(
+                reconciliation and reconciliation.get("status") == "SUCCESS"
+            ),
+            funded=bool(funding.get("funded")),
+            allocation_active=allocation is not None,
+            risk_active=risk is not None,
+            strategy_assigned=strategy is not None,
+            customer_consented=bool(control.get("customer_consented_at")),
+            bot_enabled=bool(control.get("bot_enabled")),
+            execution_eligible=bool((eligibility or {}).get("eligible")),
+            execution_reasons=tuple(gate_reasons),
+        )
+    )
+
     steps = [
         {"key": "membership", "complete": True, "label": "Command access"},
         {
@@ -416,6 +543,11 @@ def customer_overview(
             "complete": bool(reconciliation and reconciliation.get("status") == "SUCCESS"),
             "label": "Verify broker state",
         },
+        {
+            "key": "funding",
+            "complete": bool(funding.get("funded")),
+            "label": "Confirm Alpaca Paper funds",
+        },
         {"key": "allocation", "complete": allocation is not None, "label": "Choose RHEN allocation"},
         {"key": "risk", "complete": risk is not None, "label": "Set risk limits"},
         {
@@ -427,7 +559,7 @@ def customer_overview(
     ]
 
     return {
-        "schema_version": "command_customer.v1",
+        "schema_version": "command_customer.v2",
         "surface": "customer",
         "tenant": {
             "tenant_id": tenant_id,
@@ -436,11 +568,13 @@ def customer_overview(
             "status": member.get("status"),
             "role": member.get("role"),
         },
+        "lifecycle": lifecycle,
         "onboarding": {
-            "complete": all(step["complete"] for step in steps),
+            "complete": bool(lifecycle.get("setup_ready")),
             "steps": steps,
         },
         "broker": broker,
+        "funding": funding,
         "allocation": allocation,
         "risk": risk,
         "control": control,
@@ -458,7 +592,6 @@ def customer_overview(
             "funding_mutations": False,
         },
     }
-
 
 def _audit(
     cur: psycopg.Cursor[Any],
@@ -1083,8 +1216,13 @@ async def refresh_paper_broker(
         TenantAlpacaReadClient(broker, resolver),
     ).reconcile()
     record_broker_reconciliation(conn, result)
+    if result.status == "SUCCESS":
+        _ensure_default_paper_strategy_assignment(
+            conn,
+            tenant_id=tenant_id,
+            broker_account_id=str(broker_row["broker_account_id"]),
+        )
     return customer_overview(conn, email=email, tenant_id=tenant_id)
-
 
 
 def provision_paper_beta_tenant(
