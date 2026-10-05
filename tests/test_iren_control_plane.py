@@ -284,3 +284,12 @@ def test_private_sql_revision_fence_and_bounded_notification_retries():
     assert sql.count("enable row level security") == 2
     assert "attempts < 3" in gateway and "skip locked" in gateway
     assert "owner_uuid" in gateway and "owner=%s" in gateway
+
+
+def test_optional_preopen_unavailable_does_not_degrade_control_state():
+    obs = observation()
+    obs["services"]["PREOPEN"] = {"ok": False}
+    state, events = reduce_state({}, obs, POLICY)
+    assert state["state"] == "HEALTHY"
+    assert "service.PREOPEN" not in state["incidents"]
+    assert not events
