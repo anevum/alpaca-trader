@@ -901,3 +901,59 @@ def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
     assert pipeline["research"]["graen_problems"][0]["problem_id"] == problem_id
     assert pipeline["research"]["graen_runs"][0]["run_id"] == run_id
     assert pipeline["research"]["velum_replays"][0]["status"] == "PASSED"
+
+
+def test_strategy_pipeline_does_not_infer_supersession_target(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Unbound crypto research",
+            "domain": "CRYPTO_STRATEGY",
+            "priority": 90,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    claimed = store.graen_action(
+        "claim_research_problem",
+        {
+            "worker_id": "graen-test",
+            "domain": "CRYPTO_STRATEGY",
+            "methodology_version": "test-method-v1",
+        },
+    )
+    store.graen_action(
+        "queue_research_stage",
+        {
+            "problem_id": problem_id,
+            "stage": "VELUM_REPLAY",
+            "metadata": {"candidate_id": "UNBOUND-CANDIDATE"},
+        },
+    )
+    observed = datetime.now(UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "velum-unbound-pass",
+                "event_type": "velum_graen_candidate_replay",
+                "occurred_at": observed.isoformat(),
+                "strategy_version_id": "UNBOUND-CANDIDATE",
+                "source": "test",
+                "payload": {
+                    "problem_id": problem_id,
+                    "candidate_id": "UNBOUND-CANDIDATE",
+                    "engineering_gate": {"passed": True},
+                },
+            }
+        ]
+    )
+
+    pipeline = store.strategy_pipeline_research()
+
+    assert pipeline["candidate"]["candidate_id"] == "UNBOUND-CANDIDATE"
+    assert pipeline["candidate"]["supersedes_strategy_version_id"] is None
+    assert pipeline["release_gate"]["status"] == "HOLD"
+    assert pipeline["release_gate"]["target_strategy_version_id"] is None
+    assert "no explicit production supersession target" in pipeline["release_gate"]["reason"].lower()
