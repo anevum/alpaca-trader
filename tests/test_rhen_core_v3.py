@@ -203,6 +203,7 @@ def test_supervisor_strips_broker_credentials_from_pure_core(
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_API_SECRET", "secret")
     monkeypatch.setenv("TRADING_INGEST_TOKEN", "x" * 40)
+    monkeypatch.setenv("FOUNDATION_SHADOW_ENABLED", "true")
 
     core = _child_env(ProcessSpec("nostra", "app.nostra.service:app", 8115))
     assert core["ALPACA_API_KEY"] == "DISABLED"
@@ -210,6 +211,7 @@ def test_supervisor_strips_broker_credentials_from_pure_core(
     assert core["EXECUTION_ENABLED"] == "false"
     assert core["LIVE_TRADING"] == "false"
     assert core["GRAEN_GATEWAY_TOKEN"] == "x" * 40
+    assert core["FOUNDATION_SHADOW_ENABLED"] == "false"
 
     replay = _child_env(
         ProcessSpec(
@@ -223,6 +225,18 @@ def test_supervisor_strips_broker_credentials_from_pure_core(
     assert replay["ALPACA_API_SECRET"] == "secret"
     assert replay["EXECUTION_ENABLED"] == "false"
     assert replay["LIVE_TRADING"] == "false"
+    assert replay["FOUNDATION_SHADOW_ENABLED"] == "false"
+
+    execution = _child_env(
+        ProcessSpec(
+            "execution",
+            "app.main:app",
+            8101,
+            critical=True,
+            market_data_credentials=True,
+        )
+    )
+    assert execution["FOUNDATION_SHADOW_ENABLED"] == "false"
 
 
 
