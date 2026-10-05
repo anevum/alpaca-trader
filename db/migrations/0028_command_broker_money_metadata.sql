@@ -51,6 +51,7 @@ create table if not exists anevum.broker_transfer_intents (
     settled_at timestamptz,
     foreign key (tenant_id, broker_account_id)
         references anevum.broker_accounts(tenant_id, broker_account_id),
+    unique (tenant_id, transfer_intent_id),
     foreign key (tenant_id, funding_relationship_id)
         references anevum.broker_funding_relationships(tenant_id, funding_relationship_id),
     check (direction in ('DEPOSIT','WITHDRAWAL')),
