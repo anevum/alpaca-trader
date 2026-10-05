@@ -33,6 +33,7 @@ from foundation.command_platform import (
     customer_overview,
     refresh_paper_broker,
     resolve_command_session,
+    provision_paper_beta_tenant,
     set_paper_control,
     start_paper_oauth,
     update_allocation,
@@ -87,6 +88,12 @@ class CommandOauthCallbackRequest(BaseModel):
 
 class CommandBrokerRefreshRequest(BaseModel):
     tenant_id: str
+
+
+class CommandBetaTenantRequest(BaseModel):
+    customer_email: str
+    display_name: str
+    tenant_key: str | None = None
 
 
 
@@ -775,6 +782,33 @@ async def require_command_access(
     except AccessAuthorizationError as exc:
         status = 403 if "not_allowed" in str(exc) else 401
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/v1/command/platform/admin/tenants")
+async def command_platform_admin_create_tenant(
+    body: CommandBetaTenantRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_access(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return provision_paper_beta_tenant(
+                conn,
+                customer_email=body.customer_email,
+                display_name=body.display_name,
+                tenant_key=body.tenant_key,
+                created_by=str(identity.get("email") or "command-admin"),
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_tenant_create_failed:{type(exc).__name__}",
+        ) from exc
 
 
 @app.get("/v1/command/platform/session")
