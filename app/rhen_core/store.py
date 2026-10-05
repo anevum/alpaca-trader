@@ -1686,6 +1686,155 @@ class RhenCoreStore:
         }
 
 
+    def strategy_pipeline_research(self) -> dict[str, Any]:
+        """Return the durable research/validation side of Command strategy state."""
+        with self.connect() as conn:
+            problem_row = conn.execute(
+                """select * from graen_problems
+                order by
+                  case status
+                    when 'RUNNING' then 0
+                    when 'WAITING' then 1
+                    when 'QUEUED' then 2
+                    when 'BLOCKED' then 3
+                    else 4
+                  end,
+                  updated_at desc
+                limit 1"""
+            ).fetchone()
+            run_row = None
+            if problem_row is not None:
+                run_row = conn.execute(
+                    """select * from graen_runs
+                    where problem_id=?
+                    order by started_at desc limit 1""",
+                    (problem_row["problem_id"],),
+                ).fetchone()
+            replay_row = conn.execute(
+                """select event_type,occurred_at,strategy_version_id,payload_json
+                from events
+                where event_type in (
+                  'velum_graen_candidate_replay',
+                  'velum_replay_result'
+                )
+                order by occurred_at desc limit 1"""
+            ).fetchone()
+
+        candidate = None
+        if problem_row is not None:
+            problem = self._problem(problem_row)
+            metadata = dict(problem.get("metadata") or {})
+            domain = str(problem.get("domain") or "").upper()
+            lane = (
+                "crypto"
+                if "CRYPTO" in domain
+                else "equities"
+                if "EQUITY" in domain or "STOCK" in domain
+                else "unknown"
+            )
+            candidate = {
+                "owner": "GRAEN",
+                "problem_id": problem.get("problem_id"),
+                "candidate_id": (
+                    metadata.get("candidate_id")
+                    or problem.get("candidate_id")
+                ),
+                "title": problem.get("title") or problem.get("statement"),
+                "lane": lane,
+                "status": problem.get("status"),
+                "stage": metadata.get("research_stage"),
+                "methodology_version": (
+                    run_row["methodology_version"] if run_row else None
+                ),
+                "run_id": run_row["run_id"] if run_row else None,
+                "updated_at": problem.get("updated_at"),
+                "started_at": problem.get("started_at"),
+                "completed_at": problem.get("completed_at"),
+            }
+
+        validation = None
+        if replay_row is not None:
+            payload = _loads(replay_row["payload_json"], {})
+            engineering_gate = (
+                dict(payload.get("engineering_gate") or {})
+                if isinstance(payload, dict)
+                else {}
+            )
+            passed = engineering_gate.get("passed")
+            validation_status = (
+                "PASSED"
+                if passed is True
+                else "FAILED"
+                if passed is False
+                else "COMPLETE"
+            )
+            validation = {
+                "owner": "VELUM",
+                "event_type": replay_row["event_type"],
+                "candidate_id": (
+                    payload.get("candidate_id")
+                    if isinstance(payload, dict)
+                    else None
+                ),
+                "problem_id": (
+                    payload.get("problem_id")
+                    if isinstance(payload, dict)
+                    else None
+                ),
+                "strategy_version_id": (
+                    replay_row["strategy_version_id"]
+                    or (
+                        payload.get("strategy_version_id")
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                ),
+                "status": validation_status,
+                "observed_at": replay_row["occurred_at"],
+                "engineering_gate": engineering_gate or None,
+            }
+
+        candidate_status = str((candidate or {}).get("status") or "").upper()
+        validation_status = str((validation or {}).get("status") or "").upper()
+        same_problem = bool(
+            candidate
+            and validation
+            and validation.get("problem_id")
+            and validation.get("problem_id") == candidate.get("problem_id")
+        )
+        release_status = "NO_CANDIDATE"
+        reason = "No durable superseding research candidate is currently exposed."
+        if candidate:
+            release_status = "HOLD"
+            reason = "Candidate has not completed validation."
+            if candidate_status in {"FAILED", "CANCELLED", "BLOCKED"}:
+                release_status = "REJECTED"
+                reason = "Candidate research is not eligible for promotion."
+            elif same_problem and validation_status == "FAILED":
+                release_status = "REJECTED"
+                reason = "Latest matching VELUM validation failed."
+            elif (
+                candidate_status in {"SUCCEEDED", "COMPLETE", "COMPLETED"}
+                and same_problem
+                and validation_status == "PASSED"
+            ):
+                release_status = "REVIEW"
+                reason = "Research and validation are complete; operator review is required."
+
+        return {
+            "schema_version": "strategy_pipeline_research.v1",
+            "candidate": candidate,
+            "validation": validation,
+            "release_gate": {
+                "owner": "IREN",
+                "status": release_status,
+                "reason": reason,
+                "automatic_promotion": False,
+                "production_authority_changed": False,
+            },
+        }
+
+
     def canonical_evidence(self) -> dict[str, Any]:
         with self.connect() as conn:
             runtime_row = conn.execute(
