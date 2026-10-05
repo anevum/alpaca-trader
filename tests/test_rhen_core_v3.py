@@ -821,3 +821,150 @@ def test_router_excludes_disabled_optional_modules(monkeypatch):
 
     monkeypatch.setenv("PREOPEN_STATE_ENABLED", "true")
     assert "preopen" in enabled_modules()
+
+
+
+def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "BTC replacement candidate",
+            "domain": "CRYPTO_STRATEGY",
+            "priority": 90,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    claimed = store.graen_action(
+        "claim_research_problem",
+        {
+            "worker_id": "graen-test",
+            "domain": "CRYPTO_STRATEGY",
+            "methodology_version": "test-method-v1",
+        },
+    )
+    run_id = claimed["run"]["run_id"]
+    store.graen_action(
+        "queue_research_stage",
+        {
+            "problem_id": problem_id,
+            "stage": "VELUM_REPLAY",
+            "metadata": {
+                "candidate_id": "BTC-CANDIDATE-2",
+                "target_lane": "crypto",
+                "supersedes_strategy_version_id": "RHEN-BTC-DIRECT-002",
+                "release_requested": True,
+            },
+        },
+    )
+    store.graen_action(
+        "complete_research_problem",
+        {
+            "problem_id": problem_id,
+            "run_id": run_id,
+            "status": "SUCCEEDED",
+            "result_summary": {"candidate_id": "BTC-CANDIDATE-2"},
+        },
+    )
+    observed = datetime.now(UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "velum-pipeline-pass",
+                "event_type": "velum_graen_candidate_replay",
+                "occurred_at": observed.isoformat(),
+                "strategy_version_id": "BTC-CANDIDATE-2",
+                "source": "test",
+                "payload": {
+                    "problem_id": problem_id,
+                    "candidate_id": "BTC-CANDIDATE-2",
+                    "engineering_gate": {"passed": True},
+                },
+            }
+        ]
+    )
+
+    pipeline = store.strategy_pipeline_research()
+
+    assert pipeline["schema_version"] == "strategy_pipeline_research.v1"
+    assert pipeline["candidate"]["problem_id"] == problem_id
+    assert pipeline["candidate"]["candidate_id"] == "BTC-CANDIDATE-2"
+    assert pipeline["candidate"]["lane"] == "crypto"
+    assert (
+        pipeline["candidate"]["supersedes_strategy_version_id"]
+        == "RHEN-BTC-DIRECT-002"
+    )
+    assert pipeline["validation"]["status"] == "PASSED"
+    assert pipeline["validation"]["problem_id"] == problem_id
+    assert pipeline["release_gate"]["status"] == "REVIEW"
+    assert (
+        pipeline["release_gate"]["target_strategy_version_id"]
+        == "RHEN-BTC-DIRECT-002"
+    )
+    assert pipeline["release_gate"]["automatic_promotion"] is False
+    assert pipeline["release_gate"]["production_authority_changed"] is False
+    assert pipeline["research"]["graen_problems"][0]["problem_id"] == problem_id
+    assert pipeline["research"]["graen_runs"][0]["run_id"] == run_id
+    assert pipeline["research"]["velum_replays"][0]["status"] == "PASSED"
+
+
+def test_strategy_pipeline_does_not_infer_supersession_target(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Unbound crypto research",
+            "domain": "CRYPTO_STRATEGY",
+            "priority": 90,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    store.graen_action(
+        "claim_research_problem",
+        {
+            "worker_id": "graen-test",
+            "domain": "CRYPTO_STRATEGY",
+            "methodology_version": "test-method-v1",
+        },
+    )
+    store.graen_action(
+        "queue_research_stage",
+        {
+            "problem_id": problem_id,
+            "stage": "VELUM_REPLAY",
+            "metadata": {"candidate_id": "UNBOUND-CANDIDATE"},
+        },
+    )
+    observed = datetime.now(UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "velum-unbound-pass",
+                "event_type": "velum_graen_candidate_replay",
+                "occurred_at": observed.isoformat(),
+                "strategy_version_id": "UNBOUND-CANDIDATE",
+                "source": "test",
+                "payload": {
+                    "problem_id": problem_id,
+                    "candidate_id": "UNBOUND-CANDIDATE",
+                    "engineering_gate": {"passed": True},
+                },
+            }
+        ]
+    )
+
+    pipeline = store.strategy_pipeline_research()
+
+    assert pipeline["candidate"]["candidate_id"] == "UNBOUND-CANDIDATE"
+    assert pipeline["candidate"]["supersedes_strategy_version_id"] is None
+    assert pipeline["release_gate"]["status"] == "HOLD"
+    assert pipeline["release_gate"]["target_strategy_version_id"] is None
+    assert pipeline["release_gate"]["target_lane"] is None
+    assert (
+        "no explicit production supersession target"
+        in pipeline["release_gate"]["reason"].lower()
+    )
