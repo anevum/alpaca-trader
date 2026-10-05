@@ -377,6 +377,7 @@ class CryptoExecutionEngine:
         recent_orders: list[dict[str, Any]],
         bars: dict[str, list[dict[str, Any]]],
         now: datetime,
+        regime_bars: dict[str, list[dict[str, Any]]] | None = None,
     ) -> list[dict[str, Any]]:
         owned = self._owned_symbols(positions, recent_orders)
         results: list[dict[str, Any]] = []
@@ -410,6 +411,7 @@ class CryptoExecutionEngine:
             elif bool(getattr(self.strategy, "manages_position_exits", False)):
                 exit_reason = self.strategy.position_exit_reason(
                     bars.get(symbol, []),
+                    (regime_bars or {}).get(symbol, []),
                     now=now,
                 )
             elif return_pct >= self.settings.crypto_target_pct:
@@ -507,8 +509,8 @@ class CryptoExecutionEngine:
             *([] if direct_btc else self.settings.crypto_confirmation_symbols),
             *owned_symbols,
         ]))
-        bars_request = (
-            self.market_data.bars_many(
+        if direct_btc:
+            bars_request = self.market_data.bars_many(
                 data_symbols,
                 timeframe=getattr(self.strategy, "timeframe", "4Hour"),
                 lookback_minutes=int(
@@ -519,13 +521,28 @@ class CryptoExecutionEngine:
                     )
                 ),
             )
-            if direct_btc
-            else self.market_data.bars_many(data_symbols)
-        )
-        bars, quotes = await asyncio.gather(
-            bars_request,
-            self.market_data.latest_quotes(active_symbols),
-        )
+            regime_request = self.market_data.bars_many(
+                ["BTC/USD"],
+                timeframe=getattr(self.strategy, "regime_timeframe", "1Day"),
+                lookback_minutes=int(
+                    getattr(
+                        self.strategy,
+                        "regime_history_minutes",
+                        270 * 24 * 60,
+                    )
+                ),
+            )
+            bars, quotes, regime_bars = await asyncio.gather(
+                bars_request,
+                self.market_data.latest_quotes(active_symbols),
+                regime_request,
+            )
+        else:
+            bars, quotes = await asyncio.gather(
+                self.market_data.bars_many(data_symbols),
+                self.market_data.latest_quotes(active_symbols),
+            )
+            regime_bars = {}
 
         managed = await self._manage_positions(
             account,
@@ -534,6 +551,7 @@ class CryptoExecutionEngine:
             recent_orders,
             bars,
             now,
+            regime_bars=regime_bars,
         )
         if any(item.get("action") == "submitted" and item.get("order") for item in managed):
             self.state.crypto_last_decision = "crypto position management submitted an order"
@@ -548,10 +566,14 @@ class CryptoExecutionEngine:
         for symbol in active_symbols:
             signal = self.strategy.evaluate(
                 bars=bars.get(symbol, []),
-                confirmation_bars={
-                    confirmation: bars.get(confirmation, [])
-                    for confirmation in self.settings.crypto_confirmation_symbols
-                },
+                confirmation_bars=(
+                    regime_bars
+                    if direct_btc
+                    else {
+                        confirmation: bars.get(confirmation, [])
+                        for confirmation in self.settings.crypto_confirmation_symbols
+                    }
+                ),
                 symbol=symbol,
                 has_position=symbol in owned_symbols,
                 order_notional=self.settings.crypto_order_notional,
