@@ -134,8 +134,12 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
             "rising": current_close > previous_close,
             "momentum_ok": momentum_pct >= self.min_momentum_pct,
             "vwap_ok": (
-                current_close > rolling_vwap
-                and vwap_edge_pct >= self.min_vwap_edge_pct
+                (
+                    current_close > rolling_vwap
+                    and vwap_edge_pct >= self.min_vwap_edge_pct
+                )
+                if self.min_vwap_edge_pct >= 0
+                else vwap_edge_pct >= self.min_vwap_edge_pct
             ),
             "vwap_extension_ok": vwap_edge_pct <= self.max_vwap_extension_pct,
             "confirmations_ok": False,
