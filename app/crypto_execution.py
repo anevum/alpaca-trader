@@ -734,6 +734,21 @@ class CryptoExecutionEngine:
                         "checks": dict(
                             (payload.get("metadata") or {}).get("checks") or {}
                         ),
+                        "current_close": (payload.get("metadata") or {}).get(
+                            "current_close"
+                        ),
+                        "fast_average": (payload.get("metadata") or {}).get(
+                            "fast_average"
+                        ),
+                        "slow_average": (payload.get("metadata") or {}).get(
+                            "slow_average"
+                        ),
+                        "momentum_pct": (payload.get("metadata") or {}).get(
+                            "momentum_pct"
+                        ),
+                        "vwap_edge_pct": (payload.get("metadata") or {}).get(
+                            "vwap_edge_pct"
+                        ),
                     }
                     for symbol, payload in scan.items()
                 ]
