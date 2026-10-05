@@ -323,10 +323,11 @@ class VelumRuntime:
         if session is not None and session.isoformat() != self.last_equity_session:
             await self._run_equity(session)
 
-        crypto_end = self._crypto_bucket_end(current)
-        crypto_key = crypto_end.isoformat()
-        if crypto_key != self.last_crypto_window_end:
-            await self._run_crypto(crypto_end)
+        if getattr(self.settings, "crypto_research_enabled", False):
+            crypto_end = self._crypto_bucket_end(current)
+            crypto_key = crypto_end.isoformat()
+            if crypto_key != self.last_crypto_window_end:
+                await self._run_crypto(crypto_end)
 
         self.last_success_at = datetime.now(timezone.utc).isoformat()
 
@@ -904,6 +905,13 @@ async def scheduler_crypto(
     x_anevum_scheduler_token: str | None = Header(default=None),
 ):
     require_scheduler_token(x_anevum_scheduler_token)
+    if not getattr(velum.settings, "crypto_research_enabled", False):
+        return {
+            "ok": True,
+            "disabled": True,
+            "reason": "legacy crypto replay research disabled",
+            "broker_orders_possible": False,
+        }
     if request.window_end.tzinfo is None:
         raise HTTPException(status_code=422, detail="window_end must be timezone-aware")
     window_end = request.window_end.astimezone(timezone.utc)
