@@ -461,6 +461,9 @@ def plan_next(
         }
 
     search_generation = len(prior_hashes) + 1
+    confirmatory_generation = (
+        int(exposure.get("strategy_validation_tests_opened") or 0) + 1
+    )
     return {
         "planner_version": PLANNER_VERSION,
         "state": "READY",
@@ -470,7 +473,8 @@ def plan_next(
         "compiler_profile": validation["compiler_profile"],
         "corpus": corpus,
         "search_generation": search_generation,
-        "validation_alpha": online_alpha(search_generation),
+        "validation_alpha": online_alpha(confirmatory_generation),
+        "confirmatory_generation": confirmatory_generation,
         "selection_policy": (
             "maximin_structural_novelty_without_backtest_performance"
         ),
