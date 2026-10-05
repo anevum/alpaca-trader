@@ -68,7 +68,7 @@ class IrenController:
                 name = item["id"]
                 url = os.getenv(item["url_env"], item["default_url"])
                 if name == "RHEN":
-                    url = os.getenv(item["url_env"], scheduler.runtime.trader_url.split("/v1/scheduler")[0] + "/health")
+                    url = os.getenv(item["url_env"], scheduler.runtime.rhen_url.split("/v1/scheduler")[0] + "/health")
                 if name == "VELUM":
                     url = os.getenv(item["url_env"], scheduler.runtime.velum_url.split("/v1/scheduler")[0] + "/health")
                 last_error: Exception | None = None
@@ -99,7 +99,7 @@ class IrenController:
                 "reason": "RHEN_unified_runtime_self_report",
             }
             try:
-                response = await client.get(scheduler.runtime.trader_url + "/configuration", headers=scheduler.runtime.scheduler_headers)
+                response = await client.get(scheduler.runtime.rhen_url + "/configuration", headers=scheduler.runtime.scheduler_headers)
                 response.raise_for_status()
                 config = response.json()
             except Exception:
