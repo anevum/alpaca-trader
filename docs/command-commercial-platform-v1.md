@@ -282,3 +282,8 @@ Platform Core v1 still hard-codes tenant_execution_runtime_ready=false because t
 account-isolated RHEN tenant executor has not yet been deployed. A fully configured
 paper customer can therefore truthfully reach READY while execution remains closed with
 tenant_execution_runtime_unavailable.
+
+
+## Tenant paper executor validation
+
+The tenant executor remains PAPER-only and fail-closed. Its runtime heartbeat may open the PAPER execution-readiness gate only while a capability-qualified executor is fresh; customer LIVE authority remains unavailable. Validation must include tenant isolation, deterministic intent-before-order behavior, ambiguous submission reconciliation, risk limits, and RHEN-owned exit quantity preservation.
