@@ -21,8 +21,8 @@ class BtcDirectSwingStrategy:
     required_history_minutes = 270 * 24 * 60
     manages_position_exits = True
 
-    momentum_lookback_bars = 180 * 6
-    sma_window_bars = 250 * 6
+    momentum_lookback_bars = 180
+    sma_window_bars = 250
     entry_lookback_bars = 42
     exit_lookback_bars = 15
     hard_stop_pct = Decimal("0.05")
@@ -42,8 +42,14 @@ class BtcDirectSwingStrategy:
             stamp = stamp.replace(tzinfo=timezone.utc)
         return stamp.astimezone(timezone.utc)
 
-    def _completed(self, bars: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
-        """Aggregate hourly Alpaca bars into completed UTC-aligned 4-hour bars."""
+    def _completed(
+        self,
+        bars: list[dict[str, Any]],
+        now: datetime,
+        *,
+        bar_hours: int,
+    ) -> list[dict[str, Any]]:
+        """Aggregate hourly Alpaca bars into completed UTC-aligned bars."""
         now_utc = now.astimezone(timezone.utc)
         buckets: dict[datetime, dict[str, Any]] = {}
         for bar in bars:
@@ -60,12 +66,15 @@ class BtcDirectSwingStrategy:
             if high < low or high < max(open_, close) or low > min(open_, close):
                 continue
 
-            bucket = stamp.replace(
-                hour=stamp.hour - (stamp.hour % 4),
-                minute=0,
-                second=0,
-                microsecond=0,
-            )
+            if bar_hours == 24:
+                bucket = stamp.replace(hour=0, minute=0, second=0, microsecond=0)
+            else:
+                bucket = stamp.replace(
+                    hour=stamp.hour - (stamp.hour % bar_hours),
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
             current = buckets.get(bucket)
             if current is None:
                 buckets[bucket] = {
@@ -85,7 +94,7 @@ class BtcDirectSwingStrategy:
 
         completed: list[dict[str, Any]] = []
         for bucket in sorted(buckets):
-            if bucket + timedelta(hours=4) > now_utc:
+            if bucket + timedelta(hours=bar_hours) > now_utc:
                 continue
             row = dict(buckets[bucket])
             row.pop("_last", None)
@@ -103,7 +112,8 @@ class BtcDirectSwingStrategy:
         now: datetime,
     ) -> dict[str, Any]:
         completed = self._completed(bars, now, bar_hours=4)
-        regime_completed = self._completed(regime_bars, now, bar_hours=24)
+        regime_source = regime_bars or bars
+        regime_completed = self._completed(regime_source, now, bar_hours=24)
         minimum_4h = max(self.entry_lookback_bars, self.exit_lookback_bars) + 1
         minimum_daily = max(self.momentum_lookback_bars, self.sma_window_bars) + 1
         if len(completed) < minimum_4h:
@@ -189,11 +199,8 @@ class BtcDirectSwingStrategy:
                 reason="BTC direct position already open; channel exit manages risk",
             )
 
-        state = self._state(
-            bars,
-            confirmation_bars.get("BTC/USD", []),
-            now,
-        )
+        del confirmation_bars
+        state = self._state(bars, bars, now)
         metadata = {
             "market": "crypto",
             "session_model": "24x7",
@@ -253,7 +260,7 @@ class BtcDirectSwingStrategy:
     ) -> str | None:
         state = self._state(
             bars,
-            regime_bars or [],
+            regime_bars or bars,
             now or datetime.now(timezone.utc),
         )
         if not state.get("ready"):
