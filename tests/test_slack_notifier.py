@@ -121,7 +121,7 @@ def test_asc_promotion_ready_is_operational_notification_only():
         }
     )
     message = queued(notifier)
-    assert message.startswith(":rhen: 🧪")
+    assert message.startswith(":rhen: 🎛️")
     assert "PROMOTION_READY" in message
     assert "no deployment occurred" in message
 
