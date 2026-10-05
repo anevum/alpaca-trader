@@ -1,6 +1,6 @@
 """Real PostgreSQL lifecycle tests for ANEVUM Command Platform Core v1."""
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import psycopg
@@ -228,6 +228,7 @@ def test_same_facts_are_not_live_eligible_without_protected_authority(conn):
     assert gate_input.environment == "LIVE"
     assert gate_input.live_customer_authority is False
     assert result.eligible is False
+    assert "broker_not_reconciled" in result.reasons
     assert "live_customer_authority_missing" in result.reasons
 
 
@@ -267,32 +268,14 @@ def test_cross_tenant_broker_reference_is_rejected_by_database(conn):
 
 def test_stale_reconciliation_closes_execution_gate(conn):
     tenant_id, broker_account_id, _ = setup_ready_paper_tenant(conn)
-    future = datetime.now(timezone.utc).replace(microsecond=0)
+    future = datetime.now(timezone.utc) + timedelta(seconds=5)
     gate_input, result = tenant_execution_eligibility(
         conn,
         tenant_id=str(tenant_id),
         broker_account_id=str(broker_account_id),
         max_reconciliation_age_seconds=1,
-        now=future.replace(second=(future.second + 2) % 60),
+        now=future,
     )
-    # If the naive second replacement wrapped the minute, force a guaranteed
-    # stale reference with a database update and retry.
-    if gate_input.broker_reconciled:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                update anevum.broker_reconciliations
-                set observed_at=now()-interval '10 minutes'
-                where tenant_id=%s and broker_account_id=%s
-                """,
-                (tenant_id, broker_account_id),
-            )
-        gate_input, result = tenant_execution_eligibility(
-            conn,
-            tenant_id=str(tenant_id),
-            broker_account_id=str(broker_account_id),
-            max_reconciliation_age_seconds=1,
-        )
 
     assert gate_input.broker_reconciled is False
     assert result.eligible is False
