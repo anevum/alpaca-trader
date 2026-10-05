@@ -280,3 +280,52 @@ def test_stale_reconciliation_closes_execution_gate(conn):
     assert gate_input.broker_reconciled is False
     assert result.eligible is False
     assert "broker_not_reconciled" in result.reasons
+
+
+
+def test_unchanged_snapshot_refreshes_verified_time(conn):
+    tenant_id, broker_account_id, provider_account_id = setup_ready_paper_tenant(conn)
+    first = datetime.now(timezone.utc)
+    repeated = BrokerReconciliationResult(
+        status="SUCCESS",
+        tenant_id=str(tenant_id),
+        broker_account_id=str(broker_account_id),
+        environment="PAPER",
+        provider="ALPACA",
+        provider_account_id_expected=provider_account_id,
+        provider_account_id_observed=provider_account_id,
+        observed_at=first + timedelta(seconds=30),
+        account_snapshot={
+            "id": provider_account_id,
+            "status": "ACTIVE",
+            "trading_blocked": False,
+            "equity": "100.00",
+        },
+        positions_snapshot=[],
+        open_orders_snapshot=[],
+        recent_orders_snapshot=[],
+        snapshot_hash="stable-snapshot-hash",
+        error_code=None,
+        error_detail=None,
+    )
+    first_record = record_broker_reconciliation(conn, repeated)
+    refreshed = BrokerReconciliationResult(
+        **{
+            **repeated.__dict__,
+            "observed_at": repeated.observed_at + timedelta(seconds=30),
+        }
+    )
+    second_record = record_broker_reconciliation(conn, refreshed)
+
+    assert first_record["reconciliation_id"] == second_record["reconciliation_id"]
+    assert second_record["observed_at"] == refreshed.observed_at
+
+    gate_input, result = tenant_execution_eligibility(
+        conn,
+        tenant_id=str(tenant_id),
+        broker_account_id=str(broker_account_id),
+        max_reconciliation_age_seconds=45,
+        now=refreshed.observed_at + timedelta(seconds=30),
+    )
+    assert gate_input.broker_reconciled is True
+    assert result.eligible is True
