@@ -204,6 +204,7 @@ def _simulate(
     exit_bars: int,
     cost_per_turnover: float,
     stop_pct: float = HARD_STOP_PCT,
+    signal_delay_bars: int = 0,
 ) -> dict[str, Any]:
     closes = [float(row["close"]) for row in bars]
     sma = _sma_series(bars, SMA_WINDOW_BARS)
@@ -223,8 +224,8 @@ def _simulate(
     stop_hits = 0
     turnover = 0.0
 
-    for index in range(minimum + 2, len(bars)):
-        signal_index = index - 1
+    for index in range(minimum + 2 + signal_delay_bars, len(bars)):
+        signal_index = index - 1 - signal_delay_bars
         anchor_index = signal_index - MOMENTUM_LOOKBACK_BARS
         average = sma[signal_index]
         if anchor_index < 0 or average is None:
@@ -310,6 +311,7 @@ def _simulate(
         "exit_lookback_bars": exit_bars,
         "hard_stop_pct": stop_pct,
         "cost_per_turnover": cost_per_turnover,
+        "signal_delay_bars": signal_delay_bars,
         "bar_count": len(returns),
         "entry_count": entries,
         "exit_count": exits,
@@ -365,6 +367,16 @@ def evaluate_btc_r2h_breakout(
         for name, cost in COST_SCENARIOS.items()
     }
 
+    one_bar_execution_delay = _simulate(
+        bars,
+        start=HOLDOUT_START,
+        end=HOLDOUT_END,
+        entry_bars=ENTRY_LOOKBACK_BARS,
+        exit_bars=EXIT_LOOKBACK_BARS,
+        cost_per_turnover=COST_SCENARIOS["taker_stress_30bp"],
+        signal_delay_bars=1,
+    )
+
     neighborhood: list[dict[str, Any]] = []
     for entry_bars in ENTRY_NEIGHBORHOOD:
         for exit_bars in EXIT_NEIGHBORHOOD:
@@ -392,6 +404,8 @@ def evaluate_btc_r2h_breakout(
         and float(decisive["sharpe"]) >= 0.75
         and float(decisive["max_drawdown"]) > -0.20
         and float(severe["total_return"]) > 0.0
+        and float(one_bar_execution_delay["total_return"]) > 0.0
+        and float(one_bar_execution_delay["sharpe"]) >= 0.75
         and positive_neighbors >= 0.75
     )
 
@@ -418,6 +432,7 @@ def evaluate_btc_r2h_breakout(
             "start": HOLDOUT_START.isoformat(),
             "end": HOLDOUT_END.isoformat(),
             "scenarios": holdout_scenarios,
+            "one_bar_execution_delay": one_bar_execution_delay,
             "neighborhood": {
                 "entry_lookbacks": list(ENTRY_NEIGHBORHOOD),
                 "exit_lookbacks": list(EXIT_NEIGHBORHOOD),
@@ -434,6 +449,8 @@ def evaluate_btc_r2h_breakout(
                 "stress_30bp_sharpe_gte": 0.75,
                 "stress_30bp_max_drawdown_gt": -0.20,
                 "severe_50bp_total_return_gt": 0.0,
+                "one_bar_delay_total_return_gt": 0.0,
+                "one_bar_delay_sharpe_gte": 0.75,
                 "holdout_neighborhood_positive_share_gte": 0.75,
             },
         },
