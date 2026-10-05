@@ -93,34 +93,7 @@ scanner = ReadOnlyScanner(
     universe=universe,
 )
 crypto_market_data = CryptoMarketDataClient(settings)
-crypto_strategy = CryptoRollingMomentumStrategy(
-    fast_window=settings.crypto_fast_window,
-    slow_window=settings.crypto_slow_window,
-    min_momentum_pct=settings.crypto_min_momentum_pct,
-    min_vwap_edge_pct=settings.crypto_min_vwap_edge_pct,
-    min_fast_slow_gap_pct=settings.crypto_min_fast_slow_gap_pct,
-    stop_pct=settings.crypto_stop_pct,
-    target_pct=settings.crypto_target_pct,
-    entry_start=settings.entry_start,
-    entry_cutoff=settings.entry_cutoff,
-    confirmation_symbols=settings.crypto_confirmation_symbols,
-    min_confirmations=settings.crypto_min_confirmations,
-    regime_window=settings.crypto_regime_window,
-    regime_min_confirmations=settings.crypto_regime_min_confirmations,
-    regime_min_return_pct=settings.crypto_regime_min_return_pct,
-    max_vwap_extension_pct=settings.crypto_max_vwap_extension_pct,
-    volatility_stop_enabled=settings.crypto_volatility_stop_enabled,
-    volatility_stop_multiplier=settings.crypto_volatility_stop_multiplier,
-    volatility_stop_lookback_bars=settings.crypto_volatility_lookback_bars,
-    max_dynamic_stop_pct=settings.crypto_max_dynamic_stop_pct,
-    strategy_version_id=settings.crypto_strategy_version_id,
-    model_version=settings.crypto_model_version,
-    calibration_version=settings.crypto_calibration_version,
-    calibration_promoted=settings.crypto_calibration_promoted,
-    regime_version=settings.crypto_regime_version,
-    execution_adapter_version=settings.crypto_execution_adapter_version,
-    feature_volatility_lookback=settings.crypto_volatility_lookback_bars,
-)
+crypto_strategy = BtcDirectSwingStrategy()
 crypto_universe = CryptoUniverse(
     settings, client, crypto_market_data, runtime_state
 )
