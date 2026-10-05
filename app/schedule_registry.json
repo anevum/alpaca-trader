@@ -28,7 +28,7 @@
         "success_route": "rhen-daily",
         "failure_route": "rhen-alerts"
       },
-      "implementation_target": "trader_preflight",
+      "implementation_target": "rhen_preflight",
       "version": "1.0.1",
       "protected_action_level": "read_only"
     },
@@ -55,7 +55,7 @@
         "success_route": "rhen-live",
         "failure_route": "rhen-alerts"
       },
-      "implementation_target": "trader_market_open",
+      "implementation_target": "rhen_market_open",
       "version": "1.0.0",
       "protected_action_level": "read_only"
     },
@@ -83,7 +83,7 @@
         "success_route": "rhen-daily",
         "failure_route": "rhen-alerts"
       },
-      "implementation_target": "trader_session_close",
+      "implementation_target": "rhen_session_close",
       "version": "1.0.8",
       "protected_action_level": "evidence_write_only"
     },
@@ -111,7 +111,7 @@
         "success_route": "rhen-research",
         "failure_route": "rhen-alerts"
       },
-      "implementation_target": "research_agent_daily",
+      "implementation_target": "graen_daily_research",
       "version": "1.0.3",
       "protected_action_level": "research_only"
     },
@@ -250,14 +250,14 @@
       "protected_action_level": "read_only"
     }
   ],
-  "independent_runtimes": [
+  "hosted_subsystems": [
     {
       "subsystem": "NOSTRA",
       "owner": "NOSTRA",
-      "mode": "independent_autorun",
-      "scheduler_owned": false,
+      "mode": "rhen_hosted_autorun",
+      "scheduler_owned": true,
       "health_owner": "IREN",
-      "evidence_store": "Foundation/PostgreSQL",
+      "evidence_store": "RHEN Core",
       "forecast_horizon_minutes": 10,
       "research_only": true,
       "execution_authority": false,
