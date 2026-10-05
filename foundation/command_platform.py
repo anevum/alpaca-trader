@@ -305,10 +305,11 @@ def _ensure_default_paper_strategy_assignment(
     broker_account_id: str,
     assigned_by: str = "platform-paper-beta",
 ) -> dict[str, Any] | None:
-    """Assign the best existing paper-capable release if none is active.
+    """Assign an explicitly configured or unambiguous paper-capable release.
 
-    This never creates or promotes a strategy release. It only consumes release
-    state already produced by the protected research/release pipeline.
+    This never creates or promotes a strategy release. If more than one eligible
+    release exists and no explicit default is configured, it fails closed and
+    leaves assignment pending rather than guessing.
     """
 
     current = _strategy_assignment(
@@ -321,31 +322,48 @@ def _ensure_default_paper_strategy_assignment(
 
     tenant_uuid = _uuid(tenant_id, "tenant_id")
     broker_uuid = _uuid(broker_account_id, "broker_account_id")
+    configured_release = os.environ.get(
+        "COMMAND_PAPER_DEFAULT_STRATEGY_RELEASE_ID", ""
+    ).strip()
+
     with conn.transaction():
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                select strategy_release_id
-                from anevum.strategy_releases
-                where lifecycle_state in (
-                    'PAPER_PASSED','APPROVED','CANARY','STABLE'
+            if configured_release:
+                cur.execute(
+                    """
+                    select strategy_release_id
+                    from anevum.strategy_releases
+                    where strategy_release_id=%s
+                      and lifecycle_state in (
+                          'PAPER_PASSED','APPROVED','CANARY','STABLE'
+                      )
+                    """,
+                    (configured_release,),
                 )
-                order by
-                    case lifecycle_state
-                        when 'STABLE' then 0
-                        when 'CANARY' then 1
-                        when 'APPROVED' then 2
-                        when 'PAPER_PASSED' then 3
-                        else 4
-                    end,
-                    created_at desc
-                limit 1
-                """
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            release_id = str(row[0])
+                row = cur.fetchone()
+                if not row:
+                    raise RuntimeError(
+                        "configured_paper_strategy_release_not_eligible"
+                    )
+                release_id = str(row[0])
+            else:
+                cur.execute(
+                    """
+                    select strategy_release_id
+                    from anevum.strategy_releases
+                    where lifecycle_state in (
+                        'PAPER_PASSED','APPROVED','CANARY','STABLE'
+                    )
+                    order by created_at desc
+                    limit 2
+                    """
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    return None
+                if len(rows) > 1:
+                    return None
+                release_id = str(rows[0][0])
 
             cur.execute(
                 """
@@ -381,6 +399,7 @@ def _ensure_default_paper_strategy_assignment(
                     object_type="strategy_release",
                     object_id=release_id,
                     payload={"broker_account_id": str(broker_uuid)},
+                    actor_type="system",
                 )
 
     return _strategy_assignment(
@@ -388,6 +407,7 @@ def _ensure_default_paper_strategy_assignment(
         tenant_id=tenant_id,
         broker_account_id=broker_account_id,
     )
+
 
 
 def _activity(
@@ -602,6 +622,7 @@ def _audit(
     object_type: str,
     object_id: str,
     payload: dict[str, Any] | None = None,
+    actor_type: str = "customer",
 ) -> None:
     cur.execute(
         """
@@ -609,13 +630,14 @@ def _audit(
             event_key,tenant_id,actor_type,actor_id,action,
             object_type,object_id,payload
         )
-        values(%s,%s,'customer',%s,%s,%s,%s,%s)
+        values(%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             sha256(
                 f"{tenant_id}|{email}|{action}|{object_type}|{object_id}|{uuid4()}".encode()
             ).hexdigest(),
             tenant_id,
+            actor_type,
             email,
             action,
             object_type,
