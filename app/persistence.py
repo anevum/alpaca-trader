@@ -45,7 +45,10 @@ class TradingEventSink:
         self.foundation_task: asyncio.Task | None = None
         self.foundation_last_error: str | None = None
         self.foundation_delivered_count = 0
-        if bool(getattr(settings, "foundation_shadow_enabled", False)):
+        if (
+            not self._remote_transport_disabled
+            and bool(getattr(settings, "foundation_shadow_enabled", False))
+        ):
             self.foundation_sink = FoundationShadowSink(
                 outbox=DurableEventOutbox(settings.foundation_outbox_path),
                 ingest_url=settings.foundation_ingest_url,
@@ -53,7 +56,17 @@ class TradingEventSink:
             )
 
     @property
+    def _remote_transport_disabled(self) -> bool:
+        return bool(
+            getattr(self.settings, "crypto_only_runtime", False)
+            and getattr(self.settings, "crypto_execution_mode", "validated")
+            == "btc_direct_paper"
+        )
+
+    @property
     def enabled(self) -> bool:
+        if self._remote_transport_disabled:
+            return False
         return bool(
             self.settings.trading_ingest_url
             and self.settings.trading_ingest_token
