@@ -1009,3 +1009,269 @@ class RhenCoreStore:
             }
             for r in rows
         ]
+
+
+    def canonical_evidence(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            runtime_row = conn.execute(
+                """select payload_json,occurred_at,run_id,strategy_version_id
+                from events where event_type='runtime_start'
+                order by occurred_at desc limit 1"""
+            ).fetchone()
+            daily_row = conn.execute(
+                """select payload_json,occurred_at from events
+                where event_type='research_daily_report'
+                order by occurred_at desc limit 1"""
+            ).fetchone()
+            weekly_row = conn.execute(
+                """select payload_json,occurred_at from events
+                where event_type='research_weekly_report'
+                order by occurred_at desc limit 1"""
+            ).fetchone()
+            agent_rows = conn.execute(
+                """select payload_json,created_at from research_runs
+                order by created_at desc limit 50"""
+            ).fetchall()
+            ledger_rows = conn.execute(
+                """select payload_json,created_at from research_ledgers
+                order by created_at desc limit 75"""
+            ).fetchall()
+
+        runtime = _loads(runtime_row["payload_json"], {}) if runtime_row else {}
+        version = str(
+            (runtime_row["strategy_version_id"] if runtime_row else None)
+            or os.getenv("STRATEGY_VERSION_ID", "")
+            or "RHEN-CURRENT"
+        ).strip()
+        name = str(
+            runtime.get("strategy_name")
+            or runtime.get("strategy")
+            or os.getenv("STRATEGY_NAME", "")
+            or version
+        ).strip()
+        current_strategy = {
+            "version_id": version,
+            "strategy_version_id": version,
+            "strategy_name": name,
+            "status": "running",
+            "git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            "activated_at": (
+                runtime_row["occurred_at"] if runtime_row else _iso()
+            ),
+            "asset_class": runtime.get("asset_class") or "multi_asset",
+            "mode": runtime.get("trading_mode") or os.getenv("TRADING_MODE", ""),
+            "run_id": (
+                runtime_row["run_id"]
+                if runtime_row else os.getenv("TRADING_RUN_ID", "")
+            ),
+            "identity_fallback_to_version": name == version,
+        }
+        daily = _loads(daily_row["payload_json"], None) if daily_row else None
+        weekly = _loads(weekly_row["payload_json"], None) if weekly_row else None
+        agent_runs = [_loads(row["payload_json"], {}) for row in agent_rows]
+
+        recent_hypotheses: list[dict[str, Any]] = []
+        recent_events: list[dict[str, Any]] = []
+        for row in ledger_rows:
+            payload = _loads(row["payload_json"], {})
+            recent_hypotheses.extend(
+                item
+                for item in payload.get("hypotheses", [])
+                if isinstance(item, dict)
+            )
+            recent_events.extend(
+                item
+                for item in payload.get("events", [])
+                if isinstance(item, dict)
+            )
+        search_ledger = {
+            "exposure": {
+                "ledger_version": "rhen-core-v3",
+                "proposal_count": len(ledger_rows),
+                "hypothesis_count": len(recent_hypotheses),
+                "event_count": len(recent_events),
+                "last_recorded_at": (
+                    ledger_rows[0]["created_at"] if ledger_rows else None
+                ),
+                "production_authority": False,
+                "protected_stage_authority": False,
+            },
+            "recent_hypotheses": recent_hypotheses[:75],
+            "recent_events": recent_events[:100],
+            "recent_multiplicity_plans": [],
+            "recent_dependence_plans": [],
+        }
+        cutoffs = [
+            row["occurred_at"]
+            for row in (daily_row, weekly_row)
+            if row is not None and row["occurred_at"]
+        ]
+        return {
+            "current_strategy": current_strategy,
+            "latest_daily_report": daily,
+            "latest_weekly_report": weekly,
+            "research_questions": [],
+            "experiments": [],
+            "research_decisions": [],
+            "agent_runs": agent_runs,
+            "search_ledger": search_ledger,
+            "evidence_cutoff": max(cutoffs) if cutoffs else None,
+        }
+
+    def nostra_work(
+        self, now: datetime | None = None
+    ) -> dict[str, Any]:
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        forecast_start = (current - timedelta(minutes=10)).isoformat()
+        score_start = (current - timedelta(hours=6)).isoformat()
+        with self.connect() as conn:
+            candidate_rows = conn.execute(
+                """select * from candidates
+                where observed_at >= ?
+                  and lower(coalesce(market_lane,''))='crypto'
+                order by observed_at asc limit 500""",
+                (forecast_start,),
+            ).fetchall()
+            forecast_rows = conn.execute(
+                """select payload_json,occurred_at from events
+                where event_type='nostra_forecast' and occurred_at >= ?
+                order by occurred_at asc limit 2000""",
+                (score_start,),
+            ).fetchall()
+            outcome_rows = conn.execute(
+                """select payload_json,occurred_at,symbol from events
+                where event_type='candidate_forward_outcome'
+                  and occurred_at >= ?
+                order by occurred_at asc limit 4000""",
+                (score_start,),
+            ).fetchall()
+
+        existing: set[str] = set()
+        forecasts: list[dict[str, Any]] = []
+        for row in forecast_rows:
+            payload = _loads(row["payload_json"], {})
+            identity = str(
+                ((payload.get("provenance") or {}).get("candidate_identity"))
+                or ((payload.get("source") or {}).get("candidate_identity"))
+                or ""
+            ).strip()
+            if identity:
+                existing.add(identity)
+            expected = (payload.get("forecast_payload") or {}).get(
+                "expected_return"
+            )
+            if identity and expected is not None:
+                forecasts.append(
+                    {
+                        "forecast_id": payload.get("forecast_id"),
+                        "candidate_identity": identity,
+                        "symbol": payload.get("symbol"),
+                        "model_id": payload.get("model_id"),
+                        "model_version": payload.get("model_version"),
+                        "expected_return": expected,
+                        "generated_at": payload.get("generated_at")
+                        or row["occurred_at"],
+                    }
+                )
+
+        forecast_candidates: list[dict[str, Any]] = []
+        for row in candidate_rows:
+            identity = str(row["candidate_key"] or "").strip()
+            if not identity or identity in existing:
+                continue
+            features = _loads(row["feature_json"], {})
+            forecast_candidates.append(
+                {
+                    "candidate_identity": identity,
+                    "candidate_id": identity,
+                    "symbol": row["symbol"],
+                    "observed_at": row["observed_at"],
+                    "run_id": row["run_id"],
+                    "strategy_version_id": row["strategy_version_id"],
+                    "features": features,
+                    "scan_cycle": {
+                        "scan_cycle_id": row["cycle_key"],
+                        "data_feed": None,
+                        "bar_interval": None,
+                        "data_status": "compact_core_v3",
+                    },
+                    "research_attribution": {},
+                    "missing_model_ids": ["nostra-zero-return-baseline-v1"],
+                }
+            )
+
+        outcomes_by_identity: dict[str, dict[str, Any]] = {}
+        for row in outcome_rows:
+            payload = _loads(row["payload_json"], {})
+            if str(payload.get("status") or "").lower() != "complete":
+                continue
+            if int(payload.get("horizon_minutes") or 0) != 10:
+                continue
+            identity = str(
+                payload.get("candidate_id")
+                or payload.get("candidate_key")
+                or ""
+            ).strip()
+            if identity:
+                outcomes_by_identity[identity] = {
+                    "payload": payload,
+                    "occurred_at": row["occurred_at"],
+                    "symbol": row["symbol"],
+                }
+
+        score_outcomes: list[dict[str, Any]] = []
+        for forecast in forecasts:
+            outcome = outcomes_by_identity.get(
+                forecast["candidate_identity"]
+            )
+            if not outcome or not forecast.get("forecast_id"):
+                continue
+            payload = outcome["payload"]
+            score_outcomes.append(
+                {
+                    **forecast,
+                    "observed_at": payload.get("observation_end_at")
+                    or outcome["occurred_at"],
+                    "realized_return": payload.get("forward_return"),
+                    "max_favorable_return": payload.get(
+                        "max_favorable_return"
+                    ),
+                    "max_adverse_return": payload.get(
+                        "max_adverse_return"
+                    ),
+                    "outcome_methodology_version": payload.get(
+                        "methodology_version"
+                    ),
+                }
+            )
+
+        return {
+            "ok": True,
+            "schema_version": "rhen-core-nostra-work-v1",
+            "generated_at": current.isoformat(),
+            "forecast_horizon_minutes": 10,
+            "baseline_model_id": "nostra-zero-return-baseline-v1",
+            "research_only": True,
+            "execution_authority": False,
+            "forecast_candidates": forecast_candidates[:200],
+            "score_outcomes": score_outcomes[:500],
+            "baseline_evaluation": None,
+            "model_evaluations": [],
+            "drift_training_state": {
+                "eligible": False,
+                "independent_cycles": 0,
+                "raw_outcome_count": 0,
+                "training_cutoff": current.isoformat(),
+                "mean_cycle_return": None,
+                "reason": "core_v3_rebuild_baseline_only",
+                "research_only": True,
+                "execution_authority": False,
+            },
+            "counts": {
+                "candidate_rows_scanned": len(candidate_rows),
+                "forecast_candidates": len(forecast_candidates),
+                "pending_score_outcomes": len(score_outcomes),
+                "evaluation_models": 0,
+                "drift_independent_cycles": 0,
+            },
+        }
