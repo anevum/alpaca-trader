@@ -2164,8 +2164,9 @@ class GraenResearchExecutor:
         resumed_requirement_id = str(
             metadata.get("engineering_resume_requirement_id") or ""
         ).strip()
+        engineering_resolution_delivered = False
         if resumed_requirement_id and state != "ENGINEERING_REQUIRED":
-            await self._callback_iren(
+            engineering_resolution_delivered = await self._callback_iren(
                 None,
                 status="SUCCEEDED",
                 result={
@@ -2303,6 +2304,11 @@ class GraenResearchExecutor:
                     "resume_stage": HYPOTHESIS_PLANNER_STAGE,
                     "next_eligible_at": next_eligible,
                     "planner_artifact_id": decision_artifact_id,
+                    "engineering_resume_requirement_id": (
+                        None
+                        if engineering_resolution_delivered
+                        else resumed_requirement_id or None
+                    ),
                 },
             )
 
@@ -2352,6 +2358,11 @@ class GraenResearchExecutor:
             "strategy_validation_alpha": float(plan.get("validation_alpha") or 0.0),
             "strategy_manifest_artifact_id": manifest_artifact_id,
             "strategy_planner_artifact_id": decision_artifact_id,
+            "engineering_resume_requirement_id": (
+                None
+                if engineering_resolution_delivered
+                else resumed_requirement_id or None
+            ),
         }
         summary = {
             "state": "STRATEGY_MANIFEST_FROZEN",
