@@ -129,6 +129,18 @@ def build_hypothesis_graph(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             candidate_next_stage = _text(
                 candidate_summary.get("next_research_stage")
             )
+            candidate_reasons: list[str] = []
+            for key in ("reasons", "reason_codes", "gate_reason_codes"):
+                value = candidate_summary.get(key)
+                if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                    candidate_reasons.extend(
+                        _text(v) for v in value if _text(v)
+                    )
+            if candidate_summary.get("error"):
+                candidate_reasons.append(
+                    _text(candidate_summary.get("error"))
+                )
+
             upper_state = candidate_state.upper()
             upper_stage = candidate_next_stage.upper()
             invalidated_candidate = _text(
@@ -185,17 +197,6 @@ def build_hypothesis_graph(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             else:
                 candidate_memory_state = "COMPLETED"
 
-            candidate_reasons: list[str] = []
-            for key in ("reasons", "reason_codes", "gate_reason_codes"):
-                value = candidate_summary.get(key)
-                if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                    candidate_reasons.extend(
-                        _text(v) for v in value if _text(v)
-                    )
-            if candidate_summary.get("error"):
-                candidate_reasons.append(
-                    _text(candidate_summary.get("error"))
-                )
             for reason in candidate_reasons:
                 failure_reasons[reason] += 1
 
