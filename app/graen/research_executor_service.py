@@ -5870,21 +5870,56 @@ class GraenResearchExecutor:
         status: str,
         result: dict[str, Any],
     ) -> bool:
-        if not linked_job_id or not self.callback_configured:
+        if not self.callback_configured:
             return False
+
+        direct_escalation = bool(
+            result.get("condition")
+            in {"ENGINEERING_REQUIRED", "HUMAN_DECISION_REQUIRED"}
+            or result.get("engineering_requirement_resolved") is True
+        )
+        if not linked_job_id and not direct_escalation:
+            return False
+
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
-                response = await client.post(
-                    f"{self.callback_base_url}/v1/iren/jobs/{linked_job_id}/callback",
-                    headers={"x-anevum-scheduler-token": self.callback_token},
-                    json={"status": status, "result": result, "error": {}},
-                )
+                if linked_job_id:
+                    response = await client.post(
+                        (
+                            f"{self.callback_base_url}/v1/iren/jobs/"
+                            f"{linked_job_id}/callback"
+                        ),
+                        headers={
+                            "x-anevum-scheduler-token": self.callback_token
+                        },
+                        json={
+                            "status": status,
+                            "result": result,
+                            "error": {},
+                        },
+                    )
+                else:
+                    response = await client.post(
+                        f"{self.callback_base_url}/v1/iren/escalations",
+                        headers={
+                            "x-anevum-scheduler-token": self.callback_token
+                        },
+                        json={
+                            "source": "GRAEN",
+                            "status": status,
+                            "result": result,
+                        },
+                    )
                 response.raise_for_status()
             return True
         except Exception as exc:
             print(
                 "GRAEN_RESEARCH_IREN_CALLBACK_ERROR",
-                {"error": type(exc).__name__, "job_id": linked_job_id},
+                {
+                    "error": type(exc).__name__,
+                    "job_id": linked_job_id,
+                    "direct_escalation": direct_escalation,
+                },
                 flush=True,
             )
             return False
