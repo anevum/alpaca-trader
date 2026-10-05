@@ -209,6 +209,8 @@ def scheduler_configuration_snapshot() -> dict:
         "risk_per_trade_pct": str(settings.risk_per_trade_pct),
         "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
         "crypto_execution_enabled": settings.crypto_execution_enabled,
+        "crypto_execution_mode": settings.crypto_execution_mode,
+        "btc_active_paper_authorized": settings.btc_active_paper_authorized,
     }
     material = {"comparison": comparison, "protected": protected}
     digest = hashlib.sha256(
@@ -687,19 +689,33 @@ async def monitor_loop():
 
 
 async def crypto_monitor_loop():
-    """Independent 24/7 crypto market lane; shadow execution until validated."""
+    """Independent 24/7 crypto market lane with explicit execution authority."""
     while not _stop.is_set():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
                 runtime_state.begin_crypto_cycle(uuid4().hex)
-                runtime_state.crypto_graen_promotion = (
-                    await fetch_crypto_promotion_status(settings)
-                )
+                if settings.crypto_execution_mode == "experimental_active_paper":
+                    runtime_state.crypto_graen_promotion = {
+                        "status": "EXPERIMENTAL_PAPER_BYPASS",
+                        "promotion_ready": False,
+                        "reason": (
+                            "BTC active paper mode collects broker-forward evidence "
+                            "without granting validated or live authority"
+                        ),
+                        "execution_class": "EXPERIMENTAL_ACTIVE_PAPER",
+                        "strategy_version_id": settings.crypto_strategy_version_id,
+                        "live_execution_authorized": False,
+                    }
+                else:
+                    runtime_state.crypto_graen_promotion = (
+                        await fetch_crypto_promotion_status(settings)
+                    )
                 result = await crypto_engine.run_once()
                 print(
                     "CRYPTO_EXECUTION_CYCLE",
                     {
                         "execution_enabled": settings.crypto_execution_enabled,
+                        "execution_mode": settings.crypto_execution_mode,
                         "action": result.get("action"),
                         "symbol": result.get("symbol"),
                         "reason": result.get("reason"),
@@ -793,6 +809,8 @@ def _runtime_configuration_snapshot() -> dict:
         "thesis_exit_enabled": settings.thesis_exit_enabled,
         "crypto_lane_enabled": settings.crypto_lane_enabled,
         "crypto_execution_enabled": settings.crypto_execution_enabled,
+        "crypto_execution_mode": settings.crypto_execution_mode,
+        "btc_active_paper_authorized": settings.btc_active_paper_authorized,
         "crypto_universe_size": settings.crypto_universe_size,
         "crypto_poll_seconds": settings.crypto_poll_seconds,
         "crypto_quote_currencies": sorted(settings.crypto_quote_currencies),
