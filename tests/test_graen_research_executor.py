@@ -530,3 +530,122 @@ def test_paper_pass_forks_human_decision_and_continues_planner():
         )
 
     asyncio.run(scenario())
+
+
+
+def test_interrupted_autonomous_bootstrap_recovers_without_duplicate_problem():
+    class InterruptedGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.problem = {
+                "problem_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "status": "QUEUED",
+                "domain": service.PROBLEM_DOMAIN,
+                "metadata": {
+                    "autonomous_loop_id": service.AUTONOMOUS_LOOP_ID,
+                    "autonomous_loop_bootstrap_version": (
+                        service.AUTONOMOUS_LOOP_BOOTSTRAP_VERSION
+                    ),
+                    "autonomous_continuation": True,
+                },
+            }
+
+        async def create_problem(self, payload):
+            raise AssertionError("interrupted bootstrap must not create a duplicate")
+
+        async def queue_research_stage(self, **kwargs):
+            self.queued_stages.append(kwargs)
+            self.problem = {
+                **self.problem,
+                "status": "WAITING",
+                "metadata": {
+                    **self.problem["metadata"],
+                    "research_stage": kwargs["stage"],
+                    **dict(kwargs.get("metadata") or {}),
+                },
+            }
+            return {"ok": True, "problem": dict(self.problem)}
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        gateway = InterruptedGateway()
+        runtime.gateway = gateway
+
+        result = await runtime._ensure_autonomous_loop_seed(
+            {"problems": [dict(gateway.problem)], "runs": []}
+        )
+
+        assert result["seeded"] is False
+        assert result["recovered"] is True
+        assert result["next_research_stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert len(gateway.queued_stages) == 1
+        assert gateway.queued_stages[0]["stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert gateway.created_problems == []
+
+    asyncio.run(scenario())
+
+
+def test_engineering_wait_releases_after_new_source_deployment(monkeypatch):
+    problem_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+    class EngineeringGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.problem = {
+                "problem_id": problem_id,
+                "status": "WAITING",
+                "domain": service.PROBLEM_DOMAIN,
+                "metadata": {
+                    "autonomous_loop_id": service.AUTONOMOUS_LOOP_ID,
+                    "autonomous_continuation": True,
+                    "research_stage": service.ENGINEERING_REQUIRED_STAGE,
+                    "resume_stage": service.HYPOTHESIS_PLANNER_STAGE,
+                    "engineering_required_source_commit": "old-source-commit",
+                },
+            }
+
+        async def snapshot(self):
+            return {
+                "problems": [dict(self.problem)],
+                "runs": [],
+                "artifacts": [],
+                "runtime_state": {},
+            }
+
+        async def queue_research_stage(self, **kwargs):
+            self.queued_stages.append(kwargs)
+            self.problem = {
+                **self.problem,
+                "status": "WAITING",
+                "metadata": {
+                    **self.problem["metadata"],
+                    "research_stage": kwargs["stage"],
+                    **dict(kwargs.get("metadata") or {}),
+                },
+            }
+            return {"ok": True, "problem": dict(self.problem)}
+
+        async def claim_research_problem(self, **kwargs):
+            return {"problem": None, "run": None}
+
+    async def scenario():
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "new-source-commit")
+        runtime = service.GraenResearchExecutor()
+        gateway = EngineeringGateway()
+        runtime.gateway = gateway
+
+        result = await runtime.process_once()
+
+        assert result["status"] == "IDLE"
+        assert gateway.queued_stages
+        release = gateway.queued_stages[0]
+        assert release["problem_id"] == problem_id
+        assert release["stage"] == service.HYPOTHESIS_PLANNER_STAGE
+        assert (
+            release["metadata"]["engineering_resumed_on_source_commit"]
+            == "new-source-commit"
+        )
+        assert release["metadata"]["autonomous_continuation"] is True
+        assert runtime.engineering_required_count == 0
+
+    asyncio.run(scenario())
