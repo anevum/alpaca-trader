@@ -154,6 +154,11 @@ def trading_public_feed() -> dict[str, Any]:
     return store.public_live_feed()
 
 
+@app.get("/v1/strategy-pipeline")
+def strategy_pipeline() -> dict[str, Any]:
+    return store.strategy_pipeline_research()
+
+
 @app.get("/v1/trading-report-read")
 def trading_report_read(
     request: Request,
