@@ -317,12 +317,134 @@ def command_account_history_payload(history: dict) -> dict:
     }
 
 
+async def crypto_command_lane_snapshot() -> dict:
+    account, positions, open_orders, recent_orders = await asyncio.gather(
+        client.account(),
+        client.positions(),
+        client.open_orders(),
+        client.recent_orders(limit=100),
+    )
+    crypto_positions = [
+        public_position(position)
+        for position in positions
+        if "/" in str(position.get("symbol") or "")
+    ]
+    crypto_orders = [
+        public_order(order)
+        for order in recent_orders
+        if "/" in str(order.get("symbol") or "")
+    ]
+    crypto_open_orders = [
+        public_order(order)
+        for order in open_orders
+        if "/" in str(order.get("symbol") or "")
+    ]
+    stats = crypto_trade_stats(
+        recent_orders,
+        positions,
+        strategy_version_id=settings.crypto_strategy_version_id,
+        strategy_family=settings.crypto_strategy_family,
+        start_at=settings.crypto_stats_start_at,
+        include_manual_btc=(
+            settings.crypto_execution_mode == "btc_direct_live_signal"
+        ),
+    )
+    history = [
+        event
+        for event in runtime_state.decision_history
+        if str(event.get("kind") or "").startswith("crypto")
+        or "/" in str(event.get("symbol") or "")
+    ][:100]
+    return {
+        "lane": "crypto",
+        "observed_at": (
+            runtime_state.crypto_last_execution_at
+            or runtime_state.crypto_last_scan_at
+            or runtime_state.crypto_last_market_data_at
+            or runtime_state.last_poll_at
+        ),
+        "trading_mode": settings.trading_mode,
+        "execution_mode": settings.crypto_execution_mode,
+        "execution_enabled": settings.crypto_execution_enabled,
+        "execution_authorized": (
+            settings.btc_direct_paper_authorized
+            if settings.crypto_execution_mode == "btc_direct_paper"
+            else settings.btc_direct_live_signal_authorized
+            if settings.crypto_execution_mode == "btc_direct_live_signal"
+            else settings.execution_authorized
+        ),
+        "broker_writes_allowed": (
+            settings.crypto_execution_mode != "btc_direct_live_signal"
+            and settings.crypto_execution_enabled
+            and settings.execution_authorized
+        ),
+        "strategy_version_id": settings.crypto_strategy_version_id,
+        "strategy_family": settings.crypto_strategy_family,
+        "stats": stats,
+        "last_decision": runtime_state.crypto_last_decision,
+        "last_signal": runtime_state.crypto_last_signal,
+        "last_scan": runtime_state.crypto_last_completed_scan,
+        "last_order": runtime_state.crypto_last_order,
+        "last_error": runtime_state.crypto_last_error,
+        "last_execution_at": runtime_state.crypto_last_execution_at,
+        "last_scan_at": runtime_state.crypto_last_scan_at,
+        "last_market_data_at": runtime_state.crypto_last_market_data_at,
+        "scanner_healthy": runtime_state.crypto_scanner_healthy,
+        "execution_healthy": runtime_state.crypto_execution_healthy,
+        "active_positions": runtime_state.crypto_active_positions,
+        "aggregate_exposure": runtime_state.crypto_aggregate_exposure,
+        "pending_approval": runtime_state.crypto_pending_approval,
+        "positions": crypto_positions,
+        "open_orders": crypto_open_orders,
+        "recent_orders": crypto_orders[:30],
+        "history": history,
+        "account": {
+            "equity": str(account.get("equity", "0")),
+            "cash": str(account.get("cash", "0")),
+            "buying_power": str(account.get("buying_power", "0")),
+        },
+        "runtime": (
+            runtime_provenance.as_dict()
+            if runtime_provenance is not None
+            else None
+        ),
+    }
+
+
+async def fetch_crypto_paper_canary_snapshot() -> dict | None:
+    base = str(settings.crypto_paper_canary_url or "").strip().rstrip("/")
+    token = str(settings.trading_ingest_token or "").strip()
+    if not base or not token or settings.crypto_only_runtime:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as http:
+            response = await http.get(
+                base + "/v1/internal/crypto-command",
+                headers={"x-anevum-scheduler-token": token},
+            )
+        payload = response.json() if response.content else {}
+        if response.status_code >= 400 or not isinstance(payload, dict):
+            raise RuntimeError("paper canary returned invalid response")
+        return {"available": True, **payload}
+    except Exception as exc:
+        return {
+            "available": False,
+            "lane": "crypto",
+            "trading_mode": "paper",
+            "execution_mode": "btc_direct_paper",
+            "last_error": f"{type(exc).__name__}: paper canary unavailable",
+        }
+
+
 async def command_snapshot() -> dict:
-    account = await client.account()
-    clock = await client.clock()
-    positions = await client.positions()
-    open_orders = await client.open_orders()
-    recent_orders = await client.recent_orders(limit=100)
+    account, clock, positions, open_orders, recent_orders, crypto_paper = await asyncio.gather(
+        client.account(),
+        client.clock(),
+        client.positions(),
+        client.open_orders(),
+        client.recent_orders(limit=100),
+        fetch_crypto_paper_canary_snapshot(),
+    )
     try:
         account_history = command_account_history_payload(
             await client.portfolio_history(
@@ -407,6 +529,8 @@ async def command_snapshot() -> dict:
         "account_history": account_history,
         "crypto_stats": crypto_stats,
         "crypto_approval": runtime_state.crypto_pending_approval,
+        "crypto_live": await crypto_command_lane_snapshot(),
+        "crypto_paper": crypto_paper,
         "strategy": {
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
@@ -1635,6 +1759,14 @@ async def resume_paper(authorization: str | None = Header(default=None)):
     runtime_state.paused = False
     runtime_state.last_decision = "paper runtime resumed by administrator"
     return {"paused": False}
+
+
+@app.get("/v1/internal/crypto-command")
+async def internal_crypto_command(
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    return await crypto_command_lane_snapshot()
 
 
 @app.get("/v1/command/session")
