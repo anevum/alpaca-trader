@@ -98,6 +98,7 @@ crypto_strategy = CryptoRollingMomentumStrategy(
     slow_window=settings.crypto_slow_window,
     min_momentum_pct=settings.crypto_min_momentum_pct,
     min_vwap_edge_pct=settings.crypto_min_vwap_edge_pct,
+    min_fast_slow_gap_pct=settings.crypto_min_fast_slow_gap_pct,
     stop_pct=settings.crypto_stop_pct,
     target_pct=settings.crypto_target_pct,
     entry_start=settings.entry_start,
