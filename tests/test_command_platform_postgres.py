@@ -170,5 +170,6 @@ def test_database_envelope_round_trip_never_stores_plaintext(conn):
     resolver = DatabaseEnvelopeSecretResolver(
         os.environ["TEST_DATABASE_URL"],
         created["tenant_id"],
+        connection=conn,
     )
     assert resolver.resolve(secret_reference) == token
