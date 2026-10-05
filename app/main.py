@@ -23,10 +23,10 @@ from .crypto_execution import CryptoExecutionEngine
 from .crypto_promotion import fetch_crypto_promotion_status
 from .crypto_layer import (
     CryptoMarketDataClient,
-    CryptoRollingMomentumStrategy,
     CryptoScanner,
     CryptoUniverse,
 )
+from .btc_direct_strategy import BtcDirectSwingStrategy
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
@@ -695,7 +695,7 @@ async def crypto_monitor_loop():
         if settings.crypto_lane_enabled and settings.credentials_configured:
             try:
                 runtime_state.begin_crypto_cycle(uuid4().hex)
-                if settings.crypto_execution_mode == "experimental_active_paper":
+                if settings.crypto_execution_mode in {"experimental_active_paper", "btc_direct_paper"}:
                     runtime_state.crypto_graen_promotion = {
                         "status": "EXPERIMENTAL_PAPER_BYPASS",
                         "promotion_ready": False,
@@ -703,7 +703,11 @@ async def crypto_monitor_loop():
                             "BTC active paper mode collects broker-forward evidence "
                             "without granting validated or live authority"
                         ),
-                        "execution_class": "EXPERIMENTAL_ACTIVE_PAPER",
+                        "execution_class": (
+                            "BTC_DIRECT_PAPER"
+                            if settings.crypto_execution_mode == "btc_direct_paper"
+                            else "EXPERIMENTAL_ACTIVE_PAPER"
+                        ),
                         "strategy_version_id": settings.crypto_strategy_version_id,
                         "live_execution_authorized": False,
                     }
