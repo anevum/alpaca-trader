@@ -17,6 +17,7 @@ for target in (
 
 from app.config import get_settings
 from app.crypto_execution import CryptoExecutionEngine
+from app.crypto_stats import crypto_trade_stats
 from app.state import RuntimeState
 from app.strategy import Signal
 
@@ -182,6 +183,36 @@ async def main():
     assert second["action"] == "submitted", second
     assert len(client.stop_calls) == 1, client.stop_calls
     assert Decimal(client.stop_calls[0]["stop_price"]) == Decimal("48500.000000000")
+
+    buy_order = {
+        "client_order_id": "anevum-crypto-btc-usd-buy-test-1",
+        "symbol": "BTC/USD",
+        "side": "buy",
+        "status": "filled",
+        "filled_qty": "0.001",
+        "filled_avg_price": "50000",
+        "filled_at": "2026-10-05T20:50:00+00:00",
+    }
+    sell_order = {
+        "client_order_id": "anevum-crypto-btc-usd-sell-test-1",
+        "symbol": "BTC/USD",
+        "side": "sell",
+        "status": "filled",
+        "filled_qty": "0.001",
+        "filled_avg_price": "52500",
+        "filled_at": "2026-10-05T21:50:00+00:00",
+    }
+    scorecard = crypto_trade_stats(
+        [buy_order, sell_order],
+        [],
+        strategy_version_id="RHEN-BTC-DIRECT-002",
+        strategy_family="btc_direct_pullback",
+        start_at=datetime(2026, 10, 5, 20, 46, 30, tzinfo=timezone.utc),
+    )
+    assert scorecard["closed_trades"] == 1, scorecard
+    assert scorecard["wins"] == 1, scorecard
+    assert Decimal(scorecard["realized_pnl"]) > 0, scorecard
+    assert Decimal(scorecard["win_rate"]) == Decimal("1"), scorecard
 
     print("RHEN crypto execution path verifier passed")
 
