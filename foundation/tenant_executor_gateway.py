@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable
+from uuid import UUID
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -28,6 +29,13 @@ from foundation.platform_core_gateway import (
 
 
 BrokerClientFactory = Callable[[Any], TenantPaperBroker]
+
+
+def _uuid(value: str, field: str) -> UUID:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid_{field}") from exc
 
 
 def _rows(cur: psycopg.Cursor[Any]) -> list[dict[str, Any]]:
@@ -248,7 +256,7 @@ class TenantPaperExecutor:
                 order by a.effective_at desc,rp.effective_at desc
                 limit 1
                 """,
-                (tenant_id, broker_account_id),
+                (_uuid(tenant_id, "tenant_id"), _uuid(broker_account_id, "broker_account_id")),
             )
             row = cur.fetchone()
             if not row:
@@ -296,8 +304,8 @@ class TenantPaperExecutor:
                         updated_at=now()
                     """,
                     (
-                        tenant_id,
-                        broker_account_id,
+                        _uuid(tenant_id, "tenant_id"),
+                        _uuid(broker_account_id, "broker_account_id"),
                         high_water,
                         max(equity, Decimal("0")),
                         observed_at,
@@ -342,8 +350,8 @@ class TenantPaperExecutor:
                     """,
                     (
                         order_intent_id,
-                        tenant_id,
-                        broker_account_id,
+                        _uuid(tenant_id, "tenant_id"),
+                        _uuid(broker_account_id, "broker_account_id"),
                         signal.strategy_release_id,
                         signal_id,
                         signal.symbol,
@@ -480,6 +488,8 @@ class TenantPaperExecutor:
             return "acknowledged", None
         if current_status in {"AMBIGUOUS", "SUBMITTING"}:
             return "ambiguous_unresolved", None
+        if current_status in {"FAILED", "CANCELLED"}:
+            return "broker_terminal_failure", None
         if current_status == "RISK_REJECTED":
             return "risk_rejected", None
 
@@ -493,6 +503,16 @@ class TenantPaperExecutor:
         except Exception:
             recovered = await client.order_by_client_order_id(client_order_id)
             if recovered is not None:
+                recovered_status = str(recovered.get("status") or "").lower()
+                if recovered_status in {"canceled", "cancelled", "expired", "rejected"}:
+                    self._update_intent(
+                        str(intent["order_intent_id"]),
+                        status="FAILED",
+                        broker_order_id=str(recovered.get("id") or "") or None,
+                        submitted=True,
+                        resolved=True,
+                    )
+                    return "broker_terminal_failure", recovered
                 self._update_intent(
                     str(intent["order_intent_id"]),
                     status="ACKNOWLEDGED",
@@ -578,7 +598,8 @@ class TenantPaperExecutor:
         )
         stop_status = str((stop_order or {}).get("status") or "").lower()
         protected = (
-            state in {"submitted", "reconciled", "reconciled_after_error", "acknowledged"}
+            stop_order is not None
+            and state in {"submitted", "reconciled", "reconciled_after_error", "acknowledged"}
             and stop_status not in {"canceled", "cancelled", "expired", "rejected"}
         )
         return {
@@ -607,7 +628,11 @@ class TenantPaperExecutor:
                   and intent_kind in ('ENTRY','EXIT','PROTECTIVE_STOP')
                 order by created_at
                 """,
-                (tenant_id, broker_account_id, symbol),
+                (
+                    _uuid(tenant_id, "tenant_id"),
+                    _uuid(broker_account_id, "broker_account_id"),
+                    symbol,
+                ),
             )
             rows = cur.fetchall()
 
@@ -645,7 +670,11 @@ class TenantPaperExecutor:
                   and status in ('ACKNOWLEDGED','RECONCILED')
                 order by created_at desc
                 """,
-                (tenant_id, broker_account_id, symbol),
+                (
+                    _uuid(tenant_id, "tenant_id"),
+                    _uuid(broker_account_id, "broker_account_id"),
+                    symbol,
+                ),
             )
             rows = cur.fetchall()
         for (client_order_id,) in rows:
@@ -733,10 +762,22 @@ class TenantPaperExecutor:
                 client_order_id=str(intent["client_order_id"]),
             ),
         )
+        blocked = state in {
+            "ambiguous",
+            "ambiguous_unresolved",
+            "broker_terminal_failure",
+        }
         return {
             "tenant_id": tenant_id,
             "broker_account_id": broker_account_id,
-            "action": "submitted" if order is not None else "blocked",
+            "action": "blocked" if blocked else ("submitted" if order is not None else "reconciled"),
+            "reason": (
+                "ambiguous_submission_unresolved"
+                if state in {"ambiguous", "ambiguous_unresolved"}
+                else "broker_order_terminal_failure"
+                if state == "broker_terminal_failure"
+                else None
+            ),
             "submission_state": state,
             "order": order,
             "order_intent_id": intent["order_intent_id"],
@@ -829,7 +870,11 @@ class TenantPaperExecutor:
                     "tenant_id": tenant_id,
                     "broker_account_id": broker_account_id,
                     "action": "blocked",
-                    "reason": "ambiguous_submission_unresolved",
+                    "reason": (
+                        "broker_order_terminal_failure"
+                        if state == "broker_terminal_failure"
+                        else "ambiguous_submission_unresolved"
+                    ),
                     "submission_state": state,
                     "order_intent_id": existing_entry["order_intent_id"],
                     "replayed": True,
