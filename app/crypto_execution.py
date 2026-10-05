@@ -52,6 +52,12 @@ class CryptoExecutionEngine:
         self.universe = universe
         self.ledger = ledger
 
+    def _experimental_active_paper(self) -> bool:
+        return (
+            getattr(self.settings, "crypto_execution_mode", "validated")
+            == "experimental_active_paper"
+        )
+
     @staticmethod
     def _is_crypto_symbol(symbol: str) -> bool:
         return "/" in str(symbol or "")
@@ -457,6 +463,16 @@ class CryptoExecutionEngine:
         if not self.settings.crypto_lane_enabled:
             self.state.crypto_last_decision = "crypto lane disabled"
             return {"action": "hold", "reason": self.state.crypto_last_decision}
+
+        active_paper = self._experimental_active_paper()
+        if active_paper and not bool(
+            getattr(self.settings, "btc_active_paper_authorized", False)
+        ):
+            self.state.crypto_last_decision = (
+                "BTC active paper execution is not explicitly authorized"
+            )
+            return {"action": "blocked", "reason": self.state.crypto_last_decision}
+
         account, positions, open_orders, recent_orders = await asyncio.gather(
             self.client.account(),
             self.client.positions(),
@@ -464,7 +480,11 @@ class CryptoExecutionEngine:
             self.client.recent_orders(limit=100),
         )
 
-        active_symbols = list(await self.universe.active_symbols(now=now))
+        active_symbols = (
+            ["BTC/USD"]
+            if active_paper
+            else list(await self.universe.active_symbols(now=now))
+        )
         owned_symbols = self._owned_symbols(positions, recent_orders)
         crypto_positions = self._crypto_positions(positions)
         self.state.crypto_active_positions = len(crypto_positions)
@@ -533,6 +553,10 @@ class CryptoExecutionEngine:
             )
             signal.metadata["market"] = "crypto"
             signal.metadata["session_model"] = "24x7"
+            if active_paper:
+                signal.metadata["execution_class"] = "EXPERIMENTAL_ACTIVE_PAPER"
+                signal.metadata["experimental_active_paper"] = True
+                signal.metadata["live_execution_authorized"] = False
             raw_features = dict((signal.metadata.get("feature_state") or {}).get("raw") or {})
             signal.metadata["market_quality"] = {
                 "bid": str(bid) if bid > 0 else None,
@@ -614,26 +638,30 @@ class CryptoExecutionEngine:
         prepared: list[tuple[Signal, Decimal, str, dict[str, str] | None]] = []
         errors: list[dict[str, str]] = []
         for signal in buy_signals:
-            if not bool(self.state.crypto_graen_promotion.get("promotion_ready")):
-                errors.append({
-                    "symbol": signal.symbol,
-                    "reason": "crypto GRAEN promotion gate not satisfied",
-                })
-                continue
-            if not self.settings.crypto_calibration_promoted:
-                errors.append({
-                    "symbol": signal.symbol,
-                    "reason": "crypto ADS calibration has not been promoted",
-                })
-                continue
-            ads_state = dict((signal.metadata or {}).get("ads_crypto") or {})
-            ads_score = ads_state.get("score")
-            if ads_score is None or Decimal(str(ads_score)) < self.settings.crypto_ads_threshold:
-                errors.append({
-                    "symbol": signal.symbol,
-                    "reason": "crypto ADS threshold not satisfied",
-                })
-                continue
+            if not active_paper:
+                if not bool(self.state.crypto_graen_promotion.get("promotion_ready")):
+                    errors.append({
+                        "symbol": signal.symbol,
+                        "reason": "crypto GRAEN promotion gate not satisfied",
+                    })
+                    continue
+                if not self.settings.crypto_calibration_promoted:
+                    errors.append({
+                        "symbol": signal.symbol,
+                        "reason": "crypto ADS calibration has not been promoted",
+                    })
+                    continue
+                ads_state = dict((signal.metadata or {}).get("ads_crypto") or {})
+                ads_score = ads_state.get("score")
+                if (
+                    ads_score is None
+                    or Decimal(str(ads_score)) < self.settings.crypto_ads_threshold
+                ):
+                    errors.append({
+                        "symbol": signal.symbol,
+                        "reason": "crypto ADS threshold not satisfied",
+                    })
+                    continue
             latest_exit = self._latest_exit(recent_orders, signal.symbol)
             if (
                 latest_exit is not None
@@ -770,6 +798,12 @@ class CryptoExecutionEngine:
 
         self.state.crypto_last_execution_context = {
             "decision_at": now.isoformat(),
+            "execution_mode": (
+                "experimental_active_paper" if active_paper else "validated"
+            ),
+            "execution_class": (
+                "EXPERIMENTAL_ACTIVE_PAPER" if active_paper else "VALIDATED"
+            ),
             "active_universe": active_symbols,
             "owned_symbols": sorted(owned_symbols),
             "entries_24h": entries_24h,
