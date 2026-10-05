@@ -2196,6 +2196,7 @@ class GraenResearchExecutor:
                 content=requirement,
             )
             summary = {
+                "condition": "ENGINEERING_REQUIRED",
                 "state": "ENGINEERING_REQUIRED",
                 "decision": "MANUAL_SOFTWARE_REQUIRED",
                 "status": "WAITING_FOR_ENGINEERING",
@@ -2214,9 +2215,15 @@ class GraenResearchExecutor:
                 summary=summary,
                 next_stage=ENGINEERING_REQUIRED_STAGE,
                 next_metadata={
+                    "autonomous_loop_id": (
+                        metadata.get("autonomous_loop_id")
+                        or AUTONOMOUS_LOOP_ID
+                    ),
                     "autonomous_continuation": True,
                     "engineering_requirement": requirement,
                     "planner_artifact_id": decision_artifact_id,
+                    "engineering_required_source_commit": _source_commit(),
+                    "resume_stage": HYPOTHESIS_PLANNER_STAGE,
                 },
             )
 
@@ -6100,6 +6107,48 @@ class GraenResearchExecutor:
             )
             stage = str(metadata.get("research_stage") or "")
             if metadata.get("autonomous_loop_id") == AUTONOMOUS_LOOP_ID:
+                if (
+                    problem.get("status") in {"QUEUED", "WAITING"}
+                    and not stage
+                ):
+                    problem_id = str(problem.get("problem_id") or "")
+                    if not problem_id:
+                        raise RuntimeError(
+                            "autonomous_loop_bootstrap_problem_identity_missing"
+                        )
+                    queued = await self.gateway.queue_research_stage(
+                        problem_id=problem_id,
+                        stage=HYPOTHESIS_PLANNER_STAGE,
+                        metadata={
+                            "autonomous_loop_id": AUTONOMOUS_LOOP_ID,
+                            "autonomous_loop_bootstrap_version": (
+                                AUTONOMOUS_LOOP_BOOTSTRAP_VERSION
+                            ),
+                            "autonomous_continuation": True,
+                            "bootstrap_source": "interrupted_bootstrap_recovery",
+                        },
+                    )
+                    if not queued.get("problem"):
+                        raise RuntimeError(
+                            "autonomous_loop_bootstrap_recovery_failed"
+                        )
+                    result = {
+                        "seeded": False,
+                        "recovered": True,
+                        "problem_id": problem_id,
+                        "autonomous_loop_id": AUTONOMOUS_LOOP_ID,
+                        "next_research_stage": HYPOTHESIS_PLANNER_STAGE,
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                        "runtime_source_mutation_authorized": False,
+                        "live_execution_authorized": False,
+                    }
+                    print(
+                        "GRAEN_AUTONOMOUS_LOOP_BOOTSTRAP_RECOVERY",
+                        result,
+                        flush=True,
+                    )
+                    return result
                 return None
             if (
                 problem.get("domain") == PROBLEM_DOMAIN
@@ -10300,7 +10349,9 @@ class GraenResearchExecutor:
         now = datetime.now(UTC)
         waiting_until: list[datetime] = []
         expired_waits: list[tuple[str, str]] = []
+        engineering_retries: list[tuple[str, str]] = []
         engineering_required = 0
+        current_source_commit = str(_source_commit() or "")
         for row in snapshot.get("problems") or []:
             if not isinstance(row, Mapping) or row.get("status") != "WAITING":
                 continue
@@ -10308,6 +10359,21 @@ class GraenResearchExecutor:
             stage = str(metadata.get("research_stage") or "")
             if stage == ENGINEERING_REQUIRED_STAGE:
                 engineering_required += 1
+                required_on_commit = str(
+                    metadata.get("engineering_required_source_commit") or ""
+                )
+                resume_stage = str(
+                    metadata.get("resume_stage") or HYPOTHESIS_PLANNER_STAGE
+                )
+                if (
+                    current_source_commit
+                    and required_on_commit
+                    and current_source_commit != required_on_commit
+                ):
+                    engineering_retries.append(
+                        (str(row.get("problem_id")), resume_stage)
+                    )
+                continue
             if stage != WAITING_CORPUS_STAGE:
                 continue
             resume_stage = str(metadata.get("resume_stage") or HYPOTHESIS_PLANNER_STAGE)
@@ -10326,6 +10392,22 @@ class GraenResearchExecutor:
 
         self.engineering_required_count = engineering_required
         self.waiting_dependency_until = min(waiting_until) if waiting_until else None
+        for engineering_problem_id, resume_stage in engineering_retries[:4]:
+            await self.gateway.queue_research_stage(
+                problem_id=engineering_problem_id,
+                stage=resume_stage,
+                metadata={
+                    "autonomous_continuation": True,
+                    "engineering_dependency_released_at": now.isoformat(),
+                    "engineering_resumed_on_source_commit": current_source_commit,
+                },
+            )
+        if engineering_retries:
+            snapshot = await self.gateway.snapshot()
+            self.engineering_required_count = max(
+                0,
+                engineering_required - len(engineering_retries[:4]),
+            )
         for waiting_problem_id, resume_stage in expired_waits[:4]:
             await self.gateway.queue_research_stage(
                 problem_id=waiting_problem_id,
