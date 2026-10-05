@@ -989,6 +989,8 @@ def _research_exposure_ledger(
     intervals: set[tuple[str,str]] = set()
     sources: dict[tuple[str,str], set[str]] = {}
     strategy_manifest_hashes: set[str] = set()
+    strategy_validation_tests_opened = 0
+    strategy_holdout_tests_opened = 0
 
     def add(left: Any, right: Any, source: str) -> None:
         start=parse_stamp(left)
@@ -1051,6 +1053,12 @@ def _research_exposure_ledger(
         ])
         payload=_obj(content)
         artifact_name=str(artifact_type or "")
+        if artifact_name == "CRYPTO_STRATEGY_STAGE_OPENED":
+            opened_stage=str(payload.get("stage") or "").upper()
+            if opened_stage == "VALIDATION":
+                strategy_validation_tests_opened += 1
+            elif opened_stage == "HOLDOUT":
+                strategy_holdout_tests_opened += 1
         if artifact_name in {
             "CRYPTO_STRATEGY_MANIFEST_V1",
             "CRYPTO_STRATEGY_PLANNER_DECISION",
@@ -1080,6 +1088,8 @@ def _research_exposure_ledger(
         ],
         "latest_inspected_end":latest,
         "strategy_manifest_hashes":sorted(strategy_manifest_hashes),
+        "strategy_validation_tests_opened":strategy_validation_tests_opened,
+        "strategy_holdout_tests_opened":strategy_holdout_tests_opened,
         "strategy_manifest_count":len(strategy_manifest_hashes),
         "built_at":datetime.now(UTC).isoformat(),
     }
