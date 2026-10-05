@@ -721,9 +721,10 @@ def _encrypt_token(*, tenant_id: str, token: str) -> tuple[bytes, bytes]:
 class DatabaseEnvelopeSecretResolver:
     database_url: str
     tenant_id: str
+    connection: psycopg.Connection[Any] | None = None
 
     def resolve(self, secret_reference: str) -> str:
-        with psycopg.connect(self.database_url, connect_timeout=5) as conn:
+        def read_row(conn: psycopg.Connection[Any]):
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -733,7 +734,13 @@ class DatabaseEnvelopeSecretResolver:
                     """,
                     (secret_reference, _uuid(self.tenant_id, "tenant_id")),
                 )
-                row = cur.fetchone()
+                return cur.fetchone()
+
+        if self.connection is not None:
+            row = read_row(self.connection)
+        else:
+            with psycopg.connect(self.database_url, connect_timeout=5) as conn:
+                row = read_row(conn)
         if not row:
             raise RuntimeError("paper OAuth secret envelope unavailable")
         version, nonce, ciphertext = row
