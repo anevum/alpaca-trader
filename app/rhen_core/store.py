@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
+NY = ZoneInfo("America/New_York")
 
 CRITICAL_EVENT_TYPES = {
     "order_intent", "broker_order", "broker_fill", "order_update",
@@ -1275,3 +1277,750 @@ class RhenCoreStore:
                 "drift_independent_cycles": 0,
             },
         }
+
+
+    def _event_rows(
+        self,
+        *,
+        event_types: set[str] | None = None,
+        limit: int = 5000,
+        newest_first: bool = True,
+    ) -> list[dict[str, Any]]:
+        order = "desc" if newest_first else "asc"
+        with self.connect() as conn:
+            if event_types:
+                marks = ",".join("?" for _ in event_types)
+                rows = conn.execute(
+                    f"""select * from events
+                    where event_type in ({marks})
+                    order by occurred_at {order} limit ?""",
+                    (*sorted(event_types), max(1, min(50000, int(limit)))),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"""select * from events
+                    order by occurred_at {order} limit ?""",
+                    (max(1, min(50000, int(limit))),),
+                ).fetchall()
+        return [
+            {
+                "event_key": row["event_key"],
+                "run_id": row["run_id"],
+                "strategy_version_id": row["strategy_version_id"],
+                "event_type": row["event_type"],
+                "occurred_at": row["occurred_at"],
+                "symbol": row["symbol"],
+                "correlation_id": row["correlation_id"],
+                "source": row["source"],
+                "payload": _loads(row["payload_json"], {}),
+                "ingested_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _session_date(value: str) -> str | None:
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        return stamp.astimezone(NY).date().isoformat()
+
+    def _latest_report_event(
+        self,
+        event_type: str,
+        *,
+        field: str,
+        requested: str | None = None,
+    ) -> dict[str, Any] | None:
+        for event in self._event_rows(
+            event_types={event_type},
+            limit=1000,
+            newest_first=True,
+        ):
+            payload = event.get("payload") or {}
+            if requested is None or str(payload.get(field) or "") == requested:
+                return event
+        return None
+
+    def _shadow_report(self, candidate_id: str | None) -> dict[str, Any]:
+        wanted = {
+            "graen_candidate_shadow_activation",
+            "graen_candidate_shadow_state",
+            "graen_candidate_shadow_opportunity",
+            "graen_candidate_shadow_entry",
+            "graen_candidate_shadow_exit",
+            "graen_candidate_shadow_checkpoint",
+        }
+        events = self._event_rows(
+            event_types=wanted,
+            limit=1000,
+            newest_first=True,
+        )
+        if candidate_id:
+            events = [
+                event
+                for event in events
+                if str((event.get("payload") or {}).get("candidate_id") or "")
+                == candidate_id
+            ]
+        activation = next(
+            (
+                event
+                for event in events
+                if event["event_type"] == "graen_candidate_shadow_activation"
+            ),
+            None,
+        )
+        activation_id = str(
+            ((activation or {}).get("payload") or {}).get("activation_id") or ""
+        )
+        if activation_id:
+            events = [
+                event
+                for event in events
+                if event is activation
+                or str(
+                    (event.get("payload") or {}).get("activation_id") or ""
+                )
+                == activation_id
+            ]
+        return {
+            "ok": True,
+            "shadow_methodology_version": "graen-forward-shadow-v1",
+            "activation": activation,
+            "state": next(
+                (
+                    event
+                    for event in events
+                    if event["event_type"] == "graen_candidate_shadow_state"
+                ),
+                None,
+            ),
+            "checkpoint": next(
+                (
+                    event
+                    for event in events
+                    if event["event_type"]
+                    == "graen_candidate_shadow_checkpoint"
+                ),
+                None,
+            ),
+            "recent_events": [
+                event
+                for event in events
+                if event["event_type"]
+                in {
+                    "graen_candidate_shadow_opportunity",
+                    "graen_candidate_shadow_entry",
+                    "graen_candidate_shadow_exit",
+                    "graen_candidate_shadow_checkpoint",
+                }
+            ][:200],
+        }
+
+    def _promotion_evidence(self) -> dict[str, Any]:
+        complete = []
+        for event in self._event_rows(
+            event_types={"candidate_forward_outcome"},
+            limit=50000,
+            newest_first=True,
+        ):
+            payload = event.get("payload") or {}
+            if payload.get("status") != "complete":
+                continue
+            lane = str(payload.get("market_lane") or "").lower()
+            version = str(
+                payload.get("strategy_version_id")
+                or event.get("strategy_version_id")
+                or ""
+            ).upper()
+            if lane == "crypto" or version.startswith("CRYPTO-"):
+                complete.append(event)
+
+        ids: set[str] = set()
+        hours: set[int] = set()
+        weekdays: set[int] = set()
+        pairs: set[str] = set()
+        observed: list[datetime] = []
+        mfes: list[float] = []
+        maes: list[float] = []
+        for event in complete:
+            payload = event.get("payload") or {}
+            identity = str(
+                payload.get("candidate_id")
+                or payload.get("candidate_key")
+                or ""
+            )
+            if identity:
+                ids.add(identity)
+            raw_stamp = (
+                (payload.get("details") or {}).get("reference_effective_at")
+                or payload.get("candidate_observed_at")
+                or event.get("occurred_at")
+            )
+            try:
+                stamp = datetime.fromisoformat(
+                    str(raw_stamp).replace("Z", "+00:00")
+                )
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=UTC)
+                stamp = stamp.astimezone(UTC)
+                observed.append(stamp)
+                hours.add(stamp.hour)
+                weekdays.add(stamp.weekday())
+            except (TypeError, ValueError):
+                pass
+            symbol = str(
+                event.get("symbol") or payload.get("symbol") or ""
+            ).upper()
+            if symbol:
+                pairs.add(symbol)
+            for key, target in (
+                ("max_favorable_return", mfes),
+                ("max_adverse_return", maes),
+            ):
+                try:
+                    target.append(float(payload[key]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+
+        return {
+            "methodology_version": "rhen-core-v3-crypto-promotion",
+            "market_lane": "crypto",
+            "resolved_candidate_predictions": len(ids),
+            "paper_round_trips": 0,
+            "paper_round_trip_source": "crypto_execution_disabled",
+            "utc_hours_covered": sorted(hours),
+            "weekdays_covered": sorted(weekdays),
+            "volatility_regimes": [],
+            "liquidity_regimes": [],
+            "pairs_covered": sorted(pairs),
+            "coverage_first_observed_at": (
+                min(observed).isoformat() if observed else None
+            ),
+            "coverage_last_observed_at": (
+                max(observed).isoformat() if observed else None
+            ),
+            "metrics": {
+                "net_expectancy_after_costs": None,
+                "brier_score": None,
+                "log_loss": None,
+                "calibration_intercept": None,
+                "calibration_slope": None,
+                "discrimination": None,
+                "max_drawdown": None,
+                "tail_loss": None,
+                "mfe": sum(mfes) / len(mfes) if mfes else None,
+                "mae": sum(maes) / len(maes) if maes else None,
+                "slippage": None,
+                "spread_sensitivity": None,
+                "regime_stability": None,
+                "time_of_week_stability": None,
+            },
+            "net_expectancy_positive_after_high_costs": False,
+            "walk_forward_passed": False,
+            "holdout_passed": False,
+            "dependence_adjusted": False,
+            "multiplicity_adjusted": False,
+            "no_lookahead_verified": False,
+            "source": "rhen-core:candidate_forward_outcome",
+            "execution_authority": False,
+        }
+
+    def _candidate_report_rows(
+        self,
+        session: str,
+        *,
+        crypto: bool | None,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """select * from candidates
+                order by observed_at desc limit 10000"""
+            ).fetchall()
+            outcome_rows = conn.execute(
+                """select payload_json,occurred_at from events
+                where event_type='candidate_forward_outcome'
+                order by occurred_at asc limit 50000"""
+            ).fetchall()
+        outcomes: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in outcome_rows:
+            payload = _loads(row["payload_json"], {})
+            identity = str(
+                payload.get("candidate_id")
+                or payload.get("candidate_key")
+                or ""
+            )
+            horizon = str(payload.get("horizon_minutes") or "")
+            if not identity or not horizon:
+                continue
+            outcomes.setdefault(identity, {})[horizon] = {
+                "status": payload.get("status"),
+                "computed_at": payload.get("computed_at")
+                or row["occurred_at"],
+                "forward_return": payload.get("forward_return"),
+                "max_favorable_return": payload.get(
+                    "max_favorable_return"
+                ),
+                "max_adverse_return": payload.get(
+                    "max_adverse_return"
+                ),
+                "methodology_version": payload.get(
+                    "methodology_version"
+                ),
+            }
+
+        result = []
+        for row in rows:
+            if self._session_date(row["observed_at"]) != session:
+                continue
+            lane = str(row["market_lane"] or "").lower()
+            is_crypto = lane == "crypto" or str(
+                row["strategy_version_id"] or ""
+            ).upper().startswith("CRYPTO-")
+            if crypto is True and not is_crypto:
+                continue
+            if crypto is False and is_crypto:
+                continue
+            identity = str(row["candidate_key"])
+            features = _loads(row["feature_json"], {})
+            result.append(
+                {
+                    "candidate_id": identity,
+                    "candidate_key": identity,
+                    "symbol": row["symbol"],
+                    "observed_at": row["observed_at"],
+                    "market_lane": row["market_lane"],
+                    "strategy_version_id": row["strategy_version_id"],
+                    "action": row["action"],
+                    "qualified": bool(row["qualified"]),
+                    "final_decision": row["final_decision"],
+                    "reason": row["reason"],
+                    "decision_reference_price": row["reference_price"],
+                    "stop_price": row["stop_price"],
+                    "target_price": row["target_price"],
+                    "features": features,
+                    "research_attribution": {},
+                    "scan_cycle": {
+                        "scan_cycle_id": row["cycle_key"],
+                        "cycle_key": row["cycle_key"],
+                        "run_id": row["run_id"],
+                        "strategy_version_id": row["strategy_version_id"],
+                        "observed_at": row["observed_at"],
+                        "data_status": "compact_core_v3",
+                    },
+                    "forward_outcomes": outcomes.get(identity, {}),
+                }
+            )
+        return result
+
+    def report_read(self, params: dict[str, str]) -> dict[str, Any]:
+        latest = params.get("latest")
+        if latest == "graen_shadow":
+            return self._shadow_report(params.get("shadow_candidate_id"))
+
+        if str(params.get("crypto_promotion") or "") in {
+            "1", "true", "True"
+        }:
+            return {"ok": True, "evidence": self._promotion_evidence()}
+
+        crypto_session = params.get("crypto_evidence_session")
+        if crypto_session:
+            rows = self._candidate_report_rows(
+                crypto_session,
+                crypto=True,
+            )
+            rows = [
+                row
+                for row in rows
+                if sum(
+                    1
+                    for outcome in row["forward_outcomes"].values()
+                    if outcome.get("status") == "complete"
+                )
+                < 7
+            ][:5000]
+            return {
+                "ok": True,
+                "evidence_version": "rhen-crypto-forward-evidence-v2",
+                "evidence_session": crypto_session,
+                "candidates": rows,
+            }
+
+        evidence_session = params.get("evidence_session")
+        if evidence_session:
+            rows = self._candidate_report_rows(
+                evidence_session,
+                crypto=False,
+            )
+            equity_rows = []
+            for row in rows[:5000]:
+                copy = dict(row)
+                by_horizon = copy.pop("forward_outcomes", {})
+                copy["outcomes"] = [
+                    {
+                        "horizon_minutes": int(h)
+                        if str(h).isdigit() else h,
+                        **value,
+                    }
+                    for h, value in sorted(
+                        by_horizon.items(),
+                        key=lambda item: (
+                            int(item[0])
+                            if str(item[0]).isdigit()
+                            else 999999
+                        ),
+                    )
+                ]
+                equity_rows.append(copy)
+            daily = self._latest_report_event(
+                "research_daily_report",
+                field="session",
+                requested=evidence_session,
+            )
+            return {
+                "ok": True,
+                "evidence_session": evidence_session,
+                "candidates": equity_rows,
+                "post_event": {
+                    "source": "rhen-core",
+                    "analytics_only": True,
+                },
+                "ads002": {},
+                "ads002_v2": {},
+                "latest_daily_report": daily,
+            }
+
+        post_session = params.get("post_event_evidence_session")
+        if post_session:
+            rows = self._candidate_report_rows(
+                post_session,
+                crypto=False,
+            )
+            return {
+                "ok": True,
+                "evidence_version": "rhen-post-event-candidates-v2",
+                "evidence_session": post_session,
+                "candidates": rows[:5000],
+                "complete_horizons": {
+                    row["candidate_id"]: sorted(
+                        int(h)
+                        for h, value in row["forward_outcomes"].items()
+                        if str(h).isdigit()
+                        and value.get("status") == "complete"
+                    )
+                    for row in rows
+                },
+                "post_event_complete": False,
+                "post_event": {
+                    "source": "rhen-core",
+                    "analytics_only": True,
+                    "forward_outcomes_loaded": False,
+                    "forward_outcome_payloads_loaded": False,
+                    "daily_report_loaded": False,
+                    "resumable": True,
+                },
+            }
+
+        if latest == "daily":
+            session = params.get("session")
+            row = self._latest_report_event(
+                "research_daily_report",
+                field="session",
+                requested=session,
+            )
+            payload = row["payload"] if row else None
+            return {
+                "ok": True,
+                "report_version": (payload or {}).get("report_version"),
+                "report": payload,
+            }
+
+        if latest == "weekly":
+            week_end = params.get("week_end")
+            row = self._latest_report_event(
+                "research_weekly_report",
+                field="week_end",
+                requested=week_end,
+            )
+            return {
+                "ok": True,
+                "report_version": "rhen-weekly-v1.2",
+                "report": row["payload"] if row else None,
+            }
+
+        if latest == "command":
+            daily = self._latest_report_event(
+                "research_daily_report",
+                field="session",
+            )
+            weekly = self._latest_report_event(
+                "research_weekly_report",
+                field="week_end",
+            )
+            recent = self._event_rows(limit=2000, newest_first=True)
+            return {
+                "ok": True,
+                "evidence_version": "rhen-command-evidence-v3",
+                "generated_at": _iso(),
+                "latest_daily": daily["payload"] if daily else None,
+                "latest_weekly": weekly["payload"] if weekly else None,
+                "research_questions": [],
+                "weekly_decisions": [],
+                "research_decisions": [],
+                "post_event_evidence": {
+                    "analytics_only": True,
+                    "source": "rhen-core",
+                },
+                "provenance": {
+                    "runtime": next(
+                        (
+                            event for event in recent
+                            if event["event_type"] == "runtime_start"
+                        ),
+                        None,
+                    ),
+                    "latest_scan_cycle": next(
+                        (
+                            event for event in recent
+                            if event["event_type"] == "decision_cycle"
+                        ),
+                        None,
+                    ),
+                },
+                "telemetry_health": {
+                    "events_observed": len(recent),
+                    "latest_event_at": (
+                        recent[0]["occurred_at"] if recent else None
+                    ),
+                    "canonical_store": "rhen-core-sqlite",
+                },
+            }
+        return {"ok": False, "error": "invalid_request"}
+
+    @staticmethod
+    def _reconciliation_result(
+        *,
+        unresolved_intents: list[dict[str, Any]],
+        unknown_open_orders: list[dict[str, Any]],
+        untracked_positions: list[dict[str, Any]],
+        observed_at: datetime,
+    ) -> dict[str, Any]:
+        blockers = []
+        if unresolved_intents:
+            blockers.append(
+                f"unresolved_intents:{len(unresolved_intents)}"
+            )
+        if unknown_open_orders:
+            blockers.append(
+                f"unknown_open_orders:{len(unknown_open_orders)}"
+            )
+        if untracked_positions:
+            blockers.append(
+                f"untracked_positions:{len(untracked_positions)}"
+            )
+        return {
+            "safe_to_enter": not blockers,
+            "reason": "reconciled" if not blockers else ",".join(blockers),
+            "observed_at": observed_at.astimezone(UTC).isoformat(),
+            "unresolved_intents": unresolved_intents,
+            "unknown_open_orders": unknown_open_orders,
+            "untracked_positions": untracked_positions,
+        }
+
+    def reconcile(self, body: dict[str, Any]) -> dict[str, Any]:
+        action = str(body.get("action") or "")
+        if action == "resolve_intent":
+            intent = dict(body.get("intent") or {})
+            run_id = str(intent.get("run_id") or "")
+            client_order_id = str(intent.get("client_order_id") or "")
+            if (
+                not run_id
+                or not client_order_id
+                or intent.get("state") != "broker_not_found"
+            ):
+                raise ValueError("invalid_intent_resolution")
+            checked = _iso(intent.get("checked_at"))
+            event = {
+                "event_key": (
+                    f"{run_id}:intent-reconcile:"
+                    f"{client_order_id}:broker_not_found"
+                ),
+                "run_id": run_id,
+                "event_type": "intent_reconciliation",
+                "occurred_at": checked,
+                "correlation_id": intent.get("correlation_id"),
+                "source": "rhen-core",
+                "payload": {
+                    "client_order_id": client_order_id,
+                    "state": "broker_not_found",
+                },
+            }
+            result = self.ingest_events([event])
+            return {
+                "ok": True,
+                "updated": int(result.get("inserted") or 0),
+            }
+
+        if action != "reconcile":
+            raise ValueError("unsupported_action")
+        data = dict(body.get("reconcile") or {})
+        run_id = str(data.get("run_id") or "")
+        strategy_version_id = str(
+            data.get("strategy_version_id") or ""
+        )
+        managed_symbols = [
+            str(value).upper()
+            for value in data.get("managed_symbols") or []
+            if str(value).strip()
+        ]
+        broker_positions = data.get("broker_positions") or []
+        open_orders = data.get("open_orders") or []
+        if (
+            not run_id
+            or not strategy_version_id
+            or not isinstance(broker_positions, list)
+            or not isinstance(open_orders, list)
+        ):
+            raise ValueError("invalid_reconciliation")
+        try:
+            observed_at = datetime.fromisoformat(
+                str(data.get("observed_at") or "").replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise ValueError("invalid_reconciliation") from exc
+        if observed_at.tzinfo is None:
+            raise ValueError("invalid_reconciliation")
+
+        events = [
+            event
+            for event in self._event_rows(
+                event_types={
+                    "order_intent",
+                    "broker_order",
+                    "intent_reconciliation",
+                },
+                limit=50000,
+                newest_first=False,
+            )
+            if str(event.get("run_id") or "") == run_id
+        ]
+        known_order_ids: set[str] = set()
+        resolved_intents: set[str] = set()
+        filled_buy_symbols: set[str] = set()
+        order_intents: list[dict[str, Any]] = []
+        for event in events:
+            payload = event.get("payload") or {}
+            if event["event_type"] == "broker_order":
+                order = payload.get("order") or {}
+                client_id = str(order.get("client_order_id") or "")
+                if client_id:
+                    known_order_ids.add(client_id)
+                    resolved_intents.add(client_id)
+                try:
+                    filled = float(order.get("filled_qty") or 0)
+                except (TypeError, ValueError):
+                    filled = 0.0
+                if (
+                    str(order.get("side") or "").lower() == "buy"
+                    and filled > 0
+                ):
+                    filled_buy_symbols.add(
+                        str(order.get("symbol") or "").upper()
+                    )
+            elif event["event_type"] == "intent_reconciliation":
+                if payload.get("state") == "broker_not_found":
+                    resolved_intents.add(
+                        str(payload.get("client_order_id") or "")
+                    )
+            elif event["event_type"] == "order_intent":
+                intent = payload.get("intent") or {}
+                client_id = str(
+                    intent.get("idempotency_key")
+                    or (intent.get("payload") or {}).get(
+                        "client_order_id"
+                    )
+                    or ""
+                )
+                if client_id:
+                    order_intents.append(
+                        {
+                            "intent_id": intent.get("intent_id"),
+                            "client_order_id": client_id,
+                            "symbol": intent.get("symbol"),
+                            "side": intent.get("side"),
+                            "intended_at": intent.get("intended_at")
+                            or event.get("occurred_at"),
+                        }
+                    )
+
+        unresolved = [
+            row
+            for row in order_intents
+            if row["client_order_id"] not in resolved_intents
+        ]
+        unknown_orders = []
+        for order in open_orders:
+            client_id = str(order.get("client_order_id") or "")
+            if (
+                client_id.startswith("anevum-")
+                and client_id not in known_order_ids
+            ):
+                unknown_orders.append(
+                    {
+                        "id": order.get("id"),
+                        "client_order_id": client_id,
+                        "symbol": order.get("symbol"),
+                        "side": order.get("side"),
+                        "status": order.get("status"),
+                    }
+                )
+
+        managed = set(managed_symbols)
+        untracked = []
+        for position in broker_positions:
+            symbol = str(position.get("symbol") or "").upper()
+            try:
+                qty = float(position.get("qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if qty <= 0 or (managed and symbol not in managed):
+                continue
+            if symbol not in filled_buy_symbols:
+                untracked.append(
+                    {
+                        "symbol": symbol,
+                        "qty": position.get("qty"),
+                        "market_value": position.get("market_value"),
+                    }
+                )
+
+        result = self._reconciliation_result(
+            unresolved_intents=unresolved,
+            unknown_open_orders=unknown_orders,
+            untracked_positions=untracked,
+            observed_at=observed_at,
+        )
+        self.ingest_events(
+            [
+                {
+                    "event_key": (
+                        f"{run_id}:reconciliation:"
+                        f"{observed_at.astimezone(UTC).isoformat()}"
+                    ),
+                    "run_id": run_id,
+                    "strategy_version_id": strategy_version_id,
+                    "event_type": "reconciliation",
+                    "occurred_at": observed_at.isoformat(),
+                    "source": "rhen-core",
+                    "payload": {
+                        **result,
+                        "managed_symbols": managed_symbols,
+                    },
+                }
+            ]
+        )
+        return {"ok": True, "result": result}
