@@ -131,7 +131,19 @@ def build_hypothesis_graph(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             )
             upper_state = candidate_state.upper()
             upper_stage = candidate_next_stage.upper()
-            if (
+            invalidated_candidate = _text(
+                metadata.get("falsified_candidate_id")
+            )
+            if invalidated_candidate == candidate_id:
+                candidate_memory_state = "FALSIFIED"
+                if (
+                    "sealed_confirmatory_stage_execution_orphaned"
+                    not in candidate_reasons
+                ):
+                    candidate_reasons.append(
+                        "sealed_confirmatory_stage_execution_orphaned"
+                    )
+            elif (
                 "REJECT" in upper_state
                 or "FAIL" in upper_state
                 or "NO_DEVELOPMENT_SURVIVOR" in upper_state
