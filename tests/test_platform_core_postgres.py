@@ -86,9 +86,9 @@ def setup_ready_paper_tenant(conn):
         cur.execute(
             """
             insert into anevum.broker_authorizations(
-                broker_account_id,authorization_kind,secret_reference,status
+                broker_account_id,authorization_kind,secret_reference,scopes,status
             )
-            values(%s,'OAUTH',%s,'ACTIVE')
+            values(%s,'OAUTH',%s,'["trading"]'::jsonb,'ACTIVE')
             """,
             (broker_account_id, f"secret://{tenant_id}/alpaca"),
         )
