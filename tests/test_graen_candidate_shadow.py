@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import asyncio
 import pytest
@@ -38,6 +39,7 @@ from graen.crypto.btc_r2h_breakout_v15 import (
     candidate_spec as v15_candidate_spec,
 )
 from graen.crypto.candidate_shadow import CandidateForwardShadow
+from graen.crypto.service_v6 import GraenCryptoV6Runtime
 
 
 UTC = timezone.utc
@@ -898,3 +900,51 @@ def test_v15_shadow_ready_gate_still_requires_human_review():
     assert checkpoint["promotion_authorized"] is False
     assert checkpoint["execution_authority"] is False
     assert checkpoint["broker_orders_possible"] is False
+
+
+
+def test_v15_activation_routes_to_third_shadow_without_replacing_r2f_or_r2g():
+    async def scenario():
+        runtime = GraenCryptoV6Runtime(settings())
+        runtime.candidate_shadow.activate(r2f_activation())
+        runtime.comparison_shadow.activate(r2g_activation())
+
+        primary_before = runtime.candidate_shadow._candidate_id()
+        comparison_before = runtime.comparison_shadow._candidate_id()
+
+        runtime._emit_candidate_shadow = AsyncMock(return_value=True)
+        runtime._persist_candidate_shadow_state = AsyncMock(return_value=None)
+        runtime._sync_candidate_shadow_checkpoint = AsyncMock(
+            return_value=True
+        )
+        runtime._slack = AsyncMock(return_value=None)
+
+        request = v15_activation(
+            activated_at=datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+        )
+        request["graen_run_id"] = "run-v15-routing"
+        request["epoch_index"] = 0
+        request["generation"] = 1
+
+        result = await runtime.activate_candidate_shadow(request)
+
+        assert result["duplicate"] is False
+        assert runtime.v15_shadow.active is True
+        assert runtime.v15_shadow._candidate_id() == (
+            "V15-R1-BTC-R2H-BREAKOUT-42-15"
+        )
+        assert runtime.candidate_shadow._candidate_id() == primary_before
+        assert runtime.comparison_shadow._candidate_id() == comparison_before
+        assert runtime.candidate_shadow._candidate_methodology() == (
+            V14_R2F_METHODOLOGY_VERSION
+        )
+        assert runtime.comparison_shadow._candidate_methodology() == (
+            V14_R2G_METHODOLOGY_VERSION
+        )
+        assert runtime.v15_shadow._candidate_methodology() == (
+            V15_METHODOLOGY_VERSION
+        )
+        assert runtime.v15_shadow.execution_authority is False
+        assert runtime.v15_shadow.broker_orders_possible is False
+
+    asyncio.run(scenario())
