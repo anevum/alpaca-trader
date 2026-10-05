@@ -10,6 +10,7 @@ from app.platform_core.reconciliation import BrokerReconciliationResult
 from foundation.platform_core_gateway import (
     load_tenant_broker_account,
     record_broker_reconciliation,
+    record_tenant_executor_heartbeat,
     tenant_execution_eligibility,
 )
 
@@ -206,6 +207,39 @@ def test_configured_paper_tenant_remains_blocked_until_executor_deploys(conn):
     assert gate_input.broker_reconciled is True
     assert result.eligible is False
     assert result.reasons == ("tenant_execution_runtime_unavailable",)
+
+
+def test_fresh_executor_heartbeat_opens_only_the_runtime_gate(conn):
+    tenant_id, broker_account_id, _ = setup_ready_paper_tenant(conn)
+    stamp = datetime.now(timezone.utc)
+    record_tenant_executor_heartbeat(
+        conn,
+        runtime_id=f"paper-runtime-{uuid4()}",
+        source_commit="test-sha",
+        deployment_id="test-deployment",
+        heartbeat_at=stamp,
+    )
+
+    gate_input, result = tenant_execution_eligibility(
+        conn,
+        tenant_id=str(tenant_id),
+        broker_account_id=str(broker_account_id),
+        now=stamp,
+    )
+    assert gate_input.tenant_execution_runtime_ready is True
+    assert result.eligible is True
+    assert result.reasons == ()
+
+    stale_input, stale = tenant_execution_eligibility(
+        conn,
+        tenant_id=str(tenant_id),
+        broker_account_id=str(broker_account_id),
+        max_executor_heartbeat_age_seconds=1,
+        now=stamp + timedelta(seconds=2),
+    )
+    assert stale_input.tenant_execution_runtime_ready is False
+    assert stale.eligible is False
+    assert "tenant_execution_runtime_unavailable" in stale.reasons
 
 
 def test_same_facts_are_not_live_eligible_without_protected_authority(conn):
