@@ -203,11 +203,13 @@ def test_supervisor_strips_broker_credentials_from_pure_core(
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_API_SECRET", "secret")
     monkeypatch.setenv("TRADING_INGEST_TOKEN", "x" * 40)
+    monkeypatch.setenv("ADMIN_TOKEN", "execution-admin-secret")
     monkeypatch.setenv("FOUNDATION_SHADOW_ENABLED", "true")
 
     core = _child_env(ProcessSpec("nostra", "app.nostra.service:app", 8115))
-    assert core["ALPACA_API_KEY"] == "DISABLED"
-    assert core["ALPACA_API_SECRET"] == "DISABLED"
+    assert core["ALPACA_API_KEY"] == ""
+    assert core["ALPACA_API_SECRET"] == ""
+    assert core["ADMIN_TOKEN"] == ""
     assert core["EXECUTION_ENABLED"] == "false"
     assert core["LIVE_TRADING"] == "false"
     assert core["GRAEN_GATEWAY_TOKEN"] == "x" * 40
