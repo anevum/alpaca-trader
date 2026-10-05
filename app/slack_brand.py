@@ -128,10 +128,12 @@ def infer_semantic_emoji(
             return STATUS_EMOJI["ACTIVE"]
         return "◆"
 
-    if _word(upper, "BUY") or any(token in upper for token in ("EXECUTION", "SUBMITTED", "ORDER", "SCAN")):
-        return MODULE_EMOJI["EXECUTION"]
+    if _word(upper, "BUY"):
+        return "↗️"
     if _word(upper, "SELL"):
         return "↘️"
+    if any(token in upper for token in ("EXECUTION", "SUBMITTED", "ORDER", "SCAN")):
+        return MODULE_EMOJI["EXECUTION"]
     if any(token in upper for token in ("EVIDENCE", "PERSISTENCE", "TELEMETRY", "DATA")):
         return STATUS_EMOJI["EVIDENCE"]
     if any(token in upper for token in ("RESEARCH", "DISCOVERY", "EXPERIMENT", "HYPOTHESIS", "TEST", "PROMOTION_READY")):
