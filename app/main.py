@@ -719,6 +719,7 @@ async def crypto_monitor_loop():
                         "action": result.get("action"),
                         "symbol": result.get("symbol"),
                         "reason": result.get("reason"),
+                        "entry_diagnostics": result.get("entry_diagnostics"),
                     },
                     flush=True,
                 )
