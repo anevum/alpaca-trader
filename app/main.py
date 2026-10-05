@@ -881,6 +881,9 @@ async def lifespan(app: FastAPI):
             "execution_enabled": settings.execution_enabled,
             "bot_armed": settings.bot_armed,
             "live_trading": settings.live_trading,
+            "crypto_only_runtime": settings.crypto_only_runtime,
+            "crypto_execution_mode": settings.crypto_execution_mode,
+            "crypto_research_enabled": settings.crypto_research_enabled,
             "strategy_name": settings.strategy_name,
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
@@ -1012,7 +1015,19 @@ async def lifespan(app: FastAPI):
             },
         )
 
-    if settings.credentials_configured and not settings.scan_only:
+    equity_task: asyncio.Task | None = None
+    slack_market_task: asyncio.Task | None = None
+    research_started = False
+
+    if settings.crypto_only_runtime:
+        runtime_state.set_reconciliation(
+            {
+                "safe_to_enter": False,
+                "reason": "equity runtime disabled on dedicated crypto service",
+            },
+            startup=True,
+        )
+    elif settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
         await reconcile_broker_state(startup=True, force=True)
     elif settings.scan_only:
@@ -1024,16 +1039,22 @@ async def lifespan(app: FastAPI):
         runtime_state.startup_reconciled = True
         runtime_state.reconciliation_safe = False
 
-    await research_reports.start()
-    task = asyncio.create_task(monitor_loop())
+    if not settings.crypto_only_runtime:
+        await research_reports.start()
+        research_started = True
+        equity_task = asyncio.create_task(monitor_loop())
+        slack_market_task = asyncio.create_task(slack_market_observer_loop())
+
     crypto_task = asyncio.create_task(crypto_monitor_loop())
-    slack_market_task = asyncio.create_task(slack_market_observer_loop())
     yield
     _stop.set()
-    await task
+    if equity_task is not None:
+        await equity_task
     await crypto_task
-    await slack_market_task
-    await research_reports.stop()
+    if slack_market_task is not None:
+        await slack_market_task
+    if research_started:
+        await research_reports.stop()
     event_sink.emit(
         event_type="runtime_stop",
         correlation_id=uuid4().hex,
