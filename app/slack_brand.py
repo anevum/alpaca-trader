@@ -102,6 +102,15 @@ def system_module(system: str | None) -> str:
     return LEGACY_SYSTEM_MODULE.get(str(system or "RHEN").upper(), "EXECUTION")
 
 
+def module_from_text(text: str) -> str | None:
+    """Read an explicit RHEN v3 module segment from a canonical message header."""
+    upper = str(text or "").upper()
+    for module in MODULE_EMOJI:
+        if f"RHEN // {module} //" in upper[:120]:
+            return module
+    return None
+
+
 def infer_semantic_emoji(
     text: str,
     *,
@@ -127,6 +136,10 @@ def infer_semantic_emoji(
         if any(token in upper for token in ("DEPLOY", "RELEASE", "MAINTENANCE", "REPAIR", "HOTFIX")):
             return STATUS_EMOJI["ACTIVE"]
         return "◆"
+
+    explicit_module = module_from_text(text)
+    if explicit_module:
+        return MODULE_EMOJI[explicit_module]
 
     if _word(upper, "BUY"):
         return "↗️"
