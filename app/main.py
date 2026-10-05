@@ -1736,9 +1736,22 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
 
 
 
-def _command_iren_projection(\n    status_payload: dict,\n    work_payload: dict,\n    strategy_pipeline: dict | None = None,\n) -> dict:
-    state = status_payload.get("state") if isinstance(status_payload.get("state"), dict) else {}
-    incident_map = state.get("incidents") if isinstance(state.get("incidents"), dict) else {}
+def _command_iren_projection(
+    status_payload: dict,
+    work_payload: dict,
+    strategy_pipeline: dict | None = None,
+    research: dict | None = None,
+) -> dict:
+    state = (
+        status_payload.get("state")
+        if isinstance(status_payload.get("state"), dict)
+        else {}
+    )
+    incident_map = (
+        state.get("incidents")
+        if isinstance(state.get("incidents"), dict)
+        else {}
+    )
     incidents = [
         {
             "key": key,
@@ -1747,9 +1760,14 @@ def _command_iren_projection(\n    status_payload: dict,\n    work_payload: dict
             "opened_at": row.get("opened_at"),
         }
         for key, row in incident_map.items()
-        if isinstance(row, dict) and str(row.get("status") or "").upper() == "OPEN"
+        if isinstance(row, dict)
+        and str(row.get("status") or "").upper() == "OPEN"
     ]
-    summary = work_payload.get("summary") if isinstance(work_payload.get("summary"), dict) else {}
+    summary = (
+        work_payload.get("summary")
+        if isinstance(work_payload.get("summary"), dict)
+        else {}
+    )
     return {
         "schema_version": "iren_command.v2",
         "work_schema_version": "iren_work.v1",
@@ -1760,14 +1778,51 @@ def _command_iren_projection(\n    status_payload: dict,\n    work_payload: dict
         "topology": state.get("topology"),
         "incidents": incidents,
         "scheduler": state.get("scheduler"),
-        "action_required": bool(status_payload.get("action_required")) or bool(incidents),
-        "source": "rhen_native",\n        "strategy_pipeline": strategy_pipeline or {\n            "schema_version": "strategy_pipeline.v1",\n            "available": False,\n            "active": _command_active_strategies(),\n            "candidate": None,\n            "validation": None,\n            "release_gate": {\n                "owner": "IREN",\n                "status": "UNAVAILABLE",\n                "automatic_promotion": False,\n                "production_authority_changed": False,\n            },\n        },\n        "work": {
+        "action_required": (
+            bool(status_payload.get("action_required")) or bool(incidents)
+        ),
+        "source": "rhen_native",
+        "strategy_pipeline": strategy_pipeline or {
+            "schema_version": "strategy_pipeline.v1",
+            "available": False,
+            "active": _command_active_strategies(),
+            "candidate": None,
+            "validation": None,
+            "release_gate": {
+                "owner": "IREN",
+                "status": "UNAVAILABLE",
+                "automatic_promotion": False,
+                "production_authority_changed": False,
+            },
+        },
+        "research": research or {},
+        "work": {
             **summary,
-            "objectives": work_payload.get("objectives") if isinstance(work_payload.get("objectives"), list) else [],
-            "jobs": work_payload.get("jobs") if isinstance(work_payload.get("jobs"), list) else [],
-            "job_events": work_payload.get("job_events") if isinstance(work_payload.get("job_events"), list) else [],
-            "commands": work_payload.get("commands") if isinstance(work_payload.get("commands"), list) else [],
-            "handoffs": work_payload.get("handoffs") if isinstance(work_payload.get("handoffs"), list) else [],
+            "objectives": (
+                work_payload.get("objectives")
+                if isinstance(work_payload.get("objectives"), list)
+                else []
+            ),
+            "jobs": (
+                work_payload.get("jobs")
+                if isinstance(work_payload.get("jobs"), list)
+                else []
+            ),
+            "job_events": (
+                work_payload.get("job_events")
+                if isinstance(work_payload.get("job_events"), list)
+                else []
+            ),
+            "commands": (
+                work_payload.get("commands")
+                if isinstance(work_payload.get("commands"), list)
+                else []
+            ),
+            "handoffs": (
+                work_payload.get("handoffs")
+                if isinstance(work_payload.get("handoffs"), list)
+                else []
+            ),
             "next_action": summary.get("next_action"),
             "execution_mode": summary.get("execution_mode"),
         },
