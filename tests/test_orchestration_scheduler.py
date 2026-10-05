@@ -381,3 +381,30 @@ def test_scheduler_invalid_tick_interval_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("SCHEDULER_TICK_SECONDS", "not-an-integer")
     runtime = SchedulerRuntime()
     assert runtime.tick_seconds == 30
+
+
+def test_velum_crypto_replay_recovery_uses_new_job_key():
+    import json
+    from pathlib import Path
+
+    registry = json.loads(Path("app/schedule_registry.json").read_text())
+    workflow = next(
+        row for row in registry["workflows"]
+        if row["workflow_id"] == "velum.crypto.replay"
+    )
+    assert workflow["version"] == "1.0.1"
+
+    scheduled = datetime(2026, 10, 5, 19, 5, tzinfo=UTC)
+    previous = ScheduledItem(
+        {**workflow, "version": "1.0.0"},
+        scheduled,
+        "2026-10-05T19:00:00+00:00",
+        {"window_end": "2026-10-05T19:00:00+00:00"},
+    )
+    recovery = ScheduledItem(
+        workflow,
+        scheduled,
+        "2026-10-05T19:00:00+00:00",
+        {"window_end": "2026-10-05T19:00:00+00:00"},
+    )
+    assert previous.job_key != recovery.job_key
