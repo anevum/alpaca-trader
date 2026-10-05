@@ -457,6 +457,16 @@ class TenantPaperExecutor:
         client_order_id = str(intent["client_order_id"])
         existing = await client.order_by_client_order_id(client_order_id)
         if existing is not None:
+            broker_status = str(existing.get("status") or "").lower()
+            if broker_status in {"canceled", "cancelled", "expired", "rejected"}:
+                self._update_intent(
+                    str(intent["order_intent_id"]),
+                    status="FAILED",
+                    broker_order_id=str(existing.get("id") or "") or None,
+                    submitted=True,
+                    resolved=True,
+                )
+                return "broker_terminal_failure", existing
             self._update_intent(
                 str(intent["order_intent_id"]),
                 status="ACKNOWLEDGED",
@@ -497,6 +507,16 @@ class TenantPaperExecutor:
             )
             return "ambiguous", None
 
+        broker_status = str(order.get("status") or "").lower()
+        if broker_status in {"canceled", "cancelled", "expired", "rejected"}:
+            self._update_intent(
+                str(intent["order_intent_id"]),
+                status="FAILED",
+                broker_order_id=str(order.get("id") or "") or None,
+                submitted=True,
+                resolved=True,
+            )
+            return "broker_terminal_failure", order
         self._update_intent(
             str(intent["order_intent_id"]),
             status="ACKNOWLEDGED",
@@ -556,10 +576,13 @@ class TenantPaperExecutor:
                 client_order_id=str(protective["client_order_id"]),
             ),
         )
+        stop_status = str((stop_order or {}).get("status") or "").lower()
+        protected = (
+            state in {"submitted", "reconciled", "reconciled_after_error", "acknowledged"}
+            and stop_status not in {"canceled", "cancelled", "expired", "rejected"}
+        )
         return {
-            "state": "PROTECTED" if state in {
-                "submitted", "reconciled", "reconciled_after_error", "acknowledged"
-            } else "BLOCKED",
+            "state": "PROTECTED" if protected else "BLOCKED",
             "submission_state": state,
             "order": stop_order,
         }
@@ -801,7 +824,7 @@ class TenantPaperExecutor:
                     client_order_id=str(existing_entry["client_order_id"]),
                 ),
             )
-            if state in {"ambiguous", "ambiguous_unresolved"}:
+            if state in {"ambiguous", "ambiguous_unresolved", "broker_terminal_failure"}:
                 return {
                     "tenant_id": tenant_id,
                     "broker_account_id": broker_account_id,
@@ -915,7 +938,7 @@ class TenantPaperExecutor:
                 client_order_id=str(intent["client_order_id"]),
             ),
         )
-        if state in {"ambiguous", "ambiguous_unresolved"}:
+        if state in {"ambiguous", "ambiguous_unresolved", "broker_terminal_failure"}:
             return {
                 "tenant_id": tenant_id,
                 "broker_account_id": broker_account_id,
