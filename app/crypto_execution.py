@@ -1062,13 +1062,23 @@ class CryptoExecutionEngine:
 
         result: dict[str, Any]
         if not prepared:
-            self.state.crypto_last_decision = (
-                "crypto scan completed; no executable entries"
-            )
+            scan_reasons = {
+                symbol: str(payload.get("reason") or "")
+                for symbol, payload in scan.items()
+                if payload.get("reason")
+            }
+            unique_reasons = list(dict.fromkeys(scan_reasons.values()))
+            if direct_btc and unique_reasons:
+                self.state.crypto_last_decision = unique_reasons[0]
+            else:
+                self.state.crypto_last_decision = (
+                    "crypto scan completed; no executable entries"
+                )
             result = {
                 "action": "hold",
                 "reason": self.state.crypto_last_decision,
                 "errors": errors,
+                "scan_reasons": scan_reasons,
             }
         else:
             signal, qty, client_order_id, refs = prepared[0]
