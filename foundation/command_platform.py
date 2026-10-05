@@ -410,6 +410,120 @@ def _ensure_default_paper_strategy_assignment(
 
 
 
+def assign_paper_strategy_release(
+    conn: psycopg.Connection[Any],
+    *,
+    operator_email: str,
+    tenant_id: str,
+    strategy_release_id: str,
+) -> dict[str, Any]:
+    """Explicitly assign an existing paper-capable release to one tenant.
+
+    This is an operator action for resolving ambiguous defaults. It cannot create,
+    promote, or alter a strategy release and it grants no live authority.
+    """
+
+    tenant_uuid = _uuid(tenant_id, "tenant_id")
+    release_id = str(strategy_release_id or "").strip()
+    if not release_id:
+        raise ValueError("strategy_release_id_required")
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select status
+                from anevum.tenants
+                where tenant_id=%s
+                """,
+                (tenant_uuid,),
+            )
+            tenant_row = cur.fetchone()
+            if not tenant_row:
+                raise ValueError("tenant_not_found")
+            if str(tenant_row[0] or "").upper() != "ACTIVE":
+                raise ValueError("tenant_not_active")
+
+            cur.execute(
+                """
+                select broker_account_id
+                from anevum.broker_accounts
+                where tenant_id=%s and environment='PAPER'
+                order by created_at
+                limit 1
+                """,
+                (tenant_uuid,),
+            )
+            broker_row = cur.fetchone()
+            if not broker_row:
+                raise ValueError("paper_broker_account_required")
+            broker_uuid = broker_row[0]
+
+            cur.execute(
+                """
+                select strategy_key,semantic_version,channel,lifecycle_state
+                from anevum.strategy_releases
+                where strategy_release_id=%s
+                  and lifecycle_state in (
+                      'PAPER_PASSED','APPROVED','CANARY','STABLE'
+                  )
+                """,
+                (release_id,),
+            )
+            release = cur.fetchone()
+            if not release:
+                raise ValueError("strategy_release_not_paper_capable")
+
+            cur.execute(
+                """
+                update anevum.tenant_strategy_assignments
+                set status='SUPERSEDED',unassigned_at=now()
+                where tenant_id=%s
+                  and broker_account_id=%s
+                  and status='ACTIVE'
+                """,
+                (tenant_uuid, broker_uuid),
+            )
+            cur.execute(
+                """
+                insert into anevum.tenant_strategy_assignments(
+                    tenant_id,broker_account_id,strategy_release_id,
+                    status,assigned_by
+                )
+                values(%s,%s,%s,'ACTIVE',%s)
+                returning assignment_id,assigned_at
+                """,
+                (tenant_uuid, broker_uuid, release_id, operator_email),
+            )
+            assignment_id, assigned_at = cur.fetchone()
+            _audit(
+                cur,
+                tenant_id=tenant_uuid,
+                email=operator_email,
+                action="PAPER_STRATEGY_ASSIGNED",
+                object_type="strategy_release",
+                object_id=release_id,
+                payload={
+                    "broker_account_id": str(broker_uuid),
+                    "assignment_id": str(assignment_id),
+                },
+                actor_type="operator",
+            )
+
+    return {
+        "tenant_id": str(tenant_uuid),
+        "broker_account_id": str(broker_uuid),
+        "assignment_id": str(assignment_id),
+        "strategy_release_id": release_id,
+        "strategy_key": str(release[0]),
+        "semantic_version": str(release[1]),
+        "channel": str(release[2]),
+        "lifecycle_state": str(release[3]),
+        "assigned_at": _serialize(assigned_at),
+        "live_customer_authority": False,
+    }
+
+
 def _activity(
     conn: psycopg.Connection[Any],
     *,
