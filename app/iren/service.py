@@ -157,8 +157,8 @@ class IrenController:
         return {"observed_at": datetime.now(UTC).isoformat(), "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
             "services": services, "provider_inventory": provider_inventory,
             "configuration": config, "runs": recent,
-            "scheduler": {"configured": rt.configured, "version": rt.scheduler_version,
-                "started_at": rt.started_at.isoformat(),
+            "scheduler": {"configured": rt.configured, "enabled": rt.enabled,
+                "version": rt.scheduler_version, "started_at": rt.started_at.isoformat(),
                 "last_success_at": rt.last_success_at.isoformat() if rt.last_success_at else None,
                 "last_error": bool(rt.last_error), "running_job": rt.running_job,
                 "next_expected_runs": dict(rt.next_runs)}}
