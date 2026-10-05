@@ -275,12 +275,63 @@ def public_order(order: dict) -> dict:
     return {key: order.get(key) for key in keys}
 
 
+def command_account_history_payload(history: dict) -> dict:
+    timestamps = history.get("timestamp") if isinstance(history.get("timestamp"), list) else []
+    equities = history.get("equity") if isinstance(history.get("equity"), list) else []
+    profit_loss = history.get("profit_loss") if isinstance(history.get("profit_loss"), list) else []
+    profit_loss_pct = history.get("profit_loss_pct") if isinstance(history.get("profit_loss_pct"), list) else []
+    count = min(len(timestamps), len(equities))
+    points: list[dict] = []
+    for index in range(count):
+        stamp = timestamps[index]
+        equity_value = equities[index]
+        if stamp is None or equity_value is None:
+            continue
+        try:
+            observed_at = datetime.fromtimestamp(float(stamp), tz=timezone.utc).isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+        points.append(
+            {
+                "at": observed_at,
+                "equity": str(equity_value),
+                "profit_loss": str(profit_loss[index]) if index < len(profit_loss) and profit_loss[index] is not None else None,
+                "profit_loss_pct": str(profit_loss_pct[index]) if index < len(profit_loss_pct) and profit_loss_pct[index] is not None else None,
+            }
+        )
+    return {
+        "source": "alpaca_portfolio_history",
+        "period": "1D",
+        "timeframe": str(history.get("timeframe") or "5Min"),
+        "base_value": str(history.get("base_value")) if history.get("base_value") is not None else None,
+        "points": points,
+    }
+
+
 async def command_snapshot() -> dict:
     account = await client.account()
     clock = await client.clock()
     positions = await client.positions()
     open_orders = await client.open_orders()
     recent_orders = await client.recent_orders(limit=100)
+    try:
+        account_history = command_account_history_payload(
+            await client.portfolio_history(
+                period="1D",
+                timeframe="5Min",
+                intraday_reporting="continuous",
+                pnl_reset="no_reset",
+            )
+        )
+    except Exception as exc:
+        account_history = {
+            "source": "alpaca_portfolio_history",
+            "period": "1D",
+            "timeframe": "5Min",
+            "points": [],
+            "status": "unavailable",
+            "error": type(exc).__name__,
+        }
     bot_orders = [
         order
         for order in recent_orders
@@ -334,6 +385,7 @@ async def command_snapshot() -> dict:
             "trading_blocked": bool(account.get("trading_blocked")),
             "account_blocked": bool(account.get("account_blocked")),
         },
+        "account_history": account_history,
         "strategy": {
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
