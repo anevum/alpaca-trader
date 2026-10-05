@@ -13,7 +13,12 @@ from foundation.command_platform import (
     _encrypt_token,
     _ensure_default_paper_strategy_assignment,
     assign_paper_strategy_release,
+    customer_account_projection,
+    customer_activity_projection,
+    customer_money_projection,
     customer_overview,
+    customer_overview_projection,
+    customer_trading_projection,
     provision_paper_beta_tenant,
     resolve_command_session,
     start_paper_oauth,
@@ -342,6 +347,41 @@ def test_customer_overview_derives_funding_and_lifecycle_from_alpaca_snapshot(co
         if step["key"] == "funding"
     )
     assert funding_step["complete"] is True
+
+
+    account_surface = customer_account_projection(
+        conn,
+        email="funding@example.test",
+        tenant_id=created["tenant_id"],
+    )
+    overview_surface = customer_overview_projection(
+        conn,
+        email="funding@example.test",
+        tenant_id=created["tenant_id"],
+    )
+    trading_surface = customer_trading_projection(
+        conn,
+        email="funding@example.test",
+        tenant_id=created["tenant_id"],
+    )
+    money_surface = customer_money_projection(
+        conn,
+        email="funding@example.test",
+        tenant_id=created["tenant_id"],
+    )
+    activity_surface = customer_activity_projection(
+        conn,
+        email="funding@example.test",
+        tenant_id=created["tenant_id"],
+    )
+
+    assert account_surface["schema_version"] == "command_account.v1"
+    assert overview_surface["schema_version"] == "command_overview.v1"
+    assert trading_surface["schema_version"] == "command_trading.v1"
+    assert money_surface["schema_version"] == "command_money.v1"
+    assert activity_surface["schema_version"] == "command_activity.v1"
+    assert money_surface["authority"]["broker_is_source_of_truth"] is True
+    assert overview_surface["funding"]["funded"] is True
 
 
 
