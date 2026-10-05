@@ -182,3 +182,43 @@ Platform Core v1 does not grant customer live execution or withdrawal authority.
 ## Preserve current work
 
 Current BTC research/paper work, Foundation v2, truthful Command activity semantics, and the autonomous GRAEN lifecycle continue. Platform Core v1 is additive and must not interrupt or weaken those systems.
+
+## Product overhaul v2 consolidation
+
+Platform Core is the single canonical customer-domain model.
+
+The following identities must not be duplicated by a separate financial subsystem:
+
+- tenant/principal/membership;
+- Alpaca broker account;
+- RHEN capital allocation;
+- account risk profile;
+- broker reconciliation;
+- customer trading controls.
+
+The earlier Financial Gateway draft is superseded as a parallel product architecture.
+Useful provider patterns are folded into Platform Core instead.
+
+Canonical migration sequence on this branch:
+
+- 0024: Command Platform Core identities and isolation;
+- 0025: broker reconciliation evidence;
+- 0026: tenant trading controls;
+- 0027: paper-beta OAuth/encrypted token envelopes;
+- 0028: broker funding/transfer metadata.
+
+Migration 0028 intentionally stores broker transfer intent and event metadata only. It
+does not create an ANEVUM customer cash ledger, a second provider-account identity, or
+a second RHEN allocation model.
+
+Alpaca remains authoritative for customer brokerage cash and transfer settlement.
+
+The broker-money provider adapter is fail-closed by default. The Alpaca Broker adapter
+present in Platform Core is sandbox-only and is not wired to customer transfer
+mutations. Deposits, withdrawals, production Broker API account opening, and customer
+LIVE trading remain unavailable in Platform Core v1.
+
+This consolidation preserves the autonomous GRAEN/VELUM/IREN research and release
+pipeline and the isolated BTC paper-canary program. It changes product boundaries, not
+research authority or live-risk gates.
+
