@@ -5,21 +5,28 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import re
 from typing import Any
 
 SCHEMA = "codex_handoff.v1"
-REPOSITORY = "anevum/alpaca-trader"
+REPOSITORY = os.getenv("IREN_GITHUB_REPOSITORY", "anevum/rhen").strip() or "anevum/rhen"
 TERMINAL = {"VERIFIED", "FAILED", "SUPERSEDED"}
 LIFECYCLE = {"PREPARED", "IN_PROGRESS", "PR_OPEN", "MERGED", "VERIFYING", "VERIFIED", "FAILED", "SUPERSEDED"}
-ALLOWED_PREFIXES = ("app/iren/", "foundation/iren_", "tests/test_iren_", "docs/iren/")
-ALLOWED_FILES = {"foundation/command_iren.py"}
+ALLOWED_PREFIXES = (
+    "app/iren/",
+    "app/rhen_core/",
+    "tests/test_iren_",
+    "tests/test_rhen_core_",
+    "docs/iren/",
+)
+ALLOWED_FILES = set()
 PROTECTED = (
     "RHEN strategy logic, risk controls, stops, targets, position sizing, capital allocation, "
     "broker behavior, live execution permissions, crypto execution, credentials, API spending "
     "limits, destructive infrastructure actions, legal/publication actions and external capital behavior"
 )
-REQUIRED_CHECKS = {"test", "velum-graen", "graen-forward-shadow", "inventory", "codex-postgres"}
+REQUIRED_CHECKS = {"test", "velum-graen", "graen-forward-shadow", "inventory"}
 
 
 def digest(value: Any) -> str:
@@ -71,7 +78,7 @@ def package_for(objective: dict, *, handoff_id: str, command_id: str | None,
     if not all(path_allowed(p) for p in paths):
         raise ValueError("scope_exceeds_iren_boundary")
     services = scope.get("expected_services") or ["IREN"]
-    if not services or not set(services) <= {"IREN", "IREN_EXECUTOR", "FOUNDATION"}:
+    if not services or not set(services) <= {"RHEN", "IREN", "IREN_EXECUTOR"}:
         raise ValueError("deployment_scope_exceeds_iren_boundary")
     incidents = [{"key": k, "reason": v.get("reason"), "severity": v.get("severity")}
                  for k, v in (control.get("incidents") or {}).items() if v.get("status") == "OPEN"]
@@ -128,12 +135,12 @@ Use branch {p['branch']} and put these exact lines in the PR body:
 IREN-Handoff: {p['handoff_id']}
 IREN-Objective: {p['objective_key']}
 
-Architecture: GitHub main -> Railway runtimes -> Foundation v2 Railway PostgreSQL.
-IREN owns orchestration. Specialized subsystems remain beneath IREN.
-Reuse iren.objectives, jobs, commands, job_events, planner, gateway and verifier.
-Legacy infrastructure is noncanonical and must not be reintroduced.
-Inspect app/iren/work.py, app/iren/codex_handoff.py, foundation/iren_work_gateway.py,
-foundation/command_iren.py, existing tests and the objective-specific areas below.
+Architecture: GitHub main -> unified RHEN Railway runtime -> RHEN Core volume-backed SQLite.
+IREN owns orchestration inside RHEN. GRAEN, NOSTRA and VELUM are RHEN-hosted subsystems.
+Reuse RHEN Core durable state plus IREN objectives, jobs, commands, planner, gateway and verifier.
+Legacy Foundation infrastructure is archival and must not be reintroduced into active runtime paths.
+Inspect app/iren/work.py, app/iren/codex_handoff.py, app/rhen_core/store.py,
+app/rhen_core/service.py, existing tests and the objective-specific areas below.
 
 Scope and implementation requirements: implement the objective within allowed_paths below.
 Preserve the exact success_criteria and dependencies. Use explicit deterministic evidence for each criterion.
@@ -141,7 +148,7 @@ If additional scope, migration or service deployment is required, stop and reque
 Out of scope: unrelated refactors, architecture replacement, legacy PR cleanup and all protected boundaries.
 This handoff grants NO authority over {PROTECTED}.
 Keep both model budgets zero; never invoke the paid worker or enable spending.
-Protect live trading. No trader restart/rebuild. Only expected_services may deploy.
+Protect live trading. No RHEN restart/rebuild unless the reviewed deployment explicitly requires it. Only expected_services may deploy.
 No credential changes or destructive database operations.
 
 Tests: add focused positive/negative tests for the objective, absent/stale/malformed evidence and authority denial;
@@ -169,7 +176,7 @@ def criteria_from_observations(package: dict, observations: dict) -> dict:
     """Only a fixed read-only observation namespace; no caller-supplied truth flags."""
     criteria = {}
     for name, check in package.get("verification_checks", {}).items():
-        if not isinstance(check, dict) or check.get("source") not in {"IREN", "IREN_EXECUTOR", "FOUNDATION"}:
+        if not isinstance(check, dict) or check.get("source") not in {"RHEN", "IREN", "IREN_EXECUTOR"}:
             continue
         value = observations.get(check["source"])
         path = check.get("path")
