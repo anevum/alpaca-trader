@@ -12,6 +12,7 @@ from foundation.command_platform import (
     PAPER_BETA_KEY_VERSION,
     _encrypt_token,
     _ensure_default_paper_strategy_assignment,
+    assign_paper_strategy_release,
     customer_overview,
     provision_paper_beta_tenant,
     resolve_command_session,
@@ -341,3 +342,81 @@ def test_customer_overview_derives_funding_and_lifecycle_from_alpaca_snapshot(co
         if step["key"] == "funding"
     )
     assert funding_step["complete"] is True
+
+
+
+def test_ambiguous_default_release_requires_explicit_operator_assignment(conn, monkeypatch):
+    monkeypatch.delenv("COMMAND_PAPER_DEFAULT_STRATEGY_RELEASE_ID", raising=False)
+    created = provision_paper_beta_tenant(
+        conn,
+        customer_email="ambiguous@example.test",
+        display_name="Ambiguous Beta",
+        created_by="owner@anevum.test",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into anevum.broker_accounts(
+                tenant_id,provider,provider_account_id,environment,
+                account_status,crypto_enabled,trading_blocked,withdrawals_blocked
+            )
+            values(%s,'ALPACA',%s,'PAPER','ACTIVE',true,false,false)
+            returning broker_account_id
+            """,
+            (created["tenant_id"], f"paper-{uuid4()}"),
+        )
+        broker_id = str(cur.fetchone()[0])
+        release_ids = [f"paper-release-{uuid4()}", f"paper-release-{uuid4()}"]
+        for index, release_id in enumerate(release_ids):
+            cur.execute(
+                """
+                insert into anevum.strategy_releases(
+                    strategy_release_id,strategy_key,semantic_version,channel,
+                    lifecycle_state,source_commit,strategy_hash,configuration_hash,
+                    risk_policy_version,evidence
+                )
+                values(%s,%s,%s,'INTERNAL','PAPER_PASSED',
+                       %s,%s,%s,'risk-v1','{}'::jsonb)
+                """,
+                (
+                    release_id,
+                    f"RHEN-BTC-{index}",
+                    f"0.0.{index + 1}-paper",
+                    f"test-commit-{index}",
+                    f"strategy-hash-{index}",
+                    f"config-hash-{index}",
+                ),
+            )
+
+    automatic = _ensure_default_paper_strategy_assignment(
+        conn,
+        tenant_id=created["tenant_id"],
+        broker_account_id=broker_id,
+    )
+    assert automatic is None
+
+    explicit = assign_paper_strategy_release(
+        conn,
+        operator_email="owner@anevum.test",
+        tenant_id=created["tenant_id"],
+        strategy_release_id=release_ids[1],
+    )
+    assert explicit["strategy_release_id"] == release_ids[1]
+    assert explicit["live_customer_authority"] is False
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select actor_type,action,object_id
+            from anevum.protected_audit_events
+            where tenant_id=%s
+              and action='PAPER_STRATEGY_ASSIGNED'
+            order by occurred_at desc
+            limit 1
+            """,
+            (created["tenant_id"],),
+        )
+        actor_type, action, object_id = cur.fetchone()
+    assert actor_type == "operator"
+    assert action == "PAPER_STRATEGY_ASSIGNED"
+    assert object_id == release_ids[1]
