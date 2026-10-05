@@ -52,7 +52,7 @@ def test_reconciliation_state_deduplicates_until_it_changes():
     }
     notifier.record_event(event)
     safe_message = queued(notifier)
-    assert safe_message.startswith(":rhen: ↗️")
+    assert safe_message.startswith(":rhen: ✅")
     assert "RECONCILIATION SAFE" in safe_message
 
     notifier.record_event(event)
