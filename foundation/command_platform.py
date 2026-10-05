@@ -1027,7 +1027,11 @@ async def complete_paper_oauth(
         authorization_kind="OAUTH",
         secret_reference=secret_reference,
     )
-    resolver = DatabaseEnvelopeSecretResolver(database_url, str(tenant_id))
+    resolver = DatabaseEnvelopeSecretResolver(
+        database_url,
+        str(tenant_id),
+        connection=conn,
+    )
     result = await TenantBrokerReconciler(
         broker,
         TenantAlpacaReadClient(broker, resolver),
