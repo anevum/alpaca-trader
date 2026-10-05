@@ -1686,6 +1686,264 @@ class RhenCoreStore:
         }
 
 
+    def strategy_pipeline_research(self) -> dict[str, Any]:
+        """Return the durable Command research and strategy lifecycle projection."""
+        with self.connect() as conn:
+            problem_rows = conn.execute(
+                """select * from graen_problems
+                order by
+                  case status
+                    when 'RUNNING' then 0
+                    when 'WAITING' then 1
+                    when 'QUEUED' then 2
+                    when 'BLOCKED' then 3
+                    else 4
+                  end,
+                  updated_at desc
+                limit 25"""
+            ).fetchall()
+            run_rows = conn.execute(
+                """select * from graen_runs
+                order by started_at desc limit 50"""
+            ).fetchall()
+            replay_rows = conn.execute(
+                """select event_type,occurred_at,strategy_version_id,payload_json
+                from events
+                where event_type in (
+                  'velum_graen_candidate_replay',
+                  'velum_replay_result'
+                )
+                order by occurred_at desc limit 25"""
+            ).fetchall()
+
+        graen_runtime, _ = self.get_kv("graen", "runtime", {})
+
+        problems: list[dict[str, Any]] = []
+        for row in problem_rows:
+            problem = self._problem(row)
+            metadata = dict(problem.get("metadata") or {})
+            problems.append(
+                {
+                    "problem_id": problem.get("problem_id"),
+                    "title": problem.get("title") or problem.get("statement"),
+                    "status": problem.get("status"),
+                    "domain": problem.get("domain"),
+                    "research_stage": metadata.get("research_stage"),
+                    "candidate_id": (
+                        metadata.get("candidate_id")
+                        or problem.get("candidate_id")
+                    ),
+                    "hypothesis": metadata.get("hypothesis"),
+                    "family": metadata.get("family"),
+                    "mechanism": metadata.get("mechanism"),
+                    "campaign_id": metadata.get("campaign_id"),
+                    "target_lane": metadata.get("target_lane"),
+                    "supersedes_strategy_version_id": metadata.get(
+                        "supersedes_strategy_version_id"
+                    ),
+                    "release_requested": bool(
+                        metadata.get("release_requested", False)
+                    ),
+                    "updated_at": problem.get("updated_at"),
+                    "started_at": problem.get("started_at"),
+                    "completed_at": problem.get("completed_at"),
+                }
+            )
+
+        runs: list[dict[str, Any]] = []
+        for row in run_rows:
+            run = self._run(row)
+            result = dict(run.get("result_summary") or {})
+            runs.append(
+                {
+                    "run_id": run.get("run_id"),
+                    "problem_id": run.get("problem_id"),
+                    "status": run.get("status"),
+                    "methodology_version": run.get("methodology_version"),
+                    "result_state": (
+                        result.get("result_state")
+                        or result.get("state")
+                        or result.get("status")
+                    ),
+                    "error": result.get("error"),
+                    "started_at": run.get("started_at"),
+                    "completed_at": run.get("completed_at"),
+                    "created_at": run.get("started_at"),
+                }
+            )
+
+        replay_projections: list[dict[str, Any]] = []
+        for row in replay_rows:
+            payload = _loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                payload = {}
+            engineering_gate = (
+                dict(payload.get("engineering_gate") or {})
+                if isinstance(payload.get("engineering_gate"), dict)
+                else {}
+            )
+            passed = engineering_gate.get("passed")
+            status = (
+                "PASSED"
+                if passed is True
+                else "FAILED"
+                if passed is False
+                else str(payload.get("status") or "COMPLETE").upper()
+            )
+            replay_range = (
+                dict(payload.get("range") or {})
+                if isinstance(payload.get("range"), dict)
+                else {}
+            )
+            replay_projections.append(
+                {
+                    "owner": "VELUM",
+                    "event_type": row["event_type"],
+                    "candidate_id": payload.get("candidate_id"),
+                    "problem_id": payload.get("problem_id"),
+                    "strategy_version_id": (
+                        row["strategy_version_id"]
+                        or payload.get("strategy_version_id")
+                    ),
+                    "status": status,
+                    "started_at": (
+                        payload.get("replay_start")
+                        or replay_range.get("start")
+                    ),
+                    "completed_at": row["occurred_at"],
+                    "observed_at": row["occurred_at"],
+                    "engineering_gate": engineering_gate or None,
+                }
+            )
+
+        candidate = None
+        active_candidate_states = {"RUNNING", "WAITING", "QUEUED", "BLOCKED"}
+        selected_problem = next(
+            (
+                row
+                for row in problems
+                if str(row.get("status") or "").upper() in active_candidate_states
+                or row.get("release_requested") is True
+            ),
+            None,
+        )
+        if selected_problem is not None:
+            domain = str(selected_problem.get("domain") or "").upper()
+            lane = str(selected_problem.get("target_lane") or "").lower()
+            if lane not in {"crypto", "equities"}:
+                lane = (
+                    "crypto"
+                    if "CRYPTO" in domain
+                    else "equities"
+                    if "EQUITY" in domain or "STOCK" in domain
+                    else "unknown"
+                )
+            selected_run = next(
+                (
+                    row
+                    for row in runs
+                    if row.get("problem_id") == selected_problem.get("problem_id")
+                ),
+                None,
+            )
+            candidate = {
+                "owner": "GRAEN",
+                "problem_id": selected_problem.get("problem_id"),
+                "candidate_id": selected_problem.get("candidate_id"),
+                "title": selected_problem.get("title"),
+                "lane": lane,
+                "status": selected_problem.get("status"),
+                "stage": selected_problem.get("research_stage"),
+                "methodology_version": (
+                    selected_run.get("methodology_version")
+                    if selected_run else None
+                ),
+                "run_id": selected_run.get("run_id") if selected_run else None,
+                "updated_at": selected_problem.get("updated_at"),
+                "started_at": selected_problem.get("started_at"),
+                "completed_at": selected_problem.get("completed_at"),
+                "supersedes_strategy_version_id": (
+                    selected_problem.get("supersedes_strategy_version_id")
+                ),
+                "release_requested": bool(
+                    selected_problem.get("release_requested", False)
+                ),
+            }
+
+        validation = None
+        if candidate:
+            validation = next(
+                (
+                    row
+                    for row in replay_projections
+                    if row.get("problem_id")
+                    and row.get("problem_id") == candidate.get("problem_id")
+                ),
+                None,
+            )
+        if validation is None and replay_projections:
+            validation = replay_projections[0]
+
+        candidate_status = str((candidate or {}).get("status") or "").upper()
+        validation_status = str((validation or {}).get("status") or "").upper()
+        same_problem = bool(
+            candidate
+            and validation
+            and validation.get("problem_id")
+            and validation.get("problem_id") == candidate.get("problem_id")
+        )
+        release_status = "NO_CANDIDATE"
+        reason = "No durable superseding research candidate is currently exposed."
+        if candidate:
+            release_status = "HOLD"
+            reason = "Candidate has not completed validation."
+            supersedes = candidate.get("supersedes_strategy_version_id")
+            if not supersedes:
+                reason = (
+                    "Candidate has no explicit production supersession target."
+                )
+            elif candidate_status in {"FAILED", "CANCELLED", "BLOCKED"}:
+                release_status = "REJECTED"
+                reason = "Candidate research is not eligible for promotion."
+            elif same_problem and validation_status == "FAILED":
+                release_status = "REJECTED"
+                reason = "Latest matching VELUM validation failed."
+            elif (
+                candidate_status in {"SUCCEEDED", "COMPLETE", "COMPLETED"}
+                and same_problem
+                and validation_status == "PASSED"
+                and bool(candidate.get("release_requested"))
+            ):
+                release_status = "REVIEW"
+                reason = "Research and validation are complete; operator review is required."
+
+        return {
+            "schema_version": "strategy_pipeline_research.v1",
+            "candidate": candidate,
+            "validation": validation,
+            "release_gate": {
+                "owner": "IREN",
+                "status": release_status,
+                "reason": reason,
+                "target_lane": (
+                    (candidate or {}).get("lane")
+                    if (candidate or {}).get("supersedes_strategy_version_id")
+                    else None
+                ),
+                "target_strategy_version_id": (
+                    (candidate or {}).get("supersedes_strategy_version_id")
+                ),
+                "automatic_promotion": False,
+                "production_authority_changed": False,
+            },
+            "research": {
+                "graen_problems": problems,
+                "graen_runs": runs,
+                "velum_replays": replay_projections,
+                "graen_runtime": graen_runtime or None,
+            },
+        }
+
     def canonical_evidence(self) -> dict[str, Any]:
         with self.connect() as conn:
             runtime_row = conn.execute(

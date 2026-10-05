@@ -1685,9 +1685,234 @@ async def _rhen_native_iren_request(method: str, path: str, body: dict | None = 
     return payload if isinstance(payload, dict) else {}
 
 
-def _command_iren_projection(status_payload: dict, work_payload: dict) -> dict:
-    state = status_payload.get("state") if isinstance(status_payload.get("state"), dict) else {}
-    incident_map = state.get("incidents") if isinstance(state.get("incidents"), dict) else {}
+async def _rhen_core_strategy_pipeline() -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            response = await http.get(
+                "http://127.0.0.1:8102/v1/strategy-pipeline",
+                headers={"accept": "application/json"},
+            )
+        payload = response.json() if response.content else {}
+        if response.status_code >= 400 or not isinstance(payload, dict):
+            return {
+                "available": False,
+                "status": "UNAVAILABLE",
+                "reason": "RHEN Core strategy pipeline projection is unavailable.",
+            }
+        return {"available": True, **payload}
+    except Exception as exc:
+        return {
+            "available": False,
+            "status": "UNAVAILABLE",
+            "reason": (
+                "RHEN Core strategy pipeline unavailable: "
+                f"{type(exc).__name__}"
+            ),
+        }
+
+
+def _command_active_strategies() -> list[dict]:
+    equity_enabled = not bool(settings.crypto_only_runtime)
+    equity_broker_writes = bool(
+        equity_enabled
+        and settings.execution_enabled
+        and settings.execution_authorized
+        and not settings.scan_only
+    )
+
+    crypto_lane = bool(
+        settings.crypto_lane_enabled or settings.crypto_execution_enabled
+    )
+    crypto_mode = str(settings.crypto_execution_mode or "validated")
+    direct_paper = crypto_mode == "btc_direct_paper"
+    live_signal = crypto_mode == "btc_direct_live_signal"
+    direct_btc = direct_paper or live_signal
+
+    crypto_version = str(
+        getattr(crypto_strategy, "strategy_version_id", None)
+        or settings.crypto_strategy_version_id
+        or ""
+    )
+    crypto_name = str(
+        getattr(crypto_strategy, "strategy_family", None)
+        or settings.crypto_strategy_family
+        or crypto_version
+    )
+
+    if direct_paper:
+        crypto_signal_authorized = bool(
+            settings.btc_direct_paper_authorized
+        )
+        crypto_broker_writes = crypto_signal_authorized
+    elif live_signal:
+        crypto_signal_authorized = bool(
+            settings.btc_direct_live_signal_authorized
+        )
+        crypto_broker_writes = False
+    else:
+        crypto_signal_authorized = bool(
+            crypto_lane
+            and settings.crypto_execution_enabled
+            and settings.execution_authorized
+        )
+        crypto_broker_writes = crypto_signal_authorized
+
+    validated_promotion_ready = bool(
+        runtime_state.crypto_graen_promotion.get("promotion_ready")
+        and settings.crypto_calibration_promoted
+    )
+    crypto_signals_enabled = bool(
+        crypto_signal_authorized
+        and not runtime_state.paused
+        and (direct_btc or validated_promotion_ready)
+    )
+
+    return [
+        {
+            "owner": "RHEN",
+            "lane": "equities",
+            "strategy_version_id": settings.strategy_version_id or None,
+            "strategy_name": settings.strategy_name,
+            "status": "ACTIVE" if equity_enabled else "DISABLED",
+            "trading_mode": settings.trading_mode,
+            "execution_mode": "equity_live_runtime",
+            "execution_enabled": bool(settings.execution_enabled),
+            "signal_authorized": equity_broker_writes,
+            "signals_enabled": bool(
+                runtime_state.entries_enabled
+                and equity_broker_writes
+                and not runtime_state.paused
+            ),
+            "execution_authorized": equity_broker_writes,
+            "broker_writes_allowed": equity_broker_writes,
+            "entries_enabled": bool(
+                runtime_state.entries_enabled
+                and equity_broker_writes
+                and not runtime_state.paused
+            ),
+            "manual_approval_required": False,
+        },
+        {
+            "owner": "RHEN",
+            "lane": "crypto",
+            "strategy_version_id": crypto_version or None,
+            "strategy_name": crypto_name,
+            "status": "ACTIVE" if crypto_lane else "DISABLED",
+            "trading_mode": (
+                "live"
+                if live_signal
+                else "paper"
+                if direct_paper
+                else settings.trading_mode
+            ),
+            "execution_mode": crypto_mode,
+            "execution_enabled": bool(settings.crypto_execution_enabled),
+            "signal_authorized": crypto_signal_authorized,
+            "signals_enabled": crypto_signals_enabled,
+            "execution_authorized": crypto_broker_writes,
+            "broker_writes_allowed": crypto_broker_writes,
+            "entries_enabled": bool(
+                crypto_signals_enabled and crypto_broker_writes
+            ),
+            "manual_approval_required": live_signal,
+            "pending_approval": (
+                runtime_state.crypto_pending_approval
+                if live_signal
+                else None
+            ),
+        },
+    ]
+
+
+def _command_strategy_pipeline(research_payload: dict) -> dict:
+    active = _command_active_strategies()
+    candidate = (
+        dict(research_payload.get("candidate") or {})
+        if isinstance(research_payload.get("candidate"), dict)
+        else None
+    )
+    validation = (
+        dict(research_payload.get("validation") or {})
+        if isinstance(research_payload.get("validation"), dict)
+        else None
+    )
+    release_gate = (
+        dict(research_payload.get("release_gate") or {})
+        if isinstance(research_payload.get("release_gate"), dict)
+        else {
+            "owner": "IREN",
+            "status": "UNAVAILABLE",
+            "reason": (
+                research_payload.get("reason")
+                or "Strategy research projection is unavailable."
+            ),
+            "automatic_promotion": False,
+            "production_authority_changed": False,
+        }
+    )
+
+    declared_target = str(
+        (candidate or {}).get("supersedes_strategy_version_id") or ""
+    ).strip()
+    target_lane = str((candidate or {}).get("lane") or "").lower()
+    target = next(
+        (
+            row
+            for row in active
+            if declared_target
+            and row.get("strategy_version_id") == declared_target
+            and row.get("status") != "DISABLED"
+        ),
+        None,
+    )
+
+    if declared_target and target is None:
+        release_gate["status"] = "HOLD"
+        release_gate["reason"] = (
+            "Declared supersession target is not an active RHEN strategy."
+        )
+
+    release_gate["target_lane"] = (
+        target.get("lane")
+        if target
+        else target_lane
+        if declared_target
+        else None
+    )
+    release_gate["target_strategy_version_id"] = (
+        target.get("strategy_version_id")
+        if target
+        else declared_target or None
+    )
+    release_gate["automatic_promotion"] = False
+    release_gate["production_authority_changed"] = False
+    return {
+        "schema_version": "strategy_pipeline.v1",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "available": bool(research_payload.get("available", True)),
+        "active": active,
+        "candidate": candidate,
+        "validation": validation,
+        "release_gate": release_gate,
+    }
+
+
+def _command_iren_projection(
+    status_payload: dict,
+    work_payload: dict,
+    strategy_pipeline: dict | None = None,
+    research: dict | None = None,
+) -> dict:
+    state = (
+        status_payload.get("state")
+        if isinstance(status_payload.get("state"), dict)
+        else {}
+    )
+    incident_map = (
+        state.get("incidents")
+        if isinstance(state.get("incidents"), dict)
+        else {}
+    )
     incidents = [
         {
             "key": key,
@@ -1696,9 +1921,14 @@ def _command_iren_projection(status_payload: dict, work_payload: dict) -> dict:
             "opened_at": row.get("opened_at"),
         }
         for key, row in incident_map.items()
-        if isinstance(row, dict) and str(row.get("status") or "").upper() == "OPEN"
+        if isinstance(row, dict)
+        and str(row.get("status") or "").upper() == "OPEN"
     ]
-    summary = work_payload.get("summary") if isinstance(work_payload.get("summary"), dict) else {}
+    summary = (
+        work_payload.get("summary")
+        if isinstance(work_payload.get("summary"), dict)
+        else {}
+    )
     return {
         "schema_version": "iren_command.v2",
         "work_schema_version": "iren_work.v1",
@@ -1709,15 +1939,51 @@ def _command_iren_projection(status_payload: dict, work_payload: dict) -> dict:
         "topology": state.get("topology"),
         "incidents": incidents,
         "scheduler": state.get("scheduler"),
-        "action_required": bool(status_payload.get("action_required")) or bool(incidents),
+        "action_required": (
+            bool(status_payload.get("action_required")) or bool(incidents)
+        ),
         "source": "rhen_native",
+        "strategy_pipeline": strategy_pipeline or {
+            "schema_version": "strategy_pipeline.v1",
+            "available": False,
+            "active": _command_active_strategies(),
+            "candidate": None,
+            "validation": None,
+            "release_gate": {
+                "owner": "IREN",
+                "status": "UNAVAILABLE",
+                "automatic_promotion": False,
+                "production_authority_changed": False,
+            },
+        },
+        "research": research or {},
         "work": {
             **summary,
-            "objectives": work_payload.get("objectives") if isinstance(work_payload.get("objectives"), list) else [],
-            "jobs": work_payload.get("jobs") if isinstance(work_payload.get("jobs"), list) else [],
-            "job_events": work_payload.get("job_events") if isinstance(work_payload.get("job_events"), list) else [],
-            "commands": work_payload.get("commands") if isinstance(work_payload.get("commands"), list) else [],
-            "handoffs": work_payload.get("handoffs") if isinstance(work_payload.get("handoffs"), list) else [],
+            "objectives": (
+                work_payload.get("objectives")
+                if isinstance(work_payload.get("objectives"), list)
+                else []
+            ),
+            "jobs": (
+                work_payload.get("jobs")
+                if isinstance(work_payload.get("jobs"), list)
+                else []
+            ),
+            "job_events": (
+                work_payload.get("job_events")
+                if isinstance(work_payload.get("job_events"), list)
+                else []
+            ),
+            "commands": (
+                work_payload.get("commands")
+                if isinstance(work_payload.get("commands"), list)
+                else []
+            ),
+            "handoffs": (
+                work_payload.get("handoffs")
+                if isinstance(work_payload.get("handoffs"), list)
+                else []
+            ),
             "next_action": summary.get("next_action"),
             "execution_mode": summary.get("execution_mode"),
         },
@@ -1727,11 +1993,21 @@ def _command_iren_projection(status_payload: dict, work_payload: dict) -> dict:
 @app.get("/v1/command/iren/status")
 async def command_iren_status(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
-    status_payload, work_payload = await asyncio.gather(
+    status_payload, work_payload, research_payload = await asyncio.gather(
         _rhen_native_iren_request("GET", "/v1/iren/status"),
         _rhen_native_iren_request("GET", "/v1/iren/work"),
+        _rhen_core_strategy_pipeline(),
     )
-    return _command_iren_projection(status_payload, work_payload)
+    return _command_iren_projection(
+        status_payload,
+        work_payload,
+        _command_strategy_pipeline(research_payload),
+        (
+            research_payload.get("research")
+            if isinstance(research_payload.get("research"), dict)
+            else None
+        ),
+    )
 
 
 @app.post("/v1/command/iren/command", status_code=202)
