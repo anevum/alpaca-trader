@@ -148,6 +148,58 @@ def ingest_events(
     return store.ingest_events(payload)
 
 
+
+@app.get("/v1/trading-report-read")
+def trading_report_read(
+    request: Request,
+    x_anevum_foundation_token: str | None = Header(
+        default=None, alias="x-anevum-foundation-token"
+    ),
+    x_anevum_ingest_token: str | None = Header(
+        default=None, alias="x-anevum-ingest-token"
+    ),
+) -> dict[str, Any]:
+    provided = x_anevum_foundation_token or x_anevum_ingest_token
+    _require(
+        provided,
+        "RHEN_CORE_TOKEN",
+        "FOUNDATION_INGEST_TOKEN",
+        "TRADING_INGEST_TOKEN",
+    )
+    params = {key: value for key, value in request.query_params.items()}
+    result = store.report_read(params)
+    if result.get("ok") is False:
+        error = str(result.get("error") or "invalid_request")
+        raise HTTPException(
+            status_code=422 if error.startswith("invalid_") else 400,
+            detail=error,
+        )
+    return result
+
+
+@app.post("/v1/trading-reconcile")
+def trading_reconcile(
+    body: dict[str, Any],
+    x_anevum_foundation_token: str | None = Header(
+        default=None, alias="x-anevum-foundation-token"
+    ),
+    x_anevum_ingest_token: str | None = Header(
+        default=None, alias="x-anevum-ingest-token"
+    ),
+) -> dict[str, Any]:
+    provided = x_anevum_foundation_token or x_anevum_ingest_token
+    _require(
+        provided,
+        "RHEN_CORE_TOKEN",
+        "FOUNDATION_INGEST_TOKEN",
+        "TRADING_INGEST_TOKEN",
+    )
+    try:
+        return store.reconcile(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/v1/graen-gateway")
 def graen_gateway_read(
     x_graen_gateway_token: str | None = Header(
