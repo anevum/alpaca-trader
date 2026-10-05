@@ -5,8 +5,11 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import py_compile
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 for target in (
     "app/main.py",
     "app/config.py",
