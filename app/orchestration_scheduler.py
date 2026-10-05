@@ -183,7 +183,11 @@ class LedgerClient:
 
     @property
     def configured(self) -> bool:
-        return self.gateway_url.startswith("https://") and len(self.token) >= 32
+        secure_remote = self.gateway_url.startswith("https://")
+        local_loopback = self.gateway_url.startswith(
+            ("http://127.0.0.1:", "http://localhost:")
+        )
+        return (secure_remote or local_loopback) and len(self.token) >= 32
 
     @property
     def headers(self) -> dict[str, str]:
