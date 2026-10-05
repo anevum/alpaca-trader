@@ -54,3 +54,15 @@ def test_live_customer_authority_is_not_added_to_paper_beta_service():
     assert "live_customer_authority=true" not in PLATFORM.lower()
     assert '"live_customer_trading": false' in PLATFORM.lower()
     assert '"withdrawals": false' in PLATFORM.lower()
+
+
+
+def test_operator_allowlist_is_required_for_admin_command():
+    assert "command_operator_allowlist_not_configured" in SERVICE
+    assert 'allowed_emails = os.environ.get("COMMAND_ACCESS_EMAILS", "").strip()' in SERVICE
+
+
+def test_broker_crypto_enablement_is_derived_not_assumed():
+    assert 'account.get("crypto_status")' in PLATFORM
+    assert 'in {"ACTIVE", "APPROVED"}' in PLATFORM
+    assert "values(%s,'ALPACA',%s,'PAPER',%s,true,%s,%s)" not in PLATFORM
