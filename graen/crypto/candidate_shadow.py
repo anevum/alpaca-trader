@@ -114,6 +114,7 @@ V15_MIN_READY_EXPOSED_BARS = 6
 V15_MIN_READY_ENTRIES = 1
 V15_MIN_READY_SHARPE = 0.0
 V15_MAX_READY_DRAWDOWN = -0.10
+V15_MAX_REVIEW_4H_MARKS = 252
 
 
 def _stamp(value: Any) -> datetime:
@@ -897,6 +898,14 @@ class CandidateForwardShadow:
             and sharpe > V15_MIN_READY_SHARPE
             and max_drawdown > V15_MAX_READY_DRAWDOWN
         )
+        review_limit_reached = len(marks) >= V15_MAX_REVIEW_4H_MARKS
+        status = (
+            "READY_FOR_HUMAN_REVIEW"
+            if ready
+            else "SHADOW_REJECTED"
+            if review_limit_reached
+            else "COLLECTING"
+        )
         activation = self.activation or {}
         return {
             "schema_version": "graen.candidate_shadow.checkpoint.v1",
@@ -907,7 +916,7 @@ class CandidateForwardShadow:
             "evidence_phase": str(
                 activation.get("evidence_phase") or "FORWARD_SHADOW"
             ),
-            "status": "READY_FOR_HUMAN_REVIEW" if ready else "COLLECTING",
+            "status": status,
             "trade_count": self.entry_count + self.exit_count,
             "entry_count": self.entry_count,
             "exit_count": self.exit_count,
@@ -935,10 +944,14 @@ class CandidateForwardShadow:
                 "annualized_4h_sharpe_gt": V15_MIN_READY_SHARPE,
                 "max_drawdown_gt": V15_MAX_READY_DRAWDOWN,
             },
+            "terminal_rejection_gate": {
+                "max_review_4h_marks": V15_MAX_REVIEW_4H_MARKS,
+            },
             "historical_holdout_counts_as_fresh": False,
             "promotion_authorized": False,
             "execution_authority": False,
             "broker_orders_possible": False,
+            "live_execution_authorized": False,
         }
 
 
