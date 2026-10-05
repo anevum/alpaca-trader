@@ -769,3 +769,63 @@ def test_orphaned_autonomous_validation_burns_evidence_and_returns_to_planner():
         )
 
     asyncio.run(scenario())
+
+
+
+def test_unlinked_graen_escalation_uses_direct_iren_endpoint(monkeypatch):
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    async def scenario():
+        runtime = service.GraenResearchExecutor()
+        runtime.callback_base_url = "https://iren.internal"
+        runtime.callback_token = "t" * 40
+        monkeypatch.setattr(service.httpx, "AsyncClient", Client)
+
+        delivered = await runtime._callback_iren(
+            None,
+            status="WAITING",
+            result={
+                "condition": "ENGINEERING_REQUIRED",
+                "engineering_requirement": {
+                    "requirement_id": "ENG-DIRECT-1",
+                },
+                "execution_authority": False,
+            },
+        )
+        ordinary = await runtime._callback_iren(
+            None,
+            status="WAITING",
+            result={
+                "condition": "RESEARCHING",
+                "state": "STRATEGY_DEVELOPMENT_PASSED",
+            },
+        )
+
+        assert delivered is True
+        assert ordinary is False
+        assert len(calls) == 1
+        assert calls[0][0] == "https://iren.internal/v1/iren/escalations"
+        assert calls[0][1]["headers"] == {
+            "x-anevum-scheduler-token": "t" * 40
+        }
+        assert calls[0][1]["json"]["source"] == "GRAEN"
+
+    asyncio.run(scenario())
