@@ -31,6 +31,16 @@ def _runtime_identity_complete(row: dict) -> bool:
     )
 
 
+def _engineering_objective_key(requirement_id: str) -> str | None:
+    requirement_id = str(requirement_id or "").strip()
+    if not requirement_id:
+        return None
+    objective_key = _engineering_objective_key(requirement_id)
+    if objective_key is None:
+        return None
+    return "engineering." + safe_id if safe_id else None
+
+
 def _engineering_objective_from_result(result: dict) -> dict | None:
     requirement = result.get("engineering_requirement")
     if result.get("condition") != "ENGINEERING_REQUIRED" or not isinstance(requirement, dict):
@@ -49,7 +59,7 @@ def _engineering_objective_from_result(result: dict) -> dict | None:
         if isinstance(path, str) and path.strip()
     ]
     return {
-        "objective_key": "engineering." + safe_id,
+        "objective_key": objective_key,
         "title": str(
             requirement.get("title")
             or "Implement GRAEN research capability"
@@ -518,6 +528,81 @@ async def create_command(
         requested_by=requested_by,
     )
     return {"ok": True, **created}
+
+
+@app.post("/v1/iren/escalations")
+async def autonomous_escalation(
+    body: dict,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    """Accept durable operator escalations from autonomous subsystems.
+
+    This endpoint creates/updates work metadata only. It grants no execution,
+    software, credential, spending, deployment, or live-risk authority.
+    """
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    actions: list[dict] = []
+
+    engineering_objective = _engineering_objective_from_result(result)
+    if engineering_objective is not None:
+        created = await controller.gateway(
+            "iren_objective_create",
+            objective=engineering_objective,
+        )
+        actions.append({
+            "action": "engineering_objective_created",
+            "objective": created.get("objective"),
+        })
+
+    human_decision_objective = _human_decision_objective_from_result(result)
+    if human_decision_objective is not None:
+        created = await controller.gateway(
+            "iren_objective_create",
+            objective=human_decision_objective,
+        )
+        actions.append({
+            "action": "human_decision_objective_created",
+            "objective": created.get("objective"),
+        })
+
+    if result.get("engineering_requirement_resolved") is True:
+        requirement_id = str(
+            result.get("engineering_requirement_id") or ""
+        ).strip()
+        objective_key = _engineering_objective_key(requirement_id)
+        if objective_key:
+            try:
+                updated = await controller.gateway(
+                    "iren_objective_update",
+                    objective_key=objective_key,
+                    status="COMPLETE",
+                )
+                actions.append({
+                    "action": "engineering_objective_completed",
+                    "objective": updated.get("objective"),
+                })
+            except Exception as exc:
+                # A waiting CODEX_HANDOFF verifier deliberately prevents this
+                # shortcut from completing the objective. Fail closed and let
+                # the verifier finish it.
+                actions.append({
+                    "action": "engineering_resolution_pending_verifier",
+                    "objective_key": objective_key,
+                    "error": type(exc).__name__,
+                })
+
+    if not actions:
+        raise HTTPException(
+            status_code=400,
+            detail="unsupported_autonomous_escalation",
+        )
+    return {
+        "ok": True,
+        "source": str(body.get("source") or "autonomous_subsystem"),
+        "actions": actions,
+        "protected_authority_granted": False,
+    }
 
 
 @app.post("/v1/iren/jobs/{job_id}/callback")
