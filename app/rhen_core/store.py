@@ -1013,6 +1013,201 @@ class RhenCoreStore:
         ]
 
 
+    @staticmethod
+    def _iren_work_defaults() -> dict[str, Any]:
+        return {
+            "settings": {
+                "autopilot_enabled": False,
+                "autopilot_max_jobs_per_day": 3,
+            },
+            "objectives": [],
+            "jobs": [],
+            "job_events": [],
+            "commands": [],
+        }
+
+    def iren_work_snapshot(self) -> dict[str, Any]:
+        value, _ = self.get_kv("iren", "work", self._iren_work_defaults())
+        state = self._iren_work_defaults()
+        if isinstance(value, dict):
+            state.update(value)
+        for key in ("objectives", "jobs", "job_events", "commands"):
+            if not isinstance(state.get(key), list):
+                state[key] = []
+        if not isinstance(state.get("settings"), dict):
+            state["settings"] = self._iren_work_defaults()["settings"]
+        return state
+
+    def iren_work_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        action = str(action or "").strip()
+        with self._lock:
+            state = self.iren_work_snapshot()
+            now = _iso()
+
+            if action == "iren_work_snapshot":
+                return {"ok": True, **state}
+
+            if action == "iren_command_create":
+                row = {
+                    "command_id": str(uuid4()),
+                    "command_text": str(body.get("command_text") or "")[:4000],
+                    "source": str(body.get("source") or "command")[:40],
+                    "requested_by": str(body.get("requested_by") or "operator")[:160],
+                    "context": dict(body.get("context") or {}),
+                    "status": "QUEUED",
+                    "result": {},
+                    "response": {},
+                    "linked_job_id": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                }
+                if not row["command_text"].strip():
+                    raise ValueError("command_required")
+                state["commands"].insert(0, row)
+                state["commands"] = state["commands"][:200]
+                self.set_kv("iren", "work", state)
+                return {"ok": True, "command": row}
+
+            if action == "iren_commands_claim":
+                limit = max(1, min(20, int(body.get("limit") or 5)))
+                owner = str(body.get("owner") or "iren-work-engine")[:160]
+                claimed: list[dict[str, Any]] = []
+                for row in reversed(state["commands"]):
+                    if len(claimed) >= limit:
+                        break
+                    if str(row.get("status") or "").upper() != "QUEUED":
+                        continue
+                    row["status"] = "PROCESSING"
+                    row["claimed_by"] = owner
+                    row["claimed_at"] = now
+                    row["updated_at"] = now
+                    claimed.append(dict(row))
+                self.set_kv("iren", "work", state)
+                return {"ok": True, "commands": claimed}
+
+            if action == "iren_command_complete":
+                command_id = str(body.get("command_id") or "")
+                row = next(
+                    (item for item in state["commands"] if str(item.get("command_id")) == command_id),
+                    None,
+                )
+                if row is None:
+                    return {"ok": True, "updated": False}
+                row["status"] = str(body.get("status") or "SUCCEEDED").upper()
+                result = body.get("response") if isinstance(body.get("response"), dict) else body.get("result")
+                row["result"] = dict(result or {})
+                row["response"] = dict(result or {})
+                row["linked_job_id"] = body.get("linked_job_id")
+                row["updated_at"] = now
+                row["completed_at"] = now
+                self.set_kv("iren", "work", state)
+                return {"ok": True, "updated": True, "command": row}
+
+            if action == "iren_job_create":
+                incoming = dict(body.get("job") or {})
+                row = {
+                    **incoming,
+                    "job_id": str(incoming.get("job_id") or uuid4()),
+                    "status": str(incoming.get("status") or "QUEUED").upper(),
+                    "created_at": str(incoming.get("created_at") or now),
+                    "updated_at": now,
+                    "result": dict(incoming.get("result") or {}),
+                    "error": dict(incoming.get("error") or {}),
+                }
+                state["jobs"].insert(0, row)
+                state["jobs"] = state["jobs"][:250]
+                state["job_events"].insert(0, {
+                    "event_id": str(uuid4()),
+                    "job_id": row["job_id"],
+                    "event": "created",
+                    "status": row["status"],
+                    "created_at": now,
+                })
+                state["job_events"] = state["job_events"][:500]
+                self.set_kv("iren", "work", state)
+                return {"ok": True, "job": row}
+
+            if action == "iren_jobs_claim":
+                limit = max(1, min(20, int(body.get("limit") or 3)))
+                owner = str(body.get("owner") or "iren-work-engine")[:160]
+                claimed: list[dict[str, Any]] = []
+                for row in reversed(state["jobs"]):
+                    if len(claimed) >= limit:
+                        break
+                    if str(row.get("status") or "").upper() != "QUEUED":
+                        continue
+                    row["status"] = "RUNNING"
+                    row["claimed_by"] = owner
+                    row["claimed_at"] = now
+                    row["updated_at"] = now
+                    claimed.append(dict(row))
+                self.set_kv("iren", "work", state)
+                return {"ok": True, "jobs": claimed}
+
+            if action == "iren_job_update":
+                job_id = str(body.get("job_id") or "")
+                row = next(
+                    (item for item in state["jobs"] if str(item.get("job_id")) == job_id),
+                    None,
+                )
+                if row is None:
+                    return {"ok": True, "updated": False}
+                for key in ("status", "result", "error", "requires_human", "protected_action"):
+                    if key in body:
+                        value = body[key]
+                        if key in {"result", "error"}:
+                            value = dict(value or {})
+                        elif key == "status":
+                            value = str(value or "").upper()
+                        row[key] = value
+                row["updated_at"] = now
+                if str(row.get("status") or "").upper() in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                    row["completed_at"] = now
+                state["job_events"].insert(0, {
+                    "event_id": str(uuid4()),
+                    "job_id": job_id,
+                    "event": "updated",
+                    "status": row.get("status"),
+                    "created_at": now,
+                })
+                state["job_events"] = state["job_events"][:500]
+                self.set_kv("iren", "work", state)
+                return {"ok": True, "updated": True, "job": row}
+
+            if action == "iren_objective_update":
+                key = str(body.get("objective_key") or "")
+                row = next(
+                    (item for item in state["objectives"] if str(item.get("objective_key")) == key),
+                    None,
+                )
+                if row is None:
+                    return {"ok": True, "updated": False}
+                for field in ("status", "title", "description", "priority", "metadata"):
+                    if field in body:
+                        row[field] = body[field]
+                row["updated_at"] = now
+                self.set_kv("iren", "work", state)
+                return {"ok": True, "updated": True, "objective": row}
+
+            if action == "iren_handoff_evidence":
+                return {
+                    "ok": True,
+                    "health": {
+                        "source": "rhen-core-sqlite",
+                        "storage": self.storage_state(),
+                    },
+                    "command_contract": "rhen_native",
+                }
+
+            return {
+                "ok": True,
+                "status": "UNSUPPORTED",
+                "action": action,
+                "execution_authority": False,
+            }
+
+
     def public_live_feed(
         self, now: datetime | None = None
     ) -> dict[str, Any]:

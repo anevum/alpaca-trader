@@ -284,9 +284,19 @@ def scheduler_gateway_write(
         }
     if action == "iren_commit":
         state = dict(body.get("state") or {})
+        expected = int(body.get("expected_revision") or 0)
+        _current, current_revision = store.get_kv("iren", "state", {})
+        if current_revision != expected:
+            return {
+                "ok": True,
+                "committed": False,
+                "state": _current or {},
+                "revision": current_revision,
+            }
         revision = store.set_kv("iren", "state", state)
         return {
             "ok": True,
+            "committed": True,
             "state": state,
             "revision": revision,
         }
@@ -299,8 +309,13 @@ def scheduler_gateway_write(
             "events": [],
             "claimed": False,
         }
+    if action.startswith("iren_"):
+        try:
+            return store.iren_work_action(action, body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     store.set_kv(
-        "iren_work",
+        "rhen_runtime",
         str(body.get("job_id") or body.get("job_key") or action),
         body,
     )

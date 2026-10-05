@@ -19,6 +19,16 @@ from .slack_brand import decorate_slack_message
 
 UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 REGISTRY_PATH = Path(os.getenv("SCHEDULER_REGISTRY_PATH", "app/schedule_registry.json"))
 TERMINAL_OK = {"COMPLETED", "NOOP", "BLOCKED"}
 
@@ -337,7 +347,7 @@ class SchedulerRuntime:
         ).rstrip("/")
         self.research_url = os.getenv("RHEN_RESEARCH_REVIEW_URL", "").strip()
         self.research_token = os.getenv("RHEN_REVIEW_TOKEN", "").strip()
-        self.tick_seconds = max(15, int(os.getenv("SCHEDULER_TICK_SECONDS", "30")))
+        self.tick_seconds = max(15, _env_int("SCHEDULER_TICK_SECONDS", 30))
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.started_at = datetime.now(UTC)
