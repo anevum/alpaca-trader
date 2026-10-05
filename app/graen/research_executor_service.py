@@ -342,6 +342,7 @@ RESEARCH_DIRECTOR_METHODOLOGY = "graen-research-director-v1"
 RESEARCH_DIRECTOR_STAGE_KEYS = {RESEARCH_DIRECTOR_STAGE}
 
 HYPOTHESIS_PLANNER_STAGE = "CRYPTO_HYPOTHESIS_PLANNER_V1"
+HYPOTHESIS_PLANNER_METHODOLOGY = "graen-hypothesis-planner-v1"
 STRATEGY_DEVELOPMENT_STAGE = "CRYPTO_STRATEGY_MANIFEST_DEVELOPMENT"
 STRATEGY_VALIDATION_STAGE = "CRYPTO_STRATEGY_MANIFEST_VALIDATION"
 STRATEGY_HOLDOUT_STAGE = "CRYPTO_STRATEGY_MANIFEST_HOLDOUT"
@@ -572,6 +573,8 @@ class GraenResearchExecutor:
                 V14_R2G_METHODOLOGY_VERSION,
                 V14_R2H_METHODOLOGY_VERSION,
                 RESEARCH_DIRECTOR_METHODOLOGY,
+                HYPOTHESIS_PLANNER_METHODOLOGY,
+                STRATEGY_RUNNER_VERSION,
             ],
             "running": running,
             "autorun": self.autorun,
@@ -582,6 +585,12 @@ class GraenResearchExecutor:
                 else "Waiting for uninspected research corpus"
                 if self.waiting_dependency_until
                 and self.waiting_dependency_until > datetime.now(UTC)
+                else (
+                    f"{self.engineering_required_count} engineering requirement"
+                    + ("" if self.engineering_required_count == 1 else "s")
+                    + " waiting for manual software; safe independent work continues"
+                )
+                if self.engineering_required_count
                 else "Awaiting next autonomous research problem"
             ),
             "waiting_dependency_until": (
@@ -597,6 +606,12 @@ class GraenResearchExecutor:
             "runtime_github_authorization_configured": False,
             "research_director_configured": self.research_director.configured,
             "research_director_autorun": self.research_director_autorun,
+            "autonomous_loop_bootstrap": self.autonomous_loop_bootstrap,
+            "legacy_campaign_bootstrap": self.legacy_campaign_bootstrap,
+            "research_model_execution_enabled": bool(
+                self.research_director_autorun
+                and self.research_director.configured
+            ),
             "iren_callback_configured": self.callback_configured,
             "velum_candidate_replay_configured": self.velum_configured,
             "forward_shadow_configured": self.shadow_configured,
@@ -2112,7 +2127,7 @@ class GraenResearchExecutor:
     ) -> dict[str, Any]:
         problem_id = str(problem.get("problem_id"))
         run_id = str(run.get("run_id"))
-        self.active_methodology_version = "graen-hypothesis-planner-v1"
+        self.active_methodology_version = HYPOTHESIS_PLANNER_METHODOLOGY
 
         snapshot = await self.gateway.snapshot()
         exposure = await self.gateway.research_exposure_ledger()
@@ -2122,7 +2137,7 @@ class GraenResearchExecutor:
             problem_id=problem_id,
             run_id=run_id,
             artifact_type="CRYPTO_STRATEGY_PLANNER_DECISION",
-            methodology_version="graen-hypothesis-planner-v1",
+            methodology_version=HYPOTHESIS_PLANNER_METHODOLOGY,
             content={
                 **plan,
                 "source_commit": _source_commit(),
@@ -2192,7 +2207,7 @@ class GraenResearchExecutor:
                 problem_id=problem_id,
                 run_id=run_id,
                 artifact_type="ENGINEERING_REQUIREMENT",
-                methodology_version="graen-hypothesis-planner-v1",
+                methodology_version=HYPOTHESIS_PLANNER_METHODOLOGY,
                 content=requirement,
             )
             summary = {
