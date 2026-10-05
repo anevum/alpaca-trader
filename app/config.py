@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     )
 
     crypto_lane_enabled: bool = Field(default=False, alias="CRYPTO_LANE_ENABLED")
+    crypto_research_enabled: bool = Field(
+        default=False, alias="CRYPTO_RESEARCH_ENABLED"
+    )
     crypto_execution_enabled: bool = Field(
         default=False, alias="CRYPTO_EXECUTION_ENABLED"
     )
