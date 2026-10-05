@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from app.research_agent.hypothesis_planner import (
+    _catalog,
     online_alpha,
     plan_next,
     select_uninspected_corpus,
@@ -83,7 +84,7 @@ def test_catalog_exhaustion_is_engineering_boundary_not_parameter_recycling():
         "inspected_intervals": [],
         "strategy_manifest_hashes": prior,
     }
-    for _ in range(20):
+    for _ in range(80):
         result = plan_next(
             snapshot,
             exposure,
@@ -91,6 +92,25 @@ def test_catalog_exhaustion_is_engineering_boundary_not_parameter_recycling():
         )
         if result["state"] == "ENGINEERING_REQUIRED":
             assert result["reason"] == "trusted_hypothesis_catalog_exhausted"
+            assert result["trusted_hypothesis_space_size"] == 40
+            assert len(prior) == 40
             return
+        assert result["selection_policy"] == (
+            "maximin_structural_novelty_without_backtest_performance"
+        )
+        assert result["information_value"]["uses_backtest_performance"] is False
         prior.append(result["manifest_hash"])
-    raise AssertionError("finite trusted catalog must exhaust rather than recycle")
+    raise AssertionError("finite trusted hypothesis space must exhaust rather than recycle")
+
+
+def test_trusted_hypothesis_space_is_unique_and_structurally_broad():
+    catalog = _catalog()
+    hashes = {row.hypothesis_id for row in catalog}
+    assert len(catalog) == 40
+    assert len(hashes) == 40
+    assert {row.family for row in catalog} == {
+        "cross_asset_diffusion",
+        "breadth_laggard_response",
+    }
+    assert len({row.parameters["lookback_minutes"] for row in catalog}) >= 5
+    assert len({row.parameters["hold_minutes"] for row in catalog}) >= 3
