@@ -173,3 +173,48 @@ def test_database_envelope_round_trip_never_stores_plaintext(conn):
         connection=conn,
     )
     assert resolver.resolve(secret_reference) == token
+
+
+
+def test_existing_tenant_key_cannot_be_claimed_by_another_customer(conn):
+    created = provision_paper_beta_tenant(
+        conn,
+        customer_email="original@example.test",
+        display_name="Original Beta",
+        tenant_key="shared-beta-key",
+        created_by="owner@anevum.test",
+    )
+    with pytest.raises(ValueError, match="tenant_key_already_exists"):
+        provision_paper_beta_tenant(
+            conn,
+            customer_email="intruder@example.test",
+            display_name="Intruder Beta",
+            tenant_key="shared-beta-key",
+            created_by="owner@anevum.test",
+        )
+    assert created["tenant_key"] == "shared-beta-key"
+
+
+def test_inactive_tenant_remains_readable_but_cannot_start_oauth(conn):
+    created = provision_paper_beta_tenant(
+        conn,
+        customer_email="inactive@example.test",
+        display_name="Inactive Beta",
+        created_by="owner@anevum.test",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "update anevum.tenants set status='RESTRICTED' where tenant_id=%s",
+            (created["tenant_id"],),
+        )
+
+    session = resolve_command_session(conn, email="inactive@example.test")
+    assert session["tenants"][0]["tenant_status"] == "RESTRICTED"
+
+    with pytest.raises(PermissionError, match="not_active"):
+        start_paper_oauth(
+            conn,
+            email="inactive@example.test",
+            tenant_id=created["tenant_id"],
+            redirect_uri="https://anevum.com/api/command/platform/alpaca/callback",
+        )
