@@ -114,7 +114,7 @@ def test_hourly_crypto_bucket_uses_completed_hour():
 
 def test_preflight_allows_sleeping_optional_research_agent():
     runtime = object.__new__(SchedulerRuntime)
-    runtime.trader_url = "http://rhen/v1/scheduler"
+    runtime.rhen_url = "http://rhen/v1/scheduler"
     runtime.token = "test"
     runtime._post = AsyncMock(return_value={"ok": True})
     runtime._dependency_health = AsyncMock(
@@ -125,7 +125,7 @@ def test_preflight_allows_sleeping_optional_research_agent():
         }
     )
     item = ScheduledItem(
-        workflow(implementation_target="trader_preflight"),
+        workflow(implementation_target="rhen_preflight"),
         datetime(2026, 9, 30, 12, 45, tzinfo=UTC),
         "2026-09-30",
         {"session": "2026-09-30"},
@@ -139,7 +139,7 @@ def test_preflight_allows_sleeping_optional_research_agent():
 
 def test_preflight_still_blocks_unhealthy_required_dependency():
     runtime = object.__new__(SchedulerRuntime)
-    runtime.trader_url = "http://rhen/v1/scheduler"
+    runtime.rhen_url = "http://rhen/v1/scheduler"
     runtime.token = "test"
     runtime._post = AsyncMock(return_value={"ok": True})
     runtime._dependency_health = AsyncMock(
@@ -150,7 +150,7 @@ def test_preflight_still_blocks_unhealthy_required_dependency():
         }
     )
     item = ScheduledItem(
-        workflow(implementation_target="trader_preflight"),
+        workflow(implementation_target="rhen_preflight"),
         datetime(2026, 9, 30, 12, 45, tzinfo=UTC),
         "2026-09-30",
         {"session": "2026-09-30"},
@@ -328,7 +328,7 @@ def test_session_close_can_recover_next_morning():
         stale_after_minutes=1440,
         recovery_after_minutes=15,
         retry_policy={"max_attempts": 4, "transient_only": True},
-        implementation_target="trader_session_close",
+        implementation_target="rhen_session_close",
     )
     scheduled = datetime(2026, 10, 1, 20, 15, tzinfo=UTC)
     item = ScheduledItem(w, scheduled, "2026-10-01", {"session": "2026-10-01"})
