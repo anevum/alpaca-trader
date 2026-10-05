@@ -96,35 +96,53 @@ class BtcDirectSwingStrategy:
     def _mean(values: list[Decimal]) -> Decimal:
         return sum(values, Decimal("0")) / Decimal(len(values))
 
-    def _state(self, bars: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
-        completed = self._completed(bars, now)
-        minimum = max(
-            self.momentum_lookback_bars,
-            self.sma_window_bars,
-            self.entry_lookback_bars,
-            self.exit_lookback_bars,
-        )
-        if len(completed) < minimum + 1:
+    def _state(
+        self,
+        bars: list[dict[str, Any]],
+        regime_bars: list[dict[str, Any]],
+        now: datetime,
+    ) -> dict[str, Any]:
+        completed = self._completed(bars, now, bar_hours=4)
+        regime_completed = self._completed(regime_bars, now, bar_hours=24)
+        minimum_4h = max(self.entry_lookback_bars, self.exit_lookback_bars) + 1
+        minimum_daily = max(self.momentum_lookback_bars, self.sma_window_bars) + 1
+        if len(completed) < minimum_4h:
             return {
                 "ready": False,
                 "reason": (
-                    f"BTC direct strategy warming up: {len(completed)}/{minimum + 1} "
-                    "completed 4-hour bars"
+                    f"BTC direct 4-hour warmup: {len(completed)}/{minimum_4h} "
+                    "completed bars"
                 ),
-                "completed_bars": len(completed),
+                "completed_4h_bars": len(completed),
+                "completed_daily_bars": len(regime_completed),
+            }
+        if len(regime_completed) < minimum_daily:
+            return {
+                "ready": False,
+                "reason": (
+                    f"BTC direct daily regime warmup: "
+                    f"{len(regime_completed)}/{minimum_daily} completed bars"
+                ),
+                "completed_4h_bars": len(completed),
+                "completed_daily_bars": len(regime_completed),
             }
 
         signal = completed[-1]
         history = completed[:-1]
+        daily_signal = regime_completed[-1]
+        daily_history = regime_completed[:-1]
         close = signal["c"]
-        momentum_anchor = history[-self.momentum_lookback_bars]["c"]
-        sma = self._mean([row["c"] for row in completed[-self.sma_window_bars:]])
+        daily_close = daily_signal["c"]
+        momentum_anchor = daily_history[-self.momentum_lookback_bars]["c"]
+        sma = self._mean(
+            [row["c"] for row in regime_completed[-self.sma_window_bars:]]
+        )
         momentum_return = (
-            (close - momentum_anchor) / momentum_anchor
+            (daily_close - momentum_anchor) / momentum_anchor
             if momentum_anchor > 0
             else Decimal("0")
         )
-        regime_long = bool(momentum_return > 0 or close > sma)
+        regime_long = bool(momentum_return > 0 or daily_close > sma)
         entry_high = max(
             row["h"] for row in history[-self.entry_lookback_bars:]
         )
@@ -136,7 +154,9 @@ class BtcDirectSwingStrategy:
         return {
             "ready": True,
             "bar_time": signal["t"].isoformat(),
+            "daily_regime_bar_time": daily_signal["t"].isoformat(),
             "close": close,
+            "daily_close": daily_close,
             "momentum_anchor": momentum_anchor,
             "momentum_return": momentum_return,
             "sma": sma,
@@ -145,7 +165,8 @@ class BtcDirectSwingStrategy:
             "exit_low": exit_low,
             "breakout": breakout,
             "breakdown": breakdown,
-            "completed_bars": len(completed),
+            "completed_4h_bars": len(completed),
+            "completed_daily_bars": len(regime_completed),
         }
 
     def evaluate(
@@ -157,7 +178,6 @@ class BtcDirectSwingStrategy:
         order_notional: Decimal,
         now: datetime | None = None,
     ) -> Signal:
-        del confirmation_bars
         now = now or datetime.now(timezone.utc)
         symbol = symbol.upper()
         if symbol != "BTC/USD":
@@ -169,7 +189,11 @@ class BtcDirectSwingStrategy:
                 reason="BTC direct position already open; channel exit manages risk",
             )
 
-        state = self._state(bars, now)
+        state = self._state(
+            bars,
+            confirmation_bars.get("BTC/USD", []),
+            now,
+        )
         metadata = {
             "market": "crypto",
             "session_model": "24x7",
@@ -226,7 +250,7 @@ class BtcDirectSwingStrategy:
         bars: list[dict[str, Any]],
         now: datetime | None = None,
     ) -> str | None:
-        state = self._state(bars, now or datetime.now(timezone.utc))
+        state = self._state(bars, [], now or datetime.now(timezone.utc))
         if not state.get("ready"):
             return None
         if not state["regime_long"]:
