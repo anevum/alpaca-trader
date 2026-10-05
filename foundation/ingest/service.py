@@ -28,6 +28,7 @@ from foundation.command_iren import (
     project_command,
     read_command_snapshot,
 )
+from foundation.financial_gateway import handle_financial_action, read_snapshot
 
 
 class EvidenceEvent(BaseModel):
@@ -767,6 +768,60 @@ async def command_iren_post(
         "accepted": True,
         "command": created.get("command"),
     }
+
+
+@app.get("/v1/command/finance")
+async def command_finance_get(
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_access(cf_access_jwt_assertion)
+    subject = str(identity.get("email") or "").strip()
+    if not subject:
+        raise HTTPException(status_code=403, detail="finance_identity_required")
+    try:
+        return read_snapshot(database_url(), command_subject=subject)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"financial_gateway_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.post("/v1/command/finance")
+async def command_finance_post(
+    request: Request,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_access(cf_access_jwt_assertion)
+    subject = str(identity.get("email") or "").strip()
+    if not subject:
+        raise HTTPException(status_code=403, detail="finance_identity_required")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid_json")
+    action = str(body.get("action") or "").strip()
+    try:
+        return handle_financial_action(
+            database_url(),
+            command_subject=subject,
+            action=action,
+            body=body,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"financial_gateway_failed:{type(exc).__name__}",
+        ) from exc
 
 
 @app.get("/v1/trading-public-feed")
