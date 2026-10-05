@@ -1,0 +1,1028 @@
+from __future__ import annotations
+
+import base64
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+import json
+import os
+import secrets
+from typing import Any
+from urllib.parse import urlencode
+from uuid import UUID, uuid4
+
+import httpx
+import psycopg
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from psycopg.types.json import Jsonb
+
+from app.platform_core.broker import TenantAlpacaReadClient, TenantBrokerAccount
+from app.platform_core.reconciliation import TenantBrokerReconciler
+from foundation.platform_core_gateway import (
+    latest_broker_reconciliation,
+    record_broker_reconciliation,
+    tenant_execution_eligibility,
+)
+
+
+UTC = timezone.utc
+ALPACA_AUTHORIZE_URL = "https://app.alpaca.markets/oauth/authorize"
+ALPACA_TOKEN_URL = "https://api.alpaca.markets/oauth/token"
+ALPACA_PAPER_API = "https://paper-api.alpaca.markets"
+PAPER_SCOPE = "trading"
+PAPER_BETA_KEY_VERSION = "command-paper-beta-v1"
+
+
+def _serialize(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _serialize(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize(item) for item in value]
+    return value
+
+
+def _rows(cur: psycopg.Cursor[Any]) -> list[dict[str, Any]]:
+    columns = [column.name for column in cur.description]
+    return [_serialize(dict(zip(columns, row))) for row in cur.fetchall()]
+
+
+def _email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _uuid(value: Any, field: str) -> UUID:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid_{field}") from exc
+
+
+def _admin_emails() -> set[str]:
+    return {
+        value.strip().lower()
+        for value in os.environ.get("COMMAND_ACCESS_EMAILS", "").split(",")
+        if value.strip()
+    }
+
+
+def resolve_command_session(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+) -> dict[str, Any]:
+    normalized = _email(email)
+    if not normalized:
+        raise ValueError("identity_email_required")
+    is_admin = normalized in _admin_emails()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.principal_id,p.email,p.status,
+                   m.tenant_id,m.role,m.status as membership_status,
+                   t.tenant_key,t.display_name,t.status as tenant_status
+            from anevum.principals p
+            left join anevum.tenant_memberships m
+              on m.principal_id=p.principal_id and m.status='ACTIVE'
+            left join anevum.tenants t on t.tenant_id=m.tenant_id
+            where lower(p.email)=lower(%s)
+              and p.status='ACTIVE'
+            order by
+              case m.role when 'OWNER' then 0 when 'ADMIN' then 1 else 2 end,
+              t.created_at asc
+            """,
+            (normalized,),
+        )
+        rows = _rows(cur)
+
+    principal_id = rows[0]["principal_id"] if rows else None
+    tenants = [
+        {
+            "tenant_id": row["tenant_id"],
+            "tenant_key": row["tenant_key"],
+            "display_name": row["display_name"],
+            "tenant_status": row["tenant_status"],
+            "role": row["role"],
+        }
+        for row in rows
+        if row.get("tenant_id")
+    ]
+    if not is_admin and not tenants:
+        raise PermissionError("command_tenant_membership_required")
+
+    return {
+        "authenticated": True,
+        "email": normalized,
+        "auth_source": "cloudflare_access",
+        "command_admin": is_admin,
+        "principal_id": principal_id,
+        "tenants": tenants,
+        "active_tenant_id": tenants[0]["tenant_id"] if tenants else None,
+        "surface": "operator" if is_admin else "customer",
+    }
+
+
+def _require_tenant_membership(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+    minimum_roles: set[str] | None = None,
+) -> dict[str, Any]:
+    tenant_uuid = _uuid(tenant_id, "tenant_id")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.principal_id,p.email,m.role,t.tenant_key,t.display_name,t.status
+            from anevum.principals p
+            join anevum.tenant_memberships m on m.principal_id=p.principal_id
+            join anevum.tenants t on t.tenant_id=m.tenant_id
+            where lower(p.email)=lower(%s)
+              and p.status='ACTIVE'
+              and m.status='ACTIVE'
+              and t.tenant_id=%s
+            """,
+            (_email(email), tenant_uuid),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise PermissionError("command_tenant_membership_required")
+        columns = [column.name for column in cur.description]
+    result = _serialize(dict(zip(columns, row)))
+    if minimum_roles and str(result.get("role") or "") not in minimum_roles:
+        raise PermissionError("command_tenant_role_insufficient")
+    return result
+
+
+def _broker_account(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select broker_account_id,provider,provider_account_id,environment,
+                   account_status,crypto_enabled,trading_blocked,withdrawals_blocked,
+                   last_reconciled_at,created_at,updated_at
+            from anevum.broker_accounts
+            where tenant_id=%s
+            order by case environment when 'PAPER' then 0 else 1 end, created_at
+            limit 1
+            """,
+            (_uuid(tenant_id, "tenant_id"),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        columns = [column.name for column in cur.description]
+    return _serialize(dict(zip(columns, row)))
+
+
+def _active_allocation(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+    broker_account_id: str,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select allocation_id,allocation_mode,allocation_fraction,absolute_cap,
+                   status,effective_at
+            from anevum.capital_allocations
+            where tenant_id=%s and broker_account_id=%s and status='ACTIVE'
+            order by effective_at desc
+            limit 1
+            """,
+            (_uuid(tenant_id, "tenant_id"), _uuid(broker_account_id, "broker_account_id")),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        columns = [column.name for column in cur.description]
+    return _serialize(dict(zip(columns, row)))
+
+
+def _active_risk(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+    broker_account_id: str,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select risk_profile_id,max_position_fraction,max_gross_exposure_fraction,
+                   max_daily_loss_fraction,max_drawdown_fraction,max_concurrent_positions,
+                   status,effective_at
+            from anevum.risk_profiles
+            where tenant_id=%s and broker_account_id=%s and status='ACTIVE'
+            order by effective_at desc
+            limit 1
+            """,
+            (_uuid(tenant_id, "tenant_id"), _uuid(broker_account_id, "broker_account_id")),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        columns = [column.name for column in cur.description]
+    return _serialize(dict(zip(columns, row)))
+
+
+def _trading_control(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+    broker_account_id: str,
+) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select bot_enabled,customer_consent_version,customer_consented_at,
+                   updated_by,updated_at
+            from anevum.tenant_trading_controls
+            where tenant_id=%s and broker_account_id=%s
+            """,
+            (_uuid(tenant_id, "tenant_id"), _uuid(broker_account_id, "broker_account_id")),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {
+                "bot_enabled": False,
+                "customer_consent_version": None,
+                "customer_consented_at": None,
+                "updated_by": None,
+                "updated_at": None,
+            }
+        columns = [column.name for column in cur.description]
+    return _serialize(dict(zip(columns, row)))
+
+
+def _strategy_assignment(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+    broker_account_id: str,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select a.assignment_id,a.strategy_release_id,a.status,a.assigned_at,
+                   r.strategy_key,r.semantic_version,r.channel,r.lifecycle_state
+            from anevum.tenant_strategy_assignments a
+            join anevum.strategy_releases r
+              on r.strategy_release_id=a.strategy_release_id
+            where a.tenant_id=%s and a.broker_account_id=%s and a.status='ACTIVE'
+            order by a.assigned_at desc
+            limit 1
+            """,
+            (_uuid(tenant_id, "tenant_id"), _uuid(broker_account_id, "broker_account_id")),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        columns = [column.name for column in cur.description]
+    return _serialize(dict(zip(columns, row)))
+
+
+def _activity(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+    broker_account_id: str | None,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select occurred_at,action,object_type,object_id,payload
+            from anevum.protected_audit_events
+            where tenant_id=%s
+            order by occurred_at desc
+            limit 30
+            """,
+            (_uuid(tenant_id, "tenant_id"),),
+        )
+        audit = _rows(cur)
+        reconciliations: list[dict[str, Any]] = []
+        if broker_account_id:
+            cur.execute(
+                """
+                select observed_at,status,error_code
+                from anevum.broker_reconciliations
+                where tenant_id=%s and broker_account_id=%s
+                order by observed_at desc
+                limit 15
+                """,
+                (_uuid(tenant_id, "tenant_id"), _uuid(broker_account_id, "broker_account_id")),
+            )
+            reconciliations = [
+                {
+                    "occurred_at": row["observed_at"],
+                    "action": "BROKER_RECONCILIATION",
+                    "object_type": "broker_account",
+                    "object_id": broker_account_id,
+                    "payload": {
+                        "status": row["status"],
+                        "error_code": row["error_code"],
+                    },
+                }
+                for row in _rows(cur)
+            ]
+    return sorted(
+        [*audit, *reconciliations],
+        key=lambda row: str(row.get("occurred_at") or ""),
+        reverse=True,
+    )[:40]
+
+
+def customer_overview(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    member = _require_tenant_membership(conn, email=email, tenant_id=tenant_id)
+    broker = _broker_account(conn, tenant_id=tenant_id)
+    broker_id = str((broker or {}).get("broker_account_id") or "") or None
+    allocation = _active_allocation(
+        conn, tenant_id=tenant_id, broker_account_id=broker_id
+    ) if broker_id else None
+    risk = _active_risk(
+        conn, tenant_id=tenant_id, broker_account_id=broker_id
+    ) if broker_id else None
+    control = _trading_control(
+        conn, tenant_id=tenant_id, broker_account_id=broker_id
+    ) if broker_id else {"bot_enabled": False}
+    strategy = _strategy_assignment(
+        conn, tenant_id=tenant_id, broker_account_id=broker_id
+    ) if broker_id else None
+    reconciliation = latest_broker_reconciliation(
+        conn, tenant_id=tenant_id, broker_account_id=broker_id
+    ) if broker_id else None
+
+    eligibility = None
+    if broker_id:
+        gate_input, gate_result = tenant_execution_eligibility(
+            conn,
+            tenant_id=tenant_id,
+            broker_account_id=broker_id,
+        )
+        eligibility = {
+            "eligible": gate_result.eligible,
+            "reasons": list(gate_result.reasons),
+            "environment": gate_input.environment,
+            "live_customer_authority": gate_input.live_customer_authority,
+        }
+
+    account = None
+    positions: list[dict[str, Any]] = []
+    orders: list[dict[str, Any]] = []
+    if reconciliation and reconciliation.get("status") == "SUCCESS":
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select account_snapshot,positions_snapshot,open_orders_snapshot,
+                       recent_orders_snapshot
+                from anevum.broker_reconciliations
+                where tenant_id=%s and broker_account_id=%s
+                order by observed_at desc,created_at desc
+                limit 1
+                """,
+                (_uuid(tenant_id, "tenant_id"), _uuid(broker_id, "broker_account_id")),
+            )
+            row = cur.fetchone()
+        if row:
+            account = row[0]
+            positions = list(row[1] or [])
+            orders = [*(row[2] or []), *(row[3] or [])][:50]
+
+    steps = [
+        {"key": "membership", "complete": True, "label": "Command access"},
+        {
+            "key": "broker",
+            "complete": broker is not None and str(broker.get("environment")) == "PAPER",
+            "label": "Connect Alpaca Paper",
+        },
+        {
+            "key": "reconciliation",
+            "complete": bool(reconciliation and reconciliation.get("status") == "SUCCESS"),
+            "label": "Verify broker state",
+        },
+        {"key": "allocation", "complete": allocation is not None, "label": "Choose RHEN allocation"},
+        {"key": "risk", "complete": risk is not None, "label": "Set risk limits"},
+        {
+            "key": "consent",
+            "complete": bool(control.get("customer_consented_at")),
+            "label": "Accept paper automation consent",
+        },
+        {"key": "strategy", "complete": strategy is not None, "label": "Receive strategy release"},
+    ]
+
+    return {
+        "schema_version": "command_customer.v1",
+        "surface": "customer",
+        "tenant": {
+            "tenant_id": tenant_id,
+            "tenant_key": member.get("tenant_key"),
+            "display_name": member.get("display_name"),
+            "status": member.get("status"),
+            "role": member.get("role"),
+        },
+        "onboarding": {
+            "complete": all(step["complete"] for step in steps),
+            "steps": steps,
+        },
+        "broker": broker,
+        "allocation": allocation,
+        "risk": risk,
+        "control": control,
+        "strategy": strategy,
+        "eligibility": eligibility,
+        "reconciliation": reconciliation,
+        "account": account,
+        "positions": positions,
+        "orders": orders,
+        "activity": _activity(conn, tenant_id=tenant_id, broker_account_id=broker_id),
+        "authority": {
+            "paper_only": True,
+            "live_customer_trading": False,
+            "withdrawals": False,
+            "funding_mutations": False,
+        },
+    }
+
+
+def _audit(
+    cur: psycopg.Cursor[Any],
+    *,
+    tenant_id: UUID,
+    email: str,
+    action: str,
+    object_type: str,
+    object_id: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    cur.execute(
+        """
+        insert into anevum.protected_audit_events(
+            event_key,tenant_id,actor_type,actor_id,action,
+            object_type,object_id,payload
+        )
+        values(%s,%s,'customer',%s,%s,%s,%s,%s)
+        """,
+        (
+            sha256(
+                f"{tenant_id}|{email}|{action}|{object_type}|{object_id}|{uuid4()}".encode()
+            ).hexdigest(),
+            tenant_id,
+            email,
+            action,
+            object_type,
+            object_id,
+            Jsonb(payload or {}),
+        ),
+    )
+
+
+def update_allocation(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+    allocation_fraction: float,
+    absolute_cap: float,
+) -> dict[str, Any]:
+    _require_tenant_membership(
+        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+    )
+    fraction = float(allocation_fraction)
+    cap = float(absolute_cap)
+    if not 0 < fraction <= 1:
+        raise ValueError("allocation_fraction_out_of_range")
+    if not 0 < cap <= 1_000_000:
+        raise ValueError("allocation_absolute_cap_out_of_range")
+    broker = _broker_account(conn, tenant_id=tenant_id)
+    if not broker or broker.get("environment") != "PAPER":
+        raise ValueError("paper_broker_account_required")
+    tenant_uuid = _uuid(tenant_id, "tenant_id")
+    broker_uuid = _uuid(broker["broker_account_id"], "broker_account_id")
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update anevum.capital_allocations
+                set status='SUPERSEDED',superseded_at=now()
+                where tenant_id=%s and broker_account_id=%s and status='ACTIVE'
+                """,
+                (tenant_uuid, broker_uuid),
+            )
+            cur.execute(
+                """
+                insert into anevum.capital_allocations(
+                    tenant_id,broker_account_id,allocation_fraction,
+                    absolute_cap,status
+                )
+                values(%s,%s,%s,%s,'ACTIVE')
+                returning allocation_id
+                """,
+                (tenant_uuid, broker_uuid, fraction, cap),
+            )
+            allocation_id = str(cur.fetchone()[0])
+            _audit(
+                cur,
+                tenant_id=tenant_uuid,
+                email=email,
+                action="ALLOCATION_UPDATED",
+                object_type="capital_allocation",
+                object_id=allocation_id,
+                payload={"allocation_fraction": fraction, "absolute_cap": cap},
+            )
+    return customer_overview(conn, email=email, tenant_id=tenant_id)
+
+
+def update_risk(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+    max_position_fraction: float,
+    max_gross_exposure_fraction: float,
+    max_daily_loss_fraction: float,
+    max_drawdown_fraction: float,
+    max_concurrent_positions: int,
+) -> dict[str, Any]:
+    _require_tenant_membership(
+        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+    )
+    position = float(max_position_fraction)
+    gross = float(max_gross_exposure_fraction)
+    daily = float(max_daily_loss_fraction)
+    drawdown = float(max_drawdown_fraction)
+    concurrent = int(max_concurrent_positions)
+    if not 0 < position <= 1 or not 0 < gross <= 1:
+        raise ValueError("risk_exposure_out_of_range")
+    if not 0 < daily <= 0.25 or not 0 < drawdown <= 0.50:
+        raise ValueError("risk_loss_limit_out_of_range")
+    if not 1 <= concurrent <= 20:
+        raise ValueError("risk_position_count_out_of_range")
+    broker = _broker_account(conn, tenant_id=tenant_id)
+    if not broker or broker.get("environment") != "PAPER":
+        raise ValueError("paper_broker_account_required")
+    tenant_uuid = _uuid(tenant_id, "tenant_id")
+    broker_uuid = _uuid(broker["broker_account_id"], "broker_account_id")
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update anevum.risk_profiles
+                set status='SUPERSEDED',superseded_at=now()
+                where tenant_id=%s and broker_account_id=%s and status='ACTIVE'
+                """,
+                (tenant_uuid, broker_uuid),
+            )
+            cur.execute(
+                """
+                insert into anevum.risk_profiles(
+                    tenant_id,broker_account_id,max_position_fraction,
+                    max_gross_exposure_fraction,max_daily_loss_fraction,
+                    max_drawdown_fraction,max_concurrent_positions,status
+                )
+                values(%s,%s,%s,%s,%s,%s,%s,'ACTIVE')
+                returning risk_profile_id
+                """,
+                (tenant_uuid, broker_uuid, position, gross, daily, drawdown, concurrent),
+            )
+            risk_id = str(cur.fetchone()[0])
+            _audit(
+                cur,
+                tenant_id=tenant_uuid,
+                email=email,
+                action="RISK_PROFILE_UPDATED",
+                object_type="risk_profile",
+                object_id=risk_id,
+                payload={
+                    "max_position_fraction": position,
+                    "max_gross_exposure_fraction": gross,
+                    "max_daily_loss_fraction": daily,
+                    "max_drawdown_fraction": drawdown,
+                    "max_concurrent_positions": concurrent,
+                },
+            )
+    return customer_overview(conn, email=email, tenant_id=tenant_id)
+
+
+def set_paper_control(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+    enabled: bool,
+    consent_version: str | None = None,
+) -> dict[str, Any]:
+    _require_tenant_membership(
+        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+    )
+    broker = _broker_account(conn, tenant_id=tenant_id)
+    if not broker or broker.get("environment") != "PAPER":
+        raise ValueError("paper_broker_account_required")
+    tenant_uuid = _uuid(tenant_id, "tenant_id")
+    broker_uuid = _uuid(broker["broker_account_id"], "broker_account_id")
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            if enabled:
+                cur.execute(
+                    """
+                    select customer_consent_version,customer_consented_at
+                    from anevum.tenant_trading_controls
+                    where tenant_id=%s and broker_account_id=%s
+                    """,
+                    (tenant_uuid, broker_uuid),
+                )
+                existing = cur.fetchone()
+                version = str(consent_version or (existing[0] if existing else "") or "").strip()
+                consented_at = existing[1] if existing else None
+                if not version:
+                    raise ValueError("paper_trading_consent_required")
+                if consented_at is None:
+                    consented_at = datetime.now(UTC)
+                cur.execute(
+                    """
+                    insert into anevum.tenant_trading_controls(
+                        tenant_id,broker_account_id,bot_enabled,
+                        customer_consent_version,customer_consented_at,updated_by
+                    )
+                    values(%s,%s,true,%s,%s,%s)
+                    on conflict(tenant_id,broker_account_id) do update
+                    set bot_enabled=true,
+                        customer_consent_version=excluded.customer_consent_version,
+                        customer_consented_at=coalesce(
+                            anevum.tenant_trading_controls.customer_consented_at,
+                            excluded.customer_consented_at
+                        ),
+                        updated_by=excluded.updated_by,
+                        updated_at=now()
+                    """,
+                    (tenant_uuid, broker_uuid, version, consented_at, email),
+                )
+                action = "PAPER_AUTOMATION_RESUMED"
+            else:
+                cur.execute(
+                    """
+                    insert into anevum.tenant_trading_controls(
+                        tenant_id,broker_account_id,bot_enabled,updated_by
+                    )
+                    values(%s,%s,false,%s)
+                    on conflict(tenant_id,broker_account_id) do update
+                    set bot_enabled=false,updated_by=excluded.updated_by,updated_at=now()
+                    """,
+                    (tenant_uuid, broker_uuid, email),
+                )
+                action = "PAPER_AUTOMATION_PAUSED"
+            _audit(
+                cur,
+                tenant_id=tenant_uuid,
+                email=email,
+                action=action,
+                object_type="broker_account",
+                object_id=str(broker_uuid),
+            )
+    return customer_overview(conn, email=email, tenant_id=tenant_id)
+
+
+def _paper_key() -> bytes:
+    raw = os.environ.get("COMMAND_PAPER_ENVELOPE_KEY_B64", "").strip()
+    if not raw:
+        raise RuntimeError("COMMAND_PAPER_ENVELOPE_KEY_B64 is not configured")
+    try:
+        key = base64.b64decode(raw, validate=True)
+    except Exception as exc:
+        raise RuntimeError("COMMAND_PAPER_ENVELOPE_KEY_B64 is invalid") from exc
+    if len(key) != 32:
+        raise RuntimeError("COMMAND_PAPER_ENVELOPE_KEY_B64 must decode to 32 bytes")
+    return key
+
+
+def _encrypt_token(*, tenant_id: str, token: str) -> tuple[bytes, bytes]:
+    nonce = os.urandom(12)
+    aad = f"ANEVUM|{tenant_id}|ALPACA_PAPER_OAUTH|{PAPER_BETA_KEY_VERSION}".encode()
+    ciphertext = AESGCM(_paper_key()).encrypt(nonce, token.encode(), aad)
+    return nonce, ciphertext
+
+
+@dataclass
+class DatabaseEnvelopeSecretResolver:
+    database_url: str
+    tenant_id: str
+
+    def resolve(self, secret_reference: str) -> str:
+        with psycopg.connect(self.database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select key_version,nonce,ciphertext
+                    from anevum.secret_envelopes
+                    where secret_reference=%s and tenant_id=%s and revoked_at is null
+                    """,
+                    (secret_reference, _uuid(self.tenant_id, "tenant_id")),
+                )
+                row = cur.fetchone()
+        if not row:
+            raise RuntimeError("paper OAuth secret envelope unavailable")
+        version, nonce, ciphertext = row
+        if version != PAPER_BETA_KEY_VERSION:
+            raise RuntimeError("paper OAuth secret key version unsupported")
+        aad = f"ANEVUM|{self.tenant_id}|ALPACA_PAPER_OAUTH|{version}".encode()
+        try:
+            plaintext = AESGCM(_paper_key()).decrypt(bytes(nonce), bytes(ciphertext), aad)
+        except Exception:
+            raise RuntimeError("paper OAuth secret envelope decrypt failed") from None
+        return plaintext.decode()
+
+
+def start_paper_oauth(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+    redirect_uri: str,
+) -> dict[str, Any]:
+    member = _require_tenant_membership(
+        conn, email=email, tenant_id=tenant_id, minimum_roles={"OWNER", "ADMIN"}
+    )
+    client_id = os.environ.get("ALPACA_OAUTH_CLIENT_ID", "").strip()
+    if not client_id:
+        raise RuntimeError("ALPACA_OAUTH_CLIENT_ID is not configured")
+    redirect = str(redirect_uri or "").strip()
+    if not redirect.startswith("https://"):
+        raise ValueError("oauth_redirect_uri_invalid")
+
+    raw_state = secrets.token_urlsafe(32)
+    state_hash = sha256(raw_state.encode()).hexdigest()
+    expires = datetime.now(UTC) + timedelta(minutes=10)
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into anevum.oauth_states(
+                    state_hash,tenant_id,principal_id,provider,environment,
+                    redirect_uri,expires_at
+                )
+                values(%s,%s,%s,'ALPACA','PAPER',%s,%s)
+                """,
+                (
+                    state_hash,
+                    _uuid(tenant_id, "tenant_id"),
+                    _uuid(member["principal_id"], "principal_id"),
+                    redirect,
+                    expires,
+                ),
+            )
+            _audit(
+                cur,
+                tenant_id=_uuid(tenant_id, "tenant_id"),
+                email=email,
+                action="ALPACA_PAPER_OAUTH_STARTED",
+                object_type="tenant",
+                object_id=tenant_id,
+            )
+
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "state": raw_state,
+            "scope": PAPER_SCOPE,
+            "env": "paper",
+        }
+    )
+    return {
+        "authorization_url": f"{ALPACA_AUTHORIZE_URL}?{query}",
+        "expires_at": expires.isoformat(),
+        "environment": "PAPER",
+        "scope": PAPER_SCOPE,
+    }
+
+
+async def complete_paper_oauth(
+    conn: psycopg.Connection[Any],
+    *,
+    database_url: str,
+    email: str,
+    code: str,
+    state: str,
+) -> dict[str, Any]:
+    state_hash = sha256(str(state or "").encode()).hexdigest()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select s.tenant_id,s.principal_id,s.redirect_uri,s.expires_at,s.consumed_at,
+                   p.email
+            from anevum.oauth_states s
+            join anevum.principals p on p.principal_id=s.principal_id
+            where s.state_hash=%s and s.provider='ALPACA' and s.environment='PAPER'
+            for update
+            """,
+            (state_hash,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise ValueError("oauth_state_invalid")
+    tenant_id, principal_id, redirect_uri, expires_at, consumed_at, expected_email = row
+    if consumed_at is not None:
+        raise ValueError("oauth_state_already_used")
+    if expires_at <= datetime.now(UTC):
+        raise ValueError("oauth_state_expired")
+    if _email(expected_email) != _email(email):
+        raise PermissionError("oauth_identity_mismatch")
+
+    client_id = os.environ.get("ALPACA_OAUTH_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("ALPACA_OAUTH_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise RuntimeError("Alpaca OAuth client credentials are not configured")
+
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        token_response = await http.post(
+            ALPACA_TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "code": str(code or "").strip(),
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    if not token_response.is_success:
+        raise RuntimeError(f"Alpaca OAuth token exchange failed ({token_response.status_code})")
+    token_payload = token_response.json()
+    token = str(token_payload.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Alpaca OAuth token exchange returned no access token")
+
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        account_response = await http.get(
+            ALPACA_PAPER_API + "/v2/account",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+    if not account_response.is_success:
+        raise RuntimeError(f"Alpaca paper account verification failed ({account_response.status_code})")
+    account = account_response.json()
+    provider_account_id = str(account.get("id") or "").strip()
+    if not provider_account_id:
+        raise RuntimeError("Alpaca paper account identity missing")
+
+    secret_reference = f"db-envelope://{uuid4()}"
+    nonce, ciphertext = _encrypt_token(tenant_id=str(tenant_id), token=token)
+    broker_account_id: UUID
+    scope = str(token_payload.get("scope") or PAPER_SCOPE).strip()
+    scopes = [item for item in scope.split() if item]
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update anevum.oauth_states
+                set consumed_at=now()
+                where state_hash=%s and consumed_at is null
+                """,
+                (state_hash,),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("oauth_state_already_used")
+            cur.execute(
+                """
+                insert into anevum.broker_accounts(
+                    tenant_id,provider,provider_account_id,environment,
+                    account_status,crypto_enabled,trading_blocked,withdrawals_blocked
+                )
+                values(%s,'ALPACA',%s,'PAPER',%s,true,%s,%s)
+                on conflict(provider,environment,provider_account_id) do update
+                set account_status=excluded.account_status,
+                    crypto_enabled=excluded.crypto_enabled,
+                    trading_blocked=excluded.trading_blocked,
+                    withdrawals_blocked=excluded.withdrawals_blocked,
+                    updated_at=now()
+                returning broker_account_id
+                """,
+                (
+                    tenant_id,
+                    provider_account_id,
+                    str(account.get("status") or "UNKNOWN").upper(),
+                    bool(account.get("trading_blocked")),
+                    bool(account.get("transfers_blocked")),
+                ),
+            )
+            broker_account_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                select tenant_id from anevum.broker_accounts
+                where broker_account_id=%s
+                """,
+                (broker_account_id,),
+            )
+            owner_tenant = cur.fetchone()[0]
+            if owner_tenant != tenant_id:
+                raise PermissionError("broker_account_already_owned_by_another_tenant")
+
+            cur.execute(
+                """
+                update anevum.broker_authorizations
+                set status='REVOKED',updated_at=now()
+                where broker_account_id=%s and status='ACTIVE'
+                """,
+                (broker_account_id,),
+            )
+            cur.execute(
+                """
+                insert into anevum.secret_envelopes(
+                    secret_reference,tenant_id,purpose,key_version,nonce,ciphertext
+                )
+                values(%s,%s,'ALPACA_PAPER_OAUTH',%s,%s,%s)
+                """,
+                (secret_reference, tenant_id, PAPER_BETA_KEY_VERSION, nonce, ciphertext),
+            )
+            cur.execute(
+                """
+                insert into anevum.broker_authorizations(
+                    broker_account_id,authorization_kind,secret_reference,
+                    scopes,status,issued_at,last_validated_at
+                )
+                values(%s,'OAUTH',%s,%s,'ACTIVE',now(),now())
+                """,
+                (broker_account_id, secret_reference, Jsonb(scopes)),
+            )
+            _audit(
+                cur,
+                tenant_id=tenant_id,
+                email=email,
+                action="ALPACA_PAPER_CONNECTED",
+                object_type="broker_account",
+                object_id=str(broker_account_id),
+                payload={"provider_account_id": provider_account_id, "scopes": scopes},
+            )
+
+    broker = TenantBrokerAccount(
+        tenant_id=str(tenant_id),
+        broker_account_id=str(broker_account_id),
+        provider_account_id=provider_account_id,
+        environment="PAPER",
+        authorization_kind="OAUTH",
+        secret_reference=secret_reference,
+    )
+    resolver = DatabaseEnvelopeSecretResolver(database_url, str(tenant_id))
+    result = await TenantBrokerReconciler(
+        broker,
+        TenantAlpacaReadClient(broker, resolver),
+    ).reconcile()
+    record_broker_reconciliation(conn, result)
+    return customer_overview(conn, email=email, tenant_id=str(tenant_id))
+
+
+async def refresh_paper_broker(
+    conn: psycopg.Connection[Any],
+    *,
+    database_url: str,
+    email: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    _require_tenant_membership(conn, email=email, tenant_id=tenant_id)
+    broker_row = _broker_account(conn, tenant_id=tenant_id)
+    if not broker_row or broker_row.get("environment") != "PAPER":
+        raise ValueError("paper_broker_account_required")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select authorization_kind,secret_reference
+            from anevum.broker_authorizations
+            where broker_account_id=%s and status='ACTIVE'
+            """,
+            (_uuid(broker_row["broker_account_id"], "broker_account_id"),),
+        )
+        auth = cur.fetchone()
+    if not auth:
+        raise ValueError("active_broker_authorization_required")
+
+    broker = TenantBrokerAccount(
+        tenant_id=tenant_id,
+        broker_account_id=broker_row["broker_account_id"],
+        provider_account_id=broker_row["provider_account_id"],
+        environment="PAPER",
+        authorization_kind=str(auth[0]),
+        secret_reference=str(auth[1]),
+    )
+    resolver = DatabaseEnvelopeSecretResolver(database_url, tenant_id)
+    result = await TenantBrokerReconciler(
+        broker,
+        TenantAlpacaReadClient(broker, resolver),
+    ).reconcile()
+    record_broker_reconciliation(conn, result)
+    return customer_overview(conn, email=email, tenant_id=tenant_id)
