@@ -710,7 +710,7 @@ class IrenWorkEngine:
             package = (job.get("result") or {}).get("package") or {}
             try:
                 github = await self._github_evidence(job)
-                foundation = await self.gateway("iren_handoff_evidence")
+                rhen = await self.gateway("iren_handoff_evidence")
                 root = self.executor_url.removesuffix("/v1/jobs/accept").rstrip("/")
                 async with httpx.AsyncClient(timeout=20) as client:
                     response = await client.get(root + "/health")
@@ -720,11 +720,14 @@ class IrenWorkEngine:
                     own = await client.get("http://127.0.0.1:" + os.getenv("PORT", "8080") + "/health")
                     own.raise_for_status()
                     own_health = own.json()
-                observations = {"IREN": own_health,
-                    "IREN_EXECUTOR": worker, "FOUNDATION": foundation.get("health") or {}}
+                observations = {
+                    "RHEN": rhen.get("health") or {},
+                    "IREN": own_health,
+                    "IREN_EXECUTOR": worker,
+                }
                 outcome = await self.gateway("iren_handoff_verify", handoff_id=job["job_id"],
                     package_digest=package["package_digest"], github=github, observations=observations,
-                    migrations=foundation.get("migrations") or [])
+                    migrations=rhen.get("migrations") or [])
                 if outcome.get("objective_completed"):
                     await self._reconcile_objective_dependencies()
                 updated = (outcome.get("job") or {}).get("result") or {}
@@ -732,7 +735,7 @@ class IrenWorkEngine:
                     handoff_id=job["job_id"], objective_key=job["objective_key"],
                     handoff_status=updated.get("handoff_status"),
                     blockers=(updated.get("verification") or {}).get("blockers"),
-                    command_contract=foundation.get("command_contract"),
+                    command_contract=rhen.get("command_contract"),
                     daily_budget_usd=(worker.get("software_worker") or {}).get("daily_budget_usd"),
                     job_budget_usd=(worker.get("software_worker") or {}).get("job_budget_usd"),
                     spending_authority=worker.get("spending_authority"),
