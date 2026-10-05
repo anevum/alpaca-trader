@@ -129,7 +129,7 @@ def normalize_bars(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             continue
         if min(open_, high, low, close) <= 0:
             continue
-        if high < max(open_, close, low) or low > min(open_, close, high):
+        if high < low or high < max(open_, close) or low > min(open_, close):
             continue
         by_stamp[stamp] = {
             "timestamp": stamp,
@@ -233,6 +233,12 @@ def _simulate(
         stamp = bars[index]["timestamp"]
         if not isinstance(stamp, datetime):
             continue
+        # Every evaluation window begins flat. Indicator warmup may come from
+        # earlier bars, but positions/costs cannot leak across evidence windows.
+        if stamp < start:
+            continue
+        if stamp >= end:
+            break
 
         momentum_positive = (
             closes[signal_index] / closes[anchor_index] - 1.0 > 0.0
@@ -246,7 +252,7 @@ def _simulate(
             bars, signal_index, exit_bars
         )
 
-        in_window = start <= stamp < end
+        in_window = True
         bar_return = 0.0
 
         if position == 0.0 and regime_long and breakout:
