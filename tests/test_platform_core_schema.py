@@ -25,6 +25,11 @@ def test_platform_core_schema_is_additive_and_tenant_scoped():
         assert statement in LOWER
 
     assert "tenant_id uuid not null references anevum.tenants(tenant_id)" in LOWER
+    assert "unique (tenant_id, broker_account_id)" in LOWER
+    assert (
+        "foreign key (tenant_id, broker_account_id)\n"
+        "        references anevum.broker_accounts(tenant_id, broker_account_id)"
+    ) in LOWER
 
 
 def test_broker_authorization_stores_only_secret_reference_metadata():
