@@ -127,6 +127,10 @@ comment on column anevum.broker_authorizations.secret_reference is
 create index if not exists anevum_broker_authorizations_account_idx
     on anevum.broker_authorizations (broker_account_id, status);
 
+create unique index if not exists anevum_broker_authorizations_active_uidx
+    on anevum.broker_authorizations (broker_account_id)
+    where status = 'ACTIVE';
+
 create table if not exists anevum.capital_allocations (
     allocation_id uuid primary key default gen_random_uuid(),
     tenant_id uuid not null,
