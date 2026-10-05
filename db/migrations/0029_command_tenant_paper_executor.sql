@@ -44,8 +44,7 @@ create index if not exists rhen_strategy_signals_release_time_idx
     on rhen.strategy_signals (strategy_release_id, observed_at desc);
 
 create index if not exists rhen_strategy_signals_expiry_idx
-    on rhen.strategy_signals (expires_at)
-    where expires_at > now();
+    on rhen.strategy_signals (expires_at);
 
 create or replace function rhen.reject_strategy_signal_mutation()
 returns trigger language plpgsql as $$
