@@ -2283,6 +2283,7 @@ class RhenCoreStore:
             ):
                 continue
             symbol = str(order.get("symbol") or "").upper()
+            # Standing hard stops are broker-side protection, not new exposure.
             expected_protective_stop = (
                 symbol in positive_managed_symbols
                 and symbol in filled_buy_symbols
