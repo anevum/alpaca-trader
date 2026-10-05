@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from .slack_brand import decorate_slack_message, event_system
+from .slack_brand import decorate_slack_message, event_module, event_system
 
 
 class SlackNotifier:
@@ -68,7 +68,7 @@ class SlackNotifier:
     ) -> None:
         self._enqueue(
             (
-                "*RHEN // ONLINE*\n"
+                "*RHEN // EXECUTION // ONLINE*\n"
                 f"mode: `{trading_mode}` | strategy: `{strategy_name}` | "
                 f"version: `{strategy_version_id or 'unversioned'}` | "
                 f"execution: `{'authorized' if execution_authorized else 'not-authorized'}`"
@@ -91,18 +91,18 @@ class SlackNotifier:
         if previous is None:
             if is_open:
                 self._enqueue(
-                    f"*RHEN // MARKET OPEN*\n{stamp} | live session detected; scanner/execution loop active"
+                    f"*RHEN // EXECUTION // MARKET OPEN*\n{stamp} | live session detected; scanner/execution loop active"
                 )
             return
         if previous == is_open:
             return
         if is_open:
             self._enqueue(
-                f"*RHEN // MARKET OPEN*\n{stamp} | regular session transition detected"
+                f"*RHEN // EXECUTION // MARKET OPEN*\n{stamp} | regular session transition detected"
             )
         else:
             self._enqueue(
-                f"*RHEN // MARKET CLOSED*\n{stamp} | regular session transition detected"
+                f"*RHEN // EXECUTION // MARKET CLOSED*\n{stamp} | regular session transition detected"
             )
 
     def record_event(self, event: dict[str, Any]) -> None:
@@ -170,8 +170,9 @@ class SlackNotifier:
         symbol_text = f" | `{symbol}`" if symbol else ""
         key = None if kind == "reconciliation" else f"event:{kind}:{action}:{symbol}:{message}"
         system = event_system(kind)
+        module = event_module(kind)
         self._enqueue(
-            f"*{system} // {label}*\n{at}{symbol_text} | {message}",
+            f"*RHEN // {module} // {label}*\n{at}{symbol_text} | {message}",
             key=key,
             system=system,
         )
