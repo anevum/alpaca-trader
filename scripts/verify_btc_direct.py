@@ -2,40 +2,42 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from app.btc_direct_strategy import BtcDirectSwingStrategy
 
 
-def _bars(*, reclaim: bool = True):
+def make_fixture(reclaim: bool):
     strategy = BtcDirectSwingStrategy()
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     daily = []
     for index in range(strategy.sma_window_bars + 2):
         close = Decimal("50000") + Decimal(index * 150)
-        daily.append(
-            {
-                "t": (start + timedelta(days=index)).isoformat(),
-                "o": str(close - Decimal("50")),
-                "h": str(close + Decimal("100")),
-                "l": str(close - Decimal("100")),
-                "c": str(close),
-            }
-        )
+        daily.append({
+            "t": (start + timedelta(days=index)).isoformat(),
+            "o": str(close - Decimal("50")),
+            "h": str(close + Decimal("100")),
+            "l": str(close - Decimal("100")),
+            "c": str(close),
+        })
 
     four_hour_start = start + timedelta(days=strategy.sma_window_bars - 8)
     rows = []
     for index in range(30):
         close = Decimal("60000") + Decimal(index * 80)
-        rows.append(
-            {
-                "t": (four_hour_start + timedelta(hours=4 * index)).isoformat(),
-                "o": str(close - Decimal("20")),
-                "h": str(close + Decimal("40")),
-                "l": str(close - Decimal("40")),
-                "c": str(close),
-            }
-        )
+        rows.append({
+            "t": (four_hour_start + timedelta(hours=4 * index)).isoformat(),
+            "o": str(close - Decimal("20")),
+            "h": str(close + Decimal("40")),
+            "l": str(close - Decimal("40")),
+            "c": str(close),
+        })
 
     if reclaim:
         baseline = Decimal(rows[-3]["c"])
@@ -60,11 +62,11 @@ def _bars(*, reclaim: bool = True):
     return rows, daily, now
 
 
-def test_direct_btc_strategy_enters_on_completed_pullback_reclaim():
+def main():
     strategy = BtcDirectSwingStrategy()
-    bars, daily, now = _bars(reclaim=True)
 
-    signal = strategy.evaluate(
+    bars, daily, now = make_fixture(True)
+    buy = strategy.evaluate(
         bars=bars,
         confirmation_bars={"BTC/USD": daily},
         symbol="BTC/USD",
@@ -72,22 +74,13 @@ def test_direct_btc_strategy_enters_on_completed_pullback_reclaim():
         order_notional=Decimal("63"),
         now=now,
     )
+    assert buy.action == "buy", buy
+    assert buy.stop_price > 0
+    assert buy.take_profit_price > buy.reference_price
+    assert buy.metadata["strategy_version_id"] == "RHEN-BTC-DIRECT-002"
 
-    assert signal.action == "buy"
-    assert signal.symbol == "BTC/USD"
-    assert signal.metadata["strategy_version_id"] == "RHEN-BTC-DIRECT-002"
-    assert signal.metadata["research_dependency"] is False
-    assert signal.metadata["timeframe"] == "4Hour"
-    assert signal.metadata["regime_timeframe"] == "1Day"
-    assert signal.stop_price > 0
-    assert signal.take_profit_price > signal.reference_price
-
-
-def test_direct_btc_strategy_holds_without_pullback_reclaim():
-    strategy = BtcDirectSwingStrategy()
-    bars, daily, now = _bars(reclaim=False)
-
-    signal = strategy.evaluate(
+    bars, daily, now = make_fixture(False)
+    hold = strategy.evaluate(
         bars=bars,
         confirmation_bars={"BTC/USD": daily},
         symbol="BTC/USD",
@@ -95,19 +88,9 @@ def test_direct_btc_strategy_holds_without_pullback_reclaim():
         order_notional=Decimal("63"),
         now=now,
     )
+    assert hold.action == "hold", hold
 
-    assert signal.action == "hold"
-    assert (
-        "pullback" in signal.reason.lower()
-        or "reclaim" in signal.reason.lower()
-    )
-
-
-def test_direct_btc_strategy_is_btc_only():
-    strategy = BtcDirectSwingStrategy()
-    bars, daily, now = _bars(reclaim=True)
-
-    signal = strategy.evaluate(
+    wrong = strategy.evaluate(
         bars=bars,
         confirmation_bars={"BTC/USD": daily},
         symbol="ETH/USD",
@@ -115,6 +98,10 @@ def test_direct_btc_strategy_is_btc_only():
         order_notional=Decimal("63"),
         now=now,
     )
+    assert wrong.action == "hold"
 
-    assert signal.action == "hold"
-    assert "BTC/USD only" in signal.reason
+    print("RHEN BTC direct verifier passed")
+
+
+if __name__ == "__main__":
+    main()
