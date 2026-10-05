@@ -900,6 +900,7 @@ def test_v15_shadow_ready_gate_still_requires_human_review():
     assert checkpoint["promotion_authorized"] is False
     assert checkpoint["execution_authority"] is False
     assert checkpoint["broker_orders_possible"] is False
+    assert checkpoint["live_execution_authorized"] is False
 
 
 
@@ -948,3 +949,31 @@ def test_v15_activation_routes_to_third_shadow_without_replacing_r2f_or_r2g():
         assert runtime.v15_shadow.broker_orders_possible is False
 
     asyncio.run(scenario())
+
+
+
+def test_v15_shadow_rejects_after_terminal_review_window():
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(v15_activation())
+    runtime.entry_count = 1
+    start = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+
+    for index in range(252):
+        runtime.v15_4h_marks.append(
+            {
+                "bar_end": (
+                    start + timedelta(hours=4 * (index + 1))
+                ).isoformat(),
+                "position": 1.0,
+                "turnover_units": 0.0,
+                "stressed_cost_net_return": -0.0005,
+            }
+        )
+
+    checkpoint = runtime._checkpoint()
+    assert checkpoint["status"] == "SHADOW_REJECTED"
+    assert checkpoint["fresh_4h_mark_count"] == 252
+    assert checkpoint["promotion_authorized"] is False
+    assert checkpoint["execution_authority"] is False
+    assert checkpoint["broker_orders_possible"] is False
+    assert checkpoint["live_execution_authorized"] is False
