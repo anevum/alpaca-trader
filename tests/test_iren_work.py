@@ -263,6 +263,45 @@ def test_autopilot_skips_manual_software_and_continues_independent_research():
     assert any("manual software" in row for row in decision["skipped_actions"])
 
 
+def test_autopilot_never_executes_protected_live_risk_decision():
+    data = snapshot()
+    data["objectives"][2]["status"] = "COMPLETE"
+    data["objectives"][3]["status"] = "COMPLETE"
+    data["objectives"].append({
+        "objective_key": "decision.live-risk.auto-paper-01",
+        "title": "Review live-risk charter for AUTO-PAPER-01",
+        "description": "Protected real-money promotion decision.",
+        "status": "READY",
+        "priority": 200,
+        "dependencies": [],
+        "owner_system": "IREN",
+        "protected_action": True,
+        "success_criteria": {"explicit_human_decision": True},
+        "metadata": {
+            "classification": "HUMAN_DECISION_REQUIRED",
+            "job_type": "HUMAN_DECISION",
+            "automatic_live_promotion": False,
+            "automatic_risk_increase": False,
+        },
+    })
+    data["settings"] = {
+        "autopilot_enabled": True,
+        "autopilot_max_jobs_per_day": 3,
+    }
+
+    decision = autopilot_decision(
+        data,
+        {"state": "HEALTHY", "incidents": {}},
+    )
+
+    assert decision["should_create"] is False
+    assert decision["reason"] == "protected_action_requires_human"
+    assert decision["action"]["objective_key"] == (
+        "decision.live-risk.auto-paper-01"
+    )
+    assert decision["action"]["protected_action"] is True
+
+
 def test_autopilot_does_not_repeat_same_completed_action():
     data = snapshot()
     data["objectives"][2]["status"] = "COMPLETE"
