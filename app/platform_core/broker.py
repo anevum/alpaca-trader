@@ -58,7 +58,12 @@ class TenantAlpacaReadClient:
         self.timeout_seconds = timeout_seconds
 
     def _headers(self) -> dict[str, str]:
-        token = self.secret_resolver.resolve(self.account.secret_reference).strip()
+        try:
+            token = self.secret_resolver.resolve(self.account.secret_reference).strip()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Alpaca secret resolution failed ({type(exc).__name__})"
+            ) from None
         if not token:
             raise RuntimeError("resolved Alpaca OAuth token is empty")
         return {
