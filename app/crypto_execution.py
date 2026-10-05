@@ -51,9 +51,23 @@ class CryptoExecutionEngine:
         self.state = state
         self.universe = universe
         self.ledger = ledger
+        self._direct_btc_history: list[dict[str, Any]] = []
 
     def _direct_btc_mode(self) -> bool:
         return self.settings.crypto_execution_mode == "btc_direct_paper"
+
+    def _merge_direct_btc_history(
+        self,
+        fresh: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        rows: dict[str, dict[str, Any]] = {}
+        for row in [*self._direct_btc_history, *fresh]:
+            stamp = str(row.get("t") or row.get("timestamp") or "")
+            if stamp:
+                rows[stamp] = row
+        ordered = [rows[key] for key in sorted(rows)]
+        self._direct_btc_history = ordered[-7000:]
+        return self._direct_btc_history
 
     @staticmethod
     def _is_crypto_symbol(symbol: str) -> bool:
@@ -510,33 +524,26 @@ class CryptoExecutionEngine:
             *owned_symbols,
         ]))
         if direct_btc:
-            bars_request = self.market_data.bars_many(
-                data_symbols,
-                timeframe=getattr(self.strategy, "timeframe", "4Hour"),
-                lookback_minutes=int(
-                    getattr(
-                        self.strategy,
-                        "required_history_minutes",
-                        self.settings.crypto_lookback_minutes,
-                    )
-                ),
+            bootstrap = not self._direct_btc_history
+            lookback_minutes = (
+                int(getattr(self.strategy, "required_history_minutes", 270 * 24 * 60))
+                if bootstrap
+                else 72 * 60
             )
-            regime_request = self.market_data.bars_many(
-                ["BTC/USD"],
-                timeframe=getattr(self.strategy, "regime_timeframe", "1Day"),
-                lookback_minutes=int(
-                    getattr(
-                        self.strategy,
-                        "regime_history_minutes",
-                        270 * 24 * 60,
-                    )
+            fresh_bars, quotes = await asyncio.gather(
+                self.market_data.bars_many(
+                    data_symbols,
+                    timeframe=getattr(self.strategy, "timeframe", "1Hour"),
+                    lookback_minutes=lookback_minutes,
                 ),
-            )
-            bars, quotes, regime_bars = await asyncio.gather(
-                bars_request,
                 self.market_data.latest_quotes(active_symbols),
-                regime_request,
             )
+            bars = {
+                "BTC/USD": self._merge_direct_btc_history(
+                    fresh_bars.get("BTC/USD", [])
+                )
+            }
+            regime_bars = {}
         else:
             bars, quotes = await asyncio.gather(
                 self.market_data.bars_many(data_symbols),
