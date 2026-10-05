@@ -217,7 +217,7 @@ class LedgerClient:
                     0,
                     min(3600, int(retry.get("delay_seconds") or 0)),
                 ),
-                "worker_identity": os.getenv("RAILWAY_SERVICE_ID") or "anevum-scheduler",
+                "worker_identity": os.getenv("RAILWAY_SERVICE_ID") or "IREN",
                 "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
                 "input_identity": item.input_identity,
                 "catchup_state": catchup_state,
@@ -327,13 +327,13 @@ class SchedulerRuntime:
             os.getenv("SCHEDULER_GATEWAY_URL", "").strip(),
             self.token,
         )
-        self.trader_url = os.getenv(
-            "RHEN_TRADER_SCHEDULER_URL",
-            "http://alpaca-trader.railway.internal:8080/v1/scheduler",
+        self.rhen_url = os.getenv(
+            "RHEN_SCHEDULER_URL",
+            "http://127.0.0.1:8101/v1/scheduler",
         ).rstrip("/")
         self.velum_url = os.getenv(
             "VELUM_SCHEDULER_URL",
-            "http://rhen-velum.railway.internal:8080/v1/scheduler",
+            "http://127.0.0.1:8113/v1/scheduler",
         ).rstrip("/")
         self.research_url = os.getenv("RHEN_RESEARCH_REVIEW_URL", "").strip()
         self.research_token = os.getenv("RHEN_REVIEW_TOKEN", "").strip()
@@ -359,7 +359,7 @@ class SchedulerRuntime:
     def configured(self) -> bool:
         return (
             self.ledger.configured
-            and self.trader_url.startswith("http")
+            and self.rhen_url.startswith("http")
             and self.velum_url.startswith("http")
             and self.research_url.startswith("http")
             and bool(self.research_token)
@@ -376,7 +376,7 @@ class SchedulerRuntime:
 
     async def start(self) -> None:
         if self.task is None:
-            self.task = asyncio.create_task(self._run(), name="anevum-canonical-scheduler")
+            self.task = asyncio.create_task(self._run(), name="iren-scheduler")
 
     async def stop(self) -> None:
         self.stop_event.set()
@@ -425,7 +425,7 @@ class SchedulerRuntime:
         end = (now.astimezone(NY).date() + timedelta(days=14)).isoformat()
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
-                self.trader_url + "/calendar",
+                self.rhen_url + "/calendar",
                 headers=self.scheduler_headers,
                 params={"start": start, "end": end},
             )
@@ -628,7 +628,7 @@ class SchedulerRuntime:
 
         if target == "trader_preflight":
             local = await self._post(
-                self.trader_url + "/preflight",
+                self.rhen_url + "/preflight",
                 self.scheduler_headers,
                 {"session": session, "scheduled_at": _iso(item.scheduled_at)},
             )
@@ -646,14 +646,14 @@ class SchedulerRuntime:
 
         if target == "trader_market_open":
             return await self._post(
-                self.trader_url + "/market-open",
+                self.rhen_url + "/market-open",
                 self.scheduler_headers,
                 {"session": session, "scheduled_at": _iso(item.scheduled_at)},
             )
 
         if target == "trader_session_close":
             return await self._post(
-                self.trader_url + "/session-close",
+                self.rhen_url + "/session-close",
                 self.scheduler_headers,
                 {"session": session, "scheduled_at": _iso(item.scheduled_at)},
                 timeout=300,
@@ -664,7 +664,7 @@ class SchedulerRuntime:
 
         if target == "weekly_operating_review":
             operating = await self._post(
-                self.trader_url + "/weekly-review",
+                self.rhen_url + "/weekly-review",
                 self.scheduler_headers,
                 {"session": session, "scheduled_at": _iso(item.scheduled_at)},
                 timeout=300,
@@ -831,7 +831,7 @@ class SchedulerRuntime:
 
     async def _dependency_health(self) -> dict[str, dict[str, Any]]:
         urls = {
-            "rhen": self.trader_url.split("/v1/scheduler", 1)[0] + "/health",
+            "rhen": self.rhen_url.split("/v1/scheduler", 1)[0] + "/health",
             "velum": self.velum_url.split("/v1/scheduler", 1)[0] + "/health",
             "research_agent": self.research_url.split("/v1/", 1)[0] + "/health",
         }
@@ -1003,7 +1003,7 @@ async def health():
     body = {
         "ok": healthy,
         "system": "IREN",
-        "service": "anevum-canonical-scheduler",
+        "service": "IREN",
         "scheduler_version": runtime.scheduler_version,
         "configured": runtime.configured,
         "last_tick_at": _iso(runtime.last_tick_at) if runtime.last_tick_at else None,
