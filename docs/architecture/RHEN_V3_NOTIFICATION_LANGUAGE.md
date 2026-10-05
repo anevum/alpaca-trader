@@ -46,7 +46,7 @@ The semantic vocabulary is intentionally small:
 - ⚙️ worker
 - 🖥️ command
 
-Critical state semantics take precedence over module identity. Otherwise an explicit RHEN module header selects the module marker.
+State semantics such as active, success, warning, critical, waiting, and risk take precedence over module identity. Otherwise an explicit RHEN module header selects the module marker.
 
 ## Retired notification emoji families
 
