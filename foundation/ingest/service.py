@@ -770,12 +770,18 @@ async def require_command_identity(
 async def require_command_access(
     cf_access_jwt_assertion: str | None,
 ) -> dict[str, Any]:
+    allowed_emails = os.environ.get("COMMAND_ACCESS_EMAILS", "").strip()
+    if not allowed_emails:
+        raise HTTPException(
+            status_code=503,
+            detail="command_operator_allowlist_not_configured",
+        )
     try:
         return await verify_access_assertion(
             cf_access_jwt_assertion,
             team_domain=os.environ.get("CF_ACCESS_TEAM_DOMAIN", ""),
             audience=os.environ.get("CF_ACCESS_AUD", ""),
-            allowed_emails=os.environ.get("COMMAND_ACCESS_EMAILS", ""),
+            allowed_emails=allowed_emails,
         )
     except AccessConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
