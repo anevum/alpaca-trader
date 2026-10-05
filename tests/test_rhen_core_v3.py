@@ -891,3 +891,6 @@ def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
     assert pipeline["release_gate"]["status"] == "REVIEW"
     assert pipeline["release_gate"]["automatic_promotion"] is False
     assert pipeline["release_gate"]["production_authority_changed"] is False
+    assert pipeline["research"]["graen_problems"][0]["problem_id"] == problem_id
+    assert pipeline["research"]["graen_runs"][0]["run_id"] == run_id
+    assert pipeline["research"]["velum_replays"][0]["status"] == "PASSED"
