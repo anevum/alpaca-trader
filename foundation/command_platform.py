@@ -940,7 +940,7 @@ async def complete_paper_oauth(
                     tenant_id,provider,provider_account_id,environment,
                     account_status,crypto_enabled,trading_blocked,withdrawals_blocked
                 )
-                values(%s,'ALPACA',%s,'PAPER',%s,true,%s,%s)
+                values(%s,'ALPACA',%s,'PAPER',%s,%s,%s,%s)
                 on conflict(provider,environment,provider_account_id) do update
                 set account_status=excluded.account_status,
                     crypto_enabled=excluded.crypto_enabled,
@@ -953,6 +953,7 @@ async def complete_paper_oauth(
                     tenant_id,
                     provider_account_id,
                     str(account.get("status") or "UNKNOWN").upper(),
+                    str(account.get("crypto_status") or "").upper() in {"ACTIVE", "APPROVED"},
                     bool(account.get("trading_blocked")),
                     bool(account.get("transfers_blocked")),
                 ),
