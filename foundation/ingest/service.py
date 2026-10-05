@@ -29,6 +29,7 @@ from foundation.command_iren import (
     read_command_snapshot,
 )
 from foundation.command_platform import (
+    assign_paper_strategy_release,
     complete_paper_oauth,
     customer_overview,
     refresh_paper_broker,
@@ -94,6 +95,11 @@ class CommandBetaTenantRequest(BaseModel):
     customer_email: str
     display_name: str
     tenant_key: str | None = None
+
+
+class CommandStrategyAssignmentRequest(BaseModel):
+    tenant_id: str
+    strategy_release_id: str
 
 
 
@@ -814,6 +820,32 @@ async def command_platform_admin_create_tenant(
         raise HTTPException(
             status_code=503,
             detail=f"command_platform_tenant_create_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.post("/v1/command/platform/admin/strategy-assignment")
+async def command_platform_admin_strategy_assignment(
+    body: CommandStrategyAssignmentRequest,
+    cf_access_jwt_assertion: str | None = Header(
+        default=None,
+        alias="Cf-Access-Jwt-Assertion",
+    ),
+) -> dict[str, Any]:
+    identity = await require_command_access(cf_access_jwt_assertion)
+    try:
+        with psycopg.connect(database_url(), connect_timeout=5) as conn:
+            return assign_paper_strategy_release(
+                conn,
+                operator_email=str(identity.get("email") or "command-admin"),
+                tenant_id=body.tenant_id,
+                strategy_release_id=body.strategy_release_id,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"command_platform_strategy_assignment_failed:{type(exc).__name__}",
         ) from exc
 
 
