@@ -1020,11 +1020,41 @@ def project_command(
     operating_condition = str(operating_summary.get("condition") or "UNKNOWN")
     productivity = str(operating_summary.get("productivity") or "UNKNOWN")
     engineering_required = int(operating_summary.get("engineering_required") or 0)
+    human_decision_objectives = [
+        row
+        for row in objectives
+        if str(row.get("status") or "").upper()
+        not in {"COMPLETE", "CANCELLED", "CANCELED"}
+        and isinstance(row.get("metadata"), dict)
+        and (
+            str((row.get("metadata") or {}).get("classification") or "").upper()
+            == "HUMAN_DECISION_REQUIRED"
+            or str((row.get("metadata") or {}).get("job_type") or "").upper()
+            == "HUMAN_DECISION"
+        )
+    ]
+    human_decision_required = len(human_decision_objectives)
+    if human_decision_required:
+        operating_condition = "HUMAN_DECISION_REQUIRED"
+        if isinstance(operating_summary, dict):
+            operating_summary["condition"] = operating_condition
+            operating_summary["human_decision_required"] = human_decision_required
+            operating_summary["next_autonomous_action"] = (
+                "Continue independent safe work while the protected human decision waits."
+            )
     research_attention = (
-        operating_condition in {"ENGINEERING_REQUIRED", "BLOCKED"}
+        operating_condition
+        in {"ENGINEERING_REQUIRED", "HUMAN_DECISION_REQUIRED", "BLOCKED"}
         or productivity == "STALLED"
     )
-    if engineering_required:
+    if human_decision_required:
+        operator["state"] = "HUMAN_DECISION_REQUIRED"
+        operator["message"] = (
+            f"{human_decision_required} protected decision"
+            + ("" if human_decision_required == 1 else "s")
+            + " require explicit human authority. Independent safe work continues."
+        )
+    elif engineering_required:
         operator["state"] = "ENGINEERING_REQUIRED"
         operator["message"] = (
             f"{engineering_required} software requirement"
