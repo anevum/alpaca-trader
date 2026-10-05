@@ -104,7 +104,9 @@ def record_broker_reconciliation(
                     broker_account_id,
                     snapshot_hash
                 ) where status='SUCCESS'
-                do update set completed_at=now()
+                do update set
+                    observed_at=excluded.observed_at,
+                    completed_at=now()
                 returning reconciliation_id,status,observed_at,completed_at
                 """,
                 (
