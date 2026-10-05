@@ -281,6 +281,13 @@ after insert on anevum.financial_ledger_entries
 deferrable initially deferred
 for each row execute function anevum.assert_balanced_financial_transaction();
 
+drop trigger if exists financial_ledger_transaction_balance_check
+    on anevum.financial_ledger_transactions;
+create constraint trigger financial_ledger_transaction_balance_check
+after insert on anevum.financial_ledger_transactions
+deferrable initially deferred
+for each row execute function anevum.assert_balanced_financial_transaction();
+
 insert into anevum.systems (system_key, display_name, authority, metadata)
 values (
     'FINANCE',
