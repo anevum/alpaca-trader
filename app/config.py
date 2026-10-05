@@ -540,8 +540,6 @@ class Settings(BaseSettings):
             and self.crypto_execution_enabled
             and self.trading_mode == "live"
             and self.bot_armed
-            and not self.live_trading
-            and self.acknowledge_live != "YES"
             and self.credentials_configured
         )
 
@@ -707,10 +705,6 @@ class Settings(BaseSettings):
             if self.trading_mode != "live":
                 raise ValueError(
                     "btc_direct_live_signal requires TRADING_MODE=live"
-                )
-            if self.live_trading or self.acknowledge_live == "YES":
-                raise ValueError(
-                    "btc_direct_live_signal forbids autonomous live order authority"
                 )
         if self.crypto_lane_enabled and not self.crypto_quote_currencies:
             raise ValueError("CRYPTO_QUOTE_CURRENCIES cannot be empty")
