@@ -66,3 +66,13 @@ def test_broker_crypto_enablement_is_derived_not_assumed():
     assert 'account.get("crypto_status")' in PLATFORM
     assert 'in {"ACTIVE", "APPROVED"}' in PLATFORM
     assert "values(%s,'ALPACA',%s,'PAPER',%s,true,%s,%s)" not in PLATFORM
+
+
+
+def test_oauth_callback_reconciliation_reads_envelope_in_same_transaction():
+    assert "connection=conn" in PLATFORM
+    callback_start = PLATFORM.index("async def complete_paper_oauth")
+    refresh_start = PLATFORM.index("async def refresh_paper_broker")
+    callback = PLATFORM[callback_start:refresh_start]
+    assert "DatabaseEnvelopeSecretResolver(" in callback
+    assert "connection=conn" in callback
