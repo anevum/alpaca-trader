@@ -248,9 +248,14 @@ class BtcDirectSwingStrategy:
     def position_exit_reason(
         self,
         bars: list[dict[str, Any]],
+        regime_bars: list[dict[str, Any]] | None = None,
         now: datetime | None = None,
     ) -> str | None:
-        state = self._state(bars, [], now or datetime.now(timezone.utc))
+        state = self._state(
+            bars,
+            regime_bars or [],
+            now or datetime.now(timezone.utc),
+        )
         if not state.get("ready"):
             return None
         if not state["regime_long"]:
