@@ -27,7 +27,7 @@ def test_execution_event_is_queued_but_scan_noise_is_not():
         }
     )
     message = queued(notifier)
-    assert message.startswith(":rhen_buy:")
+    assert message.startswith(":rhen: ↗️")
     assert "MSFT" in message
 
     notifier.record_event(
@@ -52,7 +52,7 @@ def test_reconciliation_state_deduplicates_until_it_changes():
     }
     notifier.record_event(event)
     safe_message = queued(notifier)
-    assert safe_message.startswith(":rhen:")
+    assert safe_message.startswith(":rhen: ✅")
     assert "RECONCILIATION SAFE" in safe_message
 
     notifier.record_event(event)
@@ -60,7 +60,7 @@ def test_reconciliation_state_deduplicates_until_it_changes():
 
     notifier.record_event({**event, "action": "blocked", "message": "state mismatch"})
     blocked_message = queued(notifier)
-    assert blocked_message.startswith(":rhen_risk:")
+    assert blocked_message.startswith(":rhen: 🛡️")
     assert "RECONCILIATION BLOCKED" in blocked_message
 
 
@@ -73,16 +73,16 @@ def test_market_open_and_close_only_emit_transitions():
 
     notifier.observe_market_state(True, observed_at=at)
     open_message = queued(notifier)
-    assert open_message.startswith(":rhen_live:")
-    assert "MARKET OPEN" in open_message
+    assert open_message.startswith(":rhen: 🔵")
+    assert "RHEN // EXECUTION // MARKET OPEN" in open_message
 
     notifier.observe_market_state(True, observed_at=at)
     assert notifier._queue.empty()
 
     notifier.observe_market_state(False, observed_at=at)
     close_message = queued(notifier)
-    assert close_message.startswith(":rhen_live:")
-    assert "MARKET CLOSED" in close_message
+    assert close_message.startswith(":rhen: 🔵")
+    assert "RHEN // EXECUTION // MARKET CLOSED" in close_message
 
 
 def test_asc_state_changes_are_queued_but_unrecognized_asc_noise_is_not():
@@ -96,7 +96,7 @@ def test_asc_state_changes_are_queued_but_unrecognized_asc_noise_is_not():
         }
     )
     message = queued(notifier)
-    assert message.startswith(":iren:")
+    assert message.startswith(":rhen: 🎛️")
     assert "ASC RESEARCH" in message
 
     notifier.record_event(
@@ -121,7 +121,7 @@ def test_asc_promotion_ready_is_operational_notification_only():
         }
     )
     message = queued(notifier)
-    assert message.startswith(":iren:")
+    assert message.startswith(":rhen: 🎛️")
     assert "PROMOTION_READY" in message
     assert "no deployment occurred" in message
 
@@ -137,8 +137,8 @@ def test_research_event_uses_graen_identity():
         }
     )
     message = queued(notifier)
-    assert message.startswith(":graen_research:")
-    assert "*GRAEN // RESEARCH_AGENT COMPLETED*" in message
+    assert message.startswith(":rhen: ✅")
+    assert "*RHEN // RESEARCH // RESEARCH_AGENT COMPLETED*" in message
 
 
 def test_asc_event_uses_iren_identity():
@@ -152,5 +152,5 @@ def test_asc_event_uses_iren_identity():
         }
     )
     message = queued(notifier)
-    assert message.startswith(":iren:")
-    assert "*IREN // ASC RESEARCH*" in message
+    assert message.startswith(":rhen: 🎛️")
+    assert "*RHEN // CONTROL // ASC RESEARCH*" in message
