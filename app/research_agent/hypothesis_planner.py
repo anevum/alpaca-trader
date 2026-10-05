@@ -8,6 +8,7 @@ from graen.crypto.research_v7 import CONTEXT_UNIVERSE
 from .strategy_grammar import (
     StrategyManifest,
     build_manifest,
+    manifest_from_dict,
     manifest_hash,
     validate_manifest,
 )
@@ -104,31 +105,56 @@ def select_uninspected_corpus(
 
 
 def _catalog() -> tuple[StrategyManifest, ...]:
+    """Bounded trusted hypothesis space.
+
+    This is intentionally a scientific search space, not a performance-tuned
+    optimizer. Every manifest is frozen before its corpus is opened and every
+    attempted manifest permanently consumes search exposure/online alpha.
+    """
     universe = tuple(CONTEXT_UNIVERSE)
     rows: list[StrategyManifest] = []
-    lead_lag_variants = (
-        # leader threshold, lag gap, lookback, hold, scan
-        (0.0035, 0.0015, 30, 60, 10),
-        (0.0050, 0.0020, 60, 120, 15),
-        (0.0075, 0.0030, 120, 120, 20),
-        (0.0100, 0.0040, 240, 240, 30),
-    )
-    for index, (leader, gap, lookback, hold, scan) in enumerate(lead_lag_variants, start=1):
+
+    # Cross-asset diffusion: 24 structurally separated points chosen by
+    # co-prime index strides so adjacent experiments do not merely nudge one
+    # threshold. The mechanism remains constant while horizon, latency,
+    # breadth and signal magnitude vary.
+    leaders = (0.0025, 0.0035, 0.0050, 0.0075, 0.0100)
+    gaps = (0.0010, 0.0015, 0.0025, 0.0035)
+    lookbacks = (15, 30, 60, 120, 240)
+    holds = (60, 120, 240)
+    scans = (5, 10, 15, 30)
+    breadths = (2, 3, 4)
+    for offset in range(24):
+        leader = leaders[offset % len(leaders)]
+        gap = gaps[(offset * 3) % len(gaps)]
+        lookback = lookbacks[(offset * 2) % len(lookbacks)]
+        hold = holds[(offset * 2) % len(holds)]
+        scan = scans[(offset * 3 + 1) % len(scans)]
+        min_breadth = breadths[(offset * 2) % len(breadths)]
         rows.append(
             build_manifest(
-                hypothesis_id=f"AUTO-LL-{index:02d}",
+                hypothesis_id=f"AUTO-LL-{offset + 1:02d}",
                 family="cross_asset_diffusion",
                 mechanism=(
-                    "Large BTC moves may be incorporated into lower-liquidity crypto assets "
-                    "with a measurable lag when cross-sectional information diffusion is incomplete."
+                    "Large BTC moves may diffuse into lower-liquidity crypto "
+                    "assets with a measurable lag when information incorporation "
+                    "is incomplete."
                 ),
                 information_source="cross_asset_returns",
                 feature="lead_lag_gap",
                 transformation="residualize_btc",
                 regime="dispersion_bucket",
                 trigger="threshold",
-                entry="delayed_market" if index > 1 else "market_next_bar",
-                exit={60: "time_60m", 120: "time_120m", 240: "time_240m"}[hold],
+                entry=(
+                    "market_next_bar"
+                    if offset % 3 == 0
+                    else "delayed_market"
+                ),
+                exit={
+                    60: "time_60m",
+                    120: "time_120m",
+                    240: "time_240m",
+                }[hold],
                 parameters={
                     "hold_minutes": hold,
                     "scan_minutes": scan,
@@ -138,63 +164,189 @@ def _catalog() -> tuple[StrategyManifest, ...]:
                     "leader_threshold": leader,
                     "lag_gap_threshold": gap,
                     "min_target_return": -0.005,
-                    "max_target_return": leader,
-                    "min_breadth_positive": 3,
-                    "require_btc_nonnegative": False,
+                    "max_target_return": max(leader, 0.0035),
+                    "min_breadth_positive": min_breadth,
+                    "require_btc_nonnegative": bool(offset % 4 == 3),
                 },
                 symbols=universe,
                 timeframe="5m",
                 falsification_statement=(
-                    "Reject if stressed-cost expectancy is nonpositive, confirmatory evidence "
-                    "does not survive online alpha spending, delayed execution fails, or results "
-                    "are excessively symbol-concentrated."
+                    "Reject if stressed-cost expectancy is nonpositive, "
+                    "confirmatory evidence fails online alpha spending, delayed "
+                    "execution fails, or results are excessively concentrated."
                 ),
                 cost_model="stressed_high",
             )
         )
 
-    breadth_variants = (
-        (30, 60, 0.0015, 0.0010),
-        (60, 120, 0.0025, 0.0020),
-        (120, 240, 0.0035, 0.0030),
-    )
-    for index, (lookback, hold, gap, market) in enumerate(breadth_variants, start=1):
-        rows.append(
-            build_manifest(
-                hypothesis_id=f"AUTO-BR-{index:02d}",
-                family="breadth_laggard_response",
-                mechanism=(
-                    "When broad crypto participation is positive but individual assets lag the "
-                    "cross-sectional move, bounded catch-up may persist after stressed costs."
-                ),
-                information_source="cross_asset_returns",
-                feature="cross_sectional_breadth",
-                transformation="rank",
-                regime="breadth_bucket",
-                trigger="threshold",
-                entry="market_next_bar",
-                exit={60: "time_60m", 120: "time_120m", 240: "time_240m"}[hold],
-                parameters={
-                    "hold_minutes": hold,
-                    "scan_minutes": 30,
-                    "lookback_minutes": lookback,
-                    "concentration_limit": 0.55,
-                    "lag_gap_threshold": gap,
-                    "min_target_return": -0.01,
-                    "max_target_return": 0.05,
-                    "min_breadth_positive": 4,
-                    "market_threshold": market,
-                },
-                symbols=universe,
-                timeframe="5m",
-                falsification_statement=(
-                    "Reject if broad-market laggard response has nonpositive stressed-cost "
-                    "expectancy, fails dependence-aware confirmation, or is concentrated in one symbol."
-                ),
-                cost_model="stressed_high",
-            )
-        )
+    # Breadth-laggard response: full 4 x 2 x 2 structural grid. Scan cadence,
+    # breadth and market floor are deterministically tied to the structural
+    # point; they are never selected from observed returns.
+    breadth_index = 0
+    for lookback in (15, 30, 60, 120):
+        for hold in (60, 120):
+            for gap in (0.0015, 0.0030):
+                breadth_index += 1
+                scan = {15: 10, 30: 15, 60: 30, 120: 60}[lookback]
+                strict = gap >= 0.0030
+                rows.append(
+                    build_manifest(
+                        hypothesis_id=f"AUTO-BR-{breadth_index:02d}",
+                        family="breadth_laggard_response",
+                        mechanism=(
+                            "When broad crypto participation is positive but "
+                            "individual assets lag the cross-sectional move, "
+                            "bounded catch-up may persist after stressed costs."
+                        ),
+                        information_source="cross_asset_returns",
+                        feature="cross_sectional_breadth",
+                        transformation="rank",
+                        regime="breadth_bucket",
+                        trigger="threshold",
+                        entry="market_next_bar",
+                        exit={
+                            60: "time_60m",
+                            120: "time_120m",
+                        }[hold],
+                        parameters={
+                            "hold_minutes": hold,
+                            "scan_minutes": scan,
+                            "lookback_minutes": lookback,
+                            "concentration_limit": 0.55,
+                            "lag_gap_threshold": gap,
+                            "min_target_return": -0.01,
+                            "max_target_return": 0.05,
+                            "min_breadth_positive": 4 if strict else 3,
+                            "market_threshold": 0.002 if strict else 0.0,
+                        },
+                        symbols=universe,
+                        timeframe="5m",
+                        falsification_statement=(
+                            "Reject if broad-market laggard response has "
+                            "nonpositive stressed-cost expectancy, fails "
+                            "dependence-aware confirmation, or is concentrated "
+                            "in one symbol."
+                        ),
+                        cost_model="stressed_high",
+                    )
+                )
     return tuple(rows)
+
+
+def _prior_manifests(snapshot: Mapping[str, Any]) -> list[StrategyManifest]:
+    manifests: list[StrategyManifest] = []
+    seen: set[str] = set()
+    for artifact in snapshot.get("artifacts") or []:
+        if not isinstance(artifact, Mapping):
+            continue
+        if str(artifact.get("artifact_type") or "") != "CRYPTO_STRATEGY_MANIFEST_V1":
+            continue
+        content = artifact.get("content")
+        if not isinstance(content, Mapping):
+            continue
+        payload = content.get("manifest")
+        if not isinstance(payload, Mapping):
+            continue
+        try:
+            manifest = manifest_from_dict(payload)
+        except (TypeError, ValueError):
+            continue
+        digest = manifest_hash(manifest)
+        if digest not in seen:
+            manifests.append(manifest)
+            seen.add(digest)
+    return manifests
+
+
+def _structural_signature(manifest: StrategyManifest) -> tuple[Any, ...]:
+    params = dict(manifest.parameters)
+    return (
+        manifest.family,
+        manifest.information_source,
+        manifest.feature,
+        manifest.transformation,
+        manifest.regime,
+        manifest.trigger,
+        manifest.entry,
+        manifest.exit,
+        params.get("lookback_minutes"),
+        params.get("hold_minutes"),
+        params.get("scan_minutes"),
+        params.get("leader_threshold"),
+        params.get("lag_gap_threshold"),
+        params.get("min_breadth_positive"),
+        params.get("market_threshold"),
+        params.get("require_btc_nonnegative"),
+    )
+
+
+def _structural_distance(left: StrategyManifest, right: StrategyManifest) -> float:
+    a = _structural_signature(left)
+    b = _structural_signature(right)
+    return sum(x != y for x, y in zip(a, b)) / len(a)
+
+
+def _information_value(
+    candidate: StrategyManifest,
+    prior: Sequence[StrategyManifest],
+) -> dict[str, Any]:
+    same_family = [row for row in prior if row.family == candidate.family]
+    family_exposure = len(same_family)
+    novelty = (
+        1.0
+        if not prior
+        else min(_structural_distance(candidate, row) for row in prior)
+    )
+    within_family_novelty = (
+        1.0
+        if not same_family
+        else min(
+            _structural_distance(candidate, row)
+            for row in same_family
+        )
+    )
+    # Coverage reward is intentionally independent of any observed return.
+    family_coverage = 1.0 / (1.0 + family_exposure)
+    score = (
+        0.50 * within_family_novelty
+        + 0.30 * novelty
+        + 0.20 * family_coverage
+    )
+    return {
+        "score": score,
+        "structural_novelty": novelty,
+        "within_family_novelty": within_family_novelty,
+        "family_exposure": family_exposure,
+        "family_coverage": family_coverage,
+        "uses_backtest_performance": False,
+    }
+
+
+def _select_next_manifest(
+    candidates: Sequence[StrategyManifest],
+    *,
+    prior_hashes: set[str],
+    prior_manifests: Sequence[StrategyManifest],
+) -> tuple[StrategyManifest | None, dict[str, Any] | None]:
+    unseen = [
+        manifest
+        for manifest in candidates
+        if manifest_hash(manifest) not in prior_hashes
+    ]
+    if not unseen:
+        return None, None
+    scored = [
+        (manifest, _information_value(manifest, prior_manifests))
+        for manifest in unseen
+    ]
+    scored.sort(
+        key=lambda item: (
+            -float(item[1]["score"]),
+            int(item[1]["family_exposure"]),
+            item[0].hypothesis_id,
+        )
+    )
+    return scored[0]
 
 
 def previously_frozen_manifest_hashes(snapshot: Mapping[str, Any]) -> set[str]:
@@ -229,9 +381,11 @@ def plan_next(
         if len(str(value)) == 64
     )
     catalog = _catalog()
-    candidate = next(
-        (manifest for manifest in catalog if manifest_hash(manifest) not in prior_hashes),
-        None,
+    prior_manifests = _prior_manifests(snapshot)
+    candidate, information_value = _select_next_manifest(
+        catalog,
+        prior_hashes=prior_hashes,
+        prior_manifests=prior_manifests,
     )
     if candidate is None:
         # The deterministic no-model catalog is finite by design. Re-searching it would
@@ -242,6 +396,7 @@ def plan_next(
             "state": "ENGINEERING_REQUIRED",
             "reason": "trusted_hypothesis_catalog_exhausted",
             "catalog_size": len(catalog),
+            "trusted_hypothesis_space_size": len(catalog),
             "prior_manifest_count": len(prior_hashes),
             "capability_required": (
                 "Extend the trusted strategy grammar/compiler with a materially new "
@@ -282,7 +437,11 @@ def plan_next(
         "corpus": corpus,
         "search_generation": search_generation,
         "validation_alpha": online_alpha(search_generation),
-        "selection_policy": "first_unseen_manifest_in_frozen_catalog",
+        "selection_policy": (
+            "maximin_structural_novelty_without_backtest_performance"
+        ),
+        "information_value": information_value,
+        "trusted_hypothesis_space_size": len(catalog),
         "execution_authority": False,
         "live_execution_authorized": False,
     }
