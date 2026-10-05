@@ -223,3 +223,230 @@ def test_supervisor_strips_broker_credentials_from_pure_core(
     assert replay["ALPACA_API_SECRET"] == "secret"
     assert replay["EXECUTION_ENABLED"] == "false"
     assert replay["LIVE_TRADING"] == "false"
+
+
+
+def test_shadow_report_restores_latest_v15_state(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    activation = {
+        "activation_id": "v15-a",
+        "candidate_id": "V15-R1-BTC-R2H-BREAKOUT-42-15",
+        "candidate_methodology": "graen-btc-r2h-breakout-v15",
+    }
+    state = {
+        **activation,
+        "last_processed_bar_end": now.isoformat(),
+        "v15_shadow_position": 1.0,
+    }
+    store.ingest_events(
+        [
+            {
+                "event_key": "shadow-activate",
+                "event_type": "graen_candidate_shadow_activation",
+                "occurred_at": (now - timedelta(seconds=2)).isoformat(),
+                "source": "test",
+                "payload": activation,
+            },
+            {
+                "event_key": "shadow-state",
+                "event_type": "graen_candidate_shadow_state",
+                "occurred_at": now.isoformat(),
+                "source": "test",
+                "payload": state,
+            },
+        ]
+    )
+
+    report = store.report_read(
+        {
+            "latest": "graen_shadow",
+            "shadow_candidate_id": activation["candidate_id"],
+        }
+    )
+
+    assert report["ok"] is True
+    assert report["activation"]["payload"]["activation_id"] == "v15-a"
+    assert report["state"]["payload"]["v15_shadow_position"] == 1.0
+
+
+def test_crypto_evidence_report_uses_compact_candidates_and_outcomes(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 5, 14, 0, tzinfo=UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "cycle-crypto-report",
+                "event_type": "decision_cycle",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-crypto",
+                "strategy_version_id": "CRYPTO-V15",
+                "source": "test",
+                "payload": {
+                    "cycle_key": "cycle-crypto-report",
+                    "market_lane": "crypto",
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate-1",
+                            "symbol": "BTC/USD",
+                            "market_lane": "crypto",
+                            "observed_at": observed.isoformat(),
+                            "qualified": True,
+                            "final_decision": "selected",
+                            "features": {"momentum_pct": 0.02},
+                        }
+                    ],
+                },
+            },
+            {
+                "event_key": "outcome-crypto-report",
+                "event_type": "candidate_forward_outcome",
+                "occurred_at": (
+                    observed + timedelta(minutes=10)
+                ).isoformat(),
+                "run_id": "run-crypto",
+                "strategy_version_id": "CRYPTO-V15",
+                "symbol": "BTC/USD",
+                "source": "test",
+                "payload": {
+                    "candidate_id": "candidate-1",
+                    "market_lane": "crypto",
+                    "status": "complete",
+                    "horizon_minutes": 10,
+                    "forward_return": 0.01,
+                },
+            },
+        ]
+    )
+
+    report = store.report_read(
+        {"crypto_evidence_session": "2026-10-05"}
+    )
+
+    assert report["ok"] is True
+    assert len(report["candidates"]) == 1
+    candidate = report["candidates"][0]
+    assert candidate["candidate_id"] == "candidate-1"
+    assert candidate["forward_outcomes"]["10"]["status"] == "complete"
+
+
+def test_reconciliation_is_fail_closed_for_unknown_broker_state(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 5, 14, 0, tzinfo=UTC)
+    result = store.reconcile(
+        {
+            "action": "reconcile",
+            "reconcile": {
+                "run_id": "run-1",
+                "strategy_version_id": "v1",
+                "observed_at": observed.isoformat(),
+                "managed_symbols": ["BTC/USD"],
+                "broker_positions": [
+                    {
+                        "symbol": "BTC/USD",
+                        "qty": "0.001",
+                        "market_value": "100",
+                    }
+                ],
+                "open_orders": [
+                    {
+                        "id": "order-unknown",
+                        "client_order_id": "anevum-unknown",
+                        "symbol": "BTC/USD",
+                        "side": "buy",
+                        "status": "new",
+                    }
+                ],
+            },
+        }
+    )
+
+    evidence = result["result"]
+    assert evidence["safe_to_enter"] is False
+    assert "unknown_open_orders:1" in evidence["reason"]
+    assert "untracked_positions:1" in evidence["reason"]
+
+
+def test_reconciliation_resolves_known_intent_and_position(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 5, 14, 0, tzinfo=UTC)
+    client_id = "anevum-known"
+    store.ingest_events(
+        [
+            {
+                "event_key": "intent-known",
+                "event_type": "order_intent",
+                "occurred_at": (
+                    observed - timedelta(minutes=2)
+                ).isoformat(),
+                "run_id": "run-1",
+                "symbol": "BTC/USD",
+                "source": "test",
+                "payload": {
+                    "intent": {
+                        "intent_id": "intent-1",
+                        "idempotency_key": client_id,
+                        "symbol": "BTC/USD",
+                        "side": "buy",
+                        "intended_at": (
+                            observed - timedelta(minutes=2)
+                        ).isoformat(),
+                    }
+                },
+            },
+            {
+                "event_key": "order-known",
+                "event_type": "broker_order",
+                "occurred_at": (
+                    observed - timedelta(minutes=1)
+                ).isoformat(),
+                "run_id": "run-1",
+                "symbol": "BTC/USD",
+                "source": "test",
+                "payload": {
+                    "order": {
+                        "client_order_id": client_id,
+                        "symbol": "BTC/USD",
+                        "side": "buy",
+                        "filled_qty": "0.001",
+                    }
+                },
+            },
+        ]
+    )
+
+    result = store.reconcile(
+        {
+            "action": "reconcile",
+            "reconcile": {
+                "run_id": "run-1",
+                "strategy_version_id": "v1",
+                "observed_at": observed.isoformat(),
+                "managed_symbols": ["BTC/USD"],
+                "broker_positions": [
+                    {
+                        "symbol": "BTC/USD",
+                        "qty": "0.001",
+                        "market_value": "100",
+                    }
+                ],
+                "open_orders": [],
+            },
+        }
+    )
+
+    assert result["result"]["safe_to_enter"] is True
+    assert result["result"]["reason"] == "reconciled"
+
+
+def test_router_sends_foundation_compatibility_paths_to_core():
+    from app.rhen_core.router import CORE_PREFIXES
+
+    assert "/v1/trading-report-read" in CORE_PREFIXES
+    assert "/v1/trading-reconcile" in CORE_PREFIXES
