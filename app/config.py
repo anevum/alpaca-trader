@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     crypto_research_enabled: bool = Field(
         default=False, alias="CRYPTO_RESEARCH_ENABLED"
     )
+    crypto_paper_canary_url: str = Field(
+        default="", alias="CRYPTO_PAPER_CANARY_URL"
+    )
     btc_direct_paper_acknowledge: str = Field(
         default="NO", alias="I_ACKNOWLEDGE_BTC_DIRECT_PAPER"
     )
