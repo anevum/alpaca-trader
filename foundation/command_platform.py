@@ -727,6 +727,165 @@ def customer_overview(
         },
     }
 
+
+def _recent_broker_transfers(
+    conn: psycopg.Connection[Any],
+    *,
+    tenant_id: str,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select transfer_intent_id,direction,currency,amount,status,
+                   provider,provider_transfer_id,created_at,updated_at,settled_at,
+                   failure_code
+            from anevum.broker_transfer_intents
+            where tenant_id=%s
+            order by created_at desc
+            limit 25
+            """,
+            (_uuid(tenant_id, "tenant_id"),),
+        )
+        return _rows(cur)
+
+
+def customer_account_projection(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    overview = customer_overview(conn, email=email, tenant_id=tenant_id)
+    return {
+        "schema_version": "command_account.v1",
+        "tenant": overview["tenant"],
+        "lifecycle": overview["lifecycle"],
+        "onboarding": overview["onboarding"],
+        "broker": overview["broker"],
+        "authority": overview["authority"],
+    }
+
+
+def customer_overview_projection(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    overview = customer_overview(conn, email=email, tenant_id=tenant_id)
+    control = overview.get("control") or {}
+    eligibility = overview.get("eligibility") or {}
+    if eligibility.get("eligible"):
+        automation_state = "ACTIVE"
+    elif control.get("bot_enabled"):
+        automation_state = "ENABLED_PENDING"
+    else:
+        automation_state = "PAUSED"
+    return {
+        "schema_version": "command_overview.v1",
+        "tenant": overview["tenant"],
+        "lifecycle": overview["lifecycle"],
+        "mode": "PAPER",
+        "automation_state": automation_state,
+        "action_required": (
+            None
+            if overview["lifecycle"].get("state") == "ACTIVE"
+            else overview["lifecycle"].get("next_action")
+        ),
+        "funding": overview["funding"],
+        "allocation": overview["allocation"],
+        "strategy": overview["strategy"],
+        "risk": overview["risk"],
+        "position_count": len(overview.get("positions") or []),
+        "order_count": len(overview.get("orders") or []),
+        "reconciliation": overview["reconciliation"],
+        "authority": overview["authority"],
+    }
+
+
+def customer_trading_projection(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    overview = customer_overview(conn, email=email, tenant_id=tenant_id)
+    return {
+        "schema_version": "command_trading.v1",
+        "tenant": overview["tenant"],
+        "lifecycle": overview["lifecycle"],
+        "mode": "PAPER",
+        "control": overview["control"],
+        "strategy": overview["strategy"],
+        "eligibility": overview["eligibility"],
+        "allocation": overview["allocation"],
+        "risk": overview["risk"],
+        "positions": overview["positions"],
+        "orders": overview["orders"],
+        "reconciliation": overview["reconciliation"],
+        "authority": overview["authority"],
+    }
+
+
+def customer_money_projection(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    overview = customer_overview(conn, email=email, tenant_id=tenant_id)
+    transfers = _recent_broker_transfers(conn, tenant_id=tenant_id)
+    return {
+        "schema_version": "command_money.v1",
+        "tenant": overview["tenant"],
+        "mode": "PAPER",
+        "broker": overview["broker"],
+        "funding": overview["funding"],
+        "allocation": overview["allocation"],
+        "recent_transfers": transfers,
+        "authority": {
+            **overview["authority"],
+            "broker_is_source_of_truth": True,
+        },
+    }
+
+
+def customer_activity_projection(
+    conn: psycopg.Connection[Any],
+    *,
+    email: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    overview = customer_overview(conn, email=email, tenant_id=tenant_id)
+    transfers = _recent_broker_transfers(conn, tenant_id=tenant_id)
+    transfer_events = [
+        {
+            "occurred_at": row.get("updated_at") or row.get("created_at"),
+            "action": f"BROKER_TRANSFER_{str(row.get('status') or 'UNKNOWN').upper()}",
+            "object_type": "broker_transfer",
+            "object_id": row.get("transfer_intent_id"),
+            "payload": {
+                "direction": row.get("direction"),
+                "currency": row.get("currency"),
+                "amount": row.get("amount"),
+                "provider": row.get("provider"),
+                "failure_code": row.get("failure_code"),
+            },
+        }
+        for row in transfers
+    ]
+    activity = sorted(
+        [*(overview.get("activity") or []), *transfer_events],
+        key=lambda row: str(row.get("occurred_at") or ""),
+        reverse=True,
+    )[:50]
+    return {
+        "schema_version": "command_activity.v1",
+        "tenant": overview["tenant"],
+        "activity": activity,
+    }
+
+
 def _audit(
     cur: psycopg.Cursor[Any],
     *,
