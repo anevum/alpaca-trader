@@ -33,6 +33,10 @@ from graen.crypto.btc_consensus_trend_v14_r2g import (
     METHODOLOGY_VERSION as V14_R2G_METHODOLOGY_VERSION,
     candidate_spec as v14_r2g_candidate_spec,
 )
+from graen.crypto.btc_r2h_breakout_v15 import (
+    METHODOLOGY_VERSION as V15_METHODOLOGY_VERSION,
+    candidate_spec as v15_candidate_spec,
+)
 from graen.crypto.candidate_shadow import CandidateForwardShadow
 
 
@@ -708,3 +712,189 @@ def test_daily_restart_at_exact_warmup_boundary_scores_every_unseen_day(candidat
         ]
         assert await runtime.cycle(now=start + timedelta(days=400, hours=1)) == []
     asyncio.run(scenario())
+
+
+
+def v15_activation(*, activated_at: datetime | None = None) -> dict:
+    spec = v15_candidate_spec().to_dict()
+    return {
+        **activation(),
+        "activation_id": "activation-v15-001",
+        "campaign_id": "v15-r1-btc-r2h-breakout",
+        "candidate_methodology": V15_METHODOLOGY_VERSION,
+        "candidate_id": spec["candidate_id"],
+        "candidate_spec": spec,
+        "velum_artifact_id": "artifact-v15-holdout",
+        "evidence_phase": "FORWARD_SHADOW",
+        "activated_at": (
+            activated_at or datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+        ).isoformat(),
+    }
+
+
+def _v15_rows(*, count: int = 1560):
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    price = 100.0
+    rows = []
+    for index in range(count):
+        next_price = price * 1.001
+        rows.append(
+            {
+                "t": (start + timedelta(hours=4 * index)).isoformat(),
+                "o": price,
+                "h": max(price, next_price),
+                "l": min(price, next_price),
+                "c": next_price,
+            }
+        )
+        price = next_price
+    return rows
+
+
+def _v15_runtime_with_rows(rows, *, activated_at: datetime):
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(v15_activation(activated_at=activated_at))
+
+    class FakeMarketData:
+        async def bars_many(self, symbols, *, timeframe, lookback_minutes):
+            assert symbols == ["BTC/USD"]
+            assert timeframe == "4Hour"
+            assert lookback_minutes >= 1500 * 240
+            return {"BTC/USD": rows}
+
+    runtime.market_data = FakeMarketData()
+    return runtime
+
+
+def test_v15_shadow_accepts_only_frozen_candidate_without_execution_authority():
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(v15_activation())
+
+    assert runtime._symbols() == ("BTC/USD",)
+    assert runtime._active_spec().candidate_id == "V15-R1-BTC-R2H-BREAKOUT-42-15"
+    assert runtime.status()["candidate_methodology"] == V15_METHODOLOGY_VERSION
+    assert runtime.status()["v15_4h_mark_count"] == 0
+    assert runtime.execution_authority is False
+    assert runtime.broker_orders_possible is False
+
+
+def test_v15_shadow_starts_flat_and_never_backfills_pre_activation_position():
+    async def scenario():
+        rows = _v15_rows()
+        activation_index = 1520
+        activated_at = (
+            datetime.fromisoformat(rows[activation_index]["t"])
+            + timedelta(hours=2)
+        )
+        runtime = _v15_runtime_with_rows(
+            rows,
+            activated_at=activated_at,
+        )
+
+        first_now = (
+            datetime.fromisoformat(rows[activation_index]["t"])
+            + timedelta(hours=4, seconds=1)
+        )
+        first = await runtime.cycle(now=first_now)
+        assert [
+            event for event in first
+            if event["event_type"] == "graen_candidate_shadow_baseline"
+        ]
+        assert runtime.v15_4h_marks == []
+        assert runtime.v15_shadow_position == 0.0
+        assert runtime.v15_entry_price is None
+
+        second_now = (
+            datetime.fromisoformat(rows[activation_index + 1]["t"])
+            + timedelta(hours=4, seconds=1)
+        )
+        second = await runtime.cycle(now=second_now)
+        marks = [
+            event for event in second
+            if event["event_type"] == "graen_candidate_shadow_4h_mark"
+        ]
+        entries = [
+            event for event in second
+            if event["event_type"] == "graen_candidate_shadow_entry"
+        ]
+        assert len(marks) == 1
+        assert len(entries) == 1
+        mark = runtime.v15_4h_marks[0]
+        assert mark["fresh_evidence"] is True
+        assert mark["execution_model"] == "prior_completed_signal_next_4h_open"
+        assert mark["entry_fired"] is True
+        assert mark["entry_price"] == rows[activation_index + 1]["o"]
+        assert runtime.v15_shadow_position == 1.0
+        assert runtime.entry_count == 1
+        assert runtime.execution_authority is False
+        assert runtime.broker_orders_possible is False
+
+    asyncio.run(scenario())
+
+
+def test_v15_shadow_gap_fails_closed_before_evidence_mutation():
+    rows = _v15_rows()
+    del rows[1510]
+    now = datetime.fromisoformat(rows[-1]["t"]) + timedelta(hours=4)
+    with pytest.raises(ValueError, match="v15_4h_calendar_gap"):
+        candidate_shadow._v15_completed_4h_rows(rows, now=now)
+
+
+def test_v15_shadow_state_is_restart_restorable_and_still_broker_proof():
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(v15_activation())
+    runtime.v15_baseline_end = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    runtime.last_processed_bar_end = datetime(2026, 10, 5, 16, 0, tzinfo=UTC)
+    runtime.v15_shadow_position = 1.0
+    runtime.v15_entry_price = 100.0
+    runtime.entry_count = 1
+    runtime.v15_4h_marks.append(
+        {
+            "bar_end": "2026-10-05T16:00:00+00:00",
+            "position": 1.0,
+            "turnover_units": 1.0,
+            "stressed_cost_net_return": 0.01,
+        }
+    )
+
+    restored = CandidateForwardShadow(settings())
+    restored.restore(runtime.snapshot())
+
+    assert restored.v15_shadow_position == 1.0
+    assert restored.v15_entry_price == 100.0
+    assert len(restored.v15_4h_marks) == 1
+    assert restored.v15_baseline_end == runtime.v15_baseline_end
+    assert restored.execution_authority is False
+    assert restored.broker_orders_possible is False
+
+
+def test_v15_shadow_ready_gate_still_requires_human_review():
+    runtime = CandidateForwardShadow(settings())
+    runtime.activate(v15_activation())
+    runtime.entry_count = 1
+    runtime.v15_shadow_position = 1.0
+    runtime.v15_entry_price = 100.0
+    start = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+
+    for index in range(42):
+        runtime.v15_4h_marks.append(
+            {
+                "bar_end": (
+                    start + timedelta(hours=4 * (index + 1))
+                ).isoformat(),
+                "position": 1.0 if index >= 1 else 0.0,
+                "turnover_units": 1.0 if index == 1 else 0.0,
+                "stressed_cost_net_return": (
+                    -0.003 if index == 0 else 0.0005
+                ),
+            }
+        )
+
+    checkpoint = runtime._checkpoint()
+    assert checkpoint["status"] == "READY_FOR_HUMAN_REVIEW"
+    assert checkpoint["fresh_4h_mark_count"] == 42
+    assert checkpoint["entry_count"] == 1
+    assert checkpoint["cumulative_stressed_cost_return"] > 0
+    assert checkpoint["promotion_authorized"] is False
+    assert checkpoint["execution_authority"] is False
+    assert checkpoint["broker_orders_possible"] is False
