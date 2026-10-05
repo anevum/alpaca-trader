@@ -5,6 +5,7 @@ import json
 
 from app.rhen_core.store import RhenCoreStore
 from app.rhen_core.supervisor import ProcessSpec, _child_env
+from app.rhen_core.router import enabled_modules
 
 
 UTC = timezone.utc
@@ -203,11 +204,13 @@ def test_supervisor_strips_broker_credentials_from_pure_core(
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_API_SECRET", "secret")
     monkeypatch.setenv("TRADING_INGEST_TOKEN", "x" * 40)
+    monkeypatch.setenv("ADMIN_TOKEN", "execution-admin-secret")
     monkeypatch.setenv("FOUNDATION_SHADOW_ENABLED", "true")
 
     core = _child_env(ProcessSpec("nostra", "app.nostra.service:app", 8115))
-    assert core["ALPACA_API_KEY"] == "DISABLED"
-    assert core["ALPACA_API_SECRET"] == "DISABLED"
+    assert core["ALPACA_API_KEY"] == ""
+    assert core["ALPACA_API_SECRET"] == ""
+    assert core["ADMIN_TOKEN"] == ""
     assert core["EXECUTION_ENABLED"] == "false"
     assert core["LIVE_TRADING"] == "false"
     assert core["GRAEN_GATEWAY_TOKEN"] == "x" * 40
@@ -806,3 +809,15 @@ def test_iren_work_queue_rejects_blank_command(tmp_path, monkeypatch):
         assert str(exc) == "command_required"
     else:
         raise AssertionError("blank IREN commands must be rejected")
+
+
+def test_router_excludes_disabled_optional_modules(monkeypatch):
+    monkeypatch.delenv("IREN_EXECUTOR_ENABLED", raising=False)
+    monkeypatch.delenv("PREOPEN_STATE_ENABLED", raising=False)
+    active = enabled_modules()
+    assert "iren_executor" not in active
+    assert "preopen" not in active
+    assert {"iren", "graen_research", "crypto_research"} <= set(active)
+
+    monkeypatch.setenv("PREOPEN_STATE_ENABLED", "true")
+    assert "preopen" in enabled_modules()

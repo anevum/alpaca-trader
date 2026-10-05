@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import httpx
@@ -9,6 +10,11 @@ from fastapi.responses import JSONResponse, Response
 
 EXECUTION_URL = "http://127.0.0.1:8101"
 CORE_URL = "http://127.0.0.1:8102"
+
+OPTIONAL_MODULE_ENVS = {
+    "iren_executor": "IREN_EXECUTOR_ENABLED",
+    "preopen": "PREOPEN_STATE_ENABLED",
+}
 
 MODULES = {
     "graen": "http://127.0.0.1:8110/health",
@@ -37,6 +43,19 @@ CORE_PREFIXES = (
 app = FastAPI(title="RHEN", version="3.0.0")
 
 
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def enabled_modules() -> dict[str, str]:
+    return {
+        name: url
+        for name, url in MODULES.items()
+        if name not in OPTIONAL_MODULE_ENVS
+        or _truthy(os.getenv(OPTIONAL_MODULE_ENVS[name]))
+    }
+
+
 async def _probe(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
     try:
         response = await client.get(url)
@@ -55,13 +74,24 @@ async def _probe(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
 
 @app.get("/health")
 async def health() -> JSONResponse:
+    active_modules = enabled_modules()
     async with httpx.AsyncClient(timeout=4.0) as client:
         execution, core, *module_rows = await asyncio.gather(
             _probe(client, EXECUTION_URL + "/health"),
             _probe(client, CORE_URL + "/ready"),
-            *(_probe(client, url) for url in MODULES.values()),
+            *(_probe(client, url) for url in active_modules.values()),
         )
-    modules = dict(zip(MODULES, module_rows))
+    modules: dict[str, dict[str, Any]] = {
+        name: {
+            "ok": True,
+            "enabled": False,
+            "optional": True,
+            "status": "DISABLED",
+        }
+        for name in OPTIONAL_MODULE_ENVS
+        if name not in active_modules
+    }
+    modules.update(dict(zip(active_modules, module_rows)))
     critical_ok = bool(execution.get("ok") and core.get("ok"))
     return JSONResponse(
         status_code=200 if critical_ok else 503,
@@ -73,7 +103,9 @@ async def health() -> JSONResponse:
             "core": core,
             "modules": modules,
             "module_failures": [
-                name for name, row in modules.items() if not row.get("ok")
+                name
+                for name, row in modules.items()
+                if row.get("enabled") is not False and not row.get("ok")
             ],
         },
     )

@@ -42,7 +42,9 @@
     {
       "id": "PREOPEN",
       "url_env": "IREN_PREOPEN_HEALTH_URL",
-      "default_url": "http://rhen-preopen-state.railway.internal:8080/health"
+      "default_url": "http://rhen-preopen-state.railway.internal:8080/health",
+      "inventory_only": true,
+      "required_inventory": false
     },
     {
       "id": "GRAEN",
@@ -71,7 +73,8 @@
       "id": "IREN_EXECUTOR",
       "url_env": "IREN_EXECUTOR_HEALTH_URL",
       "default_url": "http://iren-executor.railway.internal:8080/health",
-      "inventory_only": true
+      "inventory_only": true,
+      "required_inventory": false
     },
     {
       "id": "NOSTRA",
