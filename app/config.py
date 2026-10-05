@@ -163,6 +163,9 @@ class Settings(BaseSettings):
     crypto_execution_mode: str = Field(
         default="validated", alias="CRYPTO_EXECUTION_MODE"
     )
+    crypto_only_runtime: bool = Field(
+        default=False, alias="CRYPTO_ONLY_RUNTIME"
+    )
     crypto_research_enabled: bool = Field(
         default=False, alias="CRYPTO_RESEARCH_ENABLED"
     )
