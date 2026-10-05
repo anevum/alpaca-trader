@@ -475,6 +475,34 @@ def set_rhen_allocation(
                 request_transaction_key = f"rhen-allocation:{subject}:{key}"
                 cur.execute(
                     """
+                    select details
+                    from anevum.audit_log
+                    where actor_type='COMMAND_USER'
+                      and actor_id=%s
+                      and system_key='FINANCE'
+                      and action='finance.set_rhen_allocation_noop'
+                      and correlation_id=%s
+                    order by audit_id desc
+                    limit 1
+                    """,
+                    (subject, key),
+                )
+                prior_noop = cur.fetchone()
+                if prior_noop:
+                    prior_meta = prior_noop[0] or {}
+                    if (
+                        str(prior_meta.get("target_amount")) != str(target)
+                        or str(prior_meta.get("execution_mode")) != mode
+                        or (prior_meta.get("strategy_version_id") or None) != strategy
+                    ):
+                        raise ValueError("idempotency_conflict")
+                    result = read_snapshot(database_url, command_subject=subject)
+                    result["idempotent"] = True
+                    result["transaction_key"] = request_transaction_key
+                    return result
+
+                cur.execute(
+                    """
                     select metadata
                     from anevum.financial_ledger_transactions
                     where transaction_key=%s
