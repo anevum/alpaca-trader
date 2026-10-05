@@ -3,6 +3,17 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
+import py_compile
+
+ROOT = Path(__file__).resolve().parents[1]
+for target in (
+    "app/main.py",
+    "app/config.py",
+    "app/crypto_stats.py",
+    "app/crypto_execution.py",
+):
+    py_compile.compile(str(ROOT / target), doraise=True)
 
 from app.config import get_settings
 from app.crypto_execution import CryptoExecutionEngine
