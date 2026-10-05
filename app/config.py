@@ -199,6 +199,9 @@ class Settings(BaseSettings):
     crypto_strategy_family: str = Field(
         default="rolling_momentum_vwap", alias="CRYPTO_STRATEGY_FAMILY"
     )
+    crypto_stats_start_at_raw: str = Field(
+        default="", alias="CRYPTO_STATS_START_AT"
+    )
     crypto_model_version: str = Field(
         default="crypto-rmvwap-model-v1", alias="CRYPTO_MODEL_VERSION"
     )
@@ -473,6 +476,16 @@ class Settings(BaseSettings):
             and self.trading_run_id
             and self.strategy_version_id
         )
+
+    @property
+    def crypto_stats_start_at(self) -> datetime | None:
+        raw = self.crypto_stats_start_at_raw.strip()
+        if not raw:
+            return None
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            raise ValueError("CRYPTO_STATS_START_AT must include a timezone")
+        return stamp.astimezone(timezone.utc)
 
     @property
     def trading_run_started_at(self) -> datetime | None:
