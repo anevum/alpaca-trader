@@ -10840,6 +10840,8 @@ class GraenResearchExecutor:
                 STRATEGY_VALIDATION_STAGE,
                 STRATEGY_HOLDOUT_STAGE,
                 STRATEGY_VELUM_STAGE,
+                STRATEGY_SHADOW_STAGE,
+                STRATEGY_PAPER_STAGE,
             }:
                 return await self._execute_strategy_manifest(problem, run)
             if research_stage.startswith("CRYPTO_COMPILED_"):
