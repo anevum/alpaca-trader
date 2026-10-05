@@ -854,7 +854,7 @@ def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
             "metadata": {
                 "candidate_id": "BTC-CANDIDATE-2",
                 "target_lane": "crypto",
-                "supersedes_strategy_version_id": "RHEN-BTC-DIRECT-002",
+                "supersedes_strategy_version_id": "RHEN-BTC-DIRECT-003",
                 "release_requested": True,
             },
         },
@@ -894,14 +894,14 @@ def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
     assert pipeline["candidate"]["lane"] == "crypto"
     assert (
         pipeline["candidate"]["supersedes_strategy_version_id"]
-        == "RHEN-BTC-DIRECT-002"
+        == "RHEN-BTC-DIRECT-003"
     )
     assert pipeline["validation"]["status"] == "PASSED"
     assert pipeline["validation"]["problem_id"] == problem_id
     assert pipeline["release_gate"]["status"] == "REVIEW"
     assert (
         pipeline["release_gate"]["target_strategy_version_id"]
-        == "RHEN-BTC-DIRECT-002"
+        == "RHEN-BTC-DIRECT-003"
     )
     assert pipeline["release_gate"]["automatic_promotion"] is False
     assert pipeline["release_gate"]["production_authority_changed"] is False

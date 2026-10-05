@@ -12,90 +12,70 @@ if str(ROOT) not in sys.path:
 from app.btc_direct_strategy import BtcDirectSwingStrategy
 
 
-def make_fixture(reclaim: bool):
+def make_fixture(*, breakout: bool):
     strategy = BtcDirectSwingStrategy()
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-    daily = []
-    for index in range(strategy.sma_window_bars + 2):
-        close = Decimal("50000") + Decimal(index * 150)
-        daily.append({
-            "t": (start + timedelta(days=index)).isoformat(),
-            "o": str(close - Decimal("50")),
-            "h": str(close + Decimal("100")),
-            "l": str(close - Decimal("100")),
-            "c": str(close),
-        })
-
-    four_hour_start = start + timedelta(days=strategy.sma_window_bars - 8)
     rows = []
-    for index in range(30):
-        close = Decimal("60000") + Decimal(index * 80)
+    for index in range(strategy.long_trend_bars + 15):
+        close = Decimal("50000") + Decimal(index * 40)
         rows.append({
-            "t": (four_hour_start + timedelta(hours=4 * index)).isoformat(),
-            "o": str(close - Decimal("20")),
-            "h": str(close + Decimal("40")),
-            "l": str(close - Decimal("40")),
+            "t": (start + timedelta(hours=index)).isoformat(),
+            "o": str(close - Decimal("15")),
+            "h": str(close + Decimal("20")),
+            "l": str(close - Decimal("25")),
             "c": str(close),
         })
 
-    if reclaim:
-        baseline = Decimal(rows[-3]["c"])
-        dip_close = baseline * Decimal("0.982")
-        rows[-2] = {
-            "t": rows[-2]["t"],
-            "o": str(dip_close * Decimal("1.003")),
-            "h": str(dip_close * Decimal("1.004")),
-            "l": str(dip_close * Decimal("0.994")),
-            "c": str(dip_close),
-        }
-        reclaim_close = baseline * Decimal("1.004")
+    if not breakout:
+        prior = Decimal(rows[-2]["c"])
+        close = prior + Decimal("5")
         rows[-1] = {
             "t": rows[-1]["t"],
-            "o": str(reclaim_close * Decimal("0.997")),
-            "h": str(reclaim_close * Decimal("1.002")),
-            "l": str(reclaim_close * Decimal("0.996")),
-            "c": str(reclaim_close),
+            "o": str(close - Decimal("5")),
+            "h": str(close + Decimal("10")),
+            "l": str(close - Decimal("15")),
+            "c": str(close),
         }
 
-    now = start + timedelta(days=strategy.sma_window_bars + 4)
-    return rows, daily, now
+    now = start + timedelta(hours=len(rows) + 1)
+    return rows, now
 
 
 def main():
     strategy = BtcDirectSwingStrategy()
 
-    bars, daily, now = make_fixture(True)
+    bars, now = make_fixture(breakout=True)
     buy = strategy.evaluate(
         bars=bars,
-        confirmation_bars={"BTC/USD": daily},
+        confirmation_bars={"BTC/USD": bars},
         symbol="BTC/USD",
         has_position=False,
-        order_notional=Decimal("63"),
+        order_notional=Decimal("5"),
         now=now,
     )
     assert buy.action == "buy", buy
     assert buy.stop_price > 0
     assert buy.take_profit_price > buy.reference_price
-    assert buy.metadata["strategy_version_id"] == "RHEN-BTC-DIRECT-002"
+    assert buy.metadata["strategy_version_id"] == "RHEN-BTC-DIRECT-003"
+    assert buy.metadata["timeframe"] == "1Hour"
 
-    bars, daily, now = make_fixture(False)
+    bars, now = make_fixture(breakout=False)
     hold = strategy.evaluate(
         bars=bars,
-        confirmation_bars={"BTC/USD": daily},
+        confirmation_bars={"BTC/USD": bars},
         symbol="BTC/USD",
         has_position=False,
-        order_notional=Decimal("63"),
+        order_notional=Decimal("5"),
         now=now,
     )
     assert hold.action == "hold", hold
 
     wrong = strategy.evaluate(
         bars=bars,
-        confirmation_bars={"BTC/USD": daily},
+        confirmation_bars={"BTC/USD": bars},
         symbol="ETH/USD",
         has_position=False,
-        order_notional=Decimal("63"),
+        order_notional=Decimal("5"),
         now=now,
     )
     assert wrong.action == "hold"

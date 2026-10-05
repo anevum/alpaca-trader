@@ -8,36 +8,41 @@ from .strategy import Signal
 
 
 class BtcDirectSwingStrategy:
-    """Direct BTC/USD pullback/reclaim execution strategy.
+    """Direct BTC/USD 1-hour breakout strategy.
 
-    The strategy uses completed 4-hour bars for entries/exits and completed
-    daily bars for the broad regime. It has no GRAEN, NOSTRA, ADS, promotion,
-    or external-confirmation dependency.
+    RHEN-BTC-DIRECT-003 is intentionally slower than a 15-minute day-trading
+    loop because current small-account crypto fees make high turnover
+    structurally expensive. Entries use completed hourly bars only and require
+    both a multi-horizon bull trend and a material breakout. Position exits are
+    handled by the execution engine through the hard stop, target, and maximum
+    hold window.
     """
 
-    strategy_family = "btc_direct_pullback"
-    strategy_version_id = "RHEN-BTC-DIRECT-002"
+    strategy_family = "btc_direct_intraday_breakout"
+    strategy_version_id = "RHEN-BTC-DIRECT-003"
 
-    timeframe = "4Hour"
-    signal_timeframe = "4Hour"
-    required_history_minutes = 14 * 24 * 60
+    timeframe = "1Hour"
+    signal_timeframe = "1Hour"
+    required_history_minutes = 35 * 24 * 60
 
-    regime_timeframe = "1Day"
-    regime_history_minutes = 100 * 24 * 60
+    # The execution engine can reuse the same hourly history as regime history.
+    regime_timeframe = "1Hour"
+    regime_history_minutes = required_history_minutes
 
-    manages_position_exits = True
+    manages_position_exits = False
 
-    momentum_lookback_bars = 60
-    sma_window_bars = 90
+    fast_trend_bars = 24
+    medium_trend_bars = 72
+    slow_trend_bars = 168
+    long_trend_bars = 720
 
-    fast_window_bars = 8
-    slow_window_bars = 24
-    dip_window_bars = 4
-    dip_threshold_pct = Decimal("0.012")
+    breakout_lookback_bars = 48
+    momentum_lookback_bars = 24
+    min_momentum_pct = Decimal("0.01")
 
-    hard_stop_pct = Decimal("0.03")
-    take_profit_pct = Decimal("0.05")
-    max_hold_minutes = 18 * 4 * 60
+    hard_stop_pct = Decimal("0.025")
+    take_profit_pct = Decimal("0.03")
+    max_hold_minutes = 24 * 60
 
     @staticmethod
     def _d(value: Any) -> Decimal:
@@ -58,8 +63,6 @@ class BtcDirectSwingStrategy:
         self,
         bars: list[dict[str, Any]],
         now: datetime,
-        *,
-        bar_hours: int,
     ) -> list[dict[str, Any]]:
         now_utc = now.astimezone(timezone.utc)
         buckets: dict[datetime, dict[str, Any]] = {}
@@ -78,16 +81,7 @@ class BtcDirectSwingStrategy:
             if high < low or high < max(open_, close) or low > min(open_, close):
                 continue
 
-            if bar_hours == 24:
-                bucket = stamp.replace(hour=0, minute=0, second=0, microsecond=0)
-            else:
-                bucket = stamp.replace(
-                    hour=stamp.hour - (stamp.hour % bar_hours),
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-
+            bucket = stamp.replace(minute=0, second=0, microsecond=0)
             current = buckets.get(bucket)
             if current is None:
                 buckets[bucket] = {
@@ -107,7 +101,7 @@ class BtcDirectSwingStrategy:
 
         completed: list[dict[str, Any]] = []
         for bucket in sorted(buckets):
-            if bucket + timedelta(hours=bar_hours) > now_utc:
+            if bucket + timedelta(hours=1) > now_utc:
                 continue
             row = dict(buckets[bucket])
             row.pop("_last", None)
@@ -115,117 +109,88 @@ class BtcDirectSwingStrategy:
         return completed
 
     @staticmethod
-    def _mean(values: list[Decimal]) -> Decimal:
-        return sum(values, Decimal("0")) / Decimal(len(values))
+    def _ema(values: list[Decimal], window: int) -> Decimal:
+        if not values:
+            return Decimal("0")
+        alpha = Decimal("2") / Decimal(window + 1)
+        value = values[0]
+        for item in values[1:]:
+            value = (item * alpha) + (value * (Decimal("1") - alpha))
+        return value
 
     def _state(
         self,
         bars: list[dict[str, Any]],
-        regime_bars: list[dict[str, Any]],
         now: datetime,
     ) -> dict[str, Any]:
-        completed = self._completed(bars, now, bar_hours=4)
-        regime_completed = self._completed(regime_bars or bars, now, bar_hours=24)
-
-        minimum_4h = self.slow_window_bars + 2
-        minimum_daily = max(
-            self.momentum_lookback_bars,
-            self.sma_window_bars,
+        completed = self._completed(bars, now)
+        minimum = max(
+            self.long_trend_bars,
+            self.breakout_lookback_bars + 1,
+            self.momentum_lookback_bars + 1,
         ) + 1
-
-        if len(completed) < minimum_4h:
+        if len(completed) < minimum:
             return {
                 "ready": False,
                 "reason": (
-                    f"BTC direct 4-hour warmup: {len(completed)}/{minimum_4h} "
+                    f"BTC direct hourly warmup: {len(completed)}/{minimum} "
                     "completed bars"
                 ),
-                "completed_4h_bars": len(completed),
-                "completed_daily_bars": len(regime_completed),
-            }
-
-        if len(regime_completed) < minimum_daily:
-            return {
-                "ready": False,
-                "reason": (
-                    f"BTC direct daily regime warmup: "
-                    f"{len(regime_completed)}/{minimum_daily} completed bars"
-                ),
-                "completed_4h_bars": len(completed),
-                "completed_daily_bars": len(regime_completed),
+                "completed_hourly_bars": len(completed),
             }
 
         signal = completed[-1]
-        previous = completed[-2]
+        history = completed[:-1]
+        closes = [row["c"] for row in completed]
 
-        daily_signal = regime_completed[-1]
-        daily_history = regime_completed[:-1]
-        daily_close = daily_signal["c"]
-        momentum_anchor = daily_history[-self.momentum_lookback_bars]["c"]
-        daily_sma = self._mean(
-            [row["c"] for row in regime_completed[-self.sma_window_bars:]]
+        fast = self._ema(closes, self.fast_trend_bars)
+        medium = self._ema(
+            closes[-self.medium_trend_bars :],
+            self.medium_trend_bars,
         )
+        slow = self._ema(closes, self.slow_trend_bars)
+        long = self._ema(closes, self.long_trend_bars)
+
+        trend_long = bool(fast > medium > slow > long)
+
+        momentum_anchor = completed[-(self.momentum_lookback_bars + 1)]["c"]
         momentum_return = (
-            (daily_close - momentum_anchor) / momentum_anchor
+            (signal["c"] - momentum_anchor) / momentum_anchor
             if momentum_anchor > 0
             else Decimal("0")
         )
-        regime_long = bool(momentum_return > 0 and daily_close > daily_sma)
+        momentum_ready = bool(momentum_return > self.min_momentum_pct)
 
-        fast = self._mean(
-            [row["c"] for row in completed[-self.fast_window_bars:]]
+        prior_high = max(
+            row["h"] for row in history[-self.breakout_lookback_bars :]
         )
-        slow = self._mean(
-            [row["c"] for row in completed[-self.slow_window_bars:]]
-        )
-        previous_fast = self._mean(
-            [
-                row["c"]
-                for row in completed[-self.fast_window_bars - 1 : -1]
-            ]
-        )
-
-        recent_low = min(
-            row["l"] for row in completed[-self.dip_window_bars:]
-        )
-        dip_threshold = fast * (Decimal("1") - self.dip_threshold_pct)
-        recent_dip = recent_low <= dip_threshold
-
-        bullish_structure = fast > slow
-        reclaim = bool(
-            signal["c"] > fast
-            and previous["c"] <= previous_fast
-            and signal["c"] > signal["o"]
-        )
+        breakout = bool(signal["c"] > prior_high)
+        bullish_bar = bool(signal["c"] > signal["o"])
         entry_ready = bool(
-            regime_long
-            and bullish_structure
-            and recent_dip
-            and reclaim
+            trend_long
+            and momentum_ready
+            and breakout
+            and bullish_bar
         )
 
         return {
             "ready": True,
             "bar_time": signal["t"].isoformat(),
-            "daily_regime_bar_time": daily_signal["t"].isoformat(),
             "close": signal["c"],
             "open": signal["o"],
-            "daily_close": daily_close,
+            "fast_ema": fast,
+            "medium_ema": medium,
+            "slow_ema": slow,
+            "long_ema": long,
+            "trend_long": trend_long,
             "momentum_anchor": momentum_anchor,
             "momentum_return": momentum_return,
-            "daily_sma": daily_sma,
-            "regime_long": regime_long,
-            "fast": fast,
-            "slow": slow,
-            "previous_fast": previous_fast,
-            "recent_low": recent_low,
-            "dip_threshold": dip_threshold,
-            "recent_dip": recent_dip,
-            "bullish_structure": bullish_structure,
-            "reclaim": reclaim,
+            "momentum_ready": momentum_ready,
+            "prior_48h_high": prior_high,
+            "breakout": breakout,
+            "bullish_bar": bullish_bar,
             "entry_ready": entry_ready,
-            "completed_4h_bars": len(completed),
-            "completed_daily_bars": len(regime_completed),
+            "completed_hourly_bars": len(completed),
         }
 
     def evaluate(
@@ -254,12 +219,7 @@ class BtcDirectSwingStrategy:
                 reason="BTC direct position already open",
             )
 
-        state = self._state(
-            bars,
-            confirmation_bars.get("BTC/USD", []),
-            now,
-        )
-
+        state = self._state(bars, now)
         metadata = {
             "market": "crypto",
             "session_model": "24x7",
@@ -269,9 +229,10 @@ class BtcDirectSwingStrategy:
             "source_timeframe": self.timeframe,
             "regime_timeframe": self.regime_timeframe,
             "execution_model": (
-                "completed_4h_pullback_reclaim_then_next_available_market_execution"
+                "completed_1h_breakout_then_next_available_market_execution"
             ),
             "research_dependency": False,
+            "fee_aware": True,
             "state": {
                 key: str(value) if isinstance(value, Decimal) else value
                 for key, value in state.items()
@@ -286,35 +247,35 @@ class BtcDirectSwingStrategy:
                 metadata=metadata,
             )
 
-        if not state["regime_long"]:
+        if not state["trend_long"]:
             return Signal(
                 action="hold",
                 symbol=symbol,
-                reason="BTC direct daily bull regime is not active",
+                reason="BTC direct multi-horizon bull trend is not active",
                 metadata=metadata,
             )
 
-        if not state["bullish_structure"]:
+        if not state["momentum_ready"]:
             return Signal(
                 action="hold",
                 symbol=symbol,
-                reason="BTC direct 4-hour trend structure is not bullish",
+                reason="BTC direct 24-hour momentum is below threshold",
                 metadata=metadata,
             )
 
-        if not state["recent_dip"]:
+        if not state["breakout"]:
             return Signal(
                 action="hold",
                 symbol=symbol,
-                reason="BTC direct pullback threshold has not been reached",
+                reason="BTC direct 48-hour breakout is not confirmed",
                 metadata=metadata,
             )
 
-        if not state["reclaim"]:
+        if not state["bullish_bar"]:
             return Signal(
                 action="hold",
                 symbol=symbol,
-                reason="BTC direct 4-hour reclaim is not confirmed",
+                reason="BTC direct breakout bar is not bullish",
                 metadata=metadata,
             )
 
@@ -332,7 +293,7 @@ class BtcDirectSwingStrategy:
             reference_price=close,
             stop_price=stop_price,
             take_profit_price=target_price,
-            reason="BTC direct 4-hour bull-regime pullback reclaim confirmed",
+            reason="BTC direct 1-hour trend breakout confirmed",
             metadata=metadata,
         )
 
@@ -342,15 +303,4 @@ class BtcDirectSwingStrategy:
         regime_bars: list[dict[str, Any]] | None = None,
         now: datetime | None = None,
     ) -> str | None:
-        state = self._state(
-            bars,
-            regime_bars or bars,
-            now or datetime.now(timezone.utc),
-        )
-        if not state.get("ready"):
-            return None
-        if not state["regime_long"]:
-            return "BTC direct daily bull regime ended"
-        if not state["bullish_structure"]:
-            return "BTC direct 4-hour fast trend crossed below slow trend"
         return None
