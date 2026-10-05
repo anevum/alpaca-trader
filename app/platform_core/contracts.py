@@ -32,6 +32,7 @@ class TradingEligibilityInput:
     customer_trading_consent: bool
     customer_bot_enabled: bool
     iren_fleet_healthy: bool
+    tenant_execution_runtime_ready: bool
     live_customer_authority: bool = False
 
 
@@ -83,6 +84,8 @@ def evaluate_execution_eligibility(
         reasons.append("customer_bot_disabled")
     if not value.iren_fleet_healthy:
         reasons.append("iren_fleet_gate_closed")
+    if not value.tenant_execution_runtime_ready:
+        reasons.append("tenant_execution_runtime_unavailable")
     if environment == "LIVE" and not value.live_customer_authority:
         reasons.append("live_customer_authority_missing")
 
