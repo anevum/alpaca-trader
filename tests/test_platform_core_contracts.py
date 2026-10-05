@@ -23,6 +23,7 @@ def eligible_input(**overrides):
         "customer_trading_consent": True,
         "customer_bot_enabled": True,
         "iren_fleet_healthy": True,
+        "tenant_execution_runtime_ready": True,
         "live_customer_authority": False,
     }
     values.update(overrides)
@@ -128,3 +129,12 @@ def test_missing_broker_trading_scope_closes_execution_gate():
     )
     assert result.eligible is False
     assert result.reasons == ("broker_trading_scope_missing",)
+
+
+
+def test_missing_tenant_execution_runtime_closes_gate():
+    result = evaluate_execution_eligibility(
+        eligible_input(tenant_execution_runtime_ready=False)
+    )
+    assert result.eligible is False
+    assert result.reasons == ("tenant_execution_runtime_unavailable",)
