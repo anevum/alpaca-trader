@@ -220,7 +220,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "velum_crypto",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "protected_action_level": "research_only"
     },
     {
