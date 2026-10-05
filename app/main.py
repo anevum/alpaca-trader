@@ -1538,6 +1538,107 @@ async def command_status(authorization: str | None = Header(default=None)):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+async def _rhen_native_iren_request(method: str, path: str, body: dict | None = None) -> dict:
+    token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="IREN control token is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.request(
+                method,
+                "http://127.0.0.1:8116" + path,
+                headers={"x-anevum-scheduler-token": token},
+                json=body if method != "GET" else None,
+            )
+        payload = response.json() if response.content else {}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"IREN native control unavailable: {type(exc).__name__}",
+        ) from exc
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=payload.get("detail") if isinstance(payload, dict) else "IREN request failed",
+        )
+    return payload if isinstance(payload, dict) else {}
+
+
+def _command_iren_projection(status_payload: dict, work_payload: dict) -> dict:
+    state = status_payload.get("state") if isinstance(status_payload.get("state"), dict) else {}
+    incident_map = state.get("incidents") if isinstance(state.get("incidents"), dict) else {}
+    incidents = [
+        {
+            "key": key,
+            "severity": row.get("severity"),
+            "reason": row.get("reason"),
+            "opened_at": row.get("opened_at"),
+        }
+        for key, row in incident_map.items()
+        if isinstance(row, dict) and str(row.get("status") or "").upper() == "OPEN"
+    ]
+    summary = work_payload.get("summary") if isinstance(work_payload.get("summary"), dict) else {}
+    return {
+        "schema_version": "iren_command.v2",
+        "work_schema_version": "iren_work.v1",
+        "revision": status_payload.get("revision"),
+        "observed_at": state.get("observed_at"),
+        "stale": bool(status_payload.get("stale")),
+        "state": state.get("state") or "UNKNOWN",
+        "topology": state.get("topology"),
+        "incidents": incidents,
+        "scheduler": state.get("scheduler"),
+        "action_required": bool(status_payload.get("action_required")) or bool(incidents),
+        "source": "rhen_native",
+        "work": {
+            **summary,
+            "objectives": work_payload.get("objectives") if isinstance(work_payload.get("objectives"), list) else [],
+            "jobs": work_payload.get("jobs") if isinstance(work_payload.get("jobs"), list) else [],
+            "job_events": work_payload.get("job_events") if isinstance(work_payload.get("job_events"), list) else [],
+            "commands": work_payload.get("commands") if isinstance(work_payload.get("commands"), list) else [],
+            "handoffs": work_payload.get("handoffs") if isinstance(work_payload.get("handoffs"), list) else [],
+            "next_action": summary.get("next_action"),
+            "execution_mode": summary.get("execution_mode"),
+        },
+    }
+
+
+@app.get("/v1/command/iren/status")
+async def command_iren_status(authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    status_payload, work_payload = await asyncio.gather(
+        _rhen_native_iren_request("GET", "/v1/iren/status"),
+        _rhen_native_iren_request("GET", "/v1/iren/work"),
+    )
+    return _command_iren_projection(status_payload, work_payload)
+
+
+@app.post("/v1/command/iren/command", status_code=202)
+async def command_iren_command(
+    body: dict,
+    authorization: str | None = Header(default=None),
+):
+    identity = await require_command_admin(authorization)
+    command = str(body.get("command") or "").strip()[:4000]
+    if not command:
+        raise HTTPException(status_code=400, detail="command_required")
+    created = await _rhen_native_iren_request(
+        "POST",
+        "/v1/iren/commands",
+        {
+            "command": command,
+            "source": "command",
+            "requested_by": str(identity.get("email") or "command-admin"),
+        },
+    )
+    return {
+        "schema_version": "iren_command.v2",
+        "accepted": True,
+        "source": "rhen_native",
+        "command": created.get("command"),
+    }
+
+
 @app.get("/v1/command/reports/daily")
 async def command_daily_report(
     session: date | None = None,
