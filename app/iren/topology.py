@@ -77,6 +77,8 @@ def bounded_health(name, body):
         result["persistence"]["last_error"] = bool(persistence.get("last_error"))
         result["strategy_version_id"] = persistence.get("strategy_version_id")
         result["crypto_execution_enabled"] = crypto.get("execution_enabled")
+        result["crypto_execution_mode"] = crypto.get("execution_mode")
+        result["crypto_broker_writes_allowed"] = crypto.get("broker_writes_allowed")
         result["source_commit"] = provenance.get("git_commit")
     return result
 
@@ -138,13 +140,24 @@ def topology(observation, state, self_identity):
         configuration_identity=self_identity["configuration_identity"],
         observation_source="durable_iren_commit", scope="Independent from RHEN; shares its process with the scheduler").model_dump())
     scheduler = observation.get("scheduler", {})
-    scheduler_ok = scheduler.get("configured") is True and not scheduler.get("last_error") and (
-        fresh(scheduler.get("last_success_at"), now, 180) or fresh(scheduler.get("started_at"), now, 180))
+    scheduler_enabled = scheduler.get("enabled") is not False
+    scheduler_ok = (
+        not scheduler_enabled
+        or (
+            scheduler.get("configured") is True
+            and not scheduler.get("last_error")
+            and (
+                fresh(scheduler.get("last_success_at"), now, 180)
+                or fresh(scheduler.get("started_at"), now, 180)
+            )
+        )
+    )
     rhen = observation["services"].get("RHEN", {})
     evidence = rhen.get("persistence", {})
     evidence_incident = any(k.startswith("evidence.") and v.get("status") == "OPEN" for k, v in incidents.items())
     dependencies = {
-        "scheduler": {"status": "RUNNING" if scheduler_ok else "DEGRADED", "last_success": scheduler.get("last_success_at"),
+        "scheduler": {"status": "DISABLED" if not scheduler_enabled else "RUNNING" if scheduler_ok else "DEGRADED",
+                      "last_success": scheduler.get("last_success_at"),
                       "independent_runtime": False, "host": "IREN"},
         "data_plane": {"status": "RUNNING", "basis": "this snapshot is visible only after its durable commit"},
         "broker": {"status": "RUNNING" if rhen.get("ok") is True and rhen.get("reconciliation_safe") is True else "UNKNOWN",
