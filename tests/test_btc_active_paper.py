@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
-from types import SimpleNamespace
-
 import pytest
 
 from app.config import Settings
@@ -161,32 +159,19 @@ class Ledger:
 
 
 def _engine_settings(*, mode="experimental_active_paper", authorized=True):
-    return SimpleNamespace(
-        crypto_execution_mode=mode,
-        btc_active_paper_authorized=authorized,
-        crypto_lane_enabled=True,
-        crypto_execution_enabled=True,
-        execution_authorized=True,
-        crypto_max_concurrent_positions=1,
-        crypto_max_order_notional=Decimal("63"),
-        crypto_max_total_position_notional=Decimal("63"),
-        max_total_position_notional=Decimal("80.35"),
-        crypto_max_entries_24h=24,
-        max_daily_loss=Decimal("10"),
-        crypto_order_notional=Decimal("63"),
-        crypto_confirmation_symbols=("ETH/USD",),
-        crypto_max_spread_pct=Decimal("0.003"),
-        crypto_reentry_cooldown_minutes=5,
-        crypto_stop_pct=Decimal("0.0035"),
-        crypto_target_pct=Decimal("0.005"),
-        crypto_max_hold_minutes=60,
-        crypto_stop_limit_buffer_pct=Decimal("0.0025"),
-        crypto_calibration_promoted=False,
-        crypto_max_quote_age_seconds=15,
-        crypto_min_quoted_depth=Decimal("0"),
-        crypto_min_trade_activity=Decimal("0"),
-        crypto_ads_threshold=Decimal("0"),
-        order_owner_tag="active01",
+    return _config(
+        CRYPTO_EXECUTION_MODE=mode,
+        I_ACKNOWLEDGE_BTC_ACTIVE_PAPER=("YES" if authorized else "NO"),
+        CRYPTO_ORDER_NOTIONAL="63",
+        CRYPTO_MAX_ORDER_NOTIONAL="63",
+        CRYPTO_MAX_TOTAL_POSITION_NOTIONAL="63",
+        CRYPTO_MAX_ENTRIES_24H="24",
+        CRYPTO_MAX_SPREAD_PCT="0.003",
+        CRYPTO_REENTRY_COOLDOWN_MINUTES="5",
+        CRYPTO_STOP_PCT="0.005",
+        CRYPTO_TARGET_PCT="0.010",
+        CRYPTO_MAX_HOLD_MINUTES="120",
+        CRYPTO_CALIBRATION_PROMOTED="false",
     )
 
 
