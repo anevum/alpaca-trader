@@ -26,8 +26,14 @@ def test_planner_selects_complete_untouched_corpus():
         now=datetime(2026, 10, 4, 18, 0, tzinfo=UTC),
     )
     assert result["available"] is True
-    assert result["development"][1] == result["validation"][0]
+    assert result["development_reusable_search_sandbox"] is True
+    assert result["confirmatory_untouched_at_freeze"] is True
+    assert result["development"] == [
+        "2024-01-01T00:00:00+00:00",
+        "2024-03-01T00:00:00+00:00",
+    ]
     assert result["validation"][1] == result["holdout"][0]
+    assert result["development"][1] <= result["validation"][0]
     assert result["corpus_end"] == "2026-10-03T00:00:00+00:00"
 
 
