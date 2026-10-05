@@ -1705,22 +1705,33 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
             "production_authority_changed": False,
         }
     )
+
+    declared_target = str(
+        (candidate or {}).get("supersedes_strategy_version_id") or ""
+    ).strip()
     target_lane = str((candidate or {}).get("lane") or "").lower()
     target = next(
         (
             row
             for row in active
-            if row.get("lane") == target_lane and row.get("status") != "DISABLED"
+            if declared_target
+            and row.get("strategy_version_id") == declared_target
+            and row.get("status") != "DISABLED"
         ),
         None,
     )
-    if candidate:
-        candidate["supersedes_strategy_version_id"] = (
-            target.get("strategy_version_id") if target else None
+
+    if declared_target and target is None:
+        release_gate["status"] = "HOLD"
+        release_gate["reason"] = (
+            "Declared supersession target is not an active RHEN strategy."
         )
-    release_gate["target_lane"] = target_lane or None
+
+    release_gate["target_lane"] = (
+        target.get("lane") if target else target_lane or None
+    )
     release_gate["target_strategy_version_id"] = (
-        target.get("strategy_version_id") if target else None
+        target.get("strategy_version_id") if target else declared_target or None
     )
     release_gate["automatic_promotion"] = False
     release_gate["production_authority_changed"] = False
@@ -1733,7 +1744,6 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
         "validation": validation,
         "release_gate": release_gate,
     }
-
 
 
 def _command_iren_projection(
