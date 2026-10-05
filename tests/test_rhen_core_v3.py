@@ -450,3 +450,92 @@ def test_router_sends_foundation_compatibility_paths_to_core():
 
     assert "/v1/trading-report-read" in CORE_PREFIXES
     assert "/v1/trading-reconcile" in CORE_PREFIXES
+
+
+
+def test_weekly_range_read_returns_canonical_input_shape(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 2, 20, 10, tzinfo=UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "runtime-weekly",
+                "event_type": "runtime_start",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-weekly",
+                "strategy_version_id": "v-weekly",
+                "source": "test",
+                "payload": {"strategy_name": "weekly-test"},
+            },
+            {
+                "event_key": "daily-weekly",
+                "event_type": "research_daily_report",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-weekly",
+                "strategy_version_id": "v-weekly",
+                "source": "test",
+                "payload": {
+                    "session": "2026-10-02",
+                    "report_version": "rhen-daily-v1.4",
+                    "generated_at": observed.isoformat(),
+                    "metrics": {
+                        "realized_pnl": "0",
+                        "trade_count": 0,
+                    },
+                    "trades": [],
+                },
+            },
+            {
+                "event_key": "account-weekly",
+                "event_type": "account_snapshot",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-weekly",
+                "strategy_version_id": "v-weekly",
+                "source": "test",
+                "payload": {
+                    "equity": "100",
+                    "drawdown_pct": "0.01",
+                },
+            },
+            {
+                "event_key": "intent-weekly",
+                "event_type": "order_intent",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-weekly",
+                "strategy_version_id": "v-weekly",
+                "source": "test",
+                "payload": {
+                    "intent": {
+                        "side": "buy",
+                        "symbol": "SPY",
+                    }
+                },
+            },
+        ]
+    )
+
+    report = store.report_read(
+        {"start": "2026-09-28", "end": "2026-10-02"}
+    )
+
+    assert report["ok"] is True
+    assert report["report_version"] == "rhen-weekly-v1.2"
+    inputs = report["inputs"]
+    assert inputs["earliest_daily_session"] == "2026-10-02"
+    assert inputs["strategy_versions"] == [{"version_id": "v-weekly"}]
+    assert inputs["runs"] == [{"run_id": "run-weekly"}]
+    assert inputs["order_intents_by_session"][0]["entry_intents"] == 1
+    assert inputs["account_weekly_drawdown"]["max_drawdown_pct"] == 0.01
+    assert inputs["daily_reports"][0]["payload"]["session"] == "2026-10-02"
+
+
+def test_weekly_range_read_rejects_invalid_period(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+
+    report = store.report_read(
+        {"start": "2026-10-05", "end": "2026-10-02"}
+    )
+
+    assert report == {"ok": False, "error": "invalid_period"}
