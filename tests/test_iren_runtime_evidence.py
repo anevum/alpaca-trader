@@ -11,7 +11,7 @@ from app.iren import codex_github, executor_service
 from app.iren.codex_github import inspect_runtime_inventory
 from app.iren.core import reduce_state
 from app.iren.service import POLICY, _executor_root_url, _runtime_evidence
-from app.iren.topology import INVENTORY, bounded_health, topology
+from app.iren.topology import INVENTORY, OPTIONAL_INVENTORY, bounded_health, topology
 
 
 STAMP = datetime(2026, 10, 2, 17, 30, tzinfo=timezone.utc)
@@ -127,7 +127,9 @@ def test_inventory_covers_current_independent_runtimes_and_completes_only_with_i
 
     assert value["inventory_complete"] is True
     assert value["inventory_gaps"] == {}
-    assert value["required_inventory"] == sorted([*INVENTORY, "IREN"])
+    assert value["required_inventory"] == sorted(
+        [name for name in INVENTORY if name not in OPTIONAL_INVENTORY] + ["IREN"]
+    )
     assert _runtime_evidence({"topology": value})["complete_deployment_inventory"] is True
 
 
