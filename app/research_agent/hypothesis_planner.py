@@ -422,9 +422,9 @@ def plan_next(
         prior_manifests=prior_manifests,
     )
     if candidate is None:
-        # The deterministic no-model catalog is finite by design. Re-searching it would
-        # turn null results into parameter mining. A model-backed director or a new
-        # trusted primitive is now a real capability boundary.
+        # The trusted no-model hypothesis space is finite by design. Re-searching
+        # it would turn null results into parameter mining. A materially new
+        # trusted primitive/mechanism is now a real software capability boundary.
         return {
             "planner_version": PLANNER_VERSION,
             "state": "ENGINEERING_REQUIRED",
@@ -433,9 +433,10 @@ def plan_next(
             "trusted_hypothesis_space_size": len(catalog),
             "prior_manifest_count": len(prior_hashes),
             "capability_required": (
-                "Extend the trusted strategy grammar/compiler with a materially new "
-                "mechanism or configure the bounded Research Director as an additional "
-                "hypothesis source."
+                "Extend the trusted strategy grammar/compiler with a materially "
+                "new mechanism or data primitive. The bounded Research Director "
+                "may inform that manual engineering work but cannot bypass the "
+                "trusted compiler boundary."
             ),
         }
 
