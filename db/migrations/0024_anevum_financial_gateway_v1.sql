@@ -149,7 +149,7 @@ create table if not exists anevum.rhen_allocations (
     status text not null default 'DRAFT'
         check (status in ('DRAFT','ACTIVE','PAUSED','RETIRED')),
     currency text not null default 'USD' check (currency ~ '^[A-Z]{3,8}$'),
-    max_allocation numeric(38,12) not null check (max_allocation > 0),
+    max_allocation numeric(38,12) not null check (max_allocation >= 0),
     max_position_fraction numeric(12,8) not null default 0.10
         check (max_position_fraction > 0 and max_position_fraction <= 1),
     max_daily_loss_fraction numeric(12,8) not null default 0.05
@@ -170,9 +170,6 @@ create table if not exists anevum.financial_provider_webhooks (
     payload_hash text not null,
     event_type text,
     received_at timestamptz not null default now(),
-    processed_at timestamptz,
-    processing_status text not null default 'RECEIVED'
-        check (processing_status in ('RECEIVED','PROCESSED','IGNORED','FAILED')),
     payload jsonb not null,
     unique (provider, provider_event_id)
 );
@@ -283,6 +280,19 @@ create constraint trigger financial_ledger_balance_check
 after insert on anevum.financial_ledger_entries
 deferrable initially deferred
 for each row execute function anevum.assert_balanced_financial_transaction();
+
+insert into anevum.systems (system_key, display_name, authority, metadata)
+values (
+    'FINANCE',
+    'ANEVUM Financial',
+    'internal financial ledger and custody-provider coordination',
+    '{"external_custody":false,"live_execution_authority":false}'::jsonb
+)
+on conflict (system_key) do update
+set display_name=excluded.display_name,
+    authority=excluded.authority,
+    metadata=anevum.systems.metadata || excluded.metadata,
+    updated_at=now();
 
 insert into anevum.financial_ledger_accounts (
     account_code, owner_type, classification, normal_side, currency, metadata
