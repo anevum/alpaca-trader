@@ -956,4 +956,5 @@ def test_strategy_pipeline_does_not_infer_supersession_target(
     assert pipeline["candidate"]["supersedes_strategy_version_id"] is None
     assert pipeline["release_gate"]["status"] == "HOLD"
     assert pipeline["release_gate"]["target_strategy_version_id"] is None
+    assert pipeline["release_gate"]["target_lane"] is None
     assert "no explicit production supersession target" in pipeline["release_gate"]["reason"].lower()
