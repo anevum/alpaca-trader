@@ -130,7 +130,7 @@ A fresh variable-name audit across the active ANEVUM Core and RHEN services foun
 
 Railway OAuth still redacts variable values, so this remains a name-and-runtime-behavior audit rather than a cryptographic zero-dependency proof for arbitrary generic URL/token values.
 
-COMMAND_AUTH_MODE remains present on alpaca-trader as an obsolete variable name, while tracked current code contains no COMMAND_AUTH_MODE reference. Because the connected Railway interface does not expose a safe single-variable delete primitive and automated agent removal could not be verified, the variable is left untouched. It is nonfunctional debt, not an active auth path.
+`COMMAND_AUTH_MODE` was removed from alpaca-trader after staged-change inspection confirmed that the patch contained only that variable deletion. The resulting production redeploy completed successfully, the service returned HTTP 200 health checks, and the variable is no longer present in the Railway variable-name inventory.
 
 ### Locked Foundation v2 status
 
@@ -149,7 +149,6 @@ The following are now treated as locked decisions:
 These items do not block Foundation v2 operation:
 
 - The ANEVUM Core Railway environment is still named `staging` even though it serves canonical production consumers. Renaming is cosmetic and should be done only through a supported environment-rename path that does not recreate resources or alter environment IDs.
-- `COMMAND_AUTH_MODE` should be deleted when a safe value-aware/single-variable delete path is available.
 - Owner-browser confirmation of Command/session/topology and a harmless IREN enqueue remains a human acceptance check, not an engineering runtime blocker.
 - Railway OAuth value redaction prevents a final exhaustive inspection of arbitrary generic variable values.
 - The retained Supabase project remains untouched; deletion is separately authorized work and is not required for Foundation v2.
@@ -157,3 +156,8 @@ These items do not block Foundation v2 operation:
 Foundation v2 engineering status: **CLOSED / OPERATIONAL / LOCKED**.
 
 Development priority should now move above the Foundation layer: GRAEN/VELUM/NOSTRA research quality, crypto strategy validation, paper-canary evidence and eventual RHEN promotion gates.
+
+
+### Final post-closeout verification
+
+After the obsolete auth variable was removed, alpaca-trader redeployed successfully on canonical main. Runtime provenance reported the new main commit, application startup completed, and /health returned HTTP 200. The observed runtime configuration preserved existing execution/strategy settings; crypto execution remained disabled. No Foundation, broker, strategy, or research authority was changed as part of the closeout.
