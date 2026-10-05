@@ -761,7 +761,10 @@ def start_paper_oauth(
     if not client_id:
         raise RuntimeError("ALPACA_OAUTH_CLIENT_ID is not configured")
     redirect = str(redirect_uri or "").strip()
-    if not redirect.startswith("https://"):
+    configured_redirect = os.environ.get("ALPACA_OAUTH_REDIRECT_URI", "").strip()
+    if not configured_redirect:
+        raise RuntimeError("ALPACA_OAUTH_REDIRECT_URI is not configured")
+    if redirect != configured_redirect or not redirect.startswith("https://"):
         raise ValueError("oauth_redirect_uri_invalid")
 
     raw_state = secrets.token_urlsafe(32)
@@ -935,6 +938,18 @@ async def complete_paper_oauth(
 
             cur.execute(
                 """
+                update anevum.secret_envelopes se
+                set revoked_at=now()
+                from anevum.broker_authorizations ba
+                where ba.broker_account_id=%s
+                  and ba.status='ACTIVE'
+                  and se.secret_reference=ba.secret_reference
+                  and se.revoked_at is null
+                """,
+                (broker_account_id,),
+            )
+            cur.execute(
+                """
                 update anevum.broker_authorizations
                 set status='REVOKED',updated_at=now()
                 where broker_account_id=%s and status='ACTIVE'
@@ -1026,3 +1041,136 @@ async def refresh_paper_broker(
     ).reconcile()
     record_broker_reconciliation(conn, result)
     return customer_overview(conn, email=email, tenant_id=tenant_id)
+
+
+
+def provision_paper_beta_tenant(
+    conn: psycopg.Connection[Any],
+    *,
+    customer_email: str,
+    display_name: str,
+    tenant_key: str | None = None,
+    created_by: str,
+) -> dict[str, Any]:
+    normalized = _email(customer_email)
+    name = str(display_name or "").strip()
+    if not normalized or "@" not in normalized:
+        raise ValueError("customer_email_invalid")
+    if not name:
+        raise ValueError("tenant_display_name_required")
+    key = str(tenant_key or "").strip().lower()
+    if not key:
+        digest = sha256(normalized.encode()).hexdigest()[:10]
+        stem = "".join(ch if ch.isalnum() else "-" for ch in normalized.split("@", 1)[0])
+        key = f"beta-{stem.strip('-') or 'customer'}-{digest}"
+    if len(key) > 100 or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789-" for ch in key):
+        raise ValueError("tenant_key_invalid")
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                "select principal_id from anevum.principals where lower(email)=lower(%s)",
+                (normalized,),
+            )
+            principal_row = cur.fetchone()
+            if principal_row:
+                principal_id = principal_row[0]
+                cur.execute(
+                    """
+                    update anevum.principals
+                    set status='ACTIVE',updated_at=now()
+                    where principal_id=%s
+                    """,
+                    (principal_id,),
+                )
+            else:
+                principal_id = uuid4()
+                cur.execute(
+                    """
+                    insert into anevum.principals(
+                        principal_id,external_subject,email,status
+                    )
+                    values(%s,%s,%s,'ACTIVE')
+                    """,
+                    (principal_id, f"invite:{uuid4()}", normalized),
+                )
+
+            cur.execute(
+                "select tenant_id from anevum.tenants where tenant_key=%s",
+                (key,),
+            )
+            tenant_row = cur.fetchone()
+            if tenant_row:
+                tenant_id = tenant_row[0]
+            else:
+                tenant_id = uuid4()
+                cur.execute(
+                    """
+                    insert into anevum.tenants(
+                        tenant_id,tenant_key,display_name,status
+                    )
+                    values(%s,%s,%s,'ACTIVE')
+                    """,
+                    (tenant_id, key, name),
+                )
+
+            cur.execute(
+                """
+                insert into anevum.tenant_memberships(
+                    tenant_id,principal_id,role,status
+                )
+                values(%s,%s,'OWNER','ACTIVE')
+                on conflict(tenant_id,principal_id) do update
+                set role='OWNER',status='ACTIVE',updated_at=now()
+                """,
+                (tenant_id, principal_id),
+            )
+            cur.execute(
+                """
+                select entitlement_id
+                from anevum.entitlements
+                where tenant_id=%s
+                  and product_key='COMMAND'
+                  and status in ('ACTIVE','TRIAL')
+                  and (expires_at is null or expires_at > now())
+                limit 1
+                """,
+                (tenant_id,),
+            )
+            if not cur.fetchone():
+                cur.execute(
+                    """
+                    insert into anevum.entitlements(
+                        tenant_id,product_key,status,source,effective_at,metadata
+                    )
+                    values(%s,'COMMAND','TRIAL','paper-beta',now(),%s)
+                    """,
+                    (
+                        tenant_id,
+                        Jsonb({
+                            "paper_only": True,
+                            "live_customer_trading": False,
+                            "created_by": created_by,
+                        }),
+                    ),
+                )
+            _audit(
+                cur,
+                tenant_id=tenant_id,
+                email=created_by,
+                action="PAPER_BETA_TENANT_PROVISIONED",
+                object_type="tenant",
+                object_id=str(tenant_id),
+                payload={"customer_email": normalized, "tenant_key": key},
+            )
+
+    return {
+        "tenant_id": str(tenant_id),
+        "tenant_key": key,
+        "display_name": name,
+        "customer_email": normalized,
+        "role": "OWNER",
+        "entitlement": "TRIAL",
+        "paper_only": True,
+        "live_customer_trading": False,
+    }
