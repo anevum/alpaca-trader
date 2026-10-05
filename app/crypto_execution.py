@@ -11,10 +11,10 @@ from .alpaca_client import AlpacaClient
 from .config import Settings
 from .crypto_layer import (
     CryptoMarketDataClient,
-    CryptoRollingMomentumStrategy,
     CryptoUniverse,
     enrich_crypto_signal_market_state,
 )
+from .btc_direct_strategy import BtcDirectSwingStrategy
 from .persistence import TradingEventSink
 from .risk import validate_crypto_buy, validate_crypto_sell_to_flat
 from .state import RuntimeState
@@ -39,7 +39,7 @@ class CryptoExecutionEngine:
         settings: Settings,
         client: AlpacaClient,
         market_data: CryptoMarketDataClient,
-        strategy: CryptoRollingMomentumStrategy,
+        strategy: Any,
         state: RuntimeState,
         universe: CryptoUniverse,
         ledger: TradingEventSink | None = None,
@@ -52,10 +52,16 @@ class CryptoExecutionEngine:
         self.universe = universe
         self.ledger = ledger
 
-    def _experimental_active_paper(self) -> bool:
+    def _paper_experiment(self) -> bool:
+        return getattr(self.settings, "crypto_execution_mode", "validated") in {
+            "experimental_active_paper",
+            "btc_direct_paper",
+        }
+
+    def _direct_btc_mode(self) -> bool:
         return (
             getattr(self.settings, "crypto_execution_mode", "validated")
-            == "experimental_active_paper"
+            == "btc_direct_paper"
         )
 
     @staticmethod
@@ -240,8 +246,11 @@ class CryptoExecutionEngine:
                 "reason": "crypto position protection inputs unavailable",
             }
 
+        stop_pct = _d(
+            getattr(self.strategy, "hard_stop_pct", self.settings.crypto_stop_pct)
+        )
         stop = self._price(
-            entry * (Decimal("1") - self.settings.crypto_stop_pct)
+            entry * (Decimal("1") - stop_pct)
         )
         limit = self._price(
             stop * (Decimal("1") - self.settings.crypto_stop_limit_buffer_pct)
@@ -401,10 +410,18 @@ class CryptoExecutionEngine:
                 if entry_time is not None else None
             )
             return_pct = (current - entry) / entry
+            stop_pct = _d(
+                getattr(self.strategy, "hard_stop_pct", self.settings.crypto_stop_pct)
+            )
             exit_reason = None
-            if return_pct <= -self.settings.crypto_stop_pct:
+            if return_pct <= -stop_pct:
                 exit_reason = (
                     f"crypto software stop triggered at {return_pct:.6f}"
+                )
+            elif bool(getattr(self.strategy, "manages_position_exits", False)):
+                exit_reason = self.strategy.position_exit_reason(
+                    bars.get(symbol, []),
+                    now=now,
                 )
             elif return_pct >= self.settings.crypto_target_pct:
                 exit_reason = (
@@ -428,8 +445,12 @@ class CryptoExecutionEngine:
                         "current_price": str(current),
                         "current_return_pct": str(return_pct),
                         "held_minutes": held_minutes,
-                        "risk_stop_pct": str(self.settings.crypto_stop_pct),
-                        "target_pct": str(self.settings.crypto_target_pct),
+                        "risk_stop_pct": str(stop_pct),
+                        "target_pct": (
+                            None
+                            if bool(getattr(self.strategy, "manages_position_exits", False))
+                            else str(self.settings.crypto_target_pct)
+                        ),
                         "source": "crypto_live_position_snapshot",
                     },
                     correlation_id=self.state.crypto_current_correlation_id,
@@ -464,7 +485,8 @@ class CryptoExecutionEngine:
             self.state.crypto_last_decision = "crypto lane disabled"
             return {"action": "hold", "reason": self.state.crypto_last_decision}
 
-        active_paper = self._experimental_active_paper()
+        active_paper = self._paper_experiment()
+        direct_btc = self._direct_btc_mode()
         if active_paper and not bool(
             getattr(self.settings, "btc_active_paper_authorized", False)
         ):
@@ -496,11 +518,26 @@ class CryptoExecutionEngine:
         self.state.crypto_execution_healthy = True
         data_symbols = list(dict.fromkeys([
             *active_symbols,
-            *self.settings.crypto_confirmation_symbols,
+            *([] if direct_btc else self.settings.crypto_confirmation_symbols),
             *owned_symbols,
         ]))
+        bars_request = (
+            self.market_data.bars_many(
+                data_symbols,
+                timeframe=getattr(self.strategy, "timeframe", "4Hour"),
+                lookback_minutes=int(
+                    getattr(
+                        self.strategy,
+                        "required_history_minutes",
+                        self.settings.crypto_lookback_minutes,
+                    )
+                ),
+            )
+            if direct_btc
+            else self.market_data.bars_many(data_symbols)
+        )
         bars, quotes = await asyncio.gather(
-            self.market_data.bars_many(data_symbols),
+            bars_request,
             self.market_data.latest_quotes(active_symbols),
         )
 
@@ -535,13 +572,14 @@ class CryptoExecutionEngine:
                 now=now,
             )
             quote = quotes.get(symbol, {})
-            signal = enrich_crypto_signal_market_state(
-                signal,
-                bars=bars.get(symbol, []),
-                quote=quote,
-                now=now,
-                settings=self.settings,
-            )
+            if not direct_btc:
+                signal = enrich_crypto_signal_market_state(
+                    signal,
+                    bars=bars.get(symbol, []),
+                    quote=quote,
+                    now=now,
+                    settings=self.settings,
+                )
             self.state.crypto_last_market_data_at = now
             bid = _d(quote.get("bp"))
             ask = _d(quote.get("ap"))
@@ -554,10 +592,32 @@ class CryptoExecutionEngine:
             signal.metadata["market"] = "crypto"
             signal.metadata["session_model"] = "24x7"
             if active_paper:
-                signal.metadata["execution_class"] = "EXPERIMENTAL_ACTIVE_PAPER"
+                signal.metadata["execution_class"] = (
+                    "BTC_DIRECT_PAPER" if direct_btc else "EXPERIMENTAL_ACTIVE_PAPER"
+                )
                 signal.metadata["experimental_active_paper"] = True
                 signal.metadata["live_execution_authorized"] = False
             raw_features = dict((signal.metadata.get("feature_state") or {}).get("raw") or {})
+            if direct_btc:
+                quote_stamp = quote.get("t")
+                quote_age_ms = None
+                if quote_stamp:
+                    try:
+                        quote_at = datetime.fromisoformat(
+                            str(quote_stamp).replace("Z", "+00:00")
+                        ).astimezone(NY)
+                        quote_age_ms = max(
+                            (now - quote_at).total_seconds() * 1000,
+                            0,
+                        )
+                    except ValueError:
+                        quote_age_ms = None
+                raw_features = {
+                    "quote_age_ms": quote_age_ms,
+                    "available_depth": str(
+                        min(_d(quote.get("bs")), _d(quote.get("as")))
+                    ),
+                }
             signal.metadata["market_quality"] = {
                 "bid": str(bid) if bid > 0 else None,
                 "ask": str(ask) if ask > 0 else None,
@@ -826,10 +886,14 @@ class CryptoExecutionEngine:
         self.state.crypto_last_execution_context = {
             "decision_at": now.isoformat(),
             "execution_mode": (
-                "experimental_active_paper" if active_paper else "validated"
+                "btc_direct_paper"
+                if direct_btc
+                else ("experimental_active_paper" if active_paper else "validated")
             ),
             "execution_class": (
-                "EXPERIMENTAL_ACTIVE_PAPER" if active_paper else "VALIDATED"
+                "BTC_DIRECT_PAPER"
+                if direct_btc
+                else ("EXPERIMENTAL_ACTIVE_PAPER" if active_paper else "VALIDATED")
             ),
             "active_universe": active_symbols,
             "owned_symbols": sorted(owned_symbols),
