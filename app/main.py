@@ -1786,6 +1786,9 @@ async def command_iren_status(authorization: str | None = Header(default=None)):
         status_payload,
         work_payload,
         _command_strategy_pipeline(research_payload),
+        research_payload.get("research")
+        if isinstance(research_payload.get("research"), dict)
+        else None,
     )
 
 
