@@ -352,6 +352,9 @@ async def command_snapshot() -> dict:
         strategy_version_id=settings.crypto_strategy_version_id,
         strategy_family=settings.crypto_strategy_family,
         start_at=settings.crypto_stats_start_at,
+        include_manual_btc=(
+            settings.crypto_execution_mode == "btc_direct_live_signal"
+        ),
     )
     entry_count = engine._entry_orders_today(recent_orders)
     equity = Decimal(str(account.get("equity", "0")))
@@ -1574,6 +1577,9 @@ async def crypto_stats_endpoint(authorization: str | None = Header(default=None)
                 strategy_version_id=settings.crypto_strategy_version_id,
                 strategy_family=settings.crypto_strategy_family,
                 start_at=settings.crypto_stats_start_at,
+                include_manual_btc=(
+                    settings.crypto_execution_mode == "btc_direct_live_signal"
+                ),
             ),
             "runtime": {
                 "last_decision": runtime_state.crypto_last_decision,
