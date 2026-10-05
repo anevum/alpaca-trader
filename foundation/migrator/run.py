@@ -8,6 +8,7 @@ import psycopg
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = ROOT / "db" / "migrations"
+# Platform Core validation uses this same deterministic migrator.
 
 
 def main() -> None:
