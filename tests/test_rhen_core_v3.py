@@ -850,7 +850,12 @@ def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
         {
             "problem_id": problem_id,
             "stage": "VELUM_REPLAY",
-            "metadata": {"candidate_id": "BTC-CANDIDATE-2"},
+            "metadata": {
+                "candidate_id": "BTC-CANDIDATE-2",
+                "target_lane": "crypto",
+                "supersedes_strategy_version_id": "RHEN-BTC-DIRECT-001",
+                "release_requested": True,
+            },
         },
     )
     store.graen_action(
@@ -886,9 +891,11 @@ def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
     assert pipeline["candidate"]["problem_id"] == problem_id
     assert pipeline["candidate"]["candidate_id"] == "BTC-CANDIDATE-2"
     assert pipeline["candidate"]["lane"] == "crypto"
+    assert pipeline["candidate"]["supersedes_strategy_version_id"] == "RHEN-BTC-DIRECT-001"
     assert pipeline["validation"]["status"] == "PASSED"
     assert pipeline["validation"]["problem_id"] == problem_id
     assert pipeline["release_gate"]["status"] == "REVIEW"
+    assert pipeline["release_gate"]["target_strategy_version_id"] == "RHEN-BTC-DIRECT-001"
     assert pipeline["release_gate"]["automatic_promotion"] is False
     assert pipeline["release_gate"]["production_authority_changed"] is False
     assert pipeline["research"]["graen_problems"][0]["problem_id"] == problem_id
