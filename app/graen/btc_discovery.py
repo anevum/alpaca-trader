@@ -13,7 +13,7 @@ from app.btc_discovery_contract import (COSTS, GATES, LIVE_ID, STAGES, VERSION, 
 from app.crypto_layer import CryptoMarketDataClient
 from app.rhen_core.store import RhenCoreStore
 from app.velum_core import ContinuousReplayEngine
-from app.velum_btc import metrics
+from app.velum_btc import metrics, corpus_coverage
 
 NAMESPACE = "btc_discovery"
 UTC = timezone.utc
@@ -79,6 +79,12 @@ def projection(store: RhenCoreStore) -> dict[str, Any]:
         candidates.append(row)
     identity = state.get("paper_candidate_id") or state.get("selected_candidate_id") or state.get("current_candidate_id")
     current = next((x for x in candidates if x["candidate_id"] == identity), None)
+    data_quality = {}
+    for stage in STAGES[:3]:
+        corpus = store.get_kv(NAMESPACE, "corpus:" + stage.lower(), None)[0]
+        if corpus is not None:
+            start, end = (datetime.fromisoformat(x) for x in state["contract"][stage.lower()])
+            data_quality[stage] = corpus_coverage(corpus, start, end)
     return {"schema_version": "btc_discovery.v1", "methodology_version": VERSION,
             "authority": "CANONICAL_BTC_RESEARCH", "live_strategy_version_id": LIVE_ID,
             "live_broker_writes_allowed": False, "automatic_live_promotion": False,
@@ -87,6 +93,7 @@ def projection(store: RhenCoreStore) -> dict[str, Any]:
             "candidate": current, "candidates": candidates, "contract": state.get("contract"),
             "cost_scenarios": COSTS, "gates": GATES, "paper_candidate_id": state.get("paper_candidate_id"),
             "paper_runtime": state.get("paper_runtime"), "paper_progress": state.get("paper_progress"),
+            "paper_reader": store.get_kv(NAMESPACE, "paper_reader", None)[0], "data_quality": data_quality,
             "last_error": state.get("last_error"), "rejection_reasons": (current or {}).get("rejection_reasons", []),
             "search_completed": sum(x.get("status") != "QUEUED" for x in candidates), "search_bound": len(catalog())}
 
@@ -97,6 +104,11 @@ def record_paper(store: RhenCoreStore, body: dict[str, Any]) -> dict[str, Any]:
     with store._lock:
         state = read_state(store)
         assignment = approved_assignment(state)
+        if assignment is None and body.get("heartbeat") is True and body.get("candidate_id") == LIVE_ID and body.get("trading_mode") == "paper":
+            reader = {"status": "BASELINE", "strategy_version_id": LIVE_ID, "observed_at": datetime.now(UTC).isoformat(),
+                      "run_id": body.get("run_id"), "authenticated": True, "live_authority": False}
+            store.set_kv(NAMESPACE, "paper_reader", reader)
+            return {"ok": True, "candidate_id": LIVE_ID, "live_authority": False}
         if not assignment or body.get("candidate_id") != assignment["candidate_id"] or body.get("trading_mode") != "paper":
             raise ValueError("paper_observation_identity_mismatch")
         now = datetime.now(UTC).isoformat()
@@ -310,7 +322,7 @@ class BtcDiscoveryJob:
                 state["running"] = False
                 state["last_error"] = type(exc).__name__ + ":" + str(exc)[:200]
                 row["status"] = "REJECTED"
-                row["rejection_reasons"] = ["stage_failed:" + type(exc).__name__]
+                row["rejection_reasons"] = ["stage_failed:" + state["last_error"]]
                 if stage != "DEVELOPMENT":
                     state["status"] = "REJECTED"
                 self.save(state)

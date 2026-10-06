@@ -18,10 +18,33 @@ from app.graen.btc_discovery import (NAMESPACE, BtcDiscoveryJob, approved_assign
 from app.rhen_core.store import RhenCoreStore
 from app.rhen_core.supervisor import PROCESSES, _child_env
 from app.velum_core import ContinuousReplayEngine
-from app.velum_btc import normalized_corpus
+from app.velum_btc import normalized_corpus, corpus_coverage
 from app.config import Settings
 
 UTC = timezone.utc
+
+
+def test_data_gap_diagnostics_preserve_fail_closed_chronology():
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    lower = start - timedelta(days=35)
+    rows = [{"t": (lower + timedelta(hours=i)).isoformat(), "o": "100", "h": "101", "l": "99", "c": "100"} for i in range(841)]
+    rows.pop(20)
+    quality = corpus_coverage(rows, start, end)
+    assert quality == {"expected_bars": 841, "received_bars": 840, "missing_hours": 1,
+        "first_missing_at": (lower + timedelta(hours=20)).isoformat(), "last_missing_at": (lower + timedelta(hours=20)).isoformat()}
+    with pytest.raises(ValueError, match="incomplete_hourly_corpus:missing=1"):
+        normalized_corpus(rows, start, end)
+
+
+def test_baseline_reader_heartbeat_has_no_assignment_authority(tmp_path):
+    store = RhenCoreStore(tmp_path / "heartbeat.db")
+    ack = record_paper(store, {"heartbeat": True, "candidate_id": LIVE_ID, "trading_mode": "paper", "run_id": "baseline"})
+    assert ack["ok"] and ack["live_authority"] is False
+    assert projection(store)["paper_reader"]["authenticated"] is True
+    assert approved_assignment(read_state(store)) is None
+    with pytest.raises(ValueError):
+        record_paper(store, {"heartbeat": True, "candidate_id": LIVE_ID, "trading_mode": "live"})
 
 
 def evidence(expectancy=.01):

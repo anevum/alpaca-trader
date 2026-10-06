@@ -29,6 +29,16 @@ def metrics(trades: list[dict[str, Any]], drawdown: float | None = None) -> dict
             "max_drawdown": max(dd, drawdown or 0), "net_return": equity - 1}
 
 
+def corpus_coverage(rows: list[dict[str, Any]], start: datetime, end: datetime) -> dict[str, Any]:
+    lower = start - timedelta(days=35)
+    present = {stamp(row) for row in rows if lower <= stamp(row) < end}
+    expected = int((end - lower).total_seconds() // 3600)
+    missing = [lower + timedelta(hours=i) for i in range(expected) if lower + timedelta(hours=i) not in present]
+    return {"expected_bars": expected, "received_bars": len(present), "missing_hours": len(missing),
+            "first_missing_at": missing[0].isoformat() if missing else None,
+            "last_missing_at": missing[-1].isoformat() if missing else None}
+
+
 def normalized_corpus(rows: list[dict[str, Any]], start: datetime, end: datetime) -> list[dict[str, Any]]:
     lower = start - timedelta(days=35)
     selected = []
@@ -47,7 +57,8 @@ def normalized_corpus(rows: list[dict[str, Any]], start: datetime, end: datetime
     expected = int((end - lower).total_seconds() // 3600)
     # Missing bars cannot be silently treated as contiguous trading time.
     if len(selected) != expected or not selected or stamp(selected[0]) != lower or stamp(selected[-1]) != end - timedelta(hours=1):
-        raise ValueError("incomplete_hourly_corpus")
+        quality = corpus_coverage(rows, start, end)
+        raise ValueError(f"incomplete_hourly_corpus:missing={quality['missing_hours']},expected={expected},received={len(selected)},first={quality['first_missing_at']}")
     return selected
 
 
