@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -179,6 +180,22 @@ def _launch(spec: ProcessSpec) -> subprocess.Popen[bytes]:
     return subprocess.Popen(command, env=_child_env(spec))
 
 
+def _wait_tcp_ready(spec: ProcessSpec, timeout_seconds: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: OSError | None = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", spec.port), timeout=0.25):
+                return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.1)
+    raise RuntimeError(
+        f"rhen_process_not_ready:{spec.name}:{spec.port}:"
+        f"{type(last_error).__name__ if last_error else 'timeout'}"
+    )
+
+
 def _terminate(children: Mapping[str, subprocess.Popen[bytes]]) -> None:
     for process in children.values():
         if process.poll() is None:
@@ -215,8 +232,10 @@ def main() -> None:
     )
     for spec in ordered:
         children[spec.name] = _launch(spec)
-        if spec.name == "core":
-            time.sleep(1.5)
+        # The unified runtime is dependency ordered. Waiting for each local
+        # listener prevents Core-dependent services from failing their first
+        # readiness/gateway call during rolling deployment.
+        _wait_tcp_ready(spec)
 
     try:
         while not stopping:

@@ -23,7 +23,7 @@ NOW = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
 def test_nostra_contracts_are_deterministic_and_research_only():
     snapshot = build_snapshot(
         symbol="ETH/USD",
-        market_lane="crypto",
+        market_lane="us_equity",
         as_of_timestamp=NOW,
         feature_set_version="test-v1",
         raw_features={"x": 1.0},
@@ -32,7 +32,7 @@ def test_nostra_contracts_are_deterministic_and_research_only():
     forecast = build_forecast(
         snapshot_id=snapshot["snapshot_id"],
         symbol="ETH/USD",
-        market_lane="crypto",
+        market_lane="us_equity",
         as_of_timestamp=NOW,
         generated_at=NOW,
         horizon_minutes=10,
@@ -63,8 +63,8 @@ def test_nostra_ledger_fails_closed_without_foundation():
     ledger = NostraLedger(url="", token="")
     assert ledger.configured is False
     snapshot = build_snapshot(
-        symbol="BTC/USD",
-        market_lane="crypto",
+        symbol="AAPL",
+        market_lane="us_equity",
         as_of_timestamp=NOW,
         feature_set_version="test-v1",
         raw_features={},
@@ -148,15 +148,15 @@ class _FakeGateway:
 
 def _candidate():
     return {
-        "candidate_identity": "cycle-1:BTC/USD",
-        "symbol": "BTC/USD",
-        "market_lane": "crypto",
+        "candidate_identity": "cycle-1:AAPL",
+        "symbol": "AAPL",
+        "market_lane": "us_equity",
         "observed_at": NOW.isoformat(),
         "run_id": "run-1",
-        "strategy_version_id": "CRYPTO-TEST",
+        "strategy_version_id": "LIVE-TEST",
         "features": {
             "feature_state": {
-                "methodology_version": "crypto-features-v1",
+                "methodology_version": "equity-features-v1",
                 "raw": {
                     "momentum_return": 0.001,
                     "realized_volatility": 0.002,
@@ -174,7 +174,7 @@ def _candidate():
             "data_feed": "alpaca",
             "bar_interval": "1Min",
         },
-        "research_attribution": {"market": "crypto"},
+        "research_attribution": {"market": "us_equity"},
     }
 
 
@@ -197,7 +197,9 @@ def test_live_baseline_issues_truthful_research_only_return_forecast():
     assert result["forecasts_persisted"] == 1
     snapshot = ledger.snapshots[0][0]
     forecast = ledger.forecasts[0][0]
-    assert snapshot["provenance"]["candidate_identity"] == "cycle-1:BTC/USD"
+    assert snapshot["provenance"]["candidate_identity"] == "cycle-1:AAPL"
+    assert snapshot["market_lane"] == "us_equity"
+    assert forecast["market_lane"] == "us_equity"
     assert forecast["target_kind"] == "return"
     assert forecast["horizon_minutes"] == 10
     assert forecast["model_id"] == "zero_return"
@@ -220,8 +222,8 @@ def test_live_baseline_scores_only_gateway_matched_prior_forecast():
             "score_outcomes": [
                 {
                     "forecast_id": "nsf_prior",
-                    "candidate_identity": "cycle-1:BTC/USD",
-                    "symbol": "BTC/USD",
+                    "candidate_identity": "cycle-1:AAPL",
+                    "symbol": "AAPL",
                     "model_id": "zero_return",
                     "model_version": "nostra-baselines-v1",
                     "expected_return": 0.0,
@@ -229,7 +231,7 @@ def test_live_baseline_scores_only_gateway_matched_prior_forecast():
                     "realized_return": 0.01,
                     "max_favorable_return": "0.015",
                     "max_adverse_return": "-0.004",
-                    "outcome_methodology_version": "candidate-forward-crypto-v1",
+                    "outcome_methodology_version": "candidate-forward-equity-v1",
                 }
             ],
             "counts": {},
@@ -243,7 +245,7 @@ def test_live_baseline_scores_only_gateway_matched_prior_forecast():
     outcome = ledger.outcomes[0][0]
     score = ledger.scores[0][0]
     assert outcome["forecast_id"] == "nsf_prior"
-    assert outcome["realized_payload"]["candidate_identity"] == "cycle-1:BTC/USD"
+    assert outcome["realized_payload"]["candidate_identity"] == "cycle-1:AAPL"
     assert score["forecast_id"] == "nsf_prior"
     assert score["metrics"]["absolute_error"] == 0.01
     assert score["skill"]["absolute_error"] == 0.0
@@ -469,8 +471,8 @@ def test_live_runtime_scores_nonzero_model_against_zero_return_baseline():
             "score_outcomes": [
                 {
                     "forecast_id": "nsf_drift",
-                    "candidate_identity": "cycle-1:BTC/USD",
-                    "symbol": "BTC/USD",
+                    "candidate_identity": "cycle-1:AAPL",
+                    "symbol": "AAPL",
                     "model_id": "shrunken_drift",
                     "model_version": "nostra-shrunken-drift-v1",
                     "expected_return": 0.002,
@@ -478,7 +480,7 @@ def test_live_runtime_scores_nonzero_model_against_zero_return_baseline():
                     "realized_return": 0.01,
                     "max_favorable_return": "0.015",
                     "max_adverse_return": "-0.004",
-                    "outcome_methodology_version": "candidate-forward-crypto-v1",
+                    "outcome_methodology_version": "candidate-forward-equity-v1",
                 }
             ],
             "model_evaluations": [],

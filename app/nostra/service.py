@@ -251,10 +251,15 @@ class NostraRuntime:
         if not requested_models:
             requested_models = {zero_return_baseline()["baseline_id"]}
 
+        market_lane = str(candidate.get("market_lane") or "us_equity").strip().lower()
+        if market_lane in {"", "equities"}:
+            market_lane = "us_equity"
+        if market_lane not in {"us_equity", "us_equity_extended"}:
+            raise ValueError("unsupported_nostra_market_lane")
         feature_set_version = str(
             feature_state.get("methodology_version")
             or features.get("methodology_version")
-            or "crypto-candidate-point-in-time-v1"
+            or "rhen-equity-candidate-point-in-time-v1"
         )
         provenance = {
             "runtime_version": RUNTIME_VERSION,
@@ -273,7 +278,7 @@ class NostraRuntime:
 
         snapshot = build_snapshot(
             symbol=symbol,
-            market_lane="crypto",
+            market_lane=market_lane,
             as_of_timestamp=as_of,
             feature_set_version=feature_set_version,
             raw_features=raw_features,
@@ -297,7 +302,7 @@ class NostraRuntime:
             baseline_forecast = build_forecast(
                 snapshot_id=snapshot["snapshot_id"],
                 symbol=symbol,
-                market_lane="crypto",
+                market_lane=market_lane,
                 as_of_timestamp=as_of,
                 generated_at=generated_at,
                 horizon_minutes=LIVE_HORIZON_MINUTES,
@@ -329,7 +334,7 @@ class NostraRuntime:
             drift_forecast = build_forecast(
                 snapshot_id=snapshot["snapshot_id"],
                 symbol=symbol,
-                market_lane="crypto",
+                market_lane=market_lane,
                 as_of_timestamp=as_of,
                 generated_at=generated_at,
                 horizon_minutes=LIVE_HORIZON_MINUTES,
