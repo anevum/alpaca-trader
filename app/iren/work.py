@@ -333,7 +333,8 @@ def render_maintenance_prompt(
     ][:10]
     incidents = _open_incidents(control_state)[:12]
     topology = control_state.get("topology") or {}
-    services = topology.get("services") if isinstance(topology, dict) else []
+    topology = topology if isinstance(topology, dict) else {}
+    services = topology.get("services") or []
     services = services if isinstance(services, list) else []
     current = choose_next_action(snapshot, control_state)
     active_handoffs = codex.active_handoffs(snapshot)
