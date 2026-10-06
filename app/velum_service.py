@@ -831,12 +831,82 @@ async def graen_candidate_replay(
         )
     replay_chunk_days = 60 if fetch_timeframe == "4Hour" else None
     async with velum.run_lock:
+        progress_key = (
+            request.problem_id
+            + ":"
+            + str(request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id") or "unknown")
+            + ":"
+            + end.isoformat()
+        )
+        await velum._emit(
+            "velum_replay_progress",
+            {
+                "system": "VELUM",
+                "problem_id": request.problem_id,
+                "graen_run_id": request.graen_run_id,
+                "campaign_id": request.campaign_id,
+                "candidate_methodology": request.candidate_methodology,
+                "candidate_id": request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id"),
+                "phase": "FETCHING_CORPUS",
+                "status": "RUNNING",
+                "progress_pct": 15,
+                "replay_fetch_start": fetch_start.isoformat(),
+                "replay_fetch_end": fetch_end.isoformat(),
+                "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
+                "broker_orders_possible": False,
+                "execution_authority": False,
+            },
+            key_suffix=progress_key + ":fetching",
+        )
         bars, replay_fetch_chunks = await _fetch_candidate_replay_bars(
             replay_market_data,
             tuple(replay_symbols),
             start=fetch_start,
             end=fetch_end,
             chunk_days=replay_chunk_days,
+        )
+        bar_coverage = {
+            symbol: len(bars.get(symbol, []))
+            for symbol in replay_symbols
+        }
+        await velum._emit(
+            "velum_replay_progress",
+            {
+                "system": "VELUM",
+                "problem_id": request.problem_id,
+                "graen_run_id": request.graen_run_id,
+                "campaign_id": request.campaign_id,
+                "candidate_methodology": request.candidate_methodology,
+                "candidate_id": request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id"),
+                "phase": "CORPUS_READY",
+                "status": "RUNNING",
+                "progress_pct": 40,
+                "bar_coverage": bar_coverage,
+                "replay_fetch_chunks": replay_fetch_chunks,
+                "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
+                "broker_orders_possible": False,
+                "execution_authority": False,
+            },
+            key_suffix=progress_key + ":corpus-ready",
+        )
+        await velum._emit(
+            "velum_replay_progress",
+            {
+                "system": "VELUM",
+                "problem_id": request.problem_id,
+                "graen_run_id": request.graen_run_id,
+                "campaign_id": request.campaign_id,
+                "candidate_methodology": request.candidate_methodology,
+                "candidate_id": request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id"),
+                "phase": "REPLAYING",
+                "status": "RUNNING",
+                "progress_pct": 55,
+                "bar_coverage": bar_coverage,
+                "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
+                "broker_orders_possible": False,
+                "execution_authority": False,
+            },
+            key_suffix=progress_key + ":replaying",
         )
         result = await _run_blocking(
             replay_candidate,
@@ -855,16 +925,32 @@ async def graen_candidate_replay(
             "candidate_methodology": request.candidate_methodology,
             "epoch_index": request.epoch_index,
             "generation": request.generation,
-            "bar_coverage": {
-                symbol: len(bars.get(symbol, []))
-                for symbol in replay_symbols
-            },
+            "bar_coverage": bar_coverage,
             "replay_fetch_start": fetch_start.isoformat(),
             "replay_fetch_end": fetch_end.isoformat(),
             "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
             "replay_fetch_chunks": replay_fetch_chunks,
             "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         })
+        await velum._emit(
+            "velum_replay_progress",
+            {
+                "system": "VELUM",
+                "problem_id": request.problem_id,
+                "graen_run_id": request.graen_run_id,
+                "campaign_id": request.campaign_id,
+                "candidate_methodology": request.candidate_methodology,
+                "candidate_id": result.get("candidate_id"),
+                "phase": "PERSISTING_EVIDENCE",
+                "status": "RUNNING",
+                "progress_pct": 90,
+                "bar_coverage": bar_coverage,
+                "engineering_gate": result.get("engineering_gate"),
+                "broker_orders_possible": False,
+                "execution_authority": False,
+            },
+            key_suffix=progress_key + ":persisting",
+        )
         emitted = await velum._emit(
             "velum_graen_candidate_replay",
             result,
@@ -877,6 +963,26 @@ async def graen_candidate_replay(
             ),
         )
         result["evidence_emitted"] = emitted
+        await velum._emit(
+            "velum_replay_progress",
+            {
+                "system": "VELUM",
+                "problem_id": request.problem_id,
+                "graen_run_id": request.graen_run_id,
+                "campaign_id": request.campaign_id,
+                "candidate_methodology": request.candidate_methodology,
+                "candidate_id": result.get("candidate_id"),
+                "phase": "COMPLETE",
+                "status": "COMPLETED",
+                "progress_pct": 100,
+                "bar_coverage": bar_coverage,
+                "engineering_gate": result.get("engineering_gate"),
+                "evidence_emitted": emitted,
+                "broker_orders_possible": False,
+                "execution_authority": False,
+            },
+            key_suffix=progress_key + ":complete",
+        )
         if result["engineering_gate"]["passed"]:
             await velum._slack(
                 "*VELUM // GRAEN CANDIDATE REPLAY PASS*\n"
