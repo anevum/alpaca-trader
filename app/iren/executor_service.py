@@ -13,6 +13,8 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from .codex_handoff import LEGACY_REPOSITORY, repository_allowed
+
 UTC = timezone.utc
 
 
@@ -146,7 +148,7 @@ class ExecutorRuntime:
 
     @property
     def github_repo(self) -> str:
-        return os.getenv("IREN_GITHUB_REPOSITORY", "anevum/alpaca-trader").strip()
+        return os.getenv("IREN_GITHUB_REPOSITORY", LEGACY_REPOSITORY).strip()
 
     @property
     def base_branch(self) -> str:
@@ -191,7 +193,7 @@ class ExecutorRuntime:
             self.model_execution_authorized
             and self.openai_key.startswith("sk-")
             and len(self.github_token) >= 20
-            and self.github_repo == "anevum/alpaca-trader"
+            and repository_allowed(self.github_repo)
             and self.daily_budget_usd > 0
             and self.job_budget_usd > 0
             and self.job_budget_usd <= self.daily_budget_usd
@@ -739,7 +741,7 @@ async def runtime_inventory(
     _require_token(x_anevum_scheduler_token)
     from .codex_github import inspect_runtime_inventory
     unavailable_reason = None
-    if runtime.github_repo != "anevum/alpaca-trader":
+    if not repository_allowed(runtime.github_repo):
         unavailable_reason = "provider_repository_not_allowed"
     elif len(runtime.github_token) < 20:
         unavailable_reason = "provider_credentials_missing"
@@ -747,7 +749,11 @@ async def runtime_inventory(
     async def get(path):
         return await runtime._github_json("GET", path)
 
-    inventory = await inspect_runtime_inventory(get, unavailable_reason=unavailable_reason)
+    inventory = await inspect_runtime_inventory(
+        get,
+        unavailable_reason=unavailable_reason,
+        repository=runtime.github_repo,
+    )
     # HTTP 200 describes a usable inventory envelope, not healthy provider evidence.
     # Emit the same bounded records returned to the authenticated controller.
     print(json.dumps({
@@ -768,11 +774,17 @@ async def codex_github(
 ):
     _require_token(x_anevum_scheduler_token)
     from .codex_github import inspect_github
-    if runtime.github_repo != "anevum/alpaca-trader" or len(runtime.github_token) < 20:
+    if not repository_allowed(runtime.github_repo) or len(runtime.github_token) < 20:
         raise HTTPException(status_code=503, detail="github_evidence_unavailable")
     async def get(path):
         return await runtime._github_json("GET", path)
     try:
-        return await inspect_github(get, handoff_id=handoff_id, objective_key=objective_key, pr_number=pr_number)
+        return await inspect_github(
+            get,
+            handoff_id=handoff_id,
+            objective_key=objective_key,
+            pr_number=pr_number,
+            repository=runtime.github_repo,
+        )
     except (httpx.HTTPError, ValueError, KeyError):
         raise HTTPException(status_code=503, detail="github_evidence_unavailable")
