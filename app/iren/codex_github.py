@@ -23,14 +23,6 @@ PINNED_RUNTIME_STATUSES = {
         "environment_id": "63a64723-574d-497b-b01b-a9fef7ea78ab",
         "service_name": "rhen-velum",
     },
-    "CRYPTO_EDGE": {
-        "revision": "9628c08f0b7a065c580bd8779168f3ba526cb885",
-        "context": "RHEN - rhen-crypto-edge-discovery",
-        "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
-        "service_id": "4ed9d192-102c-4b66-8ed7-b9a650a064c5",
-        "environment_id": "63a64723-574d-497b-b01b-a9fef7ea78ab",
-        "service_name": "rhen-crypto-edge-discovery",
-    },
 }
 
 
