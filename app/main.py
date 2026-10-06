@@ -495,9 +495,70 @@ async def command_snapshot() -> dict:
     equity = Decimal(str(account.get("equity", "0")))
     last_equity = Decimal(str(account.get("last_equity", "0")))
     allocator = sizing_snapshot(settings, account, positions)
+    live_runtime = (
+        runtime_provenance.as_dict()
+        if runtime_provenance is not None
+        else {
+            "system": "RHEN",
+            "system_version": RHEN_VERSION,
+            "source": "runtime_not_started",
+            "runtime_instance_id": None,
+            "runtime_started_at": runtime_state.started_at.isoformat(),
+            "git_commit": None,
+            "deployment_id": None,
+            "metadata_quality": "partial",
+        }
+    )
+    live_runtime.update({
+        "run_id": settings.trading_run_id or None,
+        "strategy_version_id": settings.strategy_version_id or None,
+        "strategy_name": settings.strategy_name,
+        "trading_mode": settings.trading_mode,
+    })
+    latest_scan_at = runtime_state.last_strategy_at or runtime_state.last_poll_at
+    completed_scan = runtime_state.last_completed_scan or {}
+    live_telemetry = {
+        "latest_scan": {
+            "scan_cycle_id": runtime_state.current_correlation_id,
+            "observed_at": (
+                latest_scan_at.isoformat()
+                if latest_scan_at is not None
+                else None
+            ),
+            "cycle_outcome": runtime_state.last_decision,
+            "data_status": (
+                "ERROR"
+                if runtime_state.last_error
+                else "OBSERVED"
+                if latest_scan_at is not None
+                else "AWAITING_SCAN"
+            ),
+            "symbols_observed": len(completed_scan),
+            "qualified_candidates": sum(
+                1
+                for row in completed_scan.values()
+                if isinstance(row, dict)
+                and str(row.get("action") or "").lower() == "buy"
+            ),
+        },
+        "events_observed": len(runtime_state.decision_history),
+        "last_poll_at": (
+            runtime_state.last_poll_at.isoformat()
+            if runtime_state.last_poll_at is not None
+            else None
+        ),
+        "last_strategy_at": (
+            runtime_state.last_strategy_at.isoformat()
+            if runtime_state.last_strategy_at is not None
+            else None
+        ),
+        "last_error": runtime_state.last_error,
+    }
     return {
         "system": "RHEN",
         "observed_at": runtime_state.last_poll_at,
+        "runtime": live_runtime,
+        "telemetry": live_telemetry,
         "mode": settings.trading_mode,
         "market": {
             "is_open": bool(clock.get("is_open")),

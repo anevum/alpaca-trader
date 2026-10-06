@@ -1011,6 +1011,93 @@ def test_strategy_pipeline_terminal_btc_does_not_mask_active_graen(
     assert pipeline["release_gate"]["status"] == "HOLD"
 
 
+def test_command_research_tracking_exposes_canonical_runs_and_queue(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "app.graen.btc_discovery.projection",
+        lambda _store: {
+            "schema_version": "btc_discovery.v1",
+            "state": "EXHAUSTED",
+            "candidate": None,
+            "paper_candidate_id": None,
+            "paper_runtime": None,
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Cross-sectional crypto research",
+            "domain": "CRYPTO_STRATEGY",
+            "priority": 95,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    store.graen_action(
+        "queue_research_stage",
+        {
+            "problem_id": problem_id,
+            "stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
+            "metadata": {
+                "candidate_id": "CRYPTO-CROSS-ADAPTIVE-001",
+                "target_lane": "crypto",
+                "family": "cross_sectional",
+            },
+        },
+    )
+
+    queued = store.strategy_pipeline_research()
+    queued_observability = queued["research"]["observability"]
+    assert queued_observability["schema_version"] == "research_observability.v2"
+    assert queued_observability["authority"]["source"] == "rhen_core_sqlite"
+    assert any(
+        row["problem_id"] == problem_id
+        and row["system"] == "GRAEN"
+        and row["kind"] == "RESEARCH_QUEUE"
+        for row in queued_observability["runs"]
+    )
+
+    claimed = store.graen_action(
+        "claim_research_problem",
+        {
+            "worker_id": "graen-test",
+            "domain": "CRYPTO_STRATEGY",
+            "methodology_version": "cross-adaptive-v1",
+        },
+    )
+    run_id = claimed["run"]["run_id"]
+    store.graen_action(
+        "complete_research_problem",
+        {
+            "problem_id": problem_id,
+            "run_id": run_id,
+            "status": "WAITING",
+            "result_summary": {
+                "state": "COMPILED_CANDIDATE_REJECTED",
+                "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+                "candidate_count": 8,
+            },
+        },
+    )
+
+    pipeline = store.strategy_pipeline_research()
+    observability = pipeline["research"]["observability"]
+    matched = next(
+        row for row in observability["runs"] if row["run_id"] == run_id
+    )
+    assert matched["status"] == "WAITING"
+    assert matched["stage"]
+    assert matched["metrics"]["candidate_count"] == 8
+    assert any(
+        event["run_id"] == run_id and event["event_type"] == "graen_run"
+        for event in observability["events"]
+    )
+    assert pipeline["research"]["graen_runs"][0]["run_id"] == run_id
+
+
 def test_strategy_pipeline_active_btc_still_owns_primary_projection(
     tmp_path, monkeypatch
 ):
