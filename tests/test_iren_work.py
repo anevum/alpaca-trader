@@ -116,7 +116,7 @@ def test_maintenance_prompt_is_deterministic_read_only_and_grounded_in_iren_stat
         "focus on Command telemetry and keep trading behavior unchanged"
     )
     prompt = result.response["maintenance_prompt"]
-    assert "anevum/alpaca-trader" in prompt
+    assert "anevum/rhen" in prompt
     assert "anevum/anevum-web" in prompt
     assert "State: DEGRADED" in prompt
     assert "RHEN runtime | status=HEALTHY | ready=YES" in prompt
