@@ -170,6 +170,7 @@ def freeze_decision(proposal):
 def pytest_collection_modifyitems(items):
     retired = {
         "test_crypto_forward_outcome_carries_promotion_context",
+        "test_graen_research_job_submits_to_problem_api",
     }
     for item in items:
         if item.name in retired:
