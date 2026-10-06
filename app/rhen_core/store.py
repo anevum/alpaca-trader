@@ -8,7 +8,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
@@ -560,16 +560,380 @@ class RhenCoreStore:
             return self._shadow_checkpoint(body)
         if action == "crypto_promotion_status":
             return self._crypto_promotion_status(body)
-        if action in {"research_promotion_claim", "research_promotion_save"}:
-            return {
-                "ok": True,
-                "claimed": False,
-                "status": "MIGRATION_GATED",
-                "reason": "research_code_promotion_paused_during_core_v3_cutover",
-                "execution_authority": False,
-                "live_execution_authorized": False,
-            }
+        if action == "research_promotion_claim":
+            return self._research_promotion_claim(body)
+        if action == "research_promotion_save":
+            return self._research_promotion_save(body)
+        if action == "claim_adaptive_research_problem":
+            return self._graen_claim_adaptive(body)
         raise ValueError("invalid_action")
+
+    @staticmethod
+    def _valid_uuid(value: Any, error: str) -> str:
+        try:
+            return str(UUID(str(value)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(error) from exc
+
+    def _research_promotion_claim(
+        self, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        problem_id = self._valid_uuid(
+            body.get("problem_id"), "invalid_promotion_identity"
+        )
+        owner = self._valid_uuid(
+            body.get("owner"), "invalid_promotion_identity"
+        )
+        now = datetime.now(UTC)
+        with self._lock, self.connect() as conn:
+            row = conn.execute(
+                """select status,metadata_json from graen_problems
+                where problem_id=?""",
+                (problem_id,),
+            ).fetchone()
+            if row is None or row["status"] not in {"WAITING", "BLOCKED"}:
+                return {"ok": True, "claimed": False}
+
+            metadata = _loads(row["metadata_json"], {})
+            state = dict(metadata.get("code_promotion") or {})
+            lease = dict(metadata.get("code_promotion_lease") or {})
+            if state.get("phase") == "COMPLETE":
+                return {"ok": True, "claimed": False}
+
+            until = lease.get("until")
+            if until:
+                try:
+                    lease_until = datetime.fromisoformat(
+                        str(until).replace("Z", "+00:00")
+                    )
+                    if lease_until.tzinfo is None:
+                        lease_until = lease_until.replace(tzinfo=UTC)
+                    if lease_until.astimezone(UTC) > now:
+                        return {"ok": True, "claimed": False}
+                except ValueError:
+                    pass
+
+            revision = int(metadata.get("code_promotion_revision") or 0)
+            prespec = dict(
+                state.get("prespec")
+                or metadata.get("research_implementation_spec")
+                or {}
+            )
+            exposure: dict[str, Any] = {}
+            exposure_id = str(prespec.get("exposure_artifact_id") or "")
+            if exposure_id:
+                artifact = conn.execute(
+                    """select * from graen_artifacts
+                    where artifact_id=? and problem_id=?
+                      and artifact_type='RESEARCH_CORPUS_EXPOSURE_LEDGER'""",
+                    (exposure_id, problem_id),
+                ).fetchone()
+                if artifact is not None:
+                    exposure = {
+                        **_loads(artifact["content_json"], {}),
+                        "artifact_id": artifact["artifact_id"],
+                    }
+
+            runtime_row = conn.execute(
+                """select value_json from kv_state
+                where namespace='graen' and key='runtime'"""
+            ).fetchone()
+            executor = (
+                _loads(runtime_row["value_json"], {})
+                if runtime_row is not None
+                else {}
+            )
+            metadata["code_promotion_lease"] = {
+                "owner": owner,
+                "until": (now + timedelta(minutes=5)).isoformat(),
+            }
+            conn.execute(
+                """update graen_problems
+                set metadata_json=?,updated_at=? where problem_id=?""",
+                (_json(metadata), now.isoformat(), problem_id),
+            )
+            conn.commit()
+
+        return {
+            "ok": True,
+            "claimed": True,
+            "revision": revision,
+            "state": state,
+            "prespec": prespec,
+            "exposure": exposure,
+            "prespec_artifact_id": metadata.get("code_prespec_artifact_id"),
+            "executor_heartbeat": executor,
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+
+    def _research_promotion_save(
+        self, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        problem_id = self._valid_uuid(
+            body.get("problem_id"), "invalid_promotion_state"
+        )
+        owner = self._valid_uuid(body.get("owner"), "invalid_promotion_state")
+        try:
+            expected = int(body.get("expected_revision"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid_promotion_state") from exc
+        state = dict(body.get("state") or {})
+        if len(_json(state)) > 100000:
+            raise ValueError("invalid_promotion_state")
+
+        now = datetime.now(UTC)
+        with self._lock, self.connect() as conn:
+            row = conn.execute(
+                """select status,metadata_json from graen_problems
+                where problem_id=?""",
+                (problem_id,),
+            ).fetchone()
+            if row is None or row["status"] not in {"WAITING", "BLOCKED"}:
+                raise ValueError("promotion_problem_not_idle")
+
+            metadata = _loads(row["metadata_json"], {})
+            previous = dict(metadata.get("code_promotion") or {})
+            lease = dict(metadata.get("code_promotion_lease") or {})
+            try:
+                lease_until = datetime.fromisoformat(
+                    str(lease.get("until") or "").replace("Z", "+00:00")
+                )
+                if lease_until.tzinfo is None:
+                    lease_until = lease_until.replace(tzinfo=UTC)
+            except ValueError as exc:
+                raise ValueError(
+                    "promotion_lease_or_revision_conflict"
+                ) from exc
+
+            if (
+                str(lease.get("owner")) != owner
+                or int(metadata.get("code_promotion_revision") or 0) != expected
+                or lease_until.astimezone(UTC) <= now
+            ):
+                raise ValueError("promotion_lease_or_revision_conflict")
+
+            if previous.get("spec_hash") and (
+                previous.get("spec_hash") != state.get("spec_hash")
+                or previous.get("prespec") != state.get("prespec")
+            ):
+                raise ValueError("immutable_prespec_changed")
+
+            prespec_id = metadata.get("code_prespec_artifact_id")
+            if state.get("prespec") and not prespec_id:
+                spec_hash = str(state.get("spec_hash") or "")
+                if state.get("phase") != "BRANCH" or len(spec_hash) != 64:
+                    raise ValueError("prespec_must_be_frozen_before_branch")
+                content = {
+                    "specification": state["prespec"],
+                    "specification_hash": spec_hash,
+                }
+                artifact_key = (
+                    f"{problem_id}:research-code-prespec:{spec_hash}"
+                )
+                existing = conn.execute(
+                    """select artifact_id from graen_artifacts
+                    where artifact_key=?""",
+                    (artifact_key,),
+                ).fetchone()
+                if existing is None:
+                    prespec_id = str(uuid4())
+                    conn.execute(
+                        """insert into graen_artifacts(
+                            artifact_id,artifact_key,problem_id,run_id,
+                            artifact_type,methodology_version,source_commit,
+                            content_hash,content_json,created_at
+                        ) values(?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            prespec_id,
+                            artifact_key,
+                            problem_id,
+                            None,
+                            "RESEARCH_CODE_FROZEN_PRESPEC",
+                            "graen.research-code-promotion.v1",
+                            None,
+                            _hash(content),
+                            _json(content),
+                            now.isoformat(),
+                        ),
+                    )
+                else:
+                    prespec_id = existing["artifact_id"]
+
+            if state.get("phase") == "COMPLETE":
+                if (
+                    previous.get("phase") != "RESUME"
+                    or state.get("resume_stage")
+                    != "CRYPTO_COMPILED_DEVELOPMENT"
+                    or not state.get("merge_sha")
+                    or not state.get("deployment_id")
+                    or not state.get("executor_heartbeat_at")
+                    or not isinstance(state.get("ci"), list)
+                    or not state.get("ci")
+                    or not prespec_id
+                ):
+                    raise ValueError(
+                        "verified_deployment_required_before_resume"
+                    )
+                active = conn.execute(
+                    """select 1 from graen_runs
+                    where problem_id=? and status='RUNNING' limit 1""",
+                    (problem_id,),
+                ).fetchone()
+                if active is not None:
+                    raise ValueError(
+                        "active_research_run_prevents_resume"
+                    )
+
+            if previous == state:
+                metadata["code_promotion_lease"] = {}
+                conn.execute(
+                    """update graen_problems
+                    set metadata_json=?,updated_at=? where problem_id=?""",
+                    (_json(metadata), now.isoformat(), problem_id),
+                )
+                conn.commit()
+                return {
+                    "ok": True,
+                    "revision": expected,
+                    "prespec_artifact_id": prespec_id,
+                }
+
+            revision = expected + 1
+            metadata.update(
+                {
+                    "code_promotion": state,
+                    "code_promotion_revision": revision,
+                    "code_prespec_artifact_id": prespec_id,
+                    "code_promotion_lease": {},
+                }
+            )
+            if state.get("phase") == "COMPLETE":
+                metadata["research_stage"] = (
+                    "CRYPTO_COMPILED_DEVELOPMENT"
+                )
+                metadata["compiled_specification_hash"] = state.get(
+                    "spec_hash"
+                )
+
+            event = {
+                "revision": revision,
+                **state,
+                "prespec_artifact_id": prespec_id,
+            }
+            artifact_key = (
+                f"{problem_id}:research-code-event:{revision}"
+            )
+            conn.execute(
+                """insert or ignore into graen_artifacts(
+                    artifact_id,artifact_key,problem_id,run_id,
+                    artifact_type,methodology_version,source_commit,
+                    content_hash,content_json,created_at
+                ) values(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(uuid4()),
+                    artifact_key,
+                    problem_id,
+                    None,
+                    "RESEARCH_CODE_PROMOTION_EVENT",
+                    "graen.research-code-promotion.v1",
+                    None,
+                    _hash(event),
+                    _json(event),
+                    now.isoformat(),
+                ),
+            )
+            conn.execute(
+                """update graen_problems
+                set metadata_json=?,updated_at=? where problem_id=?""",
+                (_json(metadata), now.isoformat(), problem_id),
+            )
+            conn.commit()
+
+        return {
+            "ok": True,
+            "revision": revision,
+            "prespec_artifact_id": prespec_id,
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+
+    def _graen_claim_adaptive(
+        self, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        domain = str(body.get("domain") or "")
+        worker = str(body.get("worker_id") or "graen-adaptive")
+        allowed = {
+            "CRYPTO_COMPILED_DEVELOPMENT",
+            "CRYPTO_COMPILED_VALIDATION",
+            "CRYPTO_COMPILED_HOLDOUT",
+        }
+        with self._lock, self.connect() as conn:
+            rows = conn.execute(
+                """select * from graen_problems
+                where status in ('QUEUED','WAITING') and domain=?
+                order by priority desc,created_at""",
+                (domain,),
+            ).fetchall()
+            selected = None
+            for candidate in rows:
+                metadata = _loads(candidate["metadata_json"], {})
+                promotion = dict(metadata.get("code_promotion") or {})
+                if (
+                    str(metadata.get("research_stage") or "") in allowed
+                    and promotion.get("phase") == "COMPLETE"
+                ):
+                    selected = candidate
+                    break
+            if selected is None:
+                return {
+                    "ok": True,
+                    "problem": None,
+                    "run": None,
+                    "execution_authority": False,
+                }
+
+            now_text = _iso()
+            conn.execute(
+                """update graen_problems
+                set status='RUNNING',
+                    started_at=coalesce(started_at,?),
+                    updated_at=? where problem_id=?""",
+                (now_text, now_text, selected["problem_id"]),
+            )
+            run_id = str(uuid4())
+            conn.execute(
+                """insert into graen_runs(
+                    run_id,problem_id,worker_id,runtime_version,
+                    methodology_version,status,source_commit,deployment_id,
+                    started_at
+                ) values(?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    selected["problem_id"],
+                    worker,
+                    body.get("runtime_version"),
+                    body.get("methodology_version"),
+                    "RUNNING",
+                    body.get("source_commit"),
+                    body.get("deployment_id"),
+                    now_text,
+                ),
+            )
+            runrow = conn.execute(
+                "select * from graen_runs where run_id=?",
+                (run_id,),
+            ).fetchone()
+            conn.commit()
+
+        problem = self._problem(selected)
+        problem["status"] = "RUNNING"
+        return {
+            "ok": True,
+            "problem": problem,
+            "run": self._run(runrow),
+            "execution_authority": False,
+        }
 
     def _graen_create_problem(
         self, body: dict[str, Any]
