@@ -9,6 +9,8 @@ import pytest
 
 from app.graen.adaptive_hypothesis import (
     MAX_GENERATIONS,
+    PROGRAM_ID,
+    SUPERSEDES_PROGRAM_ID,
     build_spec,
     conservative_exposure_ledger,
 )
@@ -28,7 +30,7 @@ def _adaptive_problem(store: RhenCoreStore, now: datetime):
             "statement": "adaptive fixture",
             "domain": "CRYPTO_STRATEGY_RESEARCH",
             "priority": 96,
-            "metadata": {"adaptive_program_id": "GRAEN-ADAPTIVE-FLOW-V1"},
+            "metadata": {"adaptive_program_id": PROGRAM_ID},
         },
     )
     problem_id = created["problem"]["problem_id"]
@@ -61,6 +63,10 @@ def test_adaptive_spec_uses_future_sealed_confirmatory_windows():
         search_history=["fresh"],
         now=now,
     )
+
+    assert spec["mechanism"] == "cross_sectional_intraday_v1"
+    assert spec["hypothesis_id"].startswith("CRYPTO-CROSS-ADAPTIVE-")
+    assert spec["execution_authority"] is False
 
     validation_start = datetime.fromisoformat(
         spec["corpus"]["validation"][0]
@@ -317,3 +323,76 @@ def test_adaptive_velum_stage_claims_after_holdout_gate_without_new_time_window(
         == "CRYPTO_COMPILED_VELUM"
     )
     assert claimed["run"]["status"] == "RUNNING"
+
+
+
+def test_v2_ignores_exhausted_v1_and_creates_new_program():
+    async def run():
+        now = datetime(2026, 10, 6, 8, 0, tzinfo=UTC)
+        old = {
+            "problem_id": str(uuid4()),
+            "status": "WAITING",
+            "metadata": {
+                "adaptive_program_id": SUPERSEDES_PROGRAM_ID,
+                "adaptive_generation": 16,
+                "research_stage": "ADAPTIVE_PROGRAM_EXHAUSTED",
+            },
+        }
+        created_problem = {
+            "problem_id": str(uuid4()),
+            "status": "WAITING",
+            "metadata": {
+                "adaptive_program_id": PROGRAM_ID,
+                "adaptive_generation": 0,
+                "research_stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
+            },
+        }
+
+        class Gateway:
+            def __init__(self):
+                self.created = []
+                self.queued = []
+
+            async def create_problem(self, body):
+                self.created.append(body)
+                return {"problem": created_problem}
+
+            async def snapshot(self):
+                return {"problems": [old]}
+
+            async def record_artifact(self, **body):
+                return {"artifact": {"artifact_id": str(uuid4())}}
+
+            async def queue_research_stage(self, **body):
+                self.queued.append(body)
+                return {
+                    "problem": {
+                        **created_problem,
+                        "metadata": {
+                            **created_problem["metadata"],
+                            **body["metadata"],
+                            "research_stage": body["stage"],
+                        },
+                    }
+                }
+
+        runtime = object.__new__(GraenResearchExecutor)
+        runtime.gateway = Gateway()
+        problem, generated = await runtime._ensure_adaptive_hypothesis(
+            {"problems": [old], "runs": []}
+        )
+
+        assert runtime.gateway.created
+        body = runtime.gateway.created[0]
+        assert body["metadata"]["adaptive_program_id"] == PROGRAM_ID
+        assert (
+            body["metadata"]["supersedes_adaptive_program_id"]
+            == SUPERSEDES_PROGRAM_ID
+        )
+        assert problem["metadata"]["adaptive_program_id"] == PROGRAM_ID
+        assert generated["status"] == "FROZEN"
+        assert generated["hypothesis_id"].startswith(
+            "CRYPTO-CROSS-ADAPTIVE-"
+        )
+
+    asyncio.run(run())
