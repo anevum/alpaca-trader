@@ -16,6 +16,33 @@ TRIGGERS = frozenset({
 })
 MAX_ATTEMPTS = 3
 
+MECHANISM_EVALUATORS = {
+    "bar_flow_pressure_v1": "graen.crypto.flow_pressure",
+    "cross_sectional_intraday_v1": "graen.crypto.cross_sectional_intraday",
+}
+MECHANISM_METHODOLOGIES = {
+    "bar_flow_pressure_v1": "graen-crypto-flow-pressure-v1",
+    "cross_sectional_intraday_v1": "graen-crypto-cross-sectional-intraday-v1",
+}
+
+
+def evaluator_module_for_mechanism(mechanism):
+    try:
+        return MECHANISM_EVALUATORS[str(mechanism)]
+    except KeyError as exc:
+        raise IntegrityError(
+            "unsupported_mechanism_requires_new_trusted_compiler"
+        ) from exc
+
+
+def methodology_for_mechanism(mechanism):
+    try:
+        return MECHANISM_METHODOLOGIES[str(mechanism)]
+    except KeyError as exc:
+        raise IntegrityError(
+            "unsupported_mechanism_requires_new_trusted_compiler"
+        ) from exc
+
 
 class IntegrityError(ValueError):
     pass
@@ -54,27 +81,53 @@ def validate_spec(spec):
         raise IntegrityError("epoch_required")
     if spec["research_only"] is not True or spec["execution_authority"] is not False:
         raise ProtectedChange("execution_authority_forbidden")
-    if spec["mechanism"] != "bar_flow_pressure_v1":
-        raise IntegrityError("unsupported_mechanism_requires_new_trusted_compiler")
+    mechanism = str(spec["mechanism"])
+    evaluator_module_for_mechanism(mechanism)
     if spec["universe"] != ["BTC/USD", "ETH/USD", "SOL/USD"]:
         raise IntegrityError("universe_changed")
     params = spec["parameters"]
-    ranges = {
-        "lookback_bars": (36, 288), "volume_z": (0.5, 5),
-        "trade_count_z": (0.5, 5), "range_ratio": (1, 5),
-        "body_strength": (0.5, 1), "close_location": (0.5, 1),
-        "hold_minutes": (5, 120), "cooldown_minutes": (5, 240),
-    }
+    if mechanism == "bar_flow_pressure_v1":
+        ranges = {
+            "lookback_bars": (36, 288), "volume_z": (0.5, 5),
+            "trade_count_z": (0.5, 5), "range_ratio": (1, 5),
+            "body_strength": (0.5, 1), "close_location": (0.5, 1),
+            "hold_minutes": (5, 120), "cooldown_minutes": (5, 240),
+        }
+        integer_parameters = {
+            "lookback_bars", "hold_minutes", "cooldown_minutes"
+        }
+    else:
+        ranges = {
+            "momentum_5m_min": (0.0, 0.02),
+            "momentum_15m_min": (0.0, 0.04),
+            "momentum_60m_floor": (-0.05, 0.05),
+            "max_vwap_extension_pct": (0.001, 0.05),
+            "min_expected_move_pct": (0.001, 0.05),
+            "hold_minutes": (5, 120),
+            "cooldown_minutes": (5, 240),
+            "rank_top_n": (1, 2),
+        }
+        integer_parameters = {
+            "hold_minutes", "cooldown_minutes", "rank_top_n"
+        }
     if set(params) != set(ranges):
         raise IntegrityError("complete_parameters_required")
     for key, (low, high) in ranges.items():
         value = params[key]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not low <= value <= high
+        ):
             raise IntegrityError("invalid_parameter:" + key)
-    for key in ("lookback_bars", "hold_minutes", "cooldown_minutes"):
+    for key in integer_parameters:
         if not isinstance(params[key], int):
             raise IntegrityError("integer_parameter_required:" + key)
-    if params["hold_minutes"] % 5 or params["cooldown_minutes"] < params["hold_minutes"]:
+    if (
+        params["hold_minutes"] % 5
+        or params["cooldown_minutes"] % 5
+        or params["cooldown_minutes"] < params["hold_minutes"]
+    ):
         raise IntegrityError("invalid_holding_contract")
     if spec["gates"] != {
         "policy": "activity_shock_v9_frozen_gates",
@@ -149,9 +202,10 @@ def compile_bundle(spec):
     spec_path = "research/crypto/prespecs/" + slug + ".json"
     test_path = "tests/test_generated_" + slug + ".py"
     literal = repr(json.loads(canonical(spec)))
+    evaluator_module = evaluator_module_for_mechanism(spec["mechanism"])
     module = (
         '"""Generated research hypothesis; no execution authority."""\n'
-        "from graen.crypto.flow_pressure import evaluate_stage\n\n"
+        "from " + evaluator_module + " import evaluate_stage\n\n"
         "SPEC = " + literal + "\n"
         "SPEC_HASH = " + repr(spec_hash) + "\n\n"
         "def evaluate(bars, *, stage, predecessor=None):\n"
