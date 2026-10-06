@@ -258,6 +258,187 @@ class CryptoRollingMomentumStrategy(RollingMomentumVwapStrategy):
         )
 
 
+
+class CryptoCrossSectionalPaperStrategy(CryptoRollingMomentumStrategy):
+    """Paper-only cross-sectional crypto opportunity strategy.
+
+    This candidate is intentionally not a promoted live strategy. It creates
+    evidence across the dynamic USD crypto universe using short-horizon
+    momentum, range, VWAP location, and later execution-quality ranking in the
+    execution layer. Universal BTC/ETH confirmation is deliberately not part of
+    this candidate; every symbol is evaluated on its own completed-bar state.
+    """
+
+    strategy_family = "cross_sectional_intraday_paper"
+    timeframe = "1Min"
+
+    def evaluate(
+        self,
+        bars: list[dict[str, Any]],
+        confirmation_bars: dict[str, list[dict[str, Any]]],
+        symbol: str,
+        has_position: bool,
+        order_notional: Decimal,
+        now: datetime | None = None,
+    ) -> Signal:
+        now = (now or datetime.now(NY)).astimezone(NY)
+        symbol = symbol.upper()
+        if has_position:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="crypto position already open; exit layer manages risk",
+                metadata={
+                    "market": "crypto",
+                    "market_lane": "crypto",
+                    "session_model": "24x7",
+                    "strategy_family": self.strategy_family,
+                    "strategy_version_id": self.strategy_version_id,
+                },
+            )
+
+        session = self._completed_session_bars(bars, now)
+        if len(session) < 61:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="not enough completed crypto bars for cross-sectional candidate",
+                metadata={
+                    "market": "crypto",
+                    "market_lane": "crypto",
+                    "session_model": "24x7",
+                    "strategy_family": self.strategy_family,
+                    "strategy_version_id": self.strategy_version_id,
+                },
+            )
+
+        closes = [self._d(bar["c"]) for bar in session]
+        current_close = closes[-1]
+        previous_close = closes[-2]
+        if current_close <= 0:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="invalid crypto reference price",
+            )
+
+        def _ret(minutes: int) -> Decimal:
+            anchor = closes[-(minutes + 1)]
+            return (
+                (current_close - anchor) / anchor
+                if anchor > 0
+                else Decimal("0")
+            )
+
+        return_5m = _ret(5)
+        return_15m = _ret(15)
+        return_60m = _ret(60)
+        rolling_vwap = self._vwap(session[-60:])
+        vwap_edge_pct = (
+            (current_close - rolling_vwap) / rolling_vwap
+            if rolling_vwap > 0
+            else Decimal("0")
+        )
+        recent_high = max(
+            (self._d(bar.get("h")) for bar in session[-60:]),
+            default=current_close,
+        )
+        recent_low = min(
+            (self._d(bar.get("l")) for bar in session[-60:]),
+            default=current_close,
+        )
+        range_60m_pct = (
+            (recent_high - recent_low) / current_close
+            if current_close > 0
+            else Decimal("0")
+        )
+        expected_gross_move_pct = max(
+            return_15m if return_15m > 0 else Decimal("0"),
+            range_60m_pct * Decimal("0.50"),
+        )
+        opportunity_score = (
+            return_5m * Decimal("0.40")
+            + return_15m * Decimal("0.30")
+            + max(return_60m, Decimal("0")) * Decimal("0.15")
+            + range_60m_pct * Decimal("0.15")
+        )
+
+        checks = {
+            "rising": current_close > previous_close,
+            "momentum_5m_ok": return_5m >= self.min_momentum_pct,
+            "momentum_15m_positive": return_15m > 0,
+            "hour_not_deeply_negative": return_60m >= Decimal("-0.005"),
+            "above_vwap": rolling_vwap > 0 and current_close > rolling_vwap,
+            "vwap_extension_ok": vwap_edge_pct <= self.max_vwap_extension_pct,
+            "expected_move_reaches_target": expected_gross_move_pct >= self.target_pct,
+        }
+        metadata: dict[str, Any] = {
+            "market": "crypto",
+            "market_lane": "crypto",
+            "session_model": "24x7",
+            "strategy_family": self.strategy_family,
+            "strategy_version_id": self.strategy_version_id,
+            "model_version": self.model_version,
+            "calibration_version": self.calibration_version,
+            "regime_version": self.regime_version,
+            "execution_adapter_version": self.execution_adapter_version,
+            "paper_candidate": True,
+            "bar_time": self._timestamp(session[-1]).isoformat(),
+            "current_close": str(current_close),
+            "rolling_vwap": str(rolling_vwap),
+            "vwap_edge_pct": str(vwap_edge_pct),
+            "return_5m": str(return_5m),
+            "return_15m": str(return_15m),
+            "return_60m": str(return_60m),
+            "range_60m_pct": str(range_60m_pct),
+            "expected_gross_move_pct": str(expected_gross_move_pct),
+            "opportunity_score": str(opportunity_score),
+            "checks": checks,
+        }
+
+        failures = [
+            ("rising", "latest completed crypto bar is not rising"),
+            ("momentum_5m_ok", "5-minute crypto momentum is below threshold"),
+            ("momentum_15m_positive", "15-minute crypto momentum is not positive"),
+            ("hour_not_deeply_negative", "60-minute crypto trend is too negative"),
+            ("above_vwap", "crypto price is not above 60-minute rolling VWAP"),
+            ("vwap_extension_ok", "crypto price is too extended above rolling VWAP"),
+            (
+                "expected_move_reaches_target",
+                "estimated short-horizon move is below configured gross target",
+            ),
+        ]
+        for key, reason in failures:
+            if not checks[key]:
+                return Signal(
+                    action="hold",
+                    symbol=symbol,
+                    reason=reason,
+                    metadata=metadata,
+                )
+
+        stop_price = self._crypto_price(
+            current_close * (Decimal("1") - self.stop_pct)
+        )
+        target_price = self._crypto_price(
+            current_close * (Decimal("1") + self.target_pct)
+        )
+        metadata["effective_stop_pct"] = str(self.stop_pct)
+        metadata["stop_model"] = "fixed_paper_candidate"
+        metadata["stop_price"] = str(stop_price)
+        metadata["take_profit_price"] = str(target_price)
+        return Signal(
+            action="buy",
+            symbol=symbol,
+            notional=order_notional,
+            reference_price=current_close,
+            stop_price=stop_price,
+            take_profit_price=target_price,
+            reason="cross-sectional paper candidate passed short-horizon opportunity gates",
+            metadata=metadata,
+        )
+
+
 def enrich_crypto_signal_market_state(
     signal: Signal,
     *,
