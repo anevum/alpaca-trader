@@ -368,9 +368,27 @@ class RhenCoreStore:
         shadow_admit_count = 0
         shadow_candidate_count = 0
         shadow_methodology_version: str | None = None
+        forward_measurement_ready_count = 0
+        forward_missing_reference_price_count = 0
+        forward_missing_bar_time_count = 0
+        evidence_reference_only_count = 0
         for candidate in candidates:
             features = candidate.get("features")
             features = features if isinstance(features, dict) else {}
+            reference_price = numeric(candidate.get("decision_reference_price"))
+            has_reference_price = (
+                reference_price is not None and reference_price > 0
+            )
+            has_bar_time = bool(str(features.get("bar_time") or "").strip())
+            if not has_reference_price:
+                forward_missing_reference_price_count += 1
+            if not has_bar_time:
+                forward_missing_bar_time_count += 1
+            if has_reference_price and has_bar_time:
+                forward_measurement_ready_count += 1
+            if features.get("evidence_reference_only") is True:
+                evidence_reference_only_count += 1
+
             score = numeric(features.get("opportunity_score"))
             if score is not None:
                 opportunity_scores.append(score)
@@ -401,6 +419,24 @@ class RhenCoreStore:
                 admission = admission if isinstance(admission, dict) else {}
                 if admission.get("would_admit") is True:
                     shadow_admit_count += 1
+        if candidates:
+            summary["forward_measurement_ready_count"] = (
+                forward_measurement_ready_count
+            )
+            summary["forward_measurement_ready_rate_pct"] = round(
+                forward_measurement_ready_count / len(candidates) * 100.0,
+                4,
+            )
+            summary["forward_missing_reference_price_count"] = (
+                forward_missing_reference_price_count
+            )
+            summary["forward_missing_bar_time_count"] = (
+                forward_missing_bar_time_count
+            )
+            summary["evidence_reference_only_count"] = (
+                evidence_reference_only_count
+            )
+
         if opportunity_scores:
             summary["top_opportunity_score"] = max(opportunity_scores)
         if net_edges:
