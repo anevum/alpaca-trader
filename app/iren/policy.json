@@ -67,7 +67,8 @@
       "id": "CRYPTO_EDGE",
       "url_env": "IREN_CRYPTO_EDGE_HEALTH_URL",
       "default_url": "http://rhen-crypto-edge-discovery.railway.internal:8080/health",
-      "inventory_only": true
+      "inventory_only": true,
+      "required_inventory": false
     },
     {
       "id": "IREN_EXECUTOR",

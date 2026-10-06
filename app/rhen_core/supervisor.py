@@ -40,6 +40,7 @@ PROCESSES = (
         "graen.crypto.service_v6:app",
         8112,
         market_data_credentials=True,
+        enabled_env="CRYPTO_RESEARCH_ENABLED",
     ),
     ProcessSpec(
         "velum",

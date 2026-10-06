@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 from app.rhen_core.store import RhenCoreStore
-from app.rhen_core.supervisor import ProcessSpec, _child_env
+from app.rhen_core.supervisor import PROCESSES, ProcessSpec, _child_env
 from app.rhen_core.router import enabled_modules
 
 
@@ -905,13 +905,23 @@ def test_iren_work_queue_rejects_blank_command(tmp_path, monkeypatch):
 def test_router_excludes_disabled_optional_modules(monkeypatch):
     monkeypatch.delenv("IREN_EXECUTOR_ENABLED", raising=False)
     monkeypatch.delenv("PREOPEN_STATE_ENABLED", raising=False)
+    monkeypatch.delenv("CRYPTO_RESEARCH_ENABLED", raising=False)
     active = enabled_modules()
     assert "iren_executor" not in active
     assert "preopen" not in active
-    assert {"iren", "graen_research", "crypto_research"} <= set(active)
+    assert "crypto_research" not in active
+    assert {"iren", "graen_research"} <= set(active)
 
     monkeypatch.setenv("PREOPEN_STATE_ENABLED", "true")
-    assert "preopen" in enabled_modules()
+    monkeypatch.setenv("CRYPTO_RESEARCH_ENABLED", "true")
+    active = enabled_modules()
+    assert "preopen" in active
+    assert "crypto_research" in active
+
+
+def test_crypto_research_process_is_disabled_by_default():
+    crypto = next(spec for spec in PROCESSES if spec.name == "crypto-research")
+    assert crypto.enabled_env == "CRYPTO_RESEARCH_ENABLED"
 
 
 

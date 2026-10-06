@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
-OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR"}
+OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "CRYPTO_EDGE"}
 
 INVENTORY = {
     "RHEN": ("SERVICE", "alpaca-trader", "Live execution; protected trading runtime"),

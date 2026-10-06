@@ -447,11 +447,11 @@ class RhenCoreStore:
     def prune(self, now: datetime | None = None) -> dict[str, int]:
         now = now or datetime.now(UTC)
         cuts = {
-            "events": (now - timedelta(days=30)).isoformat(),
+            "events": (now - timedelta(days=14)).isoformat(),
             "cycles": (now - timedelta(days=7)).isoformat(),
-            "positions": (now - timedelta(days=14)).isoformat(),
+            "positions": (now - timedelta(days=7)).isoformat(),
             "candidates": (now - timedelta(days=7)).isoformat(),
-            "nostra": (now - timedelta(days=30)).isoformat(),
+            "nostra": (now - timedelta(days=14)).isoformat(),
             "scheduler": (now - timedelta(days=30)).isoformat(),
         }
         deleted: dict[str, int] = {}
@@ -491,6 +491,43 @@ class RhenCoreStore:
                 (cuts["scheduler"],),
             )
             deleted["scheduler_runs"] = cur.rowcount
+            cur = conn.execute(
+                """delete from research_runs
+                where rowid not in (
+                    select rowid from research_runs
+                    order by created_at desc
+                    limit 500
+                )"""
+            )
+            deleted["research_runs"] = cur.rowcount
+            cur = conn.execute(
+                """delete from research_ledgers
+                where rowid not in (
+                    select rowid from research_ledgers
+                    order by created_at desc
+                    limit 1000
+                )"""
+            )
+            deleted["research_ledgers"] = cur.rowcount
+            cur = conn.execute(
+                """delete from graen_runs
+                where status not in ('RUNNING','QUEUED')
+                  and rowid not in (
+                      select rowid from graen_runs
+                      order by started_at desc
+                      limit 1000
+                  )"""
+            )
+            deleted["graen_runs"] = cur.rowcount
+            cur = conn.execute(
+                """delete from graen_artifacts
+                where rowid not in (
+                    select rowid from graen_artifacts
+                    order by created_at desc
+                    limit 2000
+                )"""
+            )
+            deleted["graen_artifacts"] = cur.rowcount
             conn.commit()
             conn.execute("pragma wal_checkpoint(TRUNCATE)")
             conn.execute("pragma incremental_vacuum(4096)")
@@ -520,7 +557,8 @@ class RhenCoreStore:
             if allocated > 0
             else 0.0
         )
-        should_compact = force or (
+        auto_vacuum_mode = int(before.get("auto_vacuum_mode") or 0)
+        should_compact = force or auto_vacuum_mode != 2 or (
             reclaimable >= 64 * 1024 * 1024
             and fragmentation >= 0.15
         )
