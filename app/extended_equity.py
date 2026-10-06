@@ -93,6 +93,7 @@ class ExtendedEquityEngine:
         self.last_error: str | None = None
         self.last_order: dict[str, Any] | None = None
         self.last_exit_results: list[dict[str, Any]] = []
+        self.last_managed_symbols: list[str] = []
         self.current_correlation_id: str | None = None
 
     @property
@@ -124,6 +125,8 @@ class ExtendedEquityEngine:
             "last_error": self.last_error,
             "last_order": self.last_order,
             "last_exits": self.last_exit_results,
+            "managed_symbols": list(self.last_managed_symbols),
+            "active_positions": len(self.last_managed_symbols),
             "data_cache": {
                 "symbols": len(self._bars),
                 "bars": sum(len(rows) for rows in self._bars.values()),
@@ -1079,11 +1082,15 @@ class ExtendedEquityEngine:
             self.client.open_orders(),
             self.client.recent_orders(limit=500),
         )
+        managed = self._managed_positions(positions, recent_orders)
+        self.last_managed_symbols = [
+            str(position.get("symbol") or "").upper()
+            for position in managed
+        ]
 
         # During regular hours this lane performs only emergency cleanup of
         # positions it owns, then yields all new entries to the regular engine.
         if context.session == EquitySession.REGULAR:
-            managed = self._managed_positions(positions, recent_orders)
             if not managed:
                 self.last_decision = "regular session owned by primary equity engine"
                 return {"action": "hold", "reason": self.last_decision}
@@ -1111,7 +1118,6 @@ class ExtendedEquityEngine:
             }
 
         if context.session == EquitySession.CLOSED or not context.tradable:
-            managed = self._managed_positions(positions, recent_orders)
             self.last_decision = (
                 "extended equity market closed"
                 if not managed
@@ -1134,7 +1140,6 @@ class ExtendedEquityEngine:
         feed = self._feed_for(context)
         self._reset_bar_cache_if_needed(context, feed)
         universe = await self._refresh_universe(context, now)
-        managed = self._managed_positions(positions, recent_orders)
         managed_symbols = [
             str(position.get("symbol") or "").upper()
             for position in managed
