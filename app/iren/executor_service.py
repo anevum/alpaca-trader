@@ -108,7 +108,7 @@ class ExecutorRuntime:
         "position",
         "risk",
         "alpaca",
-        "crypto",
+        "asset_class",
         "strategy",
         "order",
         "execution",
@@ -485,7 +485,7 @@ class ExecutorRuntime:
                     "You are the bounded IREN software worker. Analyze the task and choose "
                     "the minimum files needed. You may work only on IREN control-plane code, "
                     "IREN Foundation gateway code, IREN tests/docs, and migrations. Never "
-                    "modify trading, broker, risk, position sizing, strategy, crypto execution, "
+                    "modify trading, broker, risk, position sizing, strategy, asset-class authority, "
                     "credentials, deployment settings, or unrelated subsystems. Return valid JSON "
                     "only with keys: summary (string), files_to_read (array of repository paths), "
                     "files_to_change (array of repository paths). Do not propose more than 8 files."
@@ -648,7 +648,7 @@ class ExecutorRuntime:
         payload = {
             "title": job.title,
             "statement": job.instructions,
-            "domain": "CRYPTO_STRATEGY_RESEARCH",
+            "domain": "EQUITY_STRATEGY_RESEARCH",
             "priority": 100,
             "source": "IREN",
             "requested_by": "iren-executor",
@@ -658,7 +658,7 @@ class ExecutorRuntime:
                 "production_authority": False,
                 "broker_authority": False,
                 "risk_or_sizing_authority": False,
-                "crypto_execution_enabled": False,
+                "live_asset_scope": "long_us_equities_etfs_only",
                 "falsification_required": True,
                 "preserve_search_history": True,
             },
