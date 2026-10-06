@@ -280,12 +280,17 @@ class TradingEventSink:
         correlation_id: str | None = None,
         occurred_at: str | None = None,
         event_key: str | None = None,
+        strategy_version_id: str | None = None,
     ) -> dict[str, Any]:
         return {
             "event_key": event_key
             or f"{self.settings.trading_run_id}:{event_type}:{uuid4().hex}",
             "run_id": self.settings.trading_run_id,
-            "strategy_version_id": self.settings.strategy_version_id,
+            "strategy_version_id": (
+                strategy_version_id
+                if strategy_version_id is not None
+                else self.settings.strategy_version_id
+            ),
             "event_type": event_type,
             "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat(),
             "symbol": symbol or None,
@@ -313,6 +318,7 @@ class TradingEventSink:
         correlation_id: str | None = None,
         occurred_at: str | None = None,
         event_key: str | None = None,
+        strategy_version_id: str | None = None,
     ) -> None:
         if not self.enabled and not self.foundation_enabled:
             return
@@ -323,6 +329,7 @@ class TradingEventSink:
             correlation_id=correlation_id,
             occurred_at=occurred_at,
             event_key=event_key,
+            strategy_version_id=strategy_version_id,
         )
         self._mirror_foundation(event)
         if not self.enabled:
@@ -938,6 +945,11 @@ class TradingEventSink:
             event_key=f"{self.settings.trading_run_id}:decision-cycle:{correlation_id}",
             correlation_id=correlation_id,
             occurred_at=cycle_ended_at.isoformat(),
+            strategy_version_id=(
+                self.settings.crypto_strategy_version_id
+                if cycle_is_crypto
+                else self.settings.strategy_version_id
+            ),
             payload={
                 "cycle_key": cycle_key,
                 "cycle_started_at": cycle_started_at.isoformat(),
@@ -1014,6 +1026,11 @@ class TradingEventSink:
             symbol=symbol.upper(),
             correlation_id=correlation_id,
             occurred_at=observed_at.isoformat(),
+            strategy_version_id=(
+                self.settings.crypto_strategy_version_id
+                if str(metrics.get("market") or "").lower() == "crypto"
+                else self.settings.strategy_version_id
+            ),
             payload=metrics,
         )
 

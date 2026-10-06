@@ -232,6 +232,9 @@ class RhenCoreStore:
                 "market", "momentum_pct", "vwap_edge_pct", "relative_volume_ratio",
                 "trend_persistence", "quality_score", "current_close",
                 "confirmation_passes", "regime_passes",
+                "opportunity_score", "estimated_net_edge_pct",
+                "expected_gross_move_pct", "return_5m", "return_15m",
+                "return_60m", "range_60m_pct",
             )
             if features.get(k) is not None
         }
@@ -281,6 +284,41 @@ class RhenCoreStore:
             )
             if payload.get(k) is not None
         }
+        def numeric(value: Any) -> float | None:
+            if value in (None, "") or isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if number == number else None
+
+        opportunity_scores: list[float] = []
+        net_edges: list[float] = []
+        expected_moves: list[float] = []
+        for candidate in candidates:
+            features = candidate.get("features")
+            features = features if isinstance(features, dict) else {}
+            score = numeric(features.get("opportunity_score"))
+            if score is not None:
+                opportunity_scores.append(score)
+            edge = numeric(features.get("estimated_net_edge_pct"))
+            if edge is None:
+                cost_model = features.get("cost_model")
+                if isinstance(cost_model, dict):
+                    edge = numeric(cost_model.get("estimated_net_edge_pct"))
+            if edge is not None:
+                net_edges.append(edge)
+            expected = numeric(features.get("expected_gross_move_pct"))
+            if expected is not None:
+                expected_moves.append(expected)
+        if opportunity_scores:
+            summary["top_opportunity_score"] = max(opportunity_scores)
+        if net_edges:
+            summary["best_estimated_net_edge_pct"] = max(net_edges)
+        if expected_moves:
+            summary["best_expected_gross_move_pct"] = max(expected_moves)
+
         runtime = payload.get("runtime") or {}
         summary["runtime"] = {
             k: runtime.get(k)
@@ -2559,8 +2597,16 @@ class RhenCoreStore:
                       or event_type like 'nostra_%'
                       or event_type like 'graen_%'
                       or strategy_version_id like 'CRYPTO-XSECT-PAPER-%'
+                      or (
+                        event_type = 'decision_cycle'
+                        and json_extract(payload_json, '$.market_lane') = 'crypto'
+                      )
+                      or (
+                        event_type = 'position_metrics'
+                        and json_extract(payload_json, '$.market') = 'crypto'
+                      )
                    order by occurred_at desc
-                   limit 180"""
+                   limit 360"""
             ).fetchall()
 
         graen_runtime, _ = self.get_kv("graen", "runtime", {})
@@ -2875,14 +2921,39 @@ class RhenCoreStore:
                 })
 
             strategy_version = str(row["strategy_version_id"] or "")
-            if strategy_version.startswith("CRYPTO-XSECT-PAPER-"):
+            candidate_strategy_version = ""
+            if event_type == "decision_cycle":
+                candidates = payload.get("candidates")
+                if isinstance(candidates, list):
+                    for candidate in candidates:
+                        if not isinstance(candidate, dict):
+                            continue
+                        value = str(candidate.get("strategy_version_id") or "")
+                        if value.startswith("CRYPTO-XSECT-PAPER-"):
+                            candidate_strategy_version = value
+                            break
+            crypto_tracking_event = (
+                strategy_version.startswith("CRYPTO-XSECT-PAPER-")
+                or bool(candidate_strategy_version)
+                or (
+                    event_type == "decision_cycle"
+                    and str(payload.get("market_lane") or "").lower() == "crypto"
+                )
+                or (
+                    event_type == "position_metrics"
+                    and str(payload.get("market") or "").lower() == "crypto"
+                )
+            )
+            if crypto_tracking_event:
                 paper_groups.setdefault(
-                    str(row["run_id"] or strategy_version), []
+                    str(row["run_id"] or candidate_strategy_version or strategy_version),
+                    []
                 ).append({
                     "event_key": row["event_key"],
                     "event_type": event_type,
                     "occurred_at": occurred_at,
                     "strategy_version_id": strategy_version,
+                    "candidate_strategy_version_id": candidate_strategy_version,
                     "payload": payload,
                 })
 
@@ -2891,47 +2962,127 @@ class RhenCoreStore:
 
         for run_key, rows in paper_groups.items():
             latest = rows[-1]
-            points: list[dict[str, Any]] = []
+            paper_strategy_version = next(
+                (
+                    str(row.get("candidate_strategy_version_id") or row.get("strategy_version_id") or "")
+                    for row in reversed(rows)
+                    if str(
+                        row.get("candidate_strategy_version_id")
+                        or row.get("strategy_version_id")
+                        or ""
+                    ).startswith("CRYPTO-XSECT-PAPER-")
+                ),
+                "",
+            )
+            if not paper_strategy_version:
+                # Keep direct BTC/live crypto telemetry out of the paper-test lane.
+                continue
+
+            return_points: list[dict[str, Any]] = []
+            score_points: list[dict[str, Any]] = []
+            net_edge_points: list[dict[str, Any]] = []
+            qualified_points: list[dict[str, Any]] = []
+            scanned_points: list[dict[str, Any]] = []
+            rejected_points: list[dict[str, Any]] = []
             fills = 0
+            decision_cycles = 0
             for row in rows:
                 payload = row["payload"]
                 if row["event_type"] == "position_metrics":
                     value = self._research_number(payload.get("current_return_pct"))
                     if value is not None:
-                        points.append({
+                        return_points.append({
                             "at": row["occurred_at"],
                             "value": round(value * 100.0, 6),
                         })
+                if row["event_type"] == "decision_cycle":
+                    decision_cycles += 1
+                    score = self._research_number(
+                        payload.get("top_opportunity_score")
+                    )
+                    edge = self._research_number(
+                        payload.get("best_estimated_net_edge_pct")
+                    )
+                    if score is not None:
+                        score_points.append({
+                            "at": row["occurred_at"],
+                            "value": round(score * 100.0, 6),
+                        })
+                    if edge is not None:
+                        net_edge_points.append({
+                            "at": row["occurred_at"],
+                            "value": round(edge * 100.0, 6),
+                        })
+                    qualified = self._research_number(payload.get("qualified_count"))
+                    scanned = self._research_number(payload.get("candidate_count"))
+                    rejected = self._research_number(payload.get("rejected_count"))
+                    if qualified is not None:
+                        qualified_points.append({
+                            "at": row["occurred_at"],
+                            "value": qualified,
+                        })
+                    if scanned is not None:
+                        scanned_points.append({
+                            "at": row["occurred_at"],
+                            "value": scanned,
+                        })
+                    if rejected is not None:
+                        rejected_points.append({
+                            "at": row["occurred_at"],
+                            "value": rejected,
+                        })
                 if row["event_type"] in {"broker_fill", "crypto_fill"}:
                     fills += 1
+
+            chart_series: list[dict[str, Any]] = []
+            for key, label, unit, points in (
+                ("opportunity_score", "Top opportunity score", "%", score_points),
+                ("estimated_net_edge", "Best estimated net edge", "%", net_edge_points),
+                ("qualified_candidates", "Qualified candidates", "", qualified_points),
+                ("scanned_candidates", "Scanned candidates", "", scanned_points),
+                ("rejected_candidates", "Rejected candidates", "", rejected_points),
+                ("paper_return", "Open-position return", "%", return_points),
+            ):
+                if len(points) > 1:
+                    chart_series.append({
+                        "key": key,
+                        "label": label,
+                        "unit": unit,
+                        "points": points[-120:],
+                    })
+
             runs.append({
                 "run_id": run_key,
                 "system": "RHEN",
                 "kind": "PAPER_TEST",
-                "title": latest["strategy_version_id"],
+                "title": paper_strategy_version,
                 "status": "RUNNING",
                 "stage": "PAPER_FORWARD",
                 "progress_pct": 50,
                 "problem_id": None,
                 "candidate_id": None,
                 "methodology_version": None,
-                "strategy_version_id": latest["strategy_version_id"],
+                "strategy_version_id": paper_strategy_version,
                 "started_at": rows[0]["occurred_at"],
                 "completed_at": None,
                 "updated_at": latest["occurred_at"],
                 "metrics": {
                     "fills": float(fills),
                     "events": float(len(rows)),
+                    "decision_cycles": float(decision_cycles),
+                    "latest_qualified_candidates": (
+                        qualified_points[-1]["value"] if qualified_points else 0.0
+                    ),
+                    "latest_scanned_candidates": (
+                        scanned_points[-1]["value"] if scanned_points else 0.0
+                    ),
                 },
-                "series": ([{
-                    "key": "paper_return",
-                    "label": "Open-position return",
-                    "unit": "%",
-                    "points": points[-120:],
-                }] if points else []),
+                "series": chart_series,
                 "detail": {
                     "paper_only": True,
                     "live_authority": False,
+                    "chart_basis": "decision_cycle_and_position_evidence",
+                    "inactive_time_drawn": False,
                 },
             })
             for row in rows[-60:]:
@@ -2943,7 +3094,7 @@ class RhenCoreStore:
                     "event_type": row["event_type"],
                     "stage": "PAPER_FORWARD",
                     "status": "OBSERVED",
-                    "title": row["strategy_version_id"],
+                    "title": paper_strategy_version,
                     "detail": (
                         row["payload"].get("cycle_outcome")
                         or row["payload"].get("reason")

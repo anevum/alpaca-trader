@@ -54,6 +54,10 @@ from graen.crypto.cross_sectional_intraday import (
     METHODOLOGY_VERSION as CROSS_SECTIONAL_METHODOLOGY_VERSION,
     evaluate_stage as evaluate_cross_sectional_stage,
 )
+from graen.crypto.cross_sectional_acceleration import (
+    METHODOLOGY_VERSION as ACCELERATION_METHODOLOGY_VERSION,
+    evaluate_stage as evaluate_acceleration_stage,
+)
 from graen.engineering import (
     digest as engineering_digest,
     stamp as engineering_stamp,
@@ -80,6 +84,7 @@ def replay_fetch_contract(
     if candidate_methodology in {
         FLOW_PRESSURE_METHODOLOGY_VERSION,
         CROSS_SECTIONAL_METHODOLOGY_VERSION,
+        ACCELERATION_METHODOLOGY_VERSION,
     }:
         # Compiled adaptive programs share a fixed crypto universe. VELUM
         # requests canonical five-minute bars independently from GRAEN; each
@@ -146,6 +151,7 @@ def replay_candidate(
     if candidate_methodology in {
         FLOW_PRESSURE_METHODOLOGY_VERSION,
         CROSS_SECTIONAL_METHODOLOGY_VERSION,
+        ACCELERATION_METHODOLOGY_VERSION,
     }:
         spec = dict(candidate_spec)
         spec_hash = validate_engineering_spec(spec)
@@ -156,11 +162,11 @@ def replay_candidate(
         if start != expected_start or end != expected_end:
             raise ValueError("compiled_velum_replay_window_mismatch")
 
-        evaluate_compiled_stage = (
-            evaluate_cross_sectional_stage
-            if candidate_methodology == CROSS_SECTIONAL_METHODOLOGY_VERSION
-            else evaluate_flow_pressure_stage
-        )
+        evaluate_compiled_stage = {
+            FLOW_PRESSURE_METHODOLOGY_VERSION: evaluate_flow_pressure_stage,
+            CROSS_SECTIONAL_METHODOLOGY_VERSION: evaluate_cross_sectional_stage,
+            ACCELERATION_METHODOLOGY_VERSION: evaluate_acceleration_stage,
+        }[candidate_methodology]
         predecessor = None
         stage_results: dict[str, dict[str, Any]] = {}
         reasons: list[str] = []
