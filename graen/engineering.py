@@ -7,9 +7,9 @@ import json
 import re
 
 SCHEMA = "graen.research-code-promotion.v1"
-CANONICAL_BRANCH = "iren-runtime-boundary-20260930"
+CANONICAL_BRANCH = "main"
 REPOSITORY = "anevum/alpaca-trader"
-REQUIRED_JOBS = frozenset({"test", "iren-command", "graen-autonomy", "research-promotion"})
+REQUIRED_JOBS = frozenset({"test", "velum-graen", "graen-forward-shadow", "codex-postgres", "graen-v14-ml"})
 TRIGGERS = frozenset({
     "MODEL_HYPOTHESIS_GENERATION_REQUIRED", "NEEDS_NEW_HYPOTHESIS_ENGINE",
     "RESEARCH_IMPLEMENTATION_REQUIRED",
