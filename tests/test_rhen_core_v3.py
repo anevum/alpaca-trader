@@ -832,3 +832,90 @@ def test_command_research_tracking_exposes_rhen_shadow_economics_run(
     assert run["detail"]["execution_authority"] is False
     assert len(run["series"]) == 3
     assert all(len(series["points"]) == 2 for series in run["series"])
+
+
+
+def test_compact_storage_prefers_incremental_vacuum_for_live_database():
+    import threading
+
+    store = RhenCoreStore.__new__(RhenCoreStore)
+    store._lock = threading.RLock()
+    commands = []
+
+    before = {
+        "bytes": 785_000_000,
+        "allocated_db_bytes": 780_000_000,
+        "reclaimable_db_bytes": 24 * 1024 * 1024,
+        "auto_vacuum_mode": 2,
+    }
+    after = {
+        **before,
+        "bytes": 760_000_000,
+        "reclaimable_db_bytes": 2 * 1024 * 1024,
+    }
+    states = [before, after]
+    store.storage_state = lambda: states.pop(0)
+
+    class Result:
+        def fetchone(self):
+            return (4096,)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql):
+            commands.append(sql)
+            return Result()
+
+    store.connect = lambda: Connection()
+
+    result = store.compact_storage()
+
+    assert result["reason"] == "incremental_vacuum_completed"
+    assert result["compacted"] is True
+    assert any("incremental_vacuum" in sql for sql in commands)
+    assert not any(sql.strip().lower() == "vacuum" for sql in commands)
+
+
+def test_compact_storage_keeps_small_incremental_fragmentation_bounded():
+    import threading
+
+    store = RhenCoreStore.__new__(RhenCoreStore)
+    store._lock = threading.RLock()
+    commands = []
+    state = {
+        "bytes": 600_000_000,
+        "allocated_db_bytes": 595_000_000,
+        "reclaimable_db_bytes": 4 * 1024 * 1024,
+        "auto_vacuum_mode": 2,
+    }
+    states = [state]
+    store.storage_state = lambda: states[0]
+
+    class Result:
+        def fetchone(self):
+            return (4096,)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql):
+            commands.append(sql)
+            return Result()
+
+    store.connect = lambda: Connection()
+
+    result = store.compact_storage()
+
+    assert result["compacted"] is False
+    assert result["reason"] == "fragmentation_below_threshold"
+    assert not any("incremental_vacuum" in sql for sql in commands)
+    assert not any(sql.strip().lower() == "vacuum" for sql in commands)
