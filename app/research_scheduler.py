@@ -59,7 +59,7 @@ from .weekly_reporting import REPORT_VERSION, build_weekly_report
 
 NY = ZoneInfo("America/New_York")
 REPORT_AFTER = time(16, 5)
-DAILY_REPORT_VERSION = "rhen-daily-v1.6"
+DAILY_REPORT_VERSION = "rhen-daily-v1.7"
 
 
 def is_last_session_of_week(current: date, next_session: date | None) -> bool:
@@ -397,6 +397,7 @@ class ResearchReportScheduler:
                 "ads002": {},
                 "ads002_v2": {},
                 "candidates": [],
+                "evidence_readiness": {},
                 "latest_daily_report": None,
                 "warning": f"canonical post-event evidence unavailable: {type(exc).__name__}: {exc}",
             }
@@ -405,6 +406,7 @@ class ResearchReportScheduler:
             "ads002": payload.get("ads002") or {},
             "ads002_v2": payload.get("ads002_v2") or {},
             "candidates": payload.get("candidates") or [],
+            "evidence_readiness": payload.get("evidence_readiness") or {},
             "latest_daily_report": payload.get("latest_daily_report"),
             "warning": None,
         }
@@ -1036,6 +1038,7 @@ class ResearchReportScheduler:
         ads002 = canonical.get("ads002") or {}
         ads002_v2 = canonical.get("ads002_v2") or {}
         candidates = list(canonical.get("candidates") or [])
+        evidence_readiness = canonical.get("evidence_readiness") or {}
         outcome_status = post_event.get("forward_outcome_status") or {}
         shadow_economics_validation = evaluate_shadow_economics(candidates)
         shadow_allocation_validation = evaluate_shadow_allocation(candidates)
@@ -1132,6 +1135,21 @@ class ResearchReportScheduler:
                 "decision evidence"
                 + (f" ({rendered})." if rendered else ".")
             )
+        readiness_state = str(
+            evidence_readiness.get("state") or ""
+        ).upper()
+        if readiness_state == "AWAITING_MEASURABLE_COHORT":
+            daily_warnings.append(
+                "Forward-outcome validation is awaiting the first post-fix measurable live cohort; legacy unmeasurable rows are retained as historical evidence only."
+            )
+        elif readiness_state == "PARTIAL":
+            daily_warnings.append(
+                "Forward-outcome evidence is partially measurable; valid rows remain usable while missing decision-time references are investigated."
+            )
+        elif readiness_state == "DEGRADED":
+            daily_warnings.append(
+                "Forward-outcome validation is degraded because the sampled cohort lacks exact decision-time price/time evidence."
+            )
         shadow_horizons = shadow_economics_validation.get("horizons") or []
         shadow_observed = [
             row for row in shadow_horizons
@@ -1182,6 +1200,7 @@ class ResearchReportScheduler:
                 "live_offline": live_offline,
                 "ads002": ads002,
                 "ads002_v2": ads002_v2,
+                "evidence_readiness": evidence_readiness,
                 "shadow_economics_validation": shadow_economics_validation,
                 "shadow_allocation_validation": shadow_allocation_validation,
                 "counterfactual_lab": counterfactual_lab,
@@ -1254,6 +1273,7 @@ class ResearchReportScheduler:
                 "candidate_forward_evidence": {
                     "by_horizon": post_event.get("forward_outcomes_by_horizon") or [],
                     "status": outcome_status,
+                    "readiness": evidence_readiness,
                     "post_event_only": True,
                     "counterfactual_not_realized_trades": True,
                 },
