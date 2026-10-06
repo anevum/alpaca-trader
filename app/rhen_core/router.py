@@ -14,13 +14,10 @@ CORE_URL = "http://127.0.0.1:8102"
 OPTIONAL_MODULE_ENVS = {
     "iren_executor": "IREN_EXECUTOR_ENABLED",
     "preopen": "PREOPEN_STATE_ENABLED",
-    "crypto_research": "CRYPTO_RESEARCH_ENABLED",
 }
 
 MODULES = {
     "graen": "http://127.0.0.1:8110/health",
-    "graen_research": "http://127.0.0.1:8111/health",
-    "crypto_research": "http://127.0.0.1:8112/health",
     "velum": "http://127.0.0.1:8113/health",
     "research_agent": "http://127.0.0.1:8114/health",
     "nostra": "http://127.0.0.1:8115/health",
@@ -35,8 +32,6 @@ PUBLIC_MODULE_ROUTES = {
 }
 
 CORE_PREFIXES = (
-    "/v1/internal/crypto-paper-assignment",
-    "/v1/btc-discovery/",
     "/v1/events",
     "/v1/trading-report-read",
     "/v1/trading-public-feed",
