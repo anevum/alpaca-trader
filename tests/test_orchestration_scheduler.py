@@ -476,7 +476,7 @@ def test_scheduled_daily_research_does_not_require_model_api():
 
 def test_iren_dispatches_adaptive_research_without_legacy_autorun():
     runtime = object.__new__(SchedulerRuntime)
-    runtime.scheduler_headers = {"x-anevum-scheduler-token": "test"}
+    runtime.token = "test"
     runtime._post = AsyncMock(
         return_value={"status": "DISPATCHED", "dispatched": True}
     )
