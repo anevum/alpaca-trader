@@ -117,6 +117,16 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
     assert shadow["expected_net_bps"] == "5"
     assert shadow["would_admit"] is True
 
+    readiness = store.candidate_evidence_readiness()
+    assert readiness["research_only"] is True
+    assert readiness["execution_authority"] is False
+    assert readiness["sampled_cycles"] == 1
+    assert readiness["candidate_count"] == 10
+    assert readiness["measurement_ready_count"] == 10
+    assert readiness["measurement_ready_rate_pct"] == 100.0
+    assert readiness["missing_reference_price_count"] == 0
+    assert readiness["missing_bar_time_count"] == 0
+
 
 def test_supervisor_strips_broker_credentials_from_pure_core(
     monkeypatch
