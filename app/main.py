@@ -35,6 +35,7 @@ from .btc_day_preview import BtcDayPreview
 from .crypto_symbols import is_crypto_row, normalized_crypto_row
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
+from .protected_configuration import build_protected_configuration
 from .provenance import RHEN_VERSION, capture_runtime_provenance
 from .research_scheduler import ResearchReportScheduler
 from .sizing import sizing_snapshot
@@ -216,37 +217,56 @@ def require_scheduler_token(x_anevum_scheduler_token: str | None) -> None:
 
 
 def scheduler_configuration_snapshot() -> dict:
+    """Return the complete non-secret protected configuration identity.
+
+    Deployment/repository/service metadata is provenance only and never
+    participates in the behavior fingerprint.
+    """
     comparison = event_sink._comparison_configuration()
     protected = {
-        "trading_mode": settings.trading_mode,
-        "execution_enabled": settings.execution_enabled,
-        "execution_authorized": settings.execution_authorized,
-        "paper_execution_authorized": settings.paper_execution_authorized,
-        "live_execution_authorized": settings.live_execution_authorized,
-        "bot_armed": settings.bot_armed,
-        "strategy_version_id": settings.strategy_version_id,
-        "max_order_notional": str(settings.max_order_notional),
-        "max_position_notional": str(settings.max_position_notional),
-        "max_concurrent_positions": settings.max_concurrent_positions,
-        "max_total_position_notional": str(settings.max_total_position_notional),
-        "max_daily_orders": settings.max_daily_orders,
-        "max_daily_loss": str(settings.max_daily_loss),
-        "risk_per_trade_pct": str(settings.risk_per_trade_pct),
-        "max_gross_exposure_pct": str(settings.max_gross_exposure_pct),
-        "crypto_execution_enabled": settings.crypto_execution_enabled,
+        "strategy": {
+            "name": settings.strategy_name,
+            "version_id": settings.strategy_version_id,
+        },
+        "execution": {
+            "trading_mode": settings.trading_mode,
+            "execution_enabled": settings.execution_enabled,
+            "execution_authorized": settings.execution_authorized,
+            "paper_execution_authorized": settings.paper_execution_authorized,
+            "live_execution_authorized": settings.live_execution_authorized,
+            "bot_armed": settings.bot_armed,
+        },
+        "sizing": {
+            "max_order_notional": settings.max_order_notional,
+            "max_position_notional": settings.max_position_notional,
+            "risk_per_trade_pct": settings.risk_per_trade_pct,
+        },
+        "portfolio": {
+            "max_concurrent_positions": settings.max_concurrent_positions,
+            "max_total_position_notional": settings.max_total_position_notional,
+            "max_daily_orders": settings.max_daily_orders,
+            "max_daily_loss": settings.max_daily_loss,
+            "max_gross_exposure_pct": settings.max_gross_exposure_pct,
+            "max_position_gross_pct": settings.max_position_gross_pct,
+            "max_portfolio_stop_risk_pct": settings.max_portfolio_stop_risk_pct,
+        },
+        "asset_authority": {
+            "long_us_equities_etfs": True,
+            "crypto": False,
+            "options": False,
+            "short_equities": False,
+            "leverage_expansion": False,
+        },
     }
-    material = {"comparison": comparison, "protected": protected}
-    digest = hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
-    return {
-        "fingerprint": "sha256:" + digest,
-        "strategy_name": settings.strategy_name,
-        "strategy_version_id": settings.strategy_version_id,
-        "trading_mode": settings.trading_mode,
-        "execution_authorized": settings.execution_authorized,
-        "crypto_execution_enabled": settings.crypto_execution_enabled,
-    }
+    provenance = runtime_provenance.as_dict() if runtime_provenance is not None else {}
+    return build_protected_configuration(
+        comparison=comparison,
+        protected=protected,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        runtime_commit=provenance.get("git_commit"),
+        deployment_id=provenance.get("deployment_id"),
+        strategy_version_id=settings.strategy_version_id or None,
+    )
 
 
 async def scheduler_session_detail(session: date) -> dict:
