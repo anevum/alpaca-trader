@@ -613,33 +613,54 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
     ) -> Signal:
         now = (now or datetime.now(NY)).astimezone(NY)
         symbol = symbol.upper()
+        session = self._completed_session_bars(bars, now)
+
+        reference_metadata: dict[str, Any] = {}
+        if session:
+            latest = session[-1]
+            latest_close = self._d(latest["c"])
+            reference_metadata = {
+                "bar_time": self._timestamp(latest).isoformat(),
+                "current_close": str(latest_close),
+                "evidence_reference_only": True,
+            }
 
         if has_position:
             return Signal(
                 action="hold",
                 symbol=symbol,
                 reason="position already open; bracket/time exits manage risk",
+                metadata=dict(reference_metadata),
             )
         if now.weekday() >= 5:
-            return Signal(action="hold", symbol=symbol, reason="weekend")
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="weekend",
+                metadata=dict(reference_metadata),
+            )
         if now.time() < self.entry_start:
-            return Signal(action="hold", symbol=symbol, reason="before entry window")
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="before entry window",
+                metadata=dict(reference_metadata),
+            )
         if now.time() > self.entry_cutoff:
-            return Signal(action="hold", symbol=symbol, reason="entry window closed")
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="entry window closed",
+                metadata=dict(reference_metadata),
+            )
 
-        session = self._completed_session_bars(bars, now)
         if len(session) < self.slow_window + 1:
-            metadata: dict[str, Any] = {}
+            metadata: dict[str, Any] = dict(reference_metadata)
             if session:
-                latest = session[-1]
-                latest_close = self._d(latest["c"])
-                metadata = {
-                    "bar_time": self._timestamp(latest).isoformat(),
-                    "current_close": str(latest_close),
-                    "evidence_reference_only": True,
+                metadata.update({
                     "warmup_bar_count": len(session),
                     "required_bar_count": self.slow_window + 1,
-                }
+                })
             return Signal(
                 action="hold",
                 symbol=symbol,

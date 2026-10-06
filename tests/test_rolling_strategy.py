@@ -138,6 +138,9 @@ def test_existing_position_blocks_additional_entry():
     )
     assert signal.action == "hold"
     assert "position already open" in signal.reason
+    assert signal.metadata["evidence_reference_only"] is True
+    assert signal.metadata["bar_time"] == "2026-09-24T09:39:00-04:00"
+    assert signal.metadata["current_close"] == "101.00"
 
 
 def test_entry_window_extends_into_afternoon_but_still_has_cutoff():
@@ -159,6 +162,9 @@ def test_entry_window_extends_into_afternoon_but_still_has_cutoff():
     )
     assert signal.action == "hold"
     assert signal.reason == "entry window closed"
+    assert signal.metadata["evidence_reference_only"] is True
+    assert signal.metadata["bar_time"] == "2026-09-24T15:29:00-04:00"
+    assert signal.metadata["current_close"] == "101.00"
 
 
 def test_deteriorating_market_regime_blocks_otherwise_valid_entry():
