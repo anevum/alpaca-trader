@@ -30,19 +30,6 @@ PROCESSES = (
     ),
     ProcessSpec("graen", "app.graen.service:app", 8110),
     ProcessSpec(
-        "graen-research",
-        "app.graen.research_executor_service:app",
-        8111,
-        market_data_credentials=True,
-    ),
-    ProcessSpec(
-        "crypto-research",
-        "graen.crypto.service_v6:app",
-        8112,
-        market_data_credentials=True,
-        enabled_env="CRYPTO_RESEARCH_ENABLED",
-    ),
-    ProcessSpec(
         "velum",
         "app.velum_service:app",
         8113,
@@ -96,16 +83,13 @@ LOOPBACK = {
     "VELUM_SCHEDULER_URL": "http://127.0.0.1:8113/v1/scheduler",
     "RHEN_RESEARCH_REVIEW_URL": "http://127.0.0.1:8114/v1/review",
     "VELUM_SERVICE_URL": "http://127.0.0.1:8113",
-    "RHEN_SHADOW_SERVICE_URL": "http://127.0.0.1:8112",
     "GRAEN_SERVICE_URL": "http://127.0.0.1:8110",
     "IREN_EXECUTOR_URL": "http://127.0.0.1:8117",
     "IREN_RHEN_HEALTH_URL": "http://127.0.0.1:8101/health",
     "IREN_VELUM_HEALTH_URL": "http://127.0.0.1:8113/health",
     "IREN_PREOPEN_HEALTH_URL": "http://127.0.0.1:8118/health",
     "IREN_GRAEN_HEALTH_URL": "http://127.0.0.1:8110/health",
-    "IREN_GRAEN_EXECUTOR_HEALTH_URL": "http://127.0.0.1:8111/health",
     "IREN_RESEARCH_AGENT_HEALTH_URL": "http://127.0.0.1:8114/health",
-    "IREN_CRYPTO_EDGE_HEALTH_URL": "http://127.0.0.1:8112/health",
     "IREN_EXECUTOR_HEALTH_URL": "http://127.0.0.1:8117/health",
     "IREN_NOSTRA_HEALTH_URL": "http://127.0.0.1:8115/health",
     "RHEN_CORE_DB_PATH": "/data/rhen-core.db",
@@ -118,7 +102,6 @@ DISABLED_EXECUTION = {
     "BOT_ARMED": "false",
     "EXECUTION_ENABLED": "false",
     "LIVE_TRADING": "false",
-    "CRYPTO_EXECUTION_ENABLED": "false",
     "I_ACKNOWLEDGE_LIVE_TRADING": "false",
     "SCAN_ONLY": "true",
 }
@@ -167,19 +150,6 @@ def _child_env(spec: ProcessSpec) -> dict[str, str]:
     env["PORT"] = str(spec.port)
     env["RHEN_UNIFIED_RUNTIME"] = "true"
     env["RHEN_UNIFIED_ROLE"] = spec.name
-    # One BTC research authority; archive handlers remain available for historical
-    # inspection, but cannot bootstrap or schedule obsolete research campaigns.
-    if spec.name in {"graen", "graen-research"}:
-        env["GRAEN_AUTORUN"] = "false"
-        env["GRAEN_RESEARCH_AUTORUN"] = "false"
-        env["GRAEN_RESEARCH_DIRECTOR_AUTORUN"] = "false"
-    if spec.name == "crypto-research":
-        env["GRAEN_LEGACY_BTC_RUNTIME_DISABLED"] = "true"
-    if spec.name in {"execution", "velum"}:
-        env["CRYPTO_RESEARCH_ENABLED"] = "false"
-        env["CRYPTO_EDGE_DISCOVERY_ENABLED"] = "false"
-        env["CRYPTO_EDGE_V2_ENABLED"] = "false"
-        env["CRYPTO_EDGE_V3_ENABLED"] = "false"
     if spec.name == "velum":
         env["VELUM_AUTORUN"] = "false"
     return env
