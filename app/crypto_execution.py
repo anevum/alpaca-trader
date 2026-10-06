@@ -713,6 +713,9 @@ class CryptoExecutionEngine:
 
         direct_btc = self._direct_btc_mode()
         live_signal = self._live_signal_mode()
+        multi_asset_paper = (
+            self.settings.crypto_execution_mode == "multi_asset_paper"
+        )
         if (getattr(self.settings, "trading_mode", None) == "live"
                 and str(getattr(self.strategy, "strategy_version_id", "")).startswith("GRAEN-BTC-")):
             return {"action": "blocked", "reason": "research_btc_candidate_cannot_enter_live_lane"}
@@ -729,6 +732,14 @@ class CryptoExecutionEngine:
         ):
             self.state.crypto_last_decision = (
                 "BTC direct paper execution is not explicitly authorized"
+            )
+            return {"action": "blocked", "reason": self.state.crypto_last_decision}
+        if (
+            multi_asset_paper
+            and not self.settings.crypto_multi_asset_paper_authorized
+        ):
+            self.state.crypto_last_decision = (
+                "multi-asset crypto paper execution is not explicitly authorized"
             )
             return {"action": "blocked", "reason": self.state.crypto_last_decision}
         if live_signal and not self.settings.btc_direct_live_signal_authorized:
@@ -978,6 +989,70 @@ class CryptoExecutionEngine:
                     reason="crypto spread exceeds execution threshold",
                     metadata=signal.metadata,
                 )
+            if signal.action == "buy" and multi_asset_paper:
+                expected_gross_move_pct = _d(
+                    signal.metadata.get("expected_gross_move_pct")
+                )
+                configured_target_pct = (
+                    (signal.take_profit_price - signal.reference_price)
+                    / signal.reference_price
+                    if signal.reference_price > 0
+                    and signal.take_profit_price > signal.reference_price
+                    else Decimal("0")
+                )
+                estimated_round_trip_cost_pct = (
+                    self.settings.crypto_estimated_round_trip_fee_pct
+                    + self.settings.crypto_estimated_round_trip_slippage_pct
+                    + max(spread_pct, Decimal("0"))
+                )
+                required_gross_move_pct = (
+                    estimated_round_trip_cost_pct
+                    + self.settings.crypto_min_net_edge_pct
+                )
+                estimated_net_edge_pct = (
+                    expected_gross_move_pct - estimated_round_trip_cost_pct
+                )
+                signal.metadata["cost_model"] = {
+                    "estimated_round_trip_fee_pct": str(
+                        self.settings.crypto_estimated_round_trip_fee_pct
+                    ),
+                    "estimated_round_trip_slippage_pct": str(
+                        self.settings.crypto_estimated_round_trip_slippage_pct
+                    ),
+                    "observed_spread_pct": str(spread_pct),
+                    "estimated_round_trip_cost_pct": str(
+                        estimated_round_trip_cost_pct
+                    ),
+                    "required_net_edge_pct": str(
+                        self.settings.crypto_min_net_edge_pct
+                    ),
+                    "required_gross_move_pct": str(required_gross_move_pct),
+                    "configured_target_pct": str(configured_target_pct),
+                    "expected_gross_move_pct": str(expected_gross_move_pct),
+                    "estimated_net_edge_pct": str(estimated_net_edge_pct),
+                }
+                signal.metadata["estimated_net_edge_pct"] = str(
+                    estimated_net_edge_pct
+                )
+                if expected_gross_move_pct < required_gross_move_pct:
+                    signal = Signal(
+                        action="hold",
+                        symbol=symbol,
+                        reason=(
+                            "estimated crypto move does not clear fees, spread, "
+                            "slippage, and required net edge"
+                        ),
+                        metadata=signal.metadata,
+                    )
+                elif expected_gross_move_pct < configured_target_pct:
+                    signal = Signal(
+                        action="hold",
+                        symbol=symbol,
+                        reason=(
+                            "estimated crypto move is below configured gross target"
+                        ),
+                        metadata=signal.metadata,
+                    )
             payload = {
                 "action": signal.action,
                 "symbol": signal.symbol,
@@ -996,6 +1071,15 @@ class CryptoExecutionEngine:
                     payload["action"] = "hold"
                     payload["reason"] = self.paper_selection.error or "paper_candidate_entries_closed"
 
+        if multi_asset_paper:
+            buy_signals.sort(
+                key=lambda item: (
+                    _d((item.metadata or {}).get("estimated_net_edge_pct")),
+                    _d((item.metadata or {}).get("opportunity_score")),
+                ),
+                reverse=True,
+            )
+
         self.state.record_crypto_scan(scan, at=now)
         entries_24h = (
             self._account_entries_24h(recent_orders, now)
@@ -1004,8 +1088,9 @@ class CryptoExecutionEngine:
         )
         prepared: list[tuple[Signal, Decimal, str, dict[str, str] | None]] = []
         errors: list[dict[str, str]] = []
+        risk_positions = list(positions)
         for signal in buy_signals:
-            if not direct_btc:
+            if not direct_btc and not multi_asset_paper:
                 if not bool(self.state.crypto_graen_promotion.get("promotion_ready")):
                     errors.append({
                         "symbol": signal.symbol,
@@ -1043,7 +1128,7 @@ class CryptoExecutionEngine:
                 signal.symbol,
                 self.settings.crypto_order_notional,
                 account,
-                positions,
+                risk_positions,
                 entries_24h + len(prepared),
                 entry_symbols=set(active_symbols),
                 require_execution_authorized=not live_signal,
@@ -1081,7 +1166,16 @@ class CryptoExecutionEngine:
                     })
                     continue
             prepared.append((signal, qty, client_order_id, refs))
-            if len(prepared) >= 1:
+            risk_positions.append({
+                "symbol": signal.symbol,
+                "qty": str(qty),
+                "market_value": str(self.settings.crypto_order_notional),
+            })
+            if len(prepared) >= (
+                1
+                if direct_btc or live_signal
+                else self.settings.crypto_max_new_entries_per_cycle
+            ):
                 break
 
         result: dict[str, Any]
@@ -1148,79 +1242,121 @@ class CryptoExecutionEngine:
                 self.state.crypto_last_signal = scan.get(signal.symbol)
                 self.state.crypto_last_execution_at = now
                 return result
-            try:
-                order = await self.client.submit_crypto_market_buy(
-                    symbol=signal.symbol,
-                    qty=str(qty),
-                    client_order_id=client_order_id,
-                )
-            except Exception as exc:
-                recovered = None
-                for attempt in range(3):
-                    try:
-                        recovered = await self.client.order_by_client_order_id(
-                            client_order_id
-                        )
-                    except Exception:
-                        recovered = None
-                    if recovered is not None:
-                        break
-                    if attempt < 2:
-                        await asyncio.sleep(0.5 * (attempt + 1))
-                if recovered is None:
-                    self.state.crypto_last_error = f"{type(exc).__name__}: {exc}"
-                    self.state.crypto_last_decision = (
-                        "crypto broker submission ambiguous; no additional entry submitted"
-                    )
-                    self.state.record_event(
-                        kind="crypto_execution",
+
+            submitted: list[dict[str, Any]] = []
+            for signal, qty, client_order_id, refs in prepared:
+                try:
+                    order = await self.client.submit_crypto_market_buy(
                         symbol=signal.symbol,
-                        action="blocked",
-                        message=self.state.crypto_last_decision,
-                        reason=self.state.crypto_last_error,
-                        at=now,
-                        payload={"market": "crypto", "client_order_id": client_order_id},
+                        qty=str(qty),
+                        client_order_id=client_order_id,
+                    )
+                except Exception as exc:
+                    recovered = None
+                    for attempt in range(3):
+                        try:
+                            recovered = await self.client.order_by_client_order_id(
+                                client_order_id
+                            )
+                        except Exception:
+                            recovered = None
+                        if recovered is not None:
+                            break
+                        if attempt < 2:
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                    if recovered is None:
+                        self.state.crypto_last_error = f"{type(exc).__name__}: {exc}"
+                        errors.append({
+                            "symbol": signal.symbol,
+                            "reason": (
+                                "crypto broker submission ambiguous; "
+                                "no additional entry submitted"
+                            ),
+                        })
+                        self.state.record_event(
+                            kind="crypto_execution",
+                            symbol=signal.symbol,
+                            action="blocked",
+                            message=(
+                                "crypto broker submission ambiguous; "
+                                "no additional entry submitted"
+                            ),
+                            reason=self.state.crypto_last_error,
+                            at=now,
+                            payload={
+                                "market": "crypto",
+                                "client_order_id": client_order_id,
+                            },
+                            correlation_id=self.state.crypto_current_correlation_id,
+                        )
+                        break
+                    order = recovered
+
+                if self.ledger is not None:
+                    self.ledger.record_broker_order(
+                        order,
+                        intent_id=(refs or {}).get("intent_id"),
+                        position_id=(refs or {}).get("position_id"),
                         correlation_id=self.state.crypto_current_correlation_id,
                     )
-                    return {
-                        "action": "blocked",
-                        "reason": self.state.crypto_last_decision,
-                        "error": self.state.crypto_last_error,
-                    }
-                order = recovered
-
-            if self.ledger is not None:
-                self.ledger.record_broker_order(
-                    order,
-                    intent_id=(refs or {}).get("intent_id"),
-                    position_id=(refs or {}).get("position_id"),
+                self.state.crypto_last_order = order
+                self.state.crypto_last_execution_at = now
+                message = f"crypto buy submitted for {signal.symbol}"
+                self.state.record_event(
+                    kind="crypto_execution",
+                    symbol=signal.symbol,
+                    action="buy",
+                    message=message,
+                    at=now,
+                    payload={"market": "crypto", "order": order},
                     correlation_id=self.state.crypto_current_correlation_id,
                 )
-            self.state.crypto_last_order = order
-            self.state.crypto_last_execution_at = now
-            self.state.crypto_last_decision = (
-                f"crypto buy submitted for {signal.symbol}"
-            )
-            self.state.record_event(
-                kind="crypto_execution",
-                symbol=signal.symbol,
-                action="buy",
-                message=self.state.crypto_last_decision,
-                at=now,
-                payload={"market": "crypto", "order": order},
-                correlation_id=self.state.crypto_current_correlation_id,
-            )
-            result = {
-                "action": "submitted",
-                "symbol": signal.symbol,
-                "reason": self.state.crypto_last_decision,
-                "order": order,
-            }
+                submitted.append({
+                    "symbol": signal.symbol,
+                    "order": order,
+                    "estimated_net_edge_pct": (
+                        signal.metadata or {}
+                    ).get("estimated_net_edge_pct"),
+                    "opportunity_score": (
+                        signal.metadata or {}
+                    ).get("opportunity_score"),
+                })
+
+            if not submitted:
+                self.state.crypto_last_decision = (
+                    "crypto entries were prepared but no broker submission was confirmed"
+                )
+                result = {
+                    "action": "blocked",
+                    "reason": self.state.crypto_last_decision,
+                    "errors": errors,
+                }
+            else:
+                self.state.crypto_last_decision = (
+                    f"submitted {len(submitted)} crypto paper entr"
+                    f"{'y' if len(submitted) == 1 else 'ies'}"
+                )
+                result = {
+                    "action": "submitted",
+                    "symbol": submitted[0]["symbol"],
+                    "reason": self.state.crypto_last_decision,
+                    "order": submitted[0]["order"],
+                    "orders": submitted,
+                    "errors": errors,
+                }
 
         self.state.crypto_last_execution_context = {
             "decision_at": now.isoformat(),
             "execution_mode": self.settings.crypto_execution_mode,
-            "execution_class": "BTC_DIRECT_PAPER" if direct_btc else "VALIDATED",
+            "execution_class": (
+                "BTC_DIRECT_PAPER"
+                if direct_btc
+                else (
+                    "MULTI_ASSET_PAPER_DISCOVERY"
+                    if multi_asset_paper
+                    else "VALIDATED"
+                )
+            ),
             "active_universe": active_symbols,
             "owned_symbols": sorted(owned_symbols),
             "entries_24h": entries_24h,

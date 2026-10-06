@@ -25,6 +25,9 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pip install pytest==8.3.5
       - run: python -m scripts.staging_check
+      - run: python -m py_compile app/config.py app/crypto_layer.py app/crypto_execution.py app/main.py
+      - run: python -m pytest -q tests/test_crypto_layer.py tests/test_crypto_execution.py
+      - run: python scripts/verify_crypto_multi_asset_paper.py
       - run: python -m py_compile graen/crypto/service_v6.py graen/crypto/shadow_v6.py graen/crypto/btc_xgb_replication_v14.py graen/crypto/btc_4h_consensus_v14_r2h.py graen/crypto/btc_r2h_breakout_v15.py
       - run: python -m pytest -q tests/test_btc_discovery.py
       - run: python -m pytest -q tests/test_iren_codex_handoff.py tests/test_iren_executor_service.py tests/test_iren_control_plane.py tests/test_iren_runtime_evidence.py
