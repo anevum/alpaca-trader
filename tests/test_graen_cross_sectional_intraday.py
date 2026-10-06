@@ -162,9 +162,9 @@ def test_acceleration_v3_requires_peer_relative_activity_confirmation():
         return output
 
     series = build_series({
-        "BTC/USD": rows(0.0020, 0.0100, True),
-        "ETH/USD": rows(0.0010, 0.0010, False),
-        "SOL/USD": rows(0.0005, 0.0005, False),
+        "BTC/USD": rows(0.0010, 0.0080, True),
+        "ETH/USD": rows(0.0007, 0.0007, False),
+        "SOL/USD": rows(0.0003, 0.0003, False),
     })
     spec = build_spec(
         1,
