@@ -84,7 +84,7 @@ def test_existing_active_job_prevents_duplicate_next_action():
     assert action["objective_key"] == "GRAEN"
 
 
-def test_do_that_creates_durable_job_spec():
+def test_do_that_routes_software_work_to_manual_codex():
     result = process_command(
         "do that",
         snapshot(),
@@ -93,9 +93,10 @@ def test_do_that_creates_durable_job_spec():
         source="command",
     )
     assert result.intent == "EXECUTE_NEXT"
-    assert result.job["objective_key"] == "COMMAND"
-    assert result.job["status"] == "QUEUED"
-    assert result.job["requested_via"] == "command"
+    assert result.job is None
+    assert result.response["execution_mode"] == "codex/manual software"
+    assert "prepare for Codex" in result.response["message"]
+    assert "no paid model job was queued" in result.response["message"]
 
 
 def test_protected_objective_requires_approval():
@@ -112,7 +113,7 @@ def test_protected_objective_requires_approval():
     assert result.job["requires_human"] is True
 
 
-def test_freeform_directive_becomes_iren_triage_job():
+def test_freeform_directive_fails_closed_without_model_worker():
     result = process_command(
         "Investigate the evidence gap",
         snapshot(),
@@ -121,8 +122,9 @@ def test_freeform_directive_becomes_iren_triage_job():
         source="slack",
     )
     assert result.intent == "DIRECTIVE"
-    assert result.job["owner_system"] == "IREN"
-    assert result.job["status"] == "QUEUED"
+    assert result.job is None
+    assert "not executed" in result.response["message"]
+    assert "prepare for Codex" in result.response["supported_actions"]
 
 
 def test_current_iren_status_is_read_only_and_creates_no_job():

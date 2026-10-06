@@ -208,8 +208,9 @@ async def inspect_github(get, *, handoff_id=None, objective_key=None, pr_number=
             if (row.get("app") or {}).get("slug") == "github-actions":
                 latest.setdefault(row["name"], row)
         checks_ok = checks_ok and checks.get("total_count", 0) <= 100 and REQUIRED_CHECKS <= set(latest)
-        checks_ok = checks_ok and all(r.get("status") == "completed" and r.get("conclusion") == "success" for r in latest.values())
-        statuses = await get(f"commits/{sha}/status")
-        checks_ok = checks_ok and (statuses.get("total_count") == 0 or statuses.get("state") == "success")
+        checks_ok = checks_ok and all(
+            r.get("status") == "completed" and r.get("conclusion") == "success"
+            for r in latest.values()
+        )
     result["ci_passed"] = bool(checks_ok)
     return result

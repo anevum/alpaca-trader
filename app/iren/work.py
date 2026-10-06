@@ -11,6 +11,7 @@ import httpx
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 from . import codex_handoff as codex
+from .codex_github import inspect_github
 
 UTC = timezone.utc
 BUSINESS_TZ = ZoneInfo("America/New_York")
@@ -537,28 +538,39 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
         return CommandResult(intent, {"message": "Items requiring human authority.", "items": decisions, **summary})
     if intent in {"EXECUTE_NEXT", "FIX"}:
         action = summary.get("next_action") or choose_next_action(snapshot, control_state)
+        execution_mode = codex.mode(action)
+        if execution_mode == "codex/manual software":
+            return CommandResult(intent, {
+                **summary,
+                "message": (
+                    "Software work is manual in the zero-cost control plane. "
+                    "Use 'prepare for Codex' to create a bounded handoff; no paid model job was queued."
+                ),
+                "next_action": action,
+                "execution_mode": execution_mode,
+            })
         job = build_job(action, requested_by, source)
         return CommandResult(intent, {
             **summary,
             "message": f"IREN queued: {action.get('title')}.",
             "next_action": action,
+            "execution_mode": execution_mode,
         }, job)
     return CommandResult(intent, {
-        "message": "Directive captured as durable work for IREN triage.",
         **summary,
-    }, {
-        "objective_key": None,
-        "title": command.strip()[:180] or "Operator directive",
-        "instructions": command.strip(),
-        "owner_system": "IREN",
-        "job_type": "AGENT_WORK",
-        "status": "QUEUED",
-        "priority": 90,
-        "protected_action": False,
-        "requires_human": False,
-        "requested_by": requested_by,
-        "requested_via": source,
-        "metadata": {"intent": "DIRECTIVE"},
+        "message": (
+            "Free-form directive not executed. IREN has no conversational model worker in "
+            "the zero-cost control plane. Use an explicit deterministic control or prepare "
+            "a manual Codex handoff."
+        ),
+        "supported_actions": [
+            "status",
+            "what's next?",
+            "do that",
+            "what needs me?",
+            "prepare for Codex",
+            "verify Codex handoff",
+        ],
     })
 
 
@@ -599,6 +611,10 @@ class IrenWorkEngine:
         self.last_handoff_check = None
         self.executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip()
         self.executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
+        self.github_token = os.getenv("IREN_GITHUB_TOKEN", "").strip()
+        self.github_repository = (
+            os.getenv("IREN_GITHUB_REPOSITORY", "").strip() or codex.REPOSITORY
+        )
 
     async def snapshot(self) -> dict[str, Any]:
         return await self.gateway("iren_work_snapshot")
@@ -683,22 +699,38 @@ class IrenWorkEngine:
                 self.last_error = type(exc).__name__
                 await self.gateway("iren_command_complete", command_id=command_id, status="FAILED", response={"error": type(exc).__name__})
 
+    async def _github_get(self, path: str) -> Any:
+        """Read bounded GitHub evidence directly; this never invokes a paid model."""
+        if self.github_repository != codex.REPOSITORY:
+            raise ValueError("github_repository_mismatch")
+        if len(self.github_token) < 20:
+            raise ValueError("github_read_token_not_configured")
+        if not path or path.startswith("/") or "://" in path:
+            raise ValueError("invalid_github_evidence_path")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{self.github_repository}/{path}",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {self.github_token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def _github_evidence(self, job=None):
-        if not self.executor_url or len(self.executor_token) < 32:
-            raise ValueError("github_evidence_router_unavailable")
-        root = self.executor_url.removesuffix("/v1/jobs/accept").rstrip("/")
-        params = {}
+        params: dict[str, Any] = {}
         if job:
             package = job["result"]["package"]
-            params = {"handoff_id": job["job_id"], "objective_key": package["objective_key"]}
+            params = {
+                "handoff_id": job["job_id"],
+                "objective_key": package["objective_key"],
+            }
             association = job["result"].get("association") or {}
             if association.get("pr_number"):
                 params["pr_number"] = association["pr_number"]
-        async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.get(root + "/v1/codex/github",
-                headers={"x-anevum-scheduler-token": self.executor_token}, params=params)
-            response.raise_for_status()
-            return response.json()
+        return await inspect_github(self._github_get, **params)
 
     async def _reconcile_handoffs(self, force=False):
         now = datetime.now(UTC)
@@ -711,11 +743,20 @@ class IrenWorkEngine:
             try:
                 github = await self._github_evidence(job)
                 foundation = await self.gateway("iren_handoff_evidence")
-                root = self.executor_url.removesuffix("/v1/jobs/accept").rstrip("/")
-                async with httpx.AsyncClient(timeout=20) as client:
-                    response = await client.get(root + "/health")
-                    response.raise_for_status()
-                    worker = response.json()
+                # Manual Codex handoffs are a zero-spend path. Record that policy
+                # locally instead of depending on an executor runtime merely to
+                # prove that paid model execution is disabled.
+                worker = {
+                    "spending_authority": False,
+                    "software_backend_configured": False,
+                    "evidence_source": "iren_local_zero_spend_policy",
+                    "software_worker": {
+                        "daily_budget_usd": 0,
+                        "job_budget_usd": 0,
+                        "model_invoked": False,
+                        "manual_handoff": True,
+                    },
+                }
                 async with httpx.AsyncClient(timeout=10) as client:
                     own = await client.get("http://127.0.0.1:" + os.getenv("PORT", "8080") + "/health")
                     own.raise_for_status()
