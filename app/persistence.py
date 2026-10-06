@@ -45,10 +45,7 @@ class TradingEventSink:
         self.foundation_task: asyncio.Task | None = None
         self.foundation_last_error: str | None = None
         self.foundation_delivered_count = 0
-        if (
-            not self._remote_transport_disabled
-            and bool(getattr(settings, "foundation_shadow_enabled", False))
-        ):
+        if bool(getattr(settings, "foundation_shadow_enabled", False)):
             self.foundation_sink = FoundationShadowSink(
                 outbox=DurableEventOutbox(settings.foundation_outbox_path),
                 ingest_url=settings.foundation_ingest_url,
@@ -56,17 +53,7 @@ class TradingEventSink:
             )
 
     @property
-    def _remote_transport_disabled(self) -> bool:
-        return bool(
-            getattr(self.settings, "crypto_only_runtime", False)
-            and getattr(self.settings, "crypto_execution_mode", "validated")
-            == "btc_direct_paper"
-        )
-
-    @property
     def enabled(self) -> bool:
-        if self._remote_transport_disabled:
-            return False
         return bool(
             self.settings.trading_ingest_url
             and self.settings.trading_ingest_token
@@ -780,17 +767,8 @@ class TradingEventSink:
         ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(scan)
         for rank, (symbol, signal) in enumerate(scan.items(), start=1):
             metadata = dict(signal.get("metadata") or {})
-            is_crypto = str(metadata.get("market") or "").lower() == "crypto"
-            candidate_strategy_version_id = (
-                self.settings.crypto_strategy_version_id
-                if is_crypto
-                else self.settings.strategy_version_id
-            )
-            candidate_data_feed = (
-                f"crypto-{self.settings.crypto_location}"
-                if is_crypto
-                else getattr(self.settings, "data_feed", None)
-            )
+            candidate_strategy_version_id = self.settings.strategy_version_id
+            candidate_data_feed = getattr(self.settings, "data_feed", None)
             candidate_comparison_context = metadata.pop("_comparison_context", None)
             if isinstance(candidate_comparison_context, dict) and not embedded_comparison_context:
                 embedded_comparison_context = candidate_comparison_context
@@ -806,13 +784,9 @@ class TradingEventSink:
             qualified = str(signal.get("action") or "").lower() == "buy"
             qualified_count += int(qualified)
             reason = str(signal.get("reason") or "")
-            ads002_shadow = (
-                None
-                if is_crypto
-                else self._ads002_shadow_candidate_safe(
-                    symbol=symbol,
-                    metadata=metadata,
-                )
+            ads002_shadow = self._ads002_shadow_candidate_safe(
+                symbol=symbol,
+                metadata=metadata,
             )
             candidates.append(
                 {
@@ -877,28 +851,12 @@ class TradingEventSink:
                     },
                     "methodology_version": "live-decision-v1",
                     "strategy_version_id": candidate_strategy_version_id,
-                    "market_lane": "crypto" if is_crypto else "us_equity",
-                    "strategy_family": (
-                        getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
-                        if is_crypto
-                        else getattr(self.settings, "strategy_name", None)
-                    ),
-                    "model_version": (
-                        getattr(self.settings, "crypto_model_version", None)
-                        if is_crypto else candidate_strategy_version_id
-                    ),
-                    "calibration_version": (
-                        getattr(self.settings, "crypto_calibration_version", None)
-                        if is_crypto else None
-                    ),
-                    "regime_version": (
-                        getattr(self.settings, "crypto_regime_version", None)
-                        if is_crypto else None
-                    ),
-                    "execution_adapter_version": (
-                        getattr(self.settings, "crypto_execution_adapter_version", None)
-                        if is_crypto else "alpaca-equity-execution-v1"
-                    ),
+                    "market_lane": "us_equity",
+                    "strategy_family": getattr(self.settings, "strategy_name", None),
+                    "model_version": candidate_strategy_version_id,
+                    "calibration_version": None,
+                    "regime_version": None,
+                    "execution_adapter_version": "alpaca-equity-execution-v1",
                     "data_source": "alpaca",
                     "data_feed": candidate_data_feed,
                     "bar_interval": getattr(self.settings, "bar_timeframe", None),
@@ -912,29 +870,20 @@ class TradingEventSink:
                     },
                     "research_attribution": {
                         "live_strategy_version": candidate_strategy_version_id,
-                        "market": "crypto" if is_crypto else "us_equity",
+                        "market": "us_equity",
                     },
                     "ads002": ads002_shadow,
                     "ads002_v2": (
-                        None
-                        if is_crypto
-                        else (
-                            ads002_v2_by_symbol.get(symbol.upper())
-                            or self._ads002_v2_missing_state(
-                                symbol=symbol,
-                                metadata=metadata,
-                                reason="DECISION_CYCLE_CONTEXT_UNAVAILABLE",
-                            )
+                        ads002_v2_by_symbol.get(symbol.upper())
+                        or self._ads002_v2_missing_state(
+                            symbol=symbol,
+                            metadata=metadata,
+                            reason="DECISION_CYCLE_CONTEXT_UNAVAILABLE",
                         )
                     ),
-                    "ads_crypto": metadata.get("ads_crypto") if is_crypto else None,
                 }
             )
 
-        cycle_is_crypto = any(
-            str((item.get("metadata") or {}).get("market") or "").lower() == "crypto"
-            for item in scan.values()
-        )
         replay_context = {
             "configuration": self._comparison_configuration(),
             "execution_context": comparison_context or embedded_comparison_context,
@@ -945,11 +894,7 @@ class TradingEventSink:
             event_key=f"{self.settings.trading_run_id}:decision-cycle:{correlation_id}",
             correlation_id=correlation_id,
             occurred_at=cycle_ended_at.isoformat(),
-            strategy_version_id=(
-                self.settings.crypto_strategy_version_id
-                if cycle_is_crypto
-                else self.settings.strategy_version_id
-            ),
+            strategy_version_id=self.settings.strategy_version_id,
             payload={
                 "cycle_key": cycle_key,
                 "cycle_started_at": cycle_started_at.isoformat(),
@@ -960,41 +905,17 @@ class TradingEventSink:
                 "symbols_expected": list(active_universe),
                 "symbols_evaluated": list(scan),
                 "execution_mode": getattr(self.settings, "trading_mode", None),
-                "market_session": (
-                    "continuous_24x7"
-                    if cycle_is_crypto
-                    else ("regular" if market_is_open else "closed")
-                ),
+                "market_session": "regular" if market_is_open else "closed",
                 "data_source": "alpaca",
-                "data_feed": (
-                    f"crypto-{self.settings.crypto_location}"
-                    if cycle_is_crypto
-                    else getattr(self.settings, "data_feed", None)
-                ),
+                "data_feed": getattr(self.settings, "data_feed", None),
                 "bar_interval": getattr(self.settings, "bar_timeframe", None),
                 "methodology_version": "live-decision-v1",
-                "market_lane": "crypto" if cycle_is_crypto else "us_equity",
-                "strategy_family": (
-                    getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
-                    if cycle_is_crypto
-                    else getattr(self.settings, "strategy_name", None)
-                ),
-                "model_version": (
-                    getattr(self.settings, "crypto_model_version", None)
-                    if cycle_is_crypto else getattr(self.settings, "strategy_version_id", None)
-                ),
-                "calibration_version": (
-                    getattr(self.settings, "crypto_calibration_version", None)
-                    if cycle_is_crypto else None
-                ),
-                "regime_version": (
-                    getattr(self.settings, "crypto_regime_version", None)
-                    if cycle_is_crypto else None
-                ),
-                "execution_adapter_version": (
-                    getattr(self.settings, "crypto_execution_adapter_version", None)
-                    if cycle_is_crypto else "alpaca-equity-execution-v1"
-                ),
+                "market_lane": "us_equity",
+                "strategy_family": getattr(self.settings, "strategy_name", None),
+                "model_version": getattr(self.settings, "strategy_version_id", None),
+                "calibration_version": None,
+                "regime_version": None,
+                "execution_adapter_version": "alpaca-equity-execution-v1",
                 "candidate_count": len(candidates),
                 "qualified_count": qualified_count,
                 "rejected_count": len(candidates) - qualified_count,
@@ -1026,11 +947,7 @@ class TradingEventSink:
             symbol=symbol.upper(),
             correlation_id=correlation_id,
             occurred_at=observed_at.isoformat(),
-            strategy_version_id=(
-                self.settings.crypto_strategy_version_id
-                if str(metrics.get("market") or "").lower() == "crypto"
-                else self.settings.strategy_version_id
-            ),
+            strategy_version_id=self.settings.strategy_version_id,
             payload=metrics,
         )
 
@@ -1048,17 +965,11 @@ class TradingEventSink:
         position_id = str(uuid4())
         metadata = dict(signal.metadata or {})
         market = str(metadata.get("market") or "").lower()
-        is_crypto = market == "crypto"
         is_extended_equity = market == "us_equity_extended"
-        time_in_force = str(
-            metadata.get("time_in_force")
-            or ("gtc" if is_crypto else "day")
-        )
+        time_in_force = str(metadata.get("time_in_force") or "day")
         order_type = str(metadata.get("execution_order_type") or "market")
         strategy_version_id = (
-            self.settings.crypto_strategy_version_id
-            if is_crypto
-            else self.settings.extended_equity_strategy_version_id
+            self.settings.extended_equity_strategy_version_id
             if is_extended_equity
             else self.settings.strategy_version_id
         )
@@ -1170,36 +1081,21 @@ class TradingEventSink:
                             or "us_equity"
                         ),
                         "strategy_family": (
-                            getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
-                            if is_crypto
-                            else "extended_rolling_momentum"
+                            "extended_rolling_momentum"
                             if is_extended_equity
                             else getattr(self.settings, "strategy_name", None)
                         ),
-                        "model_version": (
-                            getattr(self.settings, "crypto_model_version", None)
-                            if is_crypto else strategy_version_id
-                        ),
-                        "calibration_version": (
-                            getattr(self.settings, "crypto_calibration_version", None)
-                            if is_crypto else None
-                        ),
-                        "regime_version": (
-                            getattr(self.settings, "crypto_regime_version", None)
-                            if is_crypto else None
-                        ),
+                        "model_version": strategy_version_id,
+                        "calibration_version": None,
+                        "regime_version": None,
                         "execution_adapter_version": (
-                            getattr(self.settings, "crypto_execution_adapter_version", None)
-                            if is_crypto
-                            else "alpaca-equity-24x5-limit-v1"
+                            "alpaca-equity-24x5-limit-v1"
                             if is_extended_equity
                             else "alpaca-equity-execution-v1"
                         ),
                         "data_source": "alpaca",
                         "data_feed": (
-                            f"crypto-{self.settings.crypto_location}"
-                            if is_crypto
-                            else metadata.get("data_feed")
+                            metadata.get("data_feed")
                             if is_extended_equity
                             else getattr(self.settings, "data_feed", None)
                         ),
@@ -1216,17 +1112,8 @@ class TradingEventSink:
                         "research_attribution": {
                             "live_strategy_version": strategy_version_id,
                         },
-                        "ads002": (
-                            None
-                            if is_crypto or is_extended_equity
-                            else ads002_shadow
-                        ),
-                        "ads002_v2": (
-                            None
-                            if is_crypto or is_extended_equity
-                            else ads002_v2
-                        ),
-                        "ads_crypto": metadata.get("ads_crypto") if is_crypto else None,
+                        "ads002": None if is_extended_equity else ads002_shadow,
+                        "ads002_v2": None if is_extended_equity else ads002_v2,
                     },
                 },
             },
@@ -1263,10 +1150,7 @@ class TradingEventSink:
         exit_id = str(uuid4())
         metadata = dict(exit_metadata or {})
         market = str(metadata.get("market") or "").lower()
-        time_in_force = str(
-            metadata.get("time_in_force")
-            or ("gtc" if market == "crypto" else "day")
-        )
+        time_in_force = str(metadata.get("time_in_force") or "day")
         order_type = str(metadata.get("execution_order_type") or "market")
         payload = {
             "intent": {
