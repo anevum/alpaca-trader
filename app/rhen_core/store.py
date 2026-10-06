@@ -2231,7 +2231,15 @@ class RhenCoreStore:
         """Return the durable Command research and strategy lifecycle projection."""
         from app.graen.btc_discovery import projection
         btc = projection(self)
-        if btc.get("state") != "NOT_STARTED":
+        btc_state = str(btc.get("state") or "NOT_STARTED").upper()
+        btc_has_forward_paper = bool(
+            btc.get("paper_candidate_id") or btc.get("paper_runtime")
+        )
+        btc_owns_primary_pipeline = (
+            btc_state not in {"NOT_STARTED", "EXHAUSTED", "REJECTED"}
+            or btc_has_forward_paper
+        )
+        if btc_owns_primary_pipeline:
             current = btc.get("candidate") or {}
             verification = (current.get("results") or {}).get("VELUM_REPLAY") or {}
             return {"schema_version": "strategy_pipeline_research.v1", "btc_discovery": btc,
