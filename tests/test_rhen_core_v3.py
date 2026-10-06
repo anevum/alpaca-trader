@@ -749,7 +749,7 @@ def test_command_research_tracking_exposes_rhen_shadow_economics_run(
     now = datetime.now(UTC)
     events = []
     for index, (mean_net, best_net, admit_rate) in enumerate(
-        [(3.0, 8.0, 25.0), (4.5, 11.0, 40.0)]
+        [(3.0, 8.0, 25.0), (4.5, 11.0, 50.0)]
     ):
         stamp = now + timedelta(minutes=index)
         events.append(
@@ -828,7 +828,7 @@ def test_command_research_tracking_exposes_rhen_shadow_economics_run(
     assert run["methodology_version"] == "rhen-shadow-economics-v1"
     assert run["metrics"]["mean_expected_net_bps"] == 4.5
     assert run["metrics"]["best_expected_net_bps"] == 11.0
-    assert run["metrics"]["shadow_admission_rate_pct"] == 40.0
+    assert run["metrics"]["shadow_admission_rate_pct"] == 50.0
     assert run["detail"]["execution_authority"] is False
     assert len(run["series"]) == 3
     assert all(len(series["points"]) == 2 for series in run["series"])
