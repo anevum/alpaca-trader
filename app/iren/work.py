@@ -344,7 +344,7 @@ def render_maintenance_prompt(
         "Do not restart architecture analysis or redo completed work.",
         "",
         "Canonical repositories:",
-        "- Backend/runtime: anevum/alpaca-trader",
+        f"- Backend/runtime: {codex.configured_repository()}",
         "- Frontend/Command: anevum/anevum-web",
         "",
         "IREN control snapshot:",
@@ -855,9 +855,7 @@ class IrenWorkEngine:
         self.executor_url = os.getenv("IREN_EXECUTOR_URL", "").strip()
         self.executor_token = os.getenv("IREN_EXECUTOR_TOKEN", "").strip()
         self.github_token = os.getenv("IREN_GITHUB_TOKEN", "").strip()
-        self.github_repository = (
-            os.getenv("IREN_GITHUB_REPOSITORY", "").strip() or codex.REPOSITORY
-        )
+        self.github_repository = codex.configured_repository()
 
     async def snapshot(self) -> dict[str, Any]:
         snapshot = await self.gateway("iren_work_snapshot")
@@ -1026,7 +1024,7 @@ class IrenWorkEngine:
 
     async def _github_get(self, path: str) -> Any:
         """Read bounded GitHub evidence directly; this never invokes a paid model."""
-        if self.github_repository != codex.REPOSITORY:
+        if not codex.repository_allowed(self.github_repository):
             raise ValueError("github_repository_mismatch")
         if len(self.github_token) < 20:
             raise ValueError("github_read_token_not_configured")
@@ -1055,7 +1053,11 @@ class IrenWorkEngine:
             association = job["result"].get("association") or {}
             if association.get("pr_number"):
                 params["pr_number"] = association["pr_number"]
-        return await inspect_github(self._github_get, **params)
+        return await inspect_github(
+            self._github_get,
+            repository=self.github_repository,
+            **params,
+        )
 
     async def _reconcile_handoffs(self, force=False):
         now = datetime.now(UTC)
