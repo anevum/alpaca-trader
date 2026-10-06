@@ -545,6 +545,7 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
             "next_action": action,
         }, job)
     return CommandResult(intent, {
+        **summary,
         "message": (
             "Free-form directive not executed. IREN has no conversational model worker in "
             "the zero-cost control plane. Use an explicit deterministic control or prepare "
@@ -558,7 +559,6 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
             "prepare for Codex",
             "verify Codex handoff",
         ],
-        **summary,
     })
 
 
