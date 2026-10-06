@@ -210,6 +210,11 @@ class RuntimeState:
                 or old.get("reason") != payload.get("reason")
             )
             if changed:
+                # Keep per-symbol scan transitions in operator history only.
+                # Canonical decision_cycle persistence already records the
+                # bounded candidate evidence once per cycle; durably emitting
+                # every changed hold reason duplicates that evidence and can
+                # exhaust RHEN Core storage under a broad dynamic universe.
                 self.record_event(
                     kind="scan",
                     symbol=symbol,
@@ -218,6 +223,7 @@ class RuntimeState:
                     reason=str(payload.get("reason") or ""),
                     at=at,
                     payload={"signal": payload},
+                    emit=False,
                 )
         self.last_scan = scan
         self.last_completed_scan = scan
