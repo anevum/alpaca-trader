@@ -199,33 +199,6 @@
       "protected_action_level": "research_and_evidence_only"
     },
     {
-      "workflow_id": "velum.crypto.replay",
-      "subsystem": "VELUM",
-      "owner": "RHEN",
-      "enabled": false,
-      "schedule_type": "hourly",
-      "schedule_expression": "hourly+05m; replay completed hour",
-      "minute": 5,
-      "timezone": "UTC",
-      "market_calendar_dependency": false,
-      "catchup_policy": "latest_only",
-      "stale_after_minutes": 70,
-      "recovery_after_minutes": 20,
-      "retry_policy": {
-        "max_attempts": 2,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "success_route": "rhen-research",
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "velum_crypto",
-      "version": "1.0.1",
-      "protected_action_level": "research_only",
-      "disabled_reason": "Superseded by canonical bounded GRAEN BTC discovery and independent VELUM verification."
-    },
-    {
       "workflow_id": "iren.scheduler.health",
       "subsystem": "IREN",
       "owner": "IREN",
@@ -250,31 +223,6 @@
       "implementation_target": "scheduler_self_health",
       "version": "1.0.0",
       "protected_action_level": "read_only"
-    },
-    {
-      "workflow_id": "graen.btc.discovery",
-      "subsystem": "GRAEN",
-      "owner": "IREN",
-      "enabled": true,
-      "schedule_type": "interval",
-      "schedule_expression": "every_5_minutes",
-      "interval_minutes": 5,
-      "timezone": "UTC",
-      "market_calendar_dependency": false,
-      "catchup_policy": "latest_only",
-      "stale_after_minutes": 10,
-      "recovery_after_minutes": 5,
-      "retry_policy": {
-        "max_attempts": 1,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "graen_btc_discovery",
-      "version": "1.0.0",
-      "protected_action_level": "research_and_paper_assignment_only"
     },
     {
       "workflow_id": "graen.research.adaptive",
