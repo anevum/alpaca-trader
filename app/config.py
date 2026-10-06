@@ -175,6 +175,9 @@ class Settings(BaseSettings):
     btc_direct_paper_acknowledge: str = Field(
         default="NO", alias="I_ACKNOWLEDGE_BTC_DIRECT_PAPER"
     )
+    crypto_multi_asset_paper_acknowledge: str = Field(
+        default="NO", alias="I_ACKNOWLEDGE_CRYPTO_MULTI_ASSET_PAPER"
+    )
     crypto_location: str = Field(default="us", alias="CRYPTO_LOCATION")
     crypto_universe_size: int = Field(default=12, alias="CRYPTO_UNIVERSE_SIZE")
     crypto_universe_refresh_seconds: int = Field(
@@ -228,10 +231,16 @@ class Settings(BaseSettings):
     crypto_min_vwap_edge_pct: Decimal = Field(
         default=Decimal("0"), alias="CRYPTO_MIN_VWAP_EDGE_PCT"
     )
+    crypto_min_confirmations: int = Field(
+        default=1, alias="CRYPTO_MIN_CONFIRMATIONS"
+    )
     crypto_max_vwap_extension_pct: Decimal = Field(
         default=Decimal("0.008"), alias="CRYPTO_MAX_VWAP_EXTENSION_PCT"
     )
     crypto_regime_window: int = Field(default=5, alias="CRYPTO_REGIME_WINDOW")
+    crypto_regime_min_confirmations: int = Field(
+        default=1, alias="CRYPTO_REGIME_MIN_CONFIRMATIONS"
+    )
     crypto_regime_min_return_pct: Decimal = Field(
         default=Decimal("0"), alias="CRYPTO_REGIME_MIN_RETURN_PCT"
     )
@@ -274,11 +283,23 @@ class Settings(BaseSettings):
     crypto_max_concurrent_positions: int = Field(
         default=1, alias="CRYPTO_MAX_CONCURRENT_POSITIONS"
     )
+    crypto_max_new_entries_per_cycle: int = Field(
+        default=1, alias="CRYPTO_MAX_NEW_ENTRIES_PER_CYCLE"
+    )
     crypto_max_entries_24h: int = Field(
         default=4, alias="CRYPTO_MAX_ENTRIES_24H"
     )
     crypto_max_spread_pct: Decimal = Field(
         default=Decimal("0.005"), alias="CRYPTO_MAX_SPREAD_PCT"
+    )
+    crypto_estimated_round_trip_fee_pct: Decimal = Field(
+        default=Decimal("0.005"), alias="CRYPTO_ESTIMATED_ROUND_TRIP_FEE_PCT"
+    )
+    crypto_estimated_round_trip_slippage_pct: Decimal = Field(
+        default=Decimal("0.001"), alias="CRYPTO_ESTIMATED_ROUND_TRIP_SLIPPAGE_PCT"
+    )
+    crypto_min_net_edge_pct: Decimal = Field(
+        default=Decimal("0.002"), alias="CRYPTO_MIN_NET_EDGE_PCT"
     )
     crypto_stop_pct: Decimal = Field(
         default=Decimal("0.0035"), alias="CRYPTO_STOP_PCT"
@@ -536,6 +557,18 @@ class Settings(BaseSettings):
         )
 
     @property
+    def crypto_multi_asset_paper_authorized(self) -> bool:
+        return (
+            self.crypto_execution_mode == "multi_asset_paper"
+            and self.crypto_lane_enabled
+            and self.crypto_execution_enabled
+            and self.crypto_multi_asset_paper_acknowledge == "YES"
+            and self.paper_execution_authorized
+            and not self.live_trading
+            and self.acknowledge_live != "YES"
+        )
+
+    @property
     def btc_direct_live_signal_authorized(self) -> bool:
         return (
             self.crypto_execution_mode == "btc_direct_live_signal"
@@ -690,12 +723,13 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_LOOKBACK_MINUTES must be between 60 and 1440")
         if self.crypto_execution_mode not in {
             "validated",
+            "multi_asset_paper",
             "btc_direct_paper",
             "btc_direct_live_signal",
         }:
             raise ValueError(
-                "CRYPTO_EXECUTION_MODE must be validated, btc_direct_paper, "
-                "or btc_direct_live_signal"
+                "CRYPTO_EXECUTION_MODE must be validated, multi_asset_paper, "
+                "btc_direct_paper, or btc_direct_live_signal"
             )
         if self.crypto_execution_mode == "btc_direct_paper":
             if self.trading_mode != "paper":
@@ -703,6 +737,13 @@ class Settings(BaseSettings):
             if self.live_trading or self.acknowledge_live == "YES":
                 raise ValueError(
                     "btc_direct_paper cannot enable live trading authority"
+                )
+        if self.crypto_execution_mode == "multi_asset_paper":
+            if self.trading_mode != "paper":
+                raise ValueError("multi_asset_paper is hard-gated to TRADING_MODE=paper")
+            if self.live_trading or self.acknowledge_live == "YES":
+                raise ValueError(
+                    "multi_asset_paper cannot enable live trading authority"
                 )
         if self.crypto_execution_mode == "btc_direct_live_signal":
             if self.trading_mode != "live":
@@ -727,10 +768,21 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.crypto_max_concurrent_positions <= 10:
             raise ValueError("CRYPTO_MAX_CONCURRENT_POSITIONS must be between 1 and 10")
+        if not 1 <= self.crypto_max_new_entries_per_cycle <= self.crypto_max_concurrent_positions:
+            raise ValueError(
+                "CRYPTO_MAX_NEW_ENTRIES_PER_CYCLE must be between 1 and "
+                "CRYPTO_MAX_CONCURRENT_POSITIONS"
+            )
         if not 0 <= self.crypto_max_entries_24h <= 100:
             raise ValueError("CRYPTO_MAX_ENTRIES_24H must be between 0 and 100")
         if not 1 <= self.crypto_fast_window < self.crypto_slow_window <= 240:
             raise ValueError("crypto windows must satisfy 1 <= fast < slow <= 240")
+        if not 0 <= self.crypto_min_confirmations <= 10:
+            raise ValueError("CRYPTO_MIN_CONFIRMATIONS must be between 0 and 10")
+        if not 0 <= self.crypto_regime_min_confirmations <= 10:
+            raise ValueError(
+                "CRYPTO_REGIME_MIN_CONFIRMATIONS must be between 0 and 10"
+            )
         if not 3 <= self.crypto_volatility_lookback_bars <= 1440:
             raise ValueError("CRYPTO_VOLATILITY_LOOKBACK_BARS must be between 3 and 1440")
         if not 1 <= self.crypto_regime_window <= 240:
@@ -743,6 +795,16 @@ class Settings(BaseSettings):
             raise ValueError("CRYPTO_ADS_THRESHOLD must be between -20 and 20")
         if not Decimal("0") < self.crypto_max_spread_pct < Decimal("0.10"):
             raise ValueError("CRYPTO_MAX_SPREAD_PCT must be between 0 and 0.10")
+        if not Decimal("0") <= self.crypto_estimated_round_trip_fee_pct < Decimal("0.10"):
+            raise ValueError(
+                "CRYPTO_ESTIMATED_ROUND_TRIP_FEE_PCT must be between 0 and 0.10"
+            )
+        if not Decimal("0") <= self.crypto_estimated_round_trip_slippage_pct < Decimal("0.10"):
+            raise ValueError(
+                "CRYPTO_ESTIMATED_ROUND_TRIP_SLIPPAGE_PCT must be between 0 and 0.10"
+            )
+        if not Decimal("0") <= self.crypto_min_net_edge_pct < Decimal("0.10"):
+            raise ValueError("CRYPTO_MIN_NET_EDGE_PCT must be between 0 and 0.10")
         if not Decimal("0") < self.crypto_stop_pct < Decimal("0.20"):
             raise ValueError("CRYPTO_STOP_PCT must be between 0 and 0.20")
         if not Decimal("0") < self.crypto_target_pct < Decimal("0.50"):
