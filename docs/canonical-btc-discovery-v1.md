@@ -32,3 +32,9 @@ Forward paper requires 30 closed episodes, 30 independent trading dates, and 30 
 RHEN-BTC-DIRECT-003 remains the live BTC strategy and btc_direct_live_signal remains signal-only. Candidate state cannot change live selection, account mode, sizing, risk configuration, equity strategy, or broker-write authority. The default BTC strategy is tested against a frozen original-v3 regression oracle.
 
 Command shows actual stage, bounded progress, candidate identity/fingerprint, measured scenario metrics, VELUM evidence, rejections, and candidate-isolated forward paper progress. A healthy heartbeat does not imply active research. A deployment with no passing candidate truthfully shows no eligible paper assignment.
+
+## Provider-gap handling
+
+Historical BTC research remains fail-closed and never interpolates or forward-fills prices. RHEN first attempts bounded reconstruction from observed source minute bars. If Alpaca has no source observations for exactly one interior hourly interval, the research corpus may retain that timestamp as an explicit provider gap under `isolated_provider_gap_segment_reset_v1`.
+
+A provider gap is a hard replay boundary: no position or delayed entry may cross it, incomplete episodes are excluded rather than assigned an inferred exit, and strategy state must rebuild a full 35-day (840-hour) warmup from contiguous observed bars before scoring resumes. More than one missing hour, or a missing boundary bar, still fails closed. The gap timestamp and policy are included in the dataset fingerprint and replay assumptions. This affects research/VELUM evidence only; it cannot alter the live BTC strategy or broker-write authority.
