@@ -2055,7 +2055,7 @@ class RhenCoreStore:
         )
         errors_2h = sum(
             event.get("event_type") in {
-                "runtime_error", "crypto_runtime_error"
+                "runtime_error"
             }
             for event in recent_2h
         )
@@ -2110,10 +2110,6 @@ class RhenCoreStore:
             "runtime_error": (
                 "warning",
                 "Runtime reported an operational exception.",
-            ),
-            "crypto_runtime_error": (
-                "warning",
-                "Crypto runtime reported an operational exception.",
             ),
         }
         public_types = set(event_labels)
@@ -2797,15 +2793,6 @@ class RhenCoreStore:
                    where event_type like 'velum_%'
                       or event_type like 'nostra_%'
                       or event_type like 'graen_%'
-                      or strategy_version_id like 'CRYPTO-XSECT-PAPER-%'
-                      or (
-                        event_type = 'decision_cycle'
-                        and json_extract(payload_json, '$.market_lane') = 'crypto'
-                      )
-                      or (
-                        event_type = 'position_metrics'
-                        and json_extract(payload_json, '$.market') = 'crypto'
-                      )
                    order by occurred_at desc
                    limit 360"""
             ).fetchall()
@@ -3047,7 +3034,6 @@ class RhenCoreStore:
         events: list[dict[str, Any]] = []
         velum_runs: dict[str, dict[str, Any]] = {}
         nostra_runs: dict[str, dict[str, Any]] = {}
-        paper_groups: dict[str, list[dict[str, Any]]] = {}
 
         for row in reversed(event_rows):
             payload = _loads(row["payload_json"], {})
@@ -3202,186 +3188,8 @@ class RhenCoreStore:
                     "detail": None,
                 })
 
-            strategy_version = str(row["strategy_version_id"] or "")
-            candidate_strategy_version = ""
-            if event_type == "decision_cycle":
-                candidates = payload.get("candidates")
-                if isinstance(candidates, list):
-                    for candidate in candidates:
-                        if not isinstance(candidate, dict):
-                            continue
-                        value = str(candidate.get("strategy_version_id") or "")
-                        if value.startswith("CRYPTO-XSECT-PAPER-"):
-                            candidate_strategy_version = value
-                            break
-            crypto_tracking_event = (
-                strategy_version.startswith("CRYPTO-XSECT-PAPER-")
-                or bool(candidate_strategy_version)
-                or (
-                    event_type == "decision_cycle"
-                    and str(payload.get("market_lane") or "").lower() == "crypto"
-                )
-                or (
-                    event_type == "position_metrics"
-                    and str(payload.get("market") or "").lower() == "crypto"
-                )
-            )
-            if crypto_tracking_event:
-                paper_groups.setdefault(
-                    str(row["run_id"] or candidate_strategy_version or strategy_version),
-                    []
-                ).append({
-                    "event_key": row["event_key"],
-                    "event_type": event_type,
-                    "occurred_at": occurred_at,
-                    "strategy_version_id": strategy_version,
-                    "candidate_strategy_version_id": candidate_strategy_version,
-                    "payload": payload,
-                })
-
         runs.extend(velum_runs.values())
         runs.extend(nostra_runs.values())
-
-        for run_key, rows in paper_groups.items():
-            latest = rows[-1]
-            paper_strategy_version = next(
-                (
-                    str(row.get("candidate_strategy_version_id") or row.get("strategy_version_id") or "")
-                    for row in reversed(rows)
-                    if str(
-                        row.get("candidate_strategy_version_id")
-                        or row.get("strategy_version_id")
-                        or ""
-                    ).startswith("CRYPTO-XSECT-PAPER-")
-                ),
-                "",
-            )
-            if not paper_strategy_version:
-                # Keep direct BTC/live crypto telemetry out of the paper-test lane.
-                continue
-
-            return_points: list[dict[str, Any]] = []
-            score_points: list[dict[str, Any]] = []
-            net_edge_points: list[dict[str, Any]] = []
-            qualified_points: list[dict[str, Any]] = []
-            scanned_points: list[dict[str, Any]] = []
-            rejected_points: list[dict[str, Any]] = []
-            fills = 0
-            decision_cycles = 0
-            for row in rows:
-                payload = row["payload"]
-                if row["event_type"] == "position_metrics":
-                    value = self._research_number(payload.get("current_return_pct"))
-                    if value is not None:
-                        return_points.append({
-                            "at": row["occurred_at"],
-                            "value": round(value * 100.0, 6),
-                        })
-                if row["event_type"] == "decision_cycle":
-                    decision_cycles += 1
-                    score = self._research_number(
-                        payload.get("top_opportunity_score")
-                    )
-                    edge = self._research_number(
-                        payload.get("best_estimated_net_edge_pct")
-                    )
-                    if score is not None:
-                        score_points.append({
-                            "at": row["occurred_at"],
-                            "value": round(score * 100.0, 6),
-                        })
-                    if edge is not None:
-                        net_edge_points.append({
-                            "at": row["occurred_at"],
-                            "value": round(edge * 100.0, 6),
-                        })
-                    qualified = self._research_number(payload.get("qualified_count"))
-                    scanned = self._research_number(payload.get("candidate_count"))
-                    rejected = self._research_number(payload.get("rejected_count"))
-                    if qualified is not None:
-                        qualified_points.append({
-                            "at": row["occurred_at"],
-                            "value": qualified,
-                        })
-                    if scanned is not None:
-                        scanned_points.append({
-                            "at": row["occurred_at"],
-                            "value": scanned,
-                        })
-                    if rejected is not None:
-                        rejected_points.append({
-                            "at": row["occurred_at"],
-                            "value": rejected,
-                        })
-                if row["event_type"] in {"broker_fill", "crypto_fill"}:
-                    fills += 1
-
-            chart_series: list[dict[str, Any]] = []
-            for key, label, unit, points in (
-                ("opportunity_score", "Top opportunity score", "%", score_points),
-                ("estimated_net_edge", "Best estimated net edge", "%", net_edge_points),
-                ("qualified_candidates", "Qualified candidates", "", qualified_points),
-                ("scanned_candidates", "Scanned candidates", "", scanned_points),
-                ("rejected_candidates", "Rejected candidates", "", rejected_points),
-                ("paper_return", "Open-position return", "%", return_points),
-            ):
-                if len(points) > 1:
-                    chart_series.append({
-                        "key": key,
-                        "label": label,
-                        "unit": unit,
-                        "points": points[-120:],
-                    })
-
-            runs.append({
-                "run_id": run_key,
-                "system": "RHEN",
-                "kind": "PAPER_TEST",
-                "title": paper_strategy_version,
-                "status": "RUNNING",
-                "stage": "PAPER_FORWARD",
-                "progress_pct": 50,
-                "problem_id": None,
-                "candidate_id": None,
-                "methodology_version": None,
-                "strategy_version_id": paper_strategy_version,
-                "started_at": rows[0]["occurred_at"],
-                "completed_at": None,
-                "updated_at": latest["occurred_at"],
-                "metrics": {
-                    "fills": float(fills),
-                    "events": float(len(rows)),
-                    "decision_cycles": float(decision_cycles),
-                    "latest_qualified_candidates": (
-                        qualified_points[-1]["value"] if qualified_points else 0.0
-                    ),
-                    "latest_scanned_candidates": (
-                        scanned_points[-1]["value"] if scanned_points else 0.0
-                    ),
-                },
-                "series": chart_series,
-                "detail": {
-                    "paper_only": True,
-                    "live_authority": False,
-                    "chart_basis": "decision_cycle_and_position_evidence",
-                    "inactive_time_drawn": False,
-                },
-            })
-            for row in rows[-60:]:
-                events.append({
-                    "event_id": str(row["event_key"]),
-                    "at": row["occurred_at"],
-                    "system": "RHEN",
-                    "run_id": run_key,
-                    "event_type": row["event_type"],
-                    "stage": "PAPER_FORWARD",
-                    "status": "OBSERVED",
-                    "title": paper_strategy_version,
-                    "detail": (
-                        row["payload"].get("cycle_outcome")
-                        or row["payload"].get("reason")
-                    ),
-                })
 
         # The run/artifact records themselves are durable events. Include them
         # so a selected GRAEN run always has a trace even without a replay.
@@ -3451,17 +3259,6 @@ class RhenCoreStore:
 
     def strategy_pipeline_research(self) -> dict[str, Any]:
         """Return the durable Command research and strategy lifecycle projection."""
-        tracking = self.command_research_tracking()
-            return {"schema_version": "strategy_pipeline_research.v1", "btc_discovery": btc,
-                    "candidate": {**current, "owner": "GRAEN", "lane": "crypto", "updated_at": btc.get("updated_at"),
-                                  "title": current.get("candidate_id"), "supersedes_strategy_version_id": None} if current else None,
-                    "validation": {"owner": "VELUM", "candidate_id": current.get("candidate_id"),
-                                   "status": "VERIFIED" if verification.get("verified") else "WAITING",
-                                   "observed_at": btc.get("updated_at") if verification else None},
-                    "release_gate": {"owner": "IREN", "status": btc["state"], "target_lane": "paper",
-                                     "reason": "Paper evidence only; live strategy and live broker-write authority remain protected.",
-                                     "automatic_promotion": False, "production_authority_changed": False},
-                    "research": tracking}
         tracking = self.command_research_tracking()
         problems = list(tracking.get("graen_problems") or [])
         runs = list(tracking.get("graen_runs") or [])
@@ -3699,7 +3496,7 @@ class RhenCoreStore:
             candidate_rows = conn.execute(
                 """select * from candidates
                 where observed_at >= ?
-                  and lower(coalesce(market_lane,''))='crypto'
+                  and lower(coalesce(market_lane,'')) in ('us_equity','us_equity_extended','equities','')
                 order by observed_at asc limit 500""",
                 (forecast_start,),
             ).fetchall()
