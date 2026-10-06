@@ -121,11 +121,23 @@ def test_maintenance_prompt_is_deterministic_read_only_and_grounded_in_iren_stat
     assert "State: DEGRADED" in prompt
     assert "RHEN runtime | status=HEALTHY | ready=YES" in prompt
     assert "evidence.loss | severity=warning | reason=runtime_event_loss_increasing" in prompt
-    assert "Command | READY | Command | owner=IREN" in prompt
+    assert "COMMAND | READY | Command | owner=IREN" in prompt
     assert "focus on Command telemetry and keep trading behavior unchanged" in prompt
     assert "Keep paid model/API worker spending disabled." in prompt
     assert "no model/API worker was invoked" in prompt
     assert "do not invent work" in prompt
+
+
+def test_maintenance_prompt_treats_malformed_topology_as_missing_evidence():
+    result = process_command(
+        "maintenance prompt",
+        {"objectives": [], "jobs": []},
+        {"state": "HEALTHY", "incidents": {}, "topology": ["not", "a", "mapping"]},
+        requested_by="devon",
+        source="command",
+    )
+
+    assert "No service inventory present. Inspect live Railway state before editing." in result.response["maintenance_prompt"]
 
 
 def test_maintenance_prompt_reports_missing_service_inventory_instead_of_inventing_it():
