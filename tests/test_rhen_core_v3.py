@@ -838,6 +838,135 @@ def test_router_excludes_disabled_optional_modules(monkeypatch):
 
 
 
+def test_executor_heartbeat_blocks_orphaned_stale_research_run(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Interrupted crypto research",
+            "domain": "CRYPTO_STRATEGY_RESEARCH",
+            "priority": 90,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    claimed = store.graen_action(
+        "claim_research_problem",
+        {
+            "worker_id": "old-worker",
+            "runtime_version": "old-runtime",
+            "methodology_version": "old-method",
+            "domain": "CRYPTO_STRATEGY_RESEARCH",
+            "source_commit": "old-commit",
+            "deployment_id": "old-deployment",
+        },
+    )
+    run_id = claimed["run"]["run_id"]
+    stale = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    with store.connect() as conn:
+        conn.execute(
+            "update graen_runs set started_at=? where run_id=?",
+            (stale, run_id),
+        )
+        conn.execute(
+            "update graen_problems set updated_at=? where problem_id=?",
+            (stale, problem_id),
+        )
+        conn.commit()
+
+    heartbeat = store.graen_action(
+        "executor_heartbeat",
+        {
+            "worker_id": "new-worker",
+            "runtime_version": "new-runtime",
+            "methodology_version": "new-method",
+            "deployment_id": "new-deployment",
+            "active_problem_id": None,
+            "last_error": None,
+        },
+    )
+
+    assert heartbeat["recovered_stale_runs"] == [
+        {
+            "problem_id": problem_id,
+            "run_ids": [run_id],
+            "status": "BLOCKED",
+            "reason": "stale_executor_run_without_active_heartbeat",
+        }
+    ]
+    snapshot = store.graen_snapshot()
+    problem = next(
+        row for row in snapshot["problems"]
+        if row["problem_id"] == problem_id
+    )
+    run = next(row for row in snapshot["runs"] if row["run_id"] == run_id)
+    assert problem["status"] == "BLOCKED"
+    assert (
+        problem["metadata"]["stale_run_recovery"]["reason"]
+        == "stale_executor_run_without_active_heartbeat"
+    )
+    assert run["status"] == "CANCELLED"
+    assert run["completed_at"] is not None
+    assert run["result_summary"]["state"] == "ORPHANED_RUNTIME_RECOVERED"
+
+
+def test_executor_heartbeat_preserves_matching_active_research_run(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Active crypto research",
+            "domain": "CRYPTO_STRATEGY_RESEARCH",
+            "priority": 90,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    claimed = store.graen_action(
+        "claim_research_problem",
+        {
+            "worker_id": "active-worker",
+            "runtime_version": "runtime",
+            "methodology_version": "method",
+            "domain": "CRYPTO_STRATEGY_RESEARCH",
+            "source_commit": "commit",
+            "deployment_id": "deployment",
+        },
+    )
+    run_id = claimed["run"]["run_id"]
+    stale = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    with store.connect() as conn:
+        conn.execute(
+            "update graen_runs set started_at=? where run_id=?",
+            (stale, run_id),
+        )
+        conn.commit()
+
+    heartbeat = store.graen_action(
+        "executor_heartbeat",
+        {
+            "worker_id": "active-worker",
+            "runtime_version": "runtime",
+            "methodology_version": "method",
+            "deployment_id": "deployment",
+            "active_problem_id": problem_id,
+            "last_error": None,
+        },
+    )
+
+    assert heartbeat["recovered_stale_runs"] == []
+    snapshot = store.graen_snapshot()
+    problem = next(
+        row for row in snapshot["problems"]
+        if row["problem_id"] == problem_id
+    )
+    run = next(row for row in snapshot["runs"] if row["run_id"] == run_id)
+    assert problem["status"] == "RUNNING"
+    assert run["status"] == "RUNNING"
+
+
 def test_strategy_pipeline_terminal_btc_does_not_mask_active_graen(
     tmp_path, monkeypatch
 ):
