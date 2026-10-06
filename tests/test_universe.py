@@ -51,6 +51,7 @@ class FakeClient:
         symbols = [
             "SPY", "QQQ", "SMH", "AAPL", "MSFT", "NVDA",
             "AMD", "META", "GOOGL", "AMZN", "TSLA", "NFLX",
+            "JPM", "XOM",
             "OTCX", "BADF",
         ]
         assets = []
