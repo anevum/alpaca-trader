@@ -163,7 +163,7 @@ class ResearchPromotion:
                     # The gateway atomically verifies no competing active run,
                     # writes provenance and queues only frozen DEVELOPMENT.
                     state["phase"] = "COMPLETE"
-                    state["resume_stage"] = "CRYPTO_COMPILED_DEVELOPMENT"
+                    state["resume_stage"] = "STRATEGY_COMPILED_DEVELOPMENT"
                 elif phase != "COMPLETE":
                     raise IntegrityError("unknown_promotion_phase")
             if state.get("blocked_reason") == "runtime_github_authorization_not_configured" and self.repository.configured:
@@ -191,11 +191,6 @@ def engineering_problem_ids(snapshot):
         metadata = problem.get("metadata") or {}
         promotion = metadata.get("code_promotion") or {}
         research_stage = str(metadata.get("research_stage") or "")
-        # An explicitly queued native CRYPTO_* stage already has trusted
-        # implementation in the deployed runtime. It owns the problem until
-        # that stage completes; generic code promotion must not race it.
-        if research_stage.startswith("CRYPTO_") and not research_stage.startswith("CRYPTO_COMPILED_"):
-            continue
         summary = latest.get(str(problem.get("problem_id")), {})
         triggered = any(summary.get(key) in TRIGGERS for key in ("state", "decision", "next_action"))
         if promotion.get("phase") == "COMPLETE":
