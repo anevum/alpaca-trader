@@ -1765,6 +1765,8 @@ async def resume_paper(authorization: str | None = Header(default=None)):
 async def internal_crypto_command(
     x_anevum_scheduler_token: str | None = Header(default=None),
 ):
+    if not settings.crypto_only_runtime:
+        raise HTTPException(status_code=404, detail="Not found")
     require_scheduler_token(x_anevum_scheduler_token)
     return await crypto_command_lane_snapshot()
 
