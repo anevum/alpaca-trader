@@ -756,7 +756,12 @@ def project_command(
         "work": {
             **_summary({"objectives": objectives, "jobs": jobs}),
             "next_action": summary.get("next_action"),
-            "execution_mode": "codex/manual software" if handoffs else mode(summary.get("next_action")),
+            "execution_mode": (
+                mode(summary.get("next_action"))
+                if summary.get("next_action")
+                else "idle"
+            ),
+            "active_handoff_count": len(handoffs),
             "handoffs": [r.get("result") | {"handoff_id": r.get("job_id"), "objective_key": r.get("objective_key")} for r in jobs if r.get("job_type") == "CODEX_HANDOFF" and isinstance(r.get("result"), dict)],
             "objectives": objectives,
             "jobs": jobs,
