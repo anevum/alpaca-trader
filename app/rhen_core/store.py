@@ -869,8 +869,6 @@ class RhenCoreStore:
             return self._compiled_stage_evidence(body)
         if action == "shadow_checkpoint":
             return self._shadow_checkpoint(body)
-        if action == "crypto_promotion_status":
-            return self._crypto_promotion_status(body)
         if action == "research_promotion_claim":
             return self._research_promotion_claim(body)
         if action == "research_promotion_save":
@@ -1075,7 +1073,7 @@ class RhenCoreStore:
                 if (
                     previous.get("phase") != "RESUME"
                     or state.get("resume_stage")
-                    != "CRYPTO_COMPILED_DEVELOPMENT"
+                    != "STRATEGY_COMPILED_DEVELOPMENT"
                     or not state.get("merge_sha")
                     or not state.get("deployment_id")
                     or not state.get("executor_heartbeat_at")
@@ -1121,7 +1119,7 @@ class RhenCoreStore:
             )
             if state.get("phase") == "COMPLETE":
                 metadata["research_stage"] = (
-                    "CRYPTO_COMPILED_DEVELOPMENT"
+                    "STRATEGY_COMPILED_DEVELOPMENT"
                 )
                 metadata["compiled_specification_hash"] = state.get(
                     "spec_hash"
@@ -1175,10 +1173,10 @@ class RhenCoreStore:
         domain = str(body.get("domain") or "")
         worker = str(body.get("worker_id") or "graen-adaptive")
         allowed = {
-            "CRYPTO_COMPILED_DEVELOPMENT",
-            "CRYPTO_COMPILED_VALIDATION",
-            "CRYPTO_COMPILED_HOLDOUT",
-            "CRYPTO_COMPILED_VELUM",
+            "STRATEGY_COMPILED_DEVELOPMENT",
+            "STRATEGY_COMPILED_VALIDATION",
+            "STRATEGY_COMPILED_HOLDOUT",
+            "STRATEGY_COMPILED_VELUM",
         }
         with self._lock, self.connect() as conn:
             rows = conn.execute(
@@ -1205,14 +1203,14 @@ class RhenCoreStore:
                 # deployed now, but VALIDATION/HOLDOUT cannot be claimed until
                 # the entire frozen window has elapsed. VELUM is a post-holdout
                 # independent replay and has no additional maturity window.
-                if stage != "CRYPTO_COMPILED_VELUM":
+                if stage != "STRATEGY_COMPILED_VELUM":
                     spec = dict(
                         promotion.get("prespec")
                         or metadata.get("research_implementation_spec")
                         or {}
                     )
                     stage_name = stage.removeprefix(
-                        "CRYPTO_COMPILED_"
+                        "STRATEGY_COMPILED_"
                     ).lower()
                     try:
                         end_raw = spec["corpus"][stage_name][1]
@@ -1577,75 +1575,6 @@ class RhenCoreStore:
             elif payload.get("stage") == predecessor:
                 prior = {**payload, "artifact_id": artifact["artifact_id"]}
         return {"ok": True, "current": current, "predecessor": prior}
-
-    def _crypto_promotion_status(
-        self, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        requested = dict(body.get("execution_contract") or {})
-        keys = (
-            "strategy_family", "strategy_version_id", "model_version",
-            "calibration_version", "regime_version",
-            "execution_adapter_version",
-        )
-        normalized = {k: str(requested.get(k) or "").strip() for k in keys}
-        if any(not normalized[k] for k in keys):
-            return {
-                "ok": True,
-                "status": "GATED",
-                "promotion_ready": False,
-                "reason": "incomplete_execution_contract",
-                "execution_contract": normalized,
-                "execution_authority": False,
-                "live_execution_authorized": False,
-            }
-        with self.connect() as conn:
-            rows = conn.execute(
-                """select * from graen_artifacts
-                where artifact_type like 'CRYPTO_%PROMOTION_READY%'
-                order by created_at desc limit 100"""
-            ).fetchall()
-        for row in rows:
-            artifact = self._artifact(row)
-            payload = artifact["content"]
-            contract = {
-                k: str((payload.get("execution_contract") or {}).get(k) or "").strip()
-                for k in keys
-            }
-            passed = bool(
-                payload.get("statistical_promotion_ready") is True
-                or payload.get("promotion_ready") is True
-                or (
-                    payload.get("passed") is True
-                    and str(payload.get("stage") or "").upper() == "HOLDOUT"
-                )
-            )
-            if contract == normalized and passed:
-                return {
-                    "ok": True,
-                    "status": "PROMOTION_READY",
-                    "promotion_ready": True,
-                    "reason": "matching_protected_research_artifact",
-                    "execution_contract": normalized,
-                    "artifact": {
-                        k: artifact.get(k)
-                        for k in (
-                            "artifact_id", "problem_id", "run_id",
-                            "artifact_type", "methodology_version",
-                            "created_at",
-                        )
-                    },
-                    "execution_authority": False,
-                    "live_execution_authorized": False,
-                }
-        return {
-            "ok": True,
-            "status": "GATED",
-            "promotion_ready": False,
-            "reason": "no_matching_promotion_artifact",
-            "execution_contract": normalized,
-            "execution_authority": False,
-            "live_execution_authorized": False,
-        }
 
     def scheduler_claim(
         self, job: dict[str, Any]
@@ -2806,7 +2735,7 @@ class RhenCoreStore:
         ):
             mode = "AUTOMATED_TEST"
             reason = "A frozen experiment is running; autonomous execution is limited to its defined methodology."
-        elif stage.startswith("CRYPTO_COMPILED_") or stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
+        elif stage.startswith("STRATEGY_COMPILED_") or stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
             mode = "AUTOMATED_TEST"
             reason = "A frozen research chain may advance through development, validation, holdout, and replay."
         elif active_problem is not None:
@@ -3522,20 +3451,7 @@ class RhenCoreStore:
 
     def strategy_pipeline_research(self) -> dict[str, Any]:
         """Return the durable Command research and strategy lifecycle projection."""
-        from app.graen.btc_discovery import projection
-        btc = projection(self)
-        btc_state = str(btc.get("state") or "NOT_STARTED").upper()
-        btc_has_forward_paper = bool(
-            btc.get("paper_candidate_id") or btc.get("paper_runtime")
-        )
-        btc_owns_primary_pipeline = (
-            btc_state not in {"NOT_STARTED", "EXHAUSTED", "REJECTED"}
-            or btc_has_forward_paper
-        )
-        if btc_owns_primary_pipeline:
-            current = btc.get("candidate") or {}
-            verification = (current.get("results") or {}).get("VELUM_REPLAY") or {}
-            tracking = self.command_research_tracking()
+        tracking = self.command_research_tracking()
             return {"schema_version": "strategy_pipeline_research.v1", "btc_discovery": btc,
                     "candidate": {**current, "owner": "GRAEN", "lane": "crypto", "updated_at": btc.get("updated_at"),
                                   "title": current.get("candidate_id"), "supersedes_strategy_version_id": None} if current else None,
@@ -3564,16 +3480,7 @@ class RhenCoreStore:
             None,
         )
         if selected_problem is not None:
-            domain = str(selected_problem.get("domain") or "").upper()
-            lane = str(selected_problem.get("target_lane") or "").lower()
-            if lane not in {"crypto", "equities"}:
-                lane = (
-                    "crypto"
-                    if "CRYPTO" in domain
-                    else "equities"
-                    if "EQUITY" in domain or "STOCK" in domain
-                    else "unknown"
-                )
+            lane = "equities"
             selected_run = next(
                 (
                     row
@@ -3655,7 +3562,6 @@ class RhenCoreStore:
 
         return {
             "schema_version": "strategy_pipeline_research.v1",
-            "btc_discovery": btc,
             "candidate": candidate,
             "validation": validation,
             "release_gate": {
@@ -4084,120 +3990,9 @@ class RhenCoreStore:
             ][:200],
         }
 
-    def _promotion_evidence(self) -> dict[str, Any]:
-        complete = []
-        for event in self._event_rows(
-            event_types={"candidate_forward_outcome"},
-            limit=50000,
-            newest_first=True,
-        ):
-            payload = event.get("payload") or {}
-            if payload.get("status") != "complete":
-                continue
-            lane = str(payload.get("market_lane") or "").lower()
-            version = str(
-                payload.get("strategy_version_id")
-                or event.get("strategy_version_id")
-                or ""
-            ).upper()
-            if lane == "crypto" or version.startswith("CRYPTO-"):
-                complete.append(event)
-
-        ids: set[str] = set()
-        hours: set[int] = set()
-        weekdays: set[int] = set()
-        pairs: set[str] = set()
-        observed: list[datetime] = []
-        mfes: list[float] = []
-        maes: list[float] = []
-        for event in complete:
-            payload = event.get("payload") or {}
-            identity = str(
-                payload.get("candidate_id")
-                or payload.get("candidate_key")
-                or ""
-            )
-            if identity:
-                ids.add(identity)
-            raw_stamp = (
-                (payload.get("details") or {}).get("reference_effective_at")
-                or payload.get("candidate_observed_at")
-                or event.get("occurred_at")
-            )
-            try:
-                stamp = datetime.fromisoformat(
-                    str(raw_stamp).replace("Z", "+00:00")
-                )
-                if stamp.tzinfo is None:
-                    stamp = stamp.replace(tzinfo=UTC)
-                stamp = stamp.astimezone(UTC)
-                observed.append(stamp)
-                hours.add(stamp.hour)
-                weekdays.add(stamp.weekday())
-            except (TypeError, ValueError):
-                pass
-            symbol = str(
-                event.get("symbol") or payload.get("symbol") or ""
-            ).upper()
-            if symbol:
-                pairs.add(symbol)
-            for key, target in (
-                ("max_favorable_return", mfes),
-                ("max_adverse_return", maes),
-            ):
-                try:
-                    target.append(float(payload[key]))
-                except (KeyError, TypeError, ValueError):
-                    pass
-
-        return {
-            "methodology_version": "rhen-core-v3-crypto-promotion",
-            "market_lane": "crypto",
-            "resolved_candidate_predictions": len(ids),
-            "paper_round_trips": 0,
-            "paper_round_trip_source": "crypto_execution_disabled",
-            "utc_hours_covered": sorted(hours),
-            "weekdays_covered": sorted(weekdays),
-            "volatility_regimes": [],
-            "liquidity_regimes": [],
-            "pairs_covered": sorted(pairs),
-            "coverage_first_observed_at": (
-                min(observed).isoformat() if observed else None
-            ),
-            "coverage_last_observed_at": (
-                max(observed).isoformat() if observed else None
-            ),
-            "metrics": {
-                "net_expectancy_after_costs": None,
-                "brier_score": None,
-                "log_loss": None,
-                "calibration_intercept": None,
-                "calibration_slope": None,
-                "discrimination": None,
-                "max_drawdown": None,
-                "tail_loss": None,
-                "mfe": sum(mfes) / len(mfes) if mfes else None,
-                "mae": sum(maes) / len(maes) if maes else None,
-                "slippage": None,
-                "spread_sensitivity": None,
-                "regime_stability": None,
-                "time_of_week_stability": None,
-            },
-            "net_expectancy_positive_after_high_costs": False,
-            "walk_forward_passed": False,
-            "holdout_passed": False,
-            "dependence_adjusted": False,
-            "multiplicity_adjusted": False,
-            "no_lookahead_verified": False,
-            "source": "rhen-core:candidate_forward_outcome",
-            "execution_authority": False,
-        }
-
     def _candidate_report_rows(
         self,
         session: str,
-        *,
-        crypto: bool | None,
     ) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -4241,12 +4036,7 @@ class RhenCoreStore:
             if self._session_date(row["observed_at"]) != session:
                 continue
             lane = str(row["market_lane"] or "").lower()
-            is_crypto = lane == "crypto" or str(
-                row["strategy_version_id"] or ""
-            ).upper().startswith("CRYPTO-")
-            if crypto is True and not is_crypto:
-                continue
-            if crypto is False and is_crypto:
+            if lane not in {"", "us_equity", "us_equity_extended", "equities"}:
                 continue
             identity = str(row["candidate_key"])
             features = _loads(row["feature_json"], {})
@@ -4367,7 +4157,7 @@ class RhenCoreStore:
             if not (start <= parsed <= end):
                 continue
             lane = str(row["market_lane"] or "").lower()
-            if lane == "crypto":
+            if lane not in {"", "us_equity", "us_equity_extended", "equities"}:
                 continue
             bucket = candidate_grouped.setdefault(
                 session,
@@ -4586,40 +4376,9 @@ class RhenCoreStore:
         if latest == "graen_shadow":
             return self._shadow_report(params.get("shadow_candidate_id"))
 
-        if str(params.get("crypto_promotion") or "") in {
-            "1", "true", "True"
-        }:
-            return {"ok": True, "evidence": self._promotion_evidence()}
-
-        crypto_session = params.get("crypto_evidence_session")
-        if crypto_session:
-            rows = self._candidate_report_rows(
-                crypto_session,
-                crypto=True,
-            )
-            rows = [
-                row
-                for row in rows
-                if sum(
-                    1
-                    for outcome in row["forward_outcomes"].values()
-                    if outcome.get("status") == "complete"
-                )
-                < 7
-            ][:5000]
-            return {
-                "ok": True,
-                "evidence_version": "rhen-crypto-forward-evidence-v2",
-                "evidence_session": crypto_session,
-                "candidates": rows,
-            }
-
         evidence_session = params.get("evidence_session")
         if evidence_session:
-            rows = self._candidate_report_rows(
-                evidence_session,
-                crypto=False,
-            )
+            rows = self._candidate_report_rows(evidence_session)
             equity_rows = []
             for row in rows[:5000]:
                 copy = dict(row)
@@ -4660,10 +4419,7 @@ class RhenCoreStore:
 
         post_session = params.get("post_event_evidence_session")
         if post_session:
-            rows = self._candidate_report_rows(
-                post_session,
-                crypto=False,
-            )
+            rows = self._candidate_report_rows(post_session)
             return {
                 "ok": True,
                 "evidence_version": "rhen-post-event-candidates-v2",
