@@ -14,6 +14,8 @@ class CapturingSink(TradingEventSink):
             trading_run_id="run-1",
             strategy_version_id="version-1",
             target_pct="0.005",
+            min_order_notional="1",
+            max_hold_minutes=15,
             ledger_reconcile_seconds=60,
             trading_run_started_at=datetime(2026, 9, 24, 13, 30, tzinfo=timezone.utc),
         )
@@ -564,6 +566,13 @@ def test_entry_intent_carries_cycle_and_decision_evidence():
     assert payload["intent"]["payload"]["cycle_key"] == "run-1:cycle-2"
     assert payload["intent"]["payload"]["decision_quote"]["midpoint"] == "100.00"
     assert payload["intent"]["payload"]["decision_reference_price"] == "100"
+    snapshot = payload["intent"]["payload"]["candidate_snapshot"]
+    assert snapshot["shadow_allocation"]["research_only"] is True
+    assert snapshot["shadow_allocation"]["execution_authority"] is False
+    assert snapshot["shadow_allocation"]["changes_live_decision"] is False
+    assert float(snapshot["shadow_allocation"]["shadow_notional"]) <= float(
+        payload["intent"]["requested_notional"]
+    )
 
 
 def test_transport_chunks_respect_count_and_body_limits():
