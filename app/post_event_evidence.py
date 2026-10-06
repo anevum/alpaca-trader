@@ -1197,20 +1197,25 @@ class PostEventEvidenceRunner:
                     f"candidate-forward:{candidate_identity}:"
                     f"{horizon}:{FORWARD_METHODOLOGY_VERSION}:{status}"
                 )
-                self.event_sink.emit(
-                    event_type="candidate_forward_outcome",
-                    event_key=event_key,
-                    occurred_at=computed_at,
-                    symbol=str(candidate.get("symbol") or ""),
-                    payload=outcome,
-                )
-                await self._apply_backpressure()
-                summary.outcome_events += 1
                 if status == "complete":
+                    self.event_sink.emit(
+                        event_type="candidate_forward_outcome",
+                        event_key=event_key,
+                        occurred_at=computed_at,
+                        symbol=str(candidate.get("symbol") or ""),
+                        payload=outcome,
+                    )
+                    await self._apply_backpressure()
+                    summary.outcome_events += 1
                     summary.complete_outcomes += 1
                 elif status == "insufficient_future_data":
+                    # Incomplete horizons are transient diagnostics. They are
+                    # recomputed on the next post-event pass and must not
+                    # consume durable evidence storage.
                     summary.incomplete_outcomes += 1
                 else:
+                    # Error outcomes remain visible in the run summary but are
+                    # not canonical forward evidence.
                     summary.error_outcomes += 1
 
         grouped: dict[Any, list[dict[str, Any]]] = {}
