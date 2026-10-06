@@ -281,6 +281,7 @@ class RhenCoreStore:
             for k in (
                 "market", "momentum_pct", "vwap_edge_pct", "relative_volume_ratio",
                 "trend_persistence", "quality_score", "current_close", "bar_time",
+                "evidence_reference_only", "warmup_bar_count", "required_bar_count",
                 "confirmation_passes", "regime_passes",
                 "opportunity_score", "estimated_net_edge_pct",
                 "expected_gross_move_pct", "return_5m", "return_15m",
