@@ -14,8 +14,6 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 from .post_event_evidence import PostEventEvidenceRunner
-from .crypto_layer import CryptoMarketDataClient
-from .crypto_post_event_evidence import CryptoForwardEvidenceRunner
 from .research_agent.adaptation_proposal import proposal_from_counterfactual
 from .research_agent.adaptive_shadow import (
     aggregate_shadow_validation,
@@ -33,7 +31,6 @@ from .research_agent.counterfactual_lab import (
 )
 from .research_agent.control_state import transition_control_state
 from .research_agent.graen_adaptive_validation import assess_adaptive_validation
-from .research_agent.crypto_graen import assess_crypto_promotion
 from .research_agent.nostra_session import derive_nostra_regime_timeline
 from .research_agent.nostra_transition import (
     build_transition_model,
@@ -93,15 +90,6 @@ class ResearchReportScheduler:
         self.last_weekly_report: dict[str, Any] | None = None
         self.last_post_event_summary: dict[str, Any] | None = None
         self.last_error: str | None = None
-        self.crypto_market_data = CryptoMarketDataClient(settings)
-        self.crypto_forward_runner = CryptoForwardEvidenceRunner(
-            market_data=self.crypto_market_data,
-            event_sink=event_sink,
-            evidence_reader=self._crypto_evidence_api_get,
-            state=state,
-        )
-        self.last_crypto_forward_at: datetime | None = None
-        self.last_crypto_promotion_at: datetime | None = None
 
     def status(self) -> dict[str, Any]:
         return {
@@ -121,8 +109,6 @@ class ResearchReportScheduler:
             "daily_report_version": DAILY_REPORT_VERSION,
             "weekly_report_version": REPORT_VERSION,
             "last_post_event_summary": self.last_post_event_summary,
-            "crypto_graen_promotion": getattr(self.state, "crypto_graen_promotion", {}),
-            "crypto_graen_evidence": getattr(self.state, "crypto_graen_evidence", {}),
             "last_weekly_completeness": (
                 self.last_weekly_report.get("completeness_state")
                 if self.last_weekly_report
@@ -151,11 +137,8 @@ class ResearchReportScheduler:
             "RHEN_CANONICAL_SCHEDULER_ENABLED", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
         while not self.stop_event.is_set():
-            # Crypto forward evidence and promotion-state observation remain
-            # continuous evidence functions. Daily/weekly clock orchestration
-            # belongs exclusively to the canonical IREN scheduler when enabled.
-            await self._crypto_promotion_tick()
-            await self._crypto_forward_tick()
+            # Daily/weekly clock orchestration belongs exclusively to the
+            # canonical IREN scheduler when enabled.
             try:
                 if not canonical_scheduler:
                     if not catch_up_done:
@@ -176,103 +159,6 @@ class ResearchReportScheduler:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
-
-    async def _crypto_evidence_api_get(
-        self,
-        *,
-        evidence_session: str,
-    ) -> dict[str, Any]:
-        return await self._report_api_get(
-            crypto_evidence_session=evidence_session,
-        )
-
-    async def _crypto_promotion_tick(self, now: datetime | None = None) -> None:
-        if not getattr(self.settings, "crypto_lane_enabled", False):
-            return
-        if not getattr(self.settings, "crypto_research_enabled", False):
-            return
-        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if (
-            self.last_crypto_promotion_at is not None
-            and (current - self.last_crypto_promotion_at).total_seconds() < 300
-        ):
-            return
-        try:
-            response = await self._report_api_get(crypto_promotion="1")
-            evidence = dict(response.get("evidence") or {})
-            result = assess_crypto_promotion(evidence)
-            previous = dict(getattr(self.state, "crypto_graen_promotion", {}) or {})
-            self.state.crypto_graen_evidence = evidence
-            self.state.crypto_graen_promotion = result
-            self.last_crypto_promotion_at = current
-            changed = (
-                previous.get("status") != result.get("status")
-                or previous.get("reason_codes") != result.get("reason_codes")
-            )
-            if changed:
-                self.state.record_event(
-                    kind="crypto_promotion",
-                    action=(
-                        "promotion_ready"
-                        if result.get("promotion_ready")
-                        else "blocked"
-                    ),
-                    message=(
-                        "GRAEN crypto promotion gate passed"
-                        if result.get("promotion_ready")
-                        else "GRAEN crypto promotion remains gated"
-                    ),
-                    reason=",".join(result.get("reason_codes") or []) or "ALL_GATES_PASSED",
-                    payload={
-                        "promotion": result,
-                        "evidence": evidence,
-                    },
-                )
-        except Exception as exc:
-            logger.exception("GRAEN crypto promotion evaluation failed")
-            self.state.record_event(
-                kind="crypto_promotion",
-                action="error",
-                message="GRAEN crypto promotion evaluation failed",
-                reason=f"{type(exc).__name__}: {exc}",
-            )
-
-    async def _crypto_forward_tick(self, now: datetime | None = None) -> None:
-        if not getattr(self.settings, "crypto_lane_enabled", False):
-            return
-        if not getattr(self.settings, "crypto_research_enabled", False):
-            return
-        if not getattr(self.event_sink, "enabled", False):
-            return
-        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if (
-            self.last_crypto_forward_at is not None
-            and (current - self.last_crypto_forward_at).total_seconds() < 60
-        ):
-            return
-        try:
-            summary = await self.crypto_forward_runner.run_recent(current)
-            self.last_crypto_forward_at = current
-            if summary.errors:
-                self.state.record_event(
-                    kind="crypto_evidence",
-                    action="warning",
-                    message="crypto forward evidence completed with errors",
-                    reason=f"{summary.errors} outcome errors",
-                )
-        except Exception as exc:
-            logger.exception("crypto forward evidence failed")
-            self.state.crypto_forward_evidence_state = {
-                "status": "error",
-                "last_run_at": current.isoformat(),
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-            self.state.record_event(
-                kind="crypto_evidence",
-                action="error",
-                message="crypto forward evidence failed",
-                reason=f"{type(exc).__name__}: {exc}",
-            )
 
     async def _catch_up_latest_completed(
         self,
