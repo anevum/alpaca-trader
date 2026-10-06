@@ -1083,3 +1083,96 @@ def test_storage_pressure_shortens_high_frequency_retention(tmp_path, monkeypatc
 
     assert deleted["decision_cycles"] == 1
     assert [row["event_key"] for row in rows] == ["recent-cycle"]
+
+
+
+def test_candidate_report_attaches_normalized_shadow_allocation(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 6, 14, 0, tzinfo=UTC)
+    candidate_key = "cycle-allocation:SPY"
+    store.ingest_events(
+        [
+            {
+                "event_key": "cycle-allocation",
+                "event_type": "decision_cycle",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-allocation",
+                "strategy_version_id": "LIVE-TEST",
+                "source": "test",
+                "payload": {
+                    "cycle_key": "cycle-allocation",
+                    "market_lane": "us_equity",
+                    "candidate_count": 1,
+                    "qualified_count": 1,
+                    "rejected_count": 0,
+                    "candidates": [
+                        {
+                            "candidate_id": candidate_key,
+                            "symbol": "SPY",
+                            "observed_at": observed.isoformat(),
+                            "qualified": True,
+                            "final_decision": "selected_for_entry",
+                            "market_lane": "us_equity",
+                            "strategy_version_id": "LIVE-TEST",
+                            "features": {"momentum_pct": "0.002"},
+                        }
+                    ],
+                },
+            },
+            {
+                "event_key": "intent-allocation",
+                "event_type": "order_intent",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-allocation",
+                "strategy_version_id": "LIVE-TEST",
+                "source": "test",
+                "payload": {
+                    "intent": {
+                        "side": "buy",
+                        "payload": {
+                            "candidate_key": candidate_key,
+                            "candidate_snapshot": {
+                                "candidate_key": candidate_key,
+                                "shadow_allocation": {
+                                    "methodology_version": "rhen-shadow-allocation-v1",
+                                    "research_only": True,
+                                    "execution_authority": False,
+                                    "changes_live_decision": False,
+                                    "bounded_by_live_safe_notional": True,
+                                    "live_safe_notional": "20.00",
+                                    "shadow_notional": "13.00",
+                                    "expected_net_bps": "10",
+                                    "confidence": "0.8",
+                                    "expected_holding_minutes": "15",
+                                    "capital_velocity_per_minute": "0.00005",
+                                    "would_allocate": True,
+                                    "reason": "shadow_allocation_candidate",
+                                },
+                            },
+                        },
+                    }
+                },
+            },
+        ]
+    )
+
+    report = store.report_read(
+        {"evidence_session": "2026-10-06"}
+    )
+    row = next(
+        candidate
+        for candidate in report["candidates"]
+        if candidate["candidate_id"] == candidate_key
+    )
+    allocation = row["shadow_allocation"]
+
+    assert allocation["research_only"] is True
+    assert allocation["execution_authority"] is False
+    assert allocation["changes_live_decision"] is False
+    assert allocation["bounded_by_live_safe_notional"] is True
+    assert allocation["shadow_to_live_pct"] == 65.0
+    assert allocation["would_allocate"] is True
+    assert "live_safe_notional" not in allocation
+    assert "shadow_notional" not in allocation

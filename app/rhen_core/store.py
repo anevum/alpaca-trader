@@ -4258,6 +4258,12 @@ class RhenCoreStore:
                 where event_type='candidate_forward_outcome'
                 order by occurred_at asc limit 50000"""
             ).fetchall()
+            allocation_rows = conn.execute(
+                """select payload_json,occurred_at from events
+                where event_type='order_intent'
+                  and payload_json like '%shadow_allocation%'
+                order by occurred_at asc limit 10000"""
+            ).fetchall()
         outcomes: dict[str, dict[str, dict[str, Any]]] = {}
         for row in outcome_rows:
             payload = _loads(row["payload_json"], {})
@@ -4285,6 +4291,76 @@ class RhenCoreStore:
                 ),
             }
 
+        allocations: dict[str, dict[str, Any]] = {}
+        for row in allocation_rows:
+            payload = _loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                continue
+            intent = payload.get("intent")
+            intent = intent if isinstance(intent, dict) else {}
+            intent_payload = intent.get("payload")
+            intent_payload = (
+                intent_payload if isinstance(intent_payload, dict) else {}
+            )
+            snapshot = intent_payload.get("candidate_snapshot")
+            snapshot = snapshot if isinstance(snapshot, dict) else {}
+            allocation = snapshot.get("shadow_allocation")
+            if not isinstance(allocation, dict):
+                continue
+            if allocation.get("research_only") is not True:
+                continue
+            if allocation.get("execution_authority") is True:
+                continue
+            identity = str(
+                snapshot.get("candidate_key")
+                or intent_payload.get("candidate_key")
+                or ""
+            ).strip()
+            if not identity:
+                continue
+            live_safe = self._research_number(
+                allocation.get("live_safe_notional")
+            )
+            shadow_notional = self._research_number(
+                allocation.get("shadow_notional")
+            )
+            ratio_pct = None
+            if (
+                live_safe is not None
+                and live_safe > 0
+                and shadow_notional is not None
+                and shadow_notional >= 0
+            ):
+                ratio_pct = round(
+                    shadow_notional / live_safe * 100.0,
+                    6,
+                )
+            allocations[identity] = {
+                "methodology_version": allocation.get(
+                    "methodology_version"
+                ),
+                "research_only": True,
+                "execution_authority": False,
+                "changes_live_decision": (
+                    allocation.get("changes_live_decision") is True
+                ),
+                "bounded_by_live_safe_notional": (
+                    allocation.get("bounded_by_live_safe_notional") is True
+                ),
+                "would_allocate": allocation.get("would_allocate"),
+                "reason": allocation.get("reason"),
+                "shadow_to_live_pct": ratio_pct,
+                "expected_net_bps": allocation.get("expected_net_bps"),
+                "confidence": allocation.get("confidence"),
+                "expected_holding_minutes": allocation.get(
+                    "expected_holding_minutes"
+                ),
+                "capital_velocity_per_minute": allocation.get(
+                    "capital_velocity_per_minute"
+                ),
+                "observed_at": row["occurred_at"],
+            }
+
         result = []
         for row in rows:
             if self._session_date(row["observed_at"]) != session:
@@ -4310,6 +4386,7 @@ class RhenCoreStore:
                     "stop_price": row["stop_price"],
                     "target_price": row["target_price"],
                     "features": features,
+                    "shadow_allocation": allocations.get(identity),
                     "research_attribution": {},
                     "scan_cycle": {
                         "scan_cycle_id": row["cycle_key"],
