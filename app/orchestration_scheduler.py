@@ -683,10 +683,12 @@ class SchedulerRuntime:
             )
 
         if target == "trader_preflight":
-            local = await self._post(
+            local = await self._post_with_startup_retry(
                 self.trader_url + "/preflight",
                 self.scheduler_headers,
                 {"session": session, "scheduled_at": _iso(item.scheduled_at)},
+                attempts=4,
+                delay_seconds=2.0,
             )
             dependencies = await self._dependency_health()
             blocking = sorted(
@@ -935,6 +937,30 @@ class SchedulerRuntime:
         if not isinstance(result, dict):
             raise RuntimeError("invalid_dependency_response")
         return result
+
+    async def _post_with_startup_retry(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        attempts: int = 4,
+        delay_seconds: float = 2.0,
+        timeout: float = 90,
+    ) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                return await self._post(url, headers, payload, timeout=timeout)
+            except (httpx.TransportError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                retryable = not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code == 429 or exc.response.status_code >= 500
+                if not retryable or attempt >= attempts:
+                    raise
+                last_error = exc
+                await asyncio.sleep(delay_seconds)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("startup_retry_exhausted")
 
     async def _notify(
         self,
