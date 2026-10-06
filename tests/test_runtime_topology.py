@@ -230,7 +230,6 @@ async def scenario():
         started.append(True)
         await main._stop.wait()
     main.monitor_loop = loop
-    main.crypto_monitor_loop = loop
     main.slack_market_observer_loop = loop
     for target in (main.event_sink, main.slack_notifier, main.research_reports):
         target.start = AsyncMock()
@@ -241,7 +240,7 @@ async def scenario():
     assert not main.settings.credentials_configured
     async with main.lifespan(main.app):
         await asyncio.sleep(0)
-        assert len(started) == 3
+        assert len(started) == 2
         assert main.runtime_state.startup_reconciled
         assert "app.iren.service" not in sys.modules
         assert "app.orchestration_scheduler" not in sys.modules
