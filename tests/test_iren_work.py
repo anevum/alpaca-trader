@@ -741,3 +741,67 @@ def test_runtime_evidence_verifier_retries_until_inventory_complete():
     source = inspect.getsource(IrenWorkEngine._execute_jobs)
     assert '"SUCCEEDED" if inventory_complete else "QUEUED"' in source
     assert "retrying=not inventory_complete" in source
+
+
+def test_work_prompt_stops_at_research_review_boundary_instead_of_restarting_exhausted_program():
+    data = {
+        "objectives": [],
+        "jobs": [],
+        "commands": [],
+        "maintenance_evidence": {
+            "research_control": {
+                "schema_version": "research_control.v1",
+                "mode": "RESEARCH_REVIEW_REQUIRED",
+                "reason": (
+                    "The bounded hypothesis family is exhausted. Do not restart it. "
+                    "A materially new hypothesis family requires a deliberate Work/Codex pass."
+                ),
+                "review_required": True,
+                "review_kind": "NEW_HYPOTHESIS_FAMILY",
+                "work_credit_recommended": True,
+                "problem_id": "g-exhausted",
+                "stage": "ADAPTIVE_PROGRAM_EXHAUSTED",
+                "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+                "rejected_generations": 12,
+            },
+            "graen_problems": [{
+                "problem_id": "g-exhausted",
+                "title": "Adaptive acceleration",
+                "status": "WAITING",
+                "research_stage": "ADAPTIVE_PROGRAM_EXHAUSTED",
+                "candidate_id": "CRYPTO-ACCEL-ADAPTIVE-012",
+                "family": "cross_sectional_acceleration",
+            }],
+            "graen_runs": [],
+            "velum_replays": [],
+            "nostra_calibrations": [],
+            "nostra_forecasts": [],
+            "strategy_activity_24h": [],
+        },
+    }
+    control = {
+        "state": "HEALTHY",
+        "observed_at": "2026-10-06T17:00:00+00:00",
+        "topology": {"inventory_complete": True, "services": []},
+        "incidents": {},
+    }
+
+    result = process_command(
+        "maintenance prompt",
+        data,
+        control,
+        requested_by="devon",
+        source="command",
+    )
+
+    manifest = result.response["maintenance_manifest"]
+    prompt = result.response["maintenance_prompt"]
+    assert manifest["mode"] == "RESEARCH"
+    assert "NEW_HYPOTHESIS_FAMILY" in manifest["driver"]
+    assert manifest["state"]["research_control"]["mode"] == "RESEARCH_REVIEW_REQUIRED"
+    assert "Research control:" in prompt
+    assert "RESEARCH_REVIEW_REQUIRED" in prompt
+    assert "MODEL_HYPOTHESIS_GENERATION_REQUIRED" in prompt
+    assert "do not restart the exhausted program" in prompt
+    assert "parameter shuffling inside the rejected family does not satisfy" in prompt

@@ -51,6 +51,7 @@ class FakeClient:
         symbols = [
             "SPY", "QQQ", "SMH", "AAPL", "MSFT", "NVDA",
             "AMD", "META", "GOOGL", "AMZN", "TSLA", "NFLX",
+            "JPM", "XOM",
             "OTCX", "BADF",
         ]
         assets = []
@@ -72,7 +73,14 @@ class FailingClient:
 
 
 class FakeMarketData:
+    def __init__(self):
+        self.daily_requested = []
+
+    async def stock_screener_symbols(self, **kwargs):
+        return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "META", "GOOGL", "AMZN", "NFLX"]
+
     async def daily_bars_many(self, symbols, **kwargs):
+        self.daily_requested = list(symbols)
         now = datetime(2026, 9, 24, 16, 0, tzinfo=NY)
         output = {}
         for index, symbol in enumerate(symbols):
@@ -133,7 +141,7 @@ def test_dynamic_universe_filters_assets_and_builds_bounded_active_set():
     assert {"SPY", "QQQ", "SMH"} <= set(active)
     assert "OTCX" not in active
     assert "BADF" not in active
-    assert state.universe_source == "dynamic"
+    assert state.universe_source == "hierarchical_screener"
     assert state.universe_eligible_count >= 12
     assert state.universe_candidate_count >= 10
 
@@ -151,7 +159,7 @@ def test_dynamic_universe_uses_cached_snapshot_inside_refresh_interval():
     )
 
     assert second == first
-    assert state.universe_source == "dynamic"
+    assert state.universe_source == "hierarchical_screener"
 
 
 def test_dynamic_universe_falls_back_to_static_symbols_on_refresh_failure():
@@ -170,3 +178,40 @@ def test_dynamic_universe_falls_back_to_static_symbols_on_refresh_failure():
     assert {"SPY", "QQQ", "SMH"} <= set(active)
     assert state.universe_source == "fallback"
     assert "asset endpoint unavailable" in str(state.universe_error)
+
+
+def test_hierarchical_discovery_does_not_pull_daily_history_for_full_catalog():
+    state = RuntimeState()
+    market = FakeMarketData()
+    manager = DynamicUniverse(settings(), FakeClient(), market, state)
+    now = datetime(2026, 9, 25, 10, 1, tzinfo=NY)
+
+    import asyncio
+    asyncio.run(manager.active_symbols(now=now))
+
+    assert set(market.daily_requested) <= {
+        "SPY", "QQQ", "SMH", "NVDA", "TSLA", "AAPL", "MSFT",
+        "AMD", "META", "GOOGL", "AMZN", "NFLX",
+    }
+    assert "OTCX" not in market.daily_requested
+    assert "BADF" not in market.daily_requested
+    assert state.universe_eligible_count > len(market.daily_requested)
+    assert state.universe_source == "hierarchical_screener"
+
+
+def test_hierarchical_discovery_falls_back_when_screeners_unavailable():
+    class NoScreenerMarket(FakeMarketData):
+        async def stock_screener_symbols(self, **kwargs):
+            return []
+
+    state = RuntimeState()
+    market = NoScreenerMarket()
+    manager = DynamicUniverse(settings(), FakeClient(), market, state)
+    now = datetime(2026, 9, 25, 10, 1, tzinfo=NY)
+
+    import asyncio
+    active = asyncio.run(manager.active_symbols(now=now))
+
+    assert active
+    assert state.universe_source == "full_market_fallback"
+    assert len(market.daily_requested) == state.universe_eligible_count

@@ -327,6 +327,14 @@ def _maintenance_rows(snapshot: dict[str, Any], key: str) -> list[dict[str, Any]
     return [dict(row) for row in rows if isinstance(row, dict)]
 
 
+def _maintenance_research_control(snapshot: dict[str, Any]) -> dict[str, Any]:
+    evidence = snapshot.get("maintenance_evidence")
+    if not isinstance(evidence, dict):
+        return {}
+    control = evidence.get("research_control")
+    return dict(control) if isinstance(control, dict) else {}
+
+
 def _maintenance_index(
     rows: list[dict[str, Any]],
     *,
@@ -376,6 +384,15 @@ def _maintenance_state(
         "control": {
             "state": control_state.get("state") or "UNKNOWN",
             "inventory_complete": topology.get("inventory_complete") is True,
+        },
+        "research_control": {
+            key: value
+            for key, value in _maintenance_research_control(snapshot).items()
+            if key in {
+                "schema_version", "mode", "reason", "review_required",
+                "review_kind", "work_credit_recommended", "problem_id",
+                "stage", "decision", "next_action", "rejected_generations",
+            }
         },
         "services": _maintenance_index(
             [dict(row) for row in services if isinstance(row, dict)],
@@ -495,6 +512,16 @@ def _maintenance_changes(
             + _prompt_value((current_control or {}).get("state"), "UNKNOWN")
         )
 
+    previous_research_control = previous_state.get("research_control")
+    current_research_control = current_state.get("research_control")
+    if previous_research_control != current_research_control:
+        add(
+            "Research control changed: "
+            + _prompt_value((previous_research_control or {}).get("mode"), "UNKNOWN")
+            + " -> "
+            + _prompt_value((current_research_control or {}).get("mode"), "UNKNOWN")
+        )
+
     labels = {
         "services": "service",
         "incidents": "incident",
@@ -572,6 +599,16 @@ def _maintenance_mode(
         return "STABILIZE", "open operational incident"
     if blocked:
         return "RECONCILE", "blocked/waiting work requires dependency reconciliation"
+    research_control = _maintenance_research_control(snapshot)
+    if research_control.get("review_required") is True:
+        review_kind = _prompt_value(
+            research_control.get("review_kind"),
+            "RESEARCH_REVIEW",
+        )
+        return (
+            "RESEARCH",
+            "protected research review required: " + review_kind,
+        )
     if active_research or research_delta:
         return "RESEARCH", "research evidence is active or changed"
     if focus:
@@ -656,6 +693,28 @@ def build_maintenance_manifest(
 
 def _maintenance_research_lines(snapshot: dict[str, Any]) -> list[str]:
     lines: list[str] = []
+    research_control = _maintenance_research_control(snapshot)
+    if research_control:
+        lines.extend([
+            "Research control:",
+            "- mode=" + _prompt_value(research_control.get("mode"), "UNKNOWN")
+            + " | review_required="
+            + ("YES" if research_control.get("review_required") is True else "NO")
+            + " | review_kind=" + _prompt_value(research_control.get("review_kind"))
+            + " | stage=" + _prompt_value(research_control.get("stage"))
+            + " | next=" + _prompt_value(research_control.get("next_action")),
+            "- " + _prompt_value(
+                research_control.get("reason"),
+                "No explicit research-control reason supplied.",
+                500,
+            ),
+        ])
+    else:
+        lines.extend([
+            "Research control:",
+            "- No explicit research-control projection supplied. Do not infer new strategy authority.",
+        ])
+
     problems = _maintenance_rows(snapshot, "graen_problems")[:6]
     runs = _maintenance_rows(snapshot, "graen_runs")[:6]
     replays = _maintenance_rows(snapshot, "velum_replays")[:5]
@@ -914,6 +973,9 @@ def render_maintenance_prompt(
         "7. If there is no material delta and no explicit operator focus, verify current state and stop. Do not manufacture churn.",
         "",
         "RESEARCH -> STRATEGY CONTROL LOOP",
+        "0. Treat research_control as an authority boundary. If it says RESEARCH_REVIEW_REQUIRED or RELEASE_REVIEW_REQUIRED, do not restart the exhausted program or manufacture another bounded generation. Use this Work pass to solve the protected decision named by review_kind and next_action.",
+        "0a. A new hypothesis family must be materially different in mechanism or evidence basis from the exhausted family; parameter shuffling inside the rejected family does not satisfy MODEL_HYPOTHESIS_GENERATION_REQUIRED.",
+        "0b. If the protected decision is a strategy patch/release review, preserve the current production strategy and rollback path until the evidence chain and release gate are explicitly satisfied.",
         "1. Start from the current measurable problem or hypothesis. Reuse existing GRAEN work when it addresses the same question; do not duplicate experiments.",
         "2. GRAEN owns hypothesis/candidate development. Update the research question, features, methodology, or candidate only when evidence shows why.",
         "2a. Before changing strategy logic, distinguish a true strategy weakness from bad/missing data, telemetry loss, execution/reconciliation defects, or an invalid experiment.",

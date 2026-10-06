@@ -39,6 +39,7 @@ class DynamicUniverse:
         self._eligible_symbols: list[str] = []
         self._candidate_symbols: list[str] = []
         self._candidate_day: date | None = None
+        self._candidate_source = "uninitialized"
         self._active_symbols: list[str] = []
         self._last_refresh: datetime | None = None
 
@@ -111,6 +112,30 @@ class DynamicUniverse:
         if not eligible:
             raise RuntimeError("dynamic universe returned no eligible equities")
 
+        eligible_set = set(eligible)
+        screener = getattr(self.market_data, "stock_screener_symbols", None)
+        screened_rows = await screener(top=100) if callable(screener) else []
+        screened = [
+            symbol
+            for symbol in screened_rows
+            if symbol in eligible_set
+        ]
+        always = [
+            symbol
+            for symbol in self.settings.universe_always_include
+            if symbol in eligible_set
+        ]
+        if screened:
+            seed_symbols = list(
+                dict.fromkeys([*always, *screened])
+            )[: self.settings.universe_candidate_pool_size]
+            self._candidate_source = "hierarchical_screener"
+        else:
+            # Permission/feed failures do not make the universe unavailable.
+            # Fall back to the proven full-catalog daily ranking once per day.
+            seed_symbols = eligible
+            self._candidate_source = "full_market_fallback"
+
         lookback_days = max(self.settings.universe_daily_lookback * 2 + 3, 10)
         end = datetime.combine(
             now.date(),
@@ -119,14 +144,14 @@ class DynamicUniverse:
         ).astimezone(timezone.utc)
         start = (end - timedelta(days=lookback_days)).astimezone(timezone.utc)
         daily = await self.market_data.daily_bars_many(
-            eligible,
+            seed_symbols,
             start=start,
             end=end,
             batch_size=self.settings.universe_data_batch_size,
         )
 
         ranked: list[tuple[float, str]] = []
-        for symbol in eligible:
+        for symbol in seed_symbols:
             bars = daily.get(symbol, [])[-self.settings.universe_daily_lookback:]
             metrics = self._daily_metrics(bars)
             if metrics is None:
@@ -149,7 +174,6 @@ class DynamicUniverse:
             symbol
             for _score, symbol in ranked[: self.settings.universe_candidate_pool_size]
         ]
-        always = list(self.settings.universe_always_include)
         self._eligible_symbols = eligible
         self._candidate_symbols = list(dict.fromkeys([*always, *candidates]))
         self._candidate_day = now.date()
@@ -245,7 +269,7 @@ class DynamicUniverse:
                 symbols=active,
                 candidate_count=len(self._candidate_symbols),
                 eligible_count=len(self._eligible_symbols),
-                source="dynamic",
+                source=self._candidate_source,
                 at=current,
                 error=None,
             )

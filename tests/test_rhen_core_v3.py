@@ -1127,7 +1127,7 @@ def test_command_research_tracking_exposes_canonical_runs_and_queue(
 
     queued = store.strategy_pipeline_research()
     queued_observability = queued["research"]["observability"]
-    assert queued_observability["schema_version"] == "research_observability.v2"
+    assert queued_observability["schema_version"] == "research_observability.v3"
     assert queued_observability["authority"]["source"] == "rhen_core_sqlite"
     assert any(
         row["problem_id"] == problem_id
@@ -1423,3 +1423,41 @@ def test_strategy_pipeline_does_not_infer_supersession_target(
         "no explicit production supersession target"
         in pipeline["release_gate"]["reason"].lower()
     )
+
+
+def test_research_control_exposes_manual_intelligence_boundary(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Exhausted adaptive research",
+            "domain": "CRYPTO_STRATEGY",
+            "priority": 96,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    store.graen_action(
+        "queue_research_stage",
+        {
+            "problem_id": problem_id,
+            "stage": "ADAPTIVE_PROGRAM_EXHAUSTED",
+            "metadata": {
+                "candidate_id": "CRYPTO-ACCEL-ADAPTIVE-012",
+                "target_lane": "crypto",
+            },
+        },
+    )
+
+    tracking = store.command_research_tracking()
+    control = tracking["control"]
+
+    assert control["schema_version"] == "research_control.v1"
+    assert control["mode"] == "RESEARCH_REVIEW_REQUIRED"
+    assert control["review_required"] is True
+    assert control["review_kind"] == "NEW_HYPOTHESIS_FAMILY"
+    assert control["work_credit_recommended"] is True
+    assert control["autonomy"]["collect_market_evidence"] is True
+    assert control["autonomy"]["execute_frozen_hypotheses"] is True
+    assert control["autonomy"]["generate_new_hypothesis_family"] is False
+    assert control["autonomy"]["patch_strategy_code"] is False
+    assert control["autonomy"]["promote_live_strategy"] is False

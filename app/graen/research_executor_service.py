@@ -10102,6 +10102,36 @@ class GraenResearchExecutor:
                 "dispatched": False,
                 "execution_authority": False,
             }
+
+        # Exhaustion is a deliberate intelligence boundary, not an idle loop.
+        # Once the bounded program has consumed its frozen hypothesis family,
+        # keep the runtime observable but do not repeatedly create no-op tasks.
+        snapshot = await self.gateway.snapshot()
+        adaptive_problem = self._adaptive_problem(snapshot)
+        metadata = (
+            adaptive_problem.get("metadata")
+            if isinstance(adaptive_problem, Mapping)
+            and isinstance(adaptive_problem.get("metadata"), Mapping)
+            else {}
+        )
+        stage = str(metadata.get("research_stage") or "")
+        if stage == "ADAPTIVE_PROGRAM_EXHAUSTED":
+            return {
+                "status": "RESEARCH_REVIEW_REQUIRED",
+                "dispatched": False,
+                "adaptive_program_id": metadata.get("adaptive_program_id"),
+                "adaptive_generation": metadata.get("adaptive_generation"),
+                "adaptive_stage": stage,
+                "decision": metadata.get("decision")
+                or "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "next_action": metadata.get("next_action")
+                or "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+                "review_kind": "NEW_HYPOTHESIS_FAMILY",
+                "work_credit_recommended": True,
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            }
+
         self.adaptive_task = asyncio.create_task(
             self._run_adaptive_dispatch(),
             name="graen-adaptive-research",

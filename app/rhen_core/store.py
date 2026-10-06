@@ -2585,6 +2585,101 @@ class RhenCoreStore:
             return 20
         return 25 if state == "RUNNING" else 0
 
+    @staticmethod
+    def _research_control_projection(
+        problems: list[dict[str, Any]],
+        runs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Describe what the research runtime may do without operator/model reasoning.
+
+        Repetitive evidence collection, frozen-stage evaluation, and replay are
+        automation. Generating a new hypothesis family, patching strategy code,
+        or promoting production strategy remains an explicit Work/Codex review.
+        """
+        active_states = {"RUNNING", "WAITING", "QUEUED", "BLOCKED"}
+        active_problem = next(
+            (
+                row for row in problems
+                if str(row.get("status") or "").upper() in active_states
+            ),
+            problems[0] if problems else None,
+        )
+        problem_id = str((active_problem or {}).get("problem_id") or "")
+        stage = str((active_problem or {}).get("research_stage") or "").upper()
+        latest_run = next(
+            (
+                row for row in runs
+                if not problem_id or str(row.get("problem_id") or "") == problem_id
+            ),
+            runs[0] if runs else None,
+        )
+        next_action = str((latest_run or {}).get("next_action") or "").upper()
+        decision = str((latest_run or {}).get("decision") or "").upper()
+        rejected_generations = sum(
+            1
+            for row in runs
+            if str(row.get("problem_id") or "") == problem_id
+            and "REJECTED" in str(row.get("result_state") or "").upper()
+        )
+
+        mode = "IDLE"
+        reason = "No active frozen research chain is exposed."
+        review_required = False
+        review_kind = None
+
+        if stage == "ADAPTIVE_PROGRAM_EXHAUSTED":
+            mode = "RESEARCH_REVIEW_REQUIRED"
+            reason = (
+                "The bounded hypothesis family is exhausted. A new hypothesis "
+                "family requires an operator-directed Work/Codex research pass."
+            )
+            review_required = True
+            review_kind = "NEW_HYPOTHESIS_FAMILY"
+        elif stage == "CANDIDATE_READY_FOR_STRATEGY_REVIEW" or next_action == "PROTECTED_STRATEGY_UPDATE_REVIEW":
+            mode = "RELEASE_REVIEW_REQUIRED"
+            reason = (
+                "Research evidence reached the protected strategy boundary. "
+                "Strategy patching or promotion requires explicit review."
+            )
+            review_required = True
+            review_kind = "STRATEGY_PATCH_OR_RELEASE"
+        elif any(
+            str(row.get("status") or "").upper() == "RUNNING"
+            for row in runs
+        ):
+            mode = "AUTOMATED_TEST"
+            reason = "A frozen experiment is running; autonomous execution is limited to its defined methodology."
+        elif stage.startswith("CRYPTO_COMPILED_") or stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
+            mode = "AUTOMATED_TEST"
+            reason = "A frozen research chain may advance through development, validation, holdout, and replay."
+        elif active_problem is not None:
+            mode = "OBSERVING"
+            reason = "Research state is durable, but no bounded experiment is currently executing."
+
+        return {
+            "schema_version": "research_control.v1",
+            "mode": mode,
+            "reason": reason,
+            "review_required": review_required,
+            "review_kind": review_kind,
+            "work_credit_recommended": review_required,
+            "problem_id": problem_id or None,
+            "stage": stage or None,
+            "decision": decision or None,
+            "next_action": next_action or None,
+            "rejected_generations": rejected_generations,
+            "latest_run_id": (latest_run or {}).get("run_id"),
+            "autonomy": {
+                "collect_market_evidence": True,
+                "execute_frozen_hypotheses": True,
+                "run_replay_validation": True,
+                "generate_new_hypothesis_family": False,
+                "patch_strategy_code": False,
+                "promote_live_strategy": False,
+                "change_risk_or_capital": False,
+            },
+        }
+
     def command_research_tracking(self) -> dict[str, Any]:
         """Canonical read-only Command tracking from the consolidated RHEN Core."""
         with self.connect() as conn:
@@ -2705,6 +2800,9 @@ class RhenCoreStore:
                 "status": status,
                 "methodology_version": run.get("methodology_version"),
                 "result_state": result.get("state") or result.get("status"),
+                "decision": result.get("decision"),
+                "next_action": result.get("next_action"),
+                "candidate_id": result.get("candidate_id") or problem.get("candidate_id"),
                 "error": result.get("error"),
                 "started_at": run.get("started_at"),
                 "completed_at": run.get("completed_at"),
@@ -3243,13 +3341,15 @@ class RhenCoreStore:
         replay_projections.sort(
             key=lambda row: stamp(row.get("observed_at")), reverse=True
         )
+        control = self._research_control_projection(problems, compact_runs)
         return {
+            "control": control,
             "graen_problems": problems,
             "graen_runs": compact_runs,
             "velum_replays": replay_projections[:40],
             "graen_runtime": graen_runtime or None,
             "observability": {
-                "schema_version": "research_observability.v2",
+                "schema_version": "research_observability.v3",
                 "updated_at": _iso(),
                 "poll_seconds": 3,
                 "runs": runs[:64],
