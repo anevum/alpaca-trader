@@ -545,21 +545,20 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
             "next_action": action,
         }, job)
     return CommandResult(intent, {
-        "message": "Directive captured as durable work for IREN triage.",
+        "message": (
+            "Free-form directive not executed. IREN has no conversational model worker in "
+            "the zero-cost control plane. Use an explicit deterministic control or prepare "
+            "a manual Codex handoff."
+        ),
+        "supported_actions": [
+            "status",
+            "what's next?",
+            "do that",
+            "what needs me?",
+            "prepare for Codex",
+            "verify Codex handoff",
+        ],
         **summary,
-    }, {
-        "objective_key": None,
-        "title": command.strip()[:180] or "Operator directive",
-        "instructions": command.strip(),
-        "owner_system": "IREN",
-        "job_type": "AGENT_WORK",
-        "status": "QUEUED",
-        "priority": 90,
-        "protected_action": False,
-        "requires_human": False,
-        "requested_by": requested_by,
-        "requested_via": source,
-        "metadata": {"intent": "DIRECTIVE"},
     })
 
 
