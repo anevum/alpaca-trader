@@ -1334,3 +1334,100 @@ def test_profitable_thesis_exit_resets_loss_streak():
     assert allowed is True
     assert reason == ""
     assert detail["streak"] == 0
+
+
+def test_rolling_momentum_target_becomes_trailing_protection_not_forced_exit():
+    client = FakeClient(
+        positions=[position("SPY", entry="100", current="100.60")],
+        recent_orders=[bot_buy("SPY")],
+    )
+    engine = ExecutionEngine(
+        settings(
+            PROFIT_PROTECT_ENABLED="true",
+            PROFIT_PROTECT_ACTIVATION_PCT="0.001",
+            PROFIT_PROTECT_RETAIN_FRACTION="0.50",
+            PROFIT_PROTECT_MIN_PCT="0.0003",
+            TARGET_PCT="0.005",
+            THESIS_EXIT_ENABLED="true",
+        ),
+        client,
+        FakeMarketData(),
+        FailingHealthStrategy(),
+        reconciled_state(),
+    )
+    state = engine._exit_state_for_position(
+        position("SPY", entry="100", current="100.60")
+    )
+    action = engine._stateful_price_exit(
+        position("SPY", entry="100", current="100.60"),
+        state,
+    )
+
+    assert action is None
+    assert state["profit_protection_active"] is True
+    assert Decimal(state["profit_activation_threshold_pct"]) == Decimal("0.005")
+    assert Decimal(state["protected_floor_pct"]) >= Decimal("0.003")
+
+
+def test_rolling_momentum_ignores_fixed_max_hold_when_thesis_not_failed():
+    class HealthyStrategy(RollingMomentumVwapStrategy):
+        def __init__(self):
+            super().__init__(
+                fast_window=3,
+                slow_window=8,
+                min_momentum_pct=Decimal("0.0005"),
+                min_vwap_edge_pct=Decimal("0"),
+                stop_pct=Decimal("0.0035"),
+                target_pct=Decimal("0.005"),
+                entry_start=datetime.strptime("09:31", "%H:%M").time(),
+                entry_cutoff=datetime.strptime("15:30", "%H:%M").time(),
+                confirmation_symbols=("SMH",),
+                min_confirmations=1,
+            )
+
+        def position_health(self, **kwargs):
+            now = kwargs["now"]
+            return {
+                "data_ready": True,
+                "bar_time": now.replace(second=0, microsecond=0).isoformat(),
+                "strong_failure": False,
+                "reason": "position thesis remains viable",
+                "candidate_failure_count": 0,
+                "regime_ok": True,
+            }
+
+    client = FakeClient(
+        positions=[position("SPY", entry="100", current="100.20")],
+        recent_orders=[bot_buy("SPY", seconds_ago=1200)],
+    )
+    engine = ExecutionEngine(
+        settings(
+            MAX_HOLD_MINUTES="15",
+            THESIS_EXIT_ENABLED="true",
+            PROFIT_PROTECT_ENABLED="false",
+        ),
+        client,
+        FakeMarketData(),
+        HealthyStrategy(),
+        reconciled_state(),
+    )
+    account_payload = {
+        "cash": "100",
+        "equity": "100",
+        "last_equity": "100",
+        "trading_blocked": False,
+        "account_blocked": False,
+    }
+
+    result = asyncio.run(
+        engine._exit_managed_positions(
+            account_payload,
+            client._positions,
+            [],
+            client._recent_orders,
+            TEST_NOW,
+        )
+    )
+
+    assert result == []
+    assert client.sell_orders == []
