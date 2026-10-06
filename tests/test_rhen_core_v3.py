@@ -1525,3 +1525,41 @@ def test_prune_bounds_completed_scheduler_history(tmp_path, monkeypatch):
             ).fetchall()
         }
     assert remaining == {"recent-job", "running-job"}
+
+
+def test_prune_removes_nonfinal_forward_evidence(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 6, 18, 0, tzinfo=UTC)
+    with store.connect() as conn:
+        for key, status in [
+            ("complete-forward", "complete"),
+            ("pending-forward", "insufficient_future_data"),
+            ("error-forward", "error"),
+        ]:
+            conn.execute(
+                """insert into events(
+                    event_key,event_type,occurred_at,payload_json,critical,created_at
+                ) values(?,?,?,?,0,?)""",
+                (
+                    key,
+                    "candidate_forward_outcome",
+                    now.isoformat(),
+                    json.dumps({"status": status}, separators=(",", ":"), sort_keys=True),
+                    now.isoformat(),
+                ),
+            )
+        conn.commit()
+
+    deleted = store.prune(now=now)
+
+    assert deleted["incomplete_forward_outcomes"] == 2
+    with store.connect() as conn:
+        remaining = {
+            row[0]
+            for row in conn.execute(
+                "select event_key from events order by event_key"
+            ).fetchall()
+        }
+    assert "complete-forward" in remaining
+    assert "pending-forward" not in remaining
+    assert "error-forward" not in remaining
