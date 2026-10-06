@@ -13,7 +13,7 @@ def test_report_read_preserves_candidate_fields_and_forward_outcomes():
 
 def test_daily_report_persists_asc005_session_and_rolling_artifacts():
     source = Path("app/research_scheduler.py").read_text()
-    assert 'DAILY_REPORT_VERSION = "rhen-daily-v1.5"' in source
+    assert 'DAILY_REPORT_VERSION = "rhen-daily-v1.6"' in source
     assert "_build_counterfactual_lab" in source
     assert '"session_searches": session_searches' in source
     assert '"rolling_searches": rolling_searches' in source
@@ -40,3 +40,18 @@ def test_daily_report_persists_nostra_and_adaptive_control_artifacts():
     assert '"graen_validation": adaptive_control.get("graen_validation") or {}' in source
     assert '"nostra": nostra,' in source
     assert '"adaptive_strategy_control": adaptive_control,' in source
+
+
+
+def test_daily_report_persists_shadow_allocation_validation_without_authority():
+    source = Path("app/research_scheduler.py").read_text()
+    validator = Path(
+        "app/research_agent/shadow_allocation_validation.py"
+    ).read_text()
+
+    assert "evaluate_shadow_allocation(candidates)" in source
+    assert '"shadow_allocation_validation": shadow_allocation_validation' in source
+    assert '"capital_scaling_authorized": False' in source
+    assert '"automatic_application_authorized": False' in validator
+    assert '"promotion_authorized": False' in validator
+    assert '"execution_authority": False' in validator
