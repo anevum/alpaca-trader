@@ -57,6 +57,7 @@ def _recovery_windows(missing: list[datetime]) -> list[tuple[datetime, datetime]
 
 def _aggregate_recovery(rows: list[dict[str, Any]], allowed: set[datetime]) -> list[dict[str, Any]]:
     buckets: dict[datetime, dict[str, Any]] = {}
+    minutes: dict[datetime, set[datetime]] = {}
     for row in sorted(rows, key=_stamp):
         observed = _stamp(row)
         hour = observed.replace(minute=0, second=0, microsecond=0)
@@ -68,6 +69,7 @@ def _aggregate_recovery(rows: list[dict[str, Any]], allowed: set[datetime]) -> l
         open_, high, low, close = values
         if high < max(open_, close) or low > min(open_, close):
             raise ValueError("invalid_minute_recovery_ohlc")
+        minutes.setdefault(hour, set()).add(observed.replace(second=0, microsecond=0))
         current = buckets.get(hour)
         if current is None:
             buckets[hour] = {"t": hour.isoformat(), "o": str(open_), "h": str(high),
@@ -80,6 +82,10 @@ def _aggregate_recovery(rows: list[dict[str, Any]], allowed: set[datetime]) -> l
                 current["_last"] = observed
     output = []
     for hour in sorted(buckets):
+        # Recovery is evidence, not gap filling. Require a complete observed
+        # minute sequence before promoting it into a canonical hourly bar.
+        if len(minutes.get(hour, set())) != 60:
+            continue
         row = dict(buckets[hour])
         row.pop("_last", None)
         output.append(row)
