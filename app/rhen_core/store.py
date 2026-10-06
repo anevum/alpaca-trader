@@ -883,7 +883,9 @@ class RhenCoreStore:
                 stage = str(metadata.get("research_stage") or "")
                 if (
                     stage not in allowed
-                    or promotion.get("phase") != "COMPLETE"
+                    or promotion.get("phase") not in {
+                        "COMPLETE", "RUNTIME_COMPILED"
+                    }
                 ):
                     continue
 

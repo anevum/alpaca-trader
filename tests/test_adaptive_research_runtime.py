@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,6 +13,7 @@ from app.graen.adaptive_hypothesis import (
     conservative_exposure_ledger,
 )
 from app.rhen_core.store import RhenCoreStore
+from app.graen.research_executor_service import GraenResearchExecutor
 from graen.engineering import digest, verify_exposure
 
 
@@ -224,3 +227,51 @@ def test_adaptive_claim_waits_for_sealed_stage_maturity(tmp_path):
     )
     assert ready["problem"]["problem_id"] == problem_id
     assert ready["run"]["status"] == "RUNNING"
+
+
+def test_runtime_compiler_persists_exact_bundle_without_repository_write():
+    now = datetime(2026, 10, 6, 4, 0, tzinfo=UTC)
+    spec = build_spec(
+        1,
+        exposure_artifact_id=str(uuid4()),
+        search_history=["fixture"],
+        now=now,
+    )
+    problem = {
+        "problem_id": str(uuid4()),
+        "metadata": {
+            "research_implementation_spec": spec,
+            "code_promotion": {
+                "phase": "BRANCH",
+                "prespec": spec,
+                "spec_hash": digest(spec),
+                "blocked_reason": "runtime_github_authorization_not_configured",
+            },
+        },
+    }
+    gateway = type(
+        "Gateway",
+        (),
+        {
+            "record_artifact": AsyncMock(
+                return_value={"artifact": {"artifact_id": str(uuid4())}}
+            ),
+            "queue_research_stage": AsyncMock(
+                return_value={"problem": problem}
+            ),
+        },
+    )()
+    runtime = object.__new__(GraenResearchExecutor)
+    runtime.gateway = gateway
+
+    result = asyncio.run(runtime._runtime_compile_adaptive(problem))
+
+    assert result["phase"] == "RUNTIME_COMPILED"
+    assert result["repository_published"] is False
+    assert result["next_stage"] == "CRYPTO_COMPILED_DEVELOPMENT"
+    record_kwargs = gateway.record_artifact.await_args.kwargs
+    assert record_kwargs["artifact_type"] == "RESEARCH_RUNTIME_COMPILED_BUNDLE"
+    assert record_kwargs["content"]["files"]
+    queue_kwargs = gateway.queue_research_stage.await_args.kwargs
+    assert queue_kwargs["stage"] == "CRYPTO_COMPILED_DEVELOPMENT"
+    assert queue_kwargs["metadata"]["code_promotion"]["phase"] == "RUNTIME_COMPILED"

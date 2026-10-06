@@ -4690,16 +4690,46 @@ class GraenResearchExecutor:
         promotion = metadata.get("code_promotion") or {}
         spec = promotion.get("prespec") or {}
         spec_hash = validate_spec(spec)
+        phase = promotion.get("phase")
         if (
-            promotion.get("phase") != "COMPLETE"
+            phase not in {"COMPLETE", "RUNTIME_COMPILED"}
             or promotion.get("spec_hash") != spec_hash
             or metadata.get("compiled_specification_hash") != spec_hash
         ):
             raise IntegrityError("verified_engineering_handoff_required")
-        module_name = spec["hypothesis_id"].lower().replace("-", "_")
-        implementation = import_module("graen.crypto.generated." + module_name)
-        if implementation.SPEC_HASH != spec_hash or digest(implementation.SPEC) != spec_hash:
-            raise IntegrityError("deployed_candidate_does_not_match_frozen_prespec")
+
+        if phase == "COMPLETE":
+            module_name = spec["hypothesis_id"].lower().replace("-", "_")
+            implementation = import_module(
+                "graen.crypto.generated." + module_name
+            )
+            if (
+                implementation.SPEC_HASH != spec_hash
+                or digest(implementation.SPEC) != spec_hash
+            ):
+                raise IntegrityError(
+                    "deployed_candidate_does_not_match_frozen_prespec"
+                )
+            evaluate_program = implementation.evaluate
+        else:
+            from graen.crypto.flow_pressure import evaluate_stage
+            from graen.engineering import compile_bundle, verify_bundle
+
+            bundle = compile_bundle(spec)
+            verify_bundle(spec, bundle)
+
+            def evaluate_program(
+                bars,
+                *,
+                stage,
+                predecessor=None,
+            ):
+                return evaluate_stage(
+                    bars,
+                    spec=spec,
+                    stage=stage,
+                    predecessor=predecessor,
+                )
         stage = str(metadata.get("research_stage", "")).removeprefix("CRYPTO_COMPILED_").lower()
         if stage not in {"development", "validation", "holdout"}:
             raise IntegrityError("compiled_stage_not_supported")
@@ -4735,7 +4765,11 @@ class GraenResearchExecutor:
                         if current <= stamp < limit:
                             bars[symbol].append(row)
                 current = limit
-            result = implementation.evaluate(bars, stage=stage, predecessor=predecessor)
+            result = evaluate_program(
+                bars,
+                stage=stage,
+                predecessor=predecessor,
+            )
             await self.gateway.record_artifact(
                 problem_id=str(problem["problem_id"]), run_id=str(run["run_id"]),
                 artifact_type="COMPILED_STAGE_RESULT", methodology_version="graen-crypto-flow-pressure-v1",
@@ -9502,7 +9536,12 @@ class GraenResearchExecutor:
         # completes a research stage, or is rejected. Never mutate it in place.
         if stage != "RESEARCH_IMPLEMENTATION_REQUIRED":
             return problem, None
-        if promotion and promotion.get("phase") != "COMPLETE":
+        if promotion and promotion.get("phase") not in {
+            "COMPLETE", "RUNTIME_COMPILED"
+        }:
+            # Preserve the already-frozen hypothesis. The adaptive dispatcher
+            # decides whether to continue repository publication or fall back
+            # to the trusted runtime compiler; generation never mutates it.
             return problem, None
         if (
             metadata.get("research_implementation_spec")
@@ -9587,6 +9626,106 @@ class GraenResearchExecutor:
             "execution_authority": False,
         }
 
+    async def _runtime_compile_adaptive(
+        self,
+        problem: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Compile the frozen program without requiring repository writes.
+
+        The generated source bundle is persisted as evidence, but execution
+        stays inside the trusted evaluator already deployed with RHEN.
+        """
+        from graen.engineering import (
+            compile_bundle,
+            digest,
+            validate_spec,
+            verify_bundle,
+        )
+
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        promotion = (
+            metadata.get("code_promotion")
+            if isinstance(metadata.get("code_promotion"), Mapping)
+            else {}
+        )
+        spec = dict(
+            promotion.get("prespec")
+            or metadata.get("research_implementation_spec")
+            or {}
+        )
+        spec_hash = validate_spec(spec)
+        bundle = compile_bundle(spec)
+        verify_bundle(spec, bundle)
+        bundle_hash = digest(bundle)
+
+        recorded = await self.gateway.record_artifact(
+            problem_id=str(problem["problem_id"]),
+            run_id=None,
+            artifact_type="RESEARCH_RUNTIME_COMPILED_BUNDLE",
+            methodology_version="graen.runtime-compiler.v1",
+            content={
+                "spec_hash": spec_hash,
+                "bundle_hash": bundle_hash,
+                "files": bundle,
+                "repository_published": False,
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            },
+        )
+        artifact = recorded.get("artifact")
+        artifact_id = (
+            str(artifact.get("artifact_id"))
+            if isinstance(artifact, Mapping)
+            and artifact.get("artifact_id")
+            else ""
+        )
+        if not artifact_id:
+            raise RuntimeError("runtime_compiled_bundle_not_persisted")
+
+        runtime_promotion = {
+            "phase": "RUNTIME_COMPILED",
+            "spec_hash": spec_hash,
+            "prespec": spec,
+            "bundle_hash": bundle_hash,
+            "bundle_artifact_id": artifact_id,
+            "repository_published": False,
+            "write_transport": "native_trusted_runtime_compiler",
+            "source_commit": _source_commit(),
+            "deployment_id": _deployment_id(),
+            "resume_stage": "CRYPTO_COMPILED_DEVELOPMENT",
+            "protected_decision_required": False,
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+        queued = await self.gateway.queue_research_stage(
+            problem_id=str(problem["problem_id"]),
+            stage="CRYPTO_COMPILED_DEVELOPMENT",
+            metadata={
+                "code_promotion": runtime_promotion,
+                "compiled_specification_hash": spec_hash,
+                "runtime_compiled_bundle_artifact_id": artifact_id,
+                "repository_publication_optional": True,
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            },
+        )
+        if not queued.get("problem"):
+            raise RuntimeError("runtime_compiled_development_queue_failed")
+        return {
+            "phase": "RUNTIME_COMPILED",
+            "spec_hash": spec_hash,
+            "bundle_hash": bundle_hash,
+            "bundle_artifact_id": artifact_id,
+            "repository_published": False,
+            "next_stage": "CRYPTO_COMPILED_DEVELOPMENT",
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+
     async def adaptive_once(self) -> dict[str, Any]:
         """Advance only the canonical generated-research lane.
 
@@ -9602,24 +9741,53 @@ class GraenResearchExecutor:
         promotion_results: list[dict[str, Any]] = []
 
         adaptive_id = str(adaptive_problem.get("problem_id") or "")
-        eligible = {
-            problem_id
-            for problem_id in engineering_problem_ids(snapshot)
-            if problem_id == adaptive_id
-        }
-        for problem_id in list(eligible)[:1]:
-            state = await self.research_promotion.tick(problem_id)
-            promotion_results.append(
-                {
-                    "problem_id": problem_id,
-                    "phase": state.get("phase"),
-                    "blocked_reason": state.get("blocked_reason"),
-                    "protected_decision_required": bool(
-                        state.get("protected_decision_required")
-                    ),
+        adaptive_metadata = (
+            adaptive_problem.get("metadata")
+            if isinstance(adaptive_problem.get("metadata"), Mapping)
+            else {}
+        )
+        adaptive_stage = str(adaptive_metadata.get("research_stage") or "")
+        if adaptive_stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
+            if self.research_promotion.repository.configured:
+                eligible = {
+                    problem_id
+                    for problem_id in engineering_problem_ids(snapshot)
+                    if problem_id == adaptive_id
                 }
-            )
-            snapshot = await self.gateway.snapshot()
+                for problem_id in list(eligible)[:1]:
+                    state = await self.research_promotion.tick(problem_id)
+                    promotion_results.append(
+                        {
+                            "problem_id": problem_id,
+                            "phase": state.get("phase"),
+                            "blocked_reason": state.get("blocked_reason"),
+                            "protected_decision_required": bool(
+                                state.get("protected_decision_required")
+                            ),
+                        }
+                    )
+                    snapshot = await self.gateway.snapshot()
+                    refreshed = self._adaptive_problem(snapshot)
+                    if isinstance(refreshed, Mapping):
+                        adaptive_problem = refreshed
+                        adaptive_metadata = (
+                            refreshed.get("metadata")
+                            if isinstance(
+                                refreshed.get("metadata"), Mapping
+                            )
+                            else {}
+                        )
+            else:
+                runtime_state = await self._runtime_compile_adaptive(
+                    adaptive_problem
+                )
+                promotion_results.append(
+                    {
+                        "problem_id": adaptive_id,
+                        **runtime_state,
+                    }
+                )
+                snapshot = await self.gateway.snapshot()
 
         claimed = await self.gateway.claim_adaptive_research_problem(
             worker_id=self.worker_id + "-adaptive",
