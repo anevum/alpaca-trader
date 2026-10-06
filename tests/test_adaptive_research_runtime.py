@@ -396,3 +396,51 @@ def test_v3_ignores_exhausted_v2_and_creates_new_program():
         )
 
     asyncio.run(run())
+
+def test_v3_requests_model_handoff_only_after_bounded_program_exhaustion():
+    async def run():
+        problem = {
+            "problem_id": str(uuid4()),
+            "status": "WAITING",
+            "metadata": {
+                "adaptive_program_id": PROGRAM_ID,
+                "adaptive_generation": MAX_GENERATIONS,
+                "research_stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
+                "code_promotion": {"phase": "COMPLETE"},
+            },
+        }
+
+        class Gateway:
+            def __init__(self):
+                self.queued = []
+
+            async def queue_research_stage(self, **body):
+                self.queued.append(body)
+                return {
+                    "problem": {
+                        **problem,
+                        "metadata": {
+                            **problem["metadata"],
+                            **body["metadata"],
+                            "research_stage": body["stage"],
+                        },
+                    }
+                }
+
+        runtime = object.__new__(GraenResearchExecutor)
+        runtime.gateway = Gateway()
+        exhausted, result = await runtime._ensure_adaptive_hypothesis(
+            {"problems": [problem], "runs": []}
+        )
+
+        assert result["status"] == "EXHAUSTED"
+        assert result["generation"] == MAX_GENERATIONS
+        assert result["decision"] == "NEEDS_NEW_HYPOTHESIS_ENGINE"
+        assert result["next_action"] == "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+        assert exhausted["metadata"]["research_stage"] == "ADAPTIVE_PROGRAM_EXHAUSTED"
+        assert runtime.gateway.queued[0]["metadata"]["next_action"] == (
+            "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+        )
+
+    asyncio.run(run())
+
