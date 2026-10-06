@@ -1232,3 +1232,105 @@ def test_losing_hardstop_counts_as_loss_streak():
     assert allowed is False
     assert "loss-streak cooldown active" in reason
     assert detail["streak"] == 1
+
+
+def test_losing_thesis_exit_counts_as_loss_streak():
+    orders = [
+        {
+            "symbol": "NVDA",
+            "side": "buy",
+            "client_order_id": "anevum-nvda-buy-existing",
+            "status": "filled",
+            "filled_qty": "0.1",
+            "filled_avg_price": "242.00",
+            "submitted_at": iso_now(-180),
+            "filled_at": iso_now(-179),
+        },
+        {
+            "symbol": "NVDA",
+            "side": "sell",
+            "client_order_id": "anevum-nvda-thesis-existing",
+            "status": "filled",
+            "filled_qty": "0.1",
+            "filled_avg_price": "241.80",
+            "submitted_at": iso_now(-61),
+            "filled_at": iso_now(-60),
+        },
+    ]
+    engine = ExecutionEngine(
+        settings(
+            LOSS_STREAK_LIMIT="1",
+            LOSS_STREAK_COOLDOWN_MINUTES="10",
+        ),
+        FakeClient(recent_orders=orders),
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    allowed, reason, detail = engine._loss_streak_gate(orders, TEST_NOW)
+
+    assert allowed is False
+    assert "realized losses" in reason
+    assert detail["streak"] == 1
+
+
+def test_profitable_thesis_exit_resets_loss_streak():
+    orders = [
+        {
+            "symbol": "SPY",
+            "side": "buy",
+            "client_order_id": "anevum-spy-buy-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "100.00",
+            "submitted_at": iso_now(-300),
+            "filled_at": iso_now(-299),
+        },
+        {
+            "symbol": "SPY",
+            "side": "sell",
+            "client_order_id": "anevum-spy-hardstop-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "99.70",
+            "submitted_at": iso_now(-181),
+            "filled_at": iso_now(-180),
+        },
+        {
+            "symbol": "QQQ",
+            "side": "buy",
+            "client_order_id": "anevum-qqq-buy-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "100.00",
+            "submitted_at": iso_now(-150),
+            "filled_at": iso_now(-149),
+        },
+        {
+            "symbol": "QQQ",
+            "side": "sell",
+            "client_order_id": "anevum-qqq-thesis-existing",
+            "status": "filled",
+            "filled_qty": "0.2",
+            "filled_avg_price": "100.10",
+            "submitted_at": iso_now(-61),
+            "filled_at": iso_now(-60),
+        },
+    ]
+    engine = ExecutionEngine(
+        settings(
+            LOSS_STREAK_LIMIT="1",
+            LOSS_STREAK_COOLDOWN_MINUTES="10",
+        ),
+        FakeClient(recent_orders=orders),
+        FakeMarketData(),
+        BuyStrategy(),
+        reconciled_state(),
+    )
+
+    allowed, reason, detail = engine._loss_streak_gate(orders, TEST_NOW)
+
+    assert allowed is True
+    assert reason == ""
+    assert detail["streak"] == 0
