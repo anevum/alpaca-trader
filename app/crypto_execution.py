@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .alpaca_client import AlpacaClient
 from .config import Settings
+from .crypto_symbols import is_crypto_row, normalized_crypto_row
 from .crypto_layer import (
     CryptoMarketDataClient,
     CryptoRollingMomentumStrategy,
@@ -90,6 +91,8 @@ class CryptoExecutionEngine:
         )
 
     def _client_order_id(self, symbol: str, action: str) -> str:
+        if getattr(self.strategy, "preview_only", False):
+            raise ValueError("unvalidated_intraday_design_cannot_submit_orders")
         identity = getattr(self.strategy, "strategy_version_id", "")
         if identity.startswith("GRAEN-BTC-DIRECT-"):
             from .btc_discovery_contract import candidate_order_tag
@@ -135,16 +138,16 @@ class CryptoExecutionEngine:
     @classmethod
     def _crypto_positions(cls, positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
-            position
+            normalized_crypto_row(position)
             for position in positions
-            if cls._is_crypto_symbol(str(position.get("symbol", "")))
+            if is_crypto_row(position)
             and _d(position.get("qty")) > 0
         ]
 
     @classmethod
     def _bot_crypto_orders(cls, orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
-            order
+            normalized_crypto_row(order)
             for order in orders
             if str(order.get("client_order_id", "")).startswith("anevum-crypto-")
         ]
@@ -413,7 +416,36 @@ class CryptoExecutionEngine:
             }
 
         qty = _d(position.get("qty"))
+        # Do not send a second market exit while the first is still working.
+        for row in open_orders:
+            row = normalized_crypto_row(row)
+            if (row.get("symbol") == symbol and row.get("side") == "sell"
+                    and row.get("type") in {"market", "limit"}
+                    and row.get("status") not in {"canceled", "expired", "rejected", "filled"}):
+                return {"action": "hold", "symbol": symbol, "reason": "crypto exit already working"}
+        had_protection = self._protective_order(open_orders, symbol) is not None
         await self._cancel_protective(open_orders, symbol)
+        if had_protection:
+            # Cancellation can race a stop fill and does not release reserved
+            # quantity immediately. Read the broker again before deciding qty.
+            fresh_positions, fresh_orders = await asyncio.gather(
+                self.client.positions(), self.client.open_orders()
+            )
+            remaining = next((normalized_crypto_row(row) for row in fresh_positions
+                              if normalized_crypto_row(row).get("symbol") == symbol), None)
+            if remaining is None or _d(remaining.get("qty")) <= 0:
+                return {"action": "flat", "symbol": symbol, "reason": "position closed during protective cancellation"}
+            if any(normalized_crypto_row(row).get("symbol") == symbol
+                   and row.get("side") == "sell"
+                   and row.get("status") not in {"canceled", "expired", "rejected", "filled"}
+                   for row in fresh_orders):
+                return {"action": "hold", "symbol": symbol, "reason": "crypto protective cancellation pending"}
+            position = remaining
+            qty = _d(position.get("qty"))
+        if "qty_available" in position:
+            qty = min(qty, _d(position["qty_available"]))
+        if qty <= 0:
+            return {"action": "hold", "symbol": symbol, "reason": "crypto exit quantity not yet available"}
         client_order_id = self._client_order_id(symbol, "sell")
         refs = None
         if self.ledger is not None:
@@ -703,6 +735,8 @@ class CryptoExecutionEngine:
         previous_crypto_error = self.state.crypto_last_error
         self.state.crypto_last_error = None
         self.state.crypto_last_execution_context = {}
+        if getattr(self.strategy, "preview_only", False):
+            return {"action": "blocked", "reason": "unvalidated intraday design is preview only"}
 
         if self.state.paused:
             self.state.crypto_last_decision = "runtime paused"
@@ -756,6 +790,9 @@ class CryptoExecutionEngine:
             self.client.open_orders(),
             self.client.recent_orders(limit=100),
         )
+        positions = [normalized_crypto_row(row) for row in positions]
+        open_orders = [normalized_crypto_row(row) for row in open_orders]
+        recent_orders = [normalized_crypto_row(row) for row in recent_orders]
         await self.paper_selection.sync(self, positions, open_orders, recent_orders, previous_error=previous_crypto_error)
 
         active_symbols = (

@@ -30,6 +30,8 @@ from .crypto_layer import (
     CryptoUniverse,
 )
 from .btc_direct_strategy import BtcDirectSwingStrategy
+from .btc_day_preview import BtcDayPreview
+from .crypto_symbols import is_crypto_row, normalized_crypto_row
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .provenance import RHEN_VERSION, capture_runtime_provenance
@@ -96,6 +98,7 @@ scanner = ReadOnlyScanner(
     universe=universe,
 )
 crypto_market_data = CryptoMarketDataClient(settings)
+btc_day_preview = BtcDayPreview(crypto_market_data, settings)
 if settings.crypto_execution_mode in {
     "btc_direct_paper",
     "btc_direct_live_signal",
@@ -329,6 +332,9 @@ async def crypto_command_lane_snapshot() -> dict:
         client.open_orders(),
         client.recent_orders(limit=100),
     )
+    positions = [normalized_crypto_row(row) for row in positions]
+    open_orders = [normalized_crypto_row(row) for row in open_orders]
+    recent_orders = [normalized_crypto_row(row) for row in recent_orders]
     crypto_positions = [
         public_position(position)
         for position in positions
@@ -393,6 +399,7 @@ async def crypto_command_lane_snapshot() -> dict:
         "strategy_version_id": settings.crypto_strategy_version_id,
         "strategy_family": settings.crypto_strategy_family,
         "paper_selection": crypto_engine.paper_selection.snapshot(),
+        "intraday_preview": btc_day_preview.snapshot,
         "stats": stats,
         "last_decision": runtime_state.crypto_last_decision,
         "last_signal": runtime_state.crypto_last_signal,
@@ -1012,6 +1019,8 @@ async def crypto_monitor_loop():
                         await fetch_crypto_promotion_status(settings)
                     )
                 result = await crypto_engine.run_once()
+                # Read-only hypothesis observation; cannot affect execution decisions.
+                await btc_day_preview.observe()
                 print(
                     "CRYPTO_EXECUTION_CYCLE",
                     {
@@ -1370,6 +1379,7 @@ async def health():
             "strategy_family": settings.crypto_strategy_family,
             "strategy_version_id": settings.crypto_strategy_version_id,
             "model_version": settings.crypto_model_version,
+            "intraday_preview": btc_day_preview.snapshot,
             "calibration_version": settings.crypto_calibration_version,
             "regime_version": settings.crypto_regime_version,
             "execution_adapter_version": settings.crypto_execution_adapter_version,
