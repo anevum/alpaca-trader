@@ -766,13 +766,50 @@ def test_command_research_tracking_exposes_rhen_shadow_economics_run(
                     "candidate_count": 4,
                     "qualified_count": 1,
                     "rejected_count": 3,
-                    "shadow_economics_candidate_count": 4,
-                    "shadow_economics_admit_count": int(admit_rate / 25),
-                    "shadow_economics_admit_rate_pct": admit_rate,
-                    "shadow_economics_mean_net_bps": mean_net,
-                    "shadow_economics_best_net_bps": best_net,
-                    "shadow_economics_methodology_version": "rhen-shadow-economics-v1",
-                    "candidates": [],
+                    "candidates": [
+                        {
+                            "candidate_id": f"shadow-{index}-{candidate_index}",
+                            "symbol": f"S{candidate_index}",
+                            "observed_at": stamp.isoformat(),
+                            "qualified": candidate_index == 0,
+                            "final_decision": (
+                                "selected" if candidate_index == 0 else "rejected"
+                            ),
+                            "market_lane": "us_equity",
+                            "strategy_version_id": "LIVE-TEST",
+                            "features": {},
+                            "shadow_economics": {
+                                "methodology_version": "rhen-shadow-economics-v1",
+                                "research_only": True,
+                                "execution_authority": False,
+                                "estimate": {
+                                    "expected_gross_bps": str(best_net + 4),
+                                    "expected_net_bps": str(
+                                        best_net
+                                        if candidate_index == 0
+                                        else (
+                                            (mean_net * 4 - best_net) / 3
+                                        )
+                                    ),
+                                    "gross_to_cost_ratio": "2.0",
+                                    "confidence": "0.8",
+                                },
+                                "shadow_admission": {
+                                    "would_admit": (
+                                        candidate_index
+                                        < int(admit_rate / 25)
+                                    ),
+                                    "reason": (
+                                        "economic_gate_passed"
+                                        if candidate_index
+                                        < int(admit_rate / 25)
+                                        else "expected_net_edge_below_hurdle"
+                                    ),
+                                },
+                            },
+                        }
+                        for candidate_index in range(4)
+                    ],
                 },
             }
         )
