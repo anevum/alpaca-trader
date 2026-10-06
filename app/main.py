@@ -376,12 +376,19 @@ async def crypto_command_lane_snapshot() -> dict:
             if settings.crypto_execution_mode == "btc_direct_paper"
             else settings.btc_direct_live_signal_authorized
             if settings.crypto_execution_mode == "btc_direct_live_signal"
+            else settings.crypto_multi_asset_paper_authorized
+            if settings.crypto_execution_mode == "multi_asset_paper"
             else settings.execution_authorized
         ),
         "broker_writes_allowed": (
-            settings.crypto_execution_mode != "btc_direct_live_signal"
-            and settings.crypto_execution_enabled
-            and settings.execution_authorized
+            False
+            if settings.crypto_execution_mode == "btc_direct_live_signal"
+            else settings.crypto_multi_asset_paper_authorized
+            if settings.crypto_execution_mode == "multi_asset_paper"
+            else (
+                settings.crypto_execution_enabled
+                and settings.execution_authorized
+            )
         ),
         "strategy_version_id": settings.crypto_strategy_version_id,
         "strategy_family": settings.crypto_strategy_family,
@@ -898,29 +905,46 @@ async def crypto_monitor_loop():
                 if settings.crypto_execution_mode in {
                     "btc_direct_paper",
                     "btc_direct_live_signal",
+                    "multi_asset_paper",
                 }:
                     live_signal = (
                         settings.crypto_execution_mode == "btc_direct_live_signal"
+                    )
+                    multi_asset_paper = (
+                        settings.crypto_execution_mode == "multi_asset_paper"
                     )
                     runtime_state.crypto_graen_promotion = {
                         "status": (
                             "LIVE_SIGNAL"
                             if live_signal
+                            else "PAPER_DISCOVERY"
+                            if multi_asset_paper
                             else "DIRECT_EXECUTION"
                         ),
                         "promotion_ready": False,
                         "reason": (
-                            "RHEN BTC direct runtime does not depend on "
-                            "GRAEN/NOSTRA/ADS promotion"
+                            "multi-asset paper discovery collects evidence "
+                            "without requiring promoted GRAEN/ADS state"
+                            if multi_asset_paper
+                            else (
+                                "RHEN BTC direct runtime does not depend on "
+                                "GRAEN/NOSTRA/ADS promotion"
+                            )
                         ),
                         "execution_class": (
                             "BTC_DIRECT_LIVE_SIGNAL"
                             if live_signal
+                            else "MULTI_ASSET_PAPER_DISCOVERY"
+                            if multi_asset_paper
                             else "BTC_DIRECT_PAPER"
                         ),
                         "strategy_version_id": settings.crypto_strategy_version_id,
                         "live_execution_authorized": False,
-                        "broker_writes_allowed": not live_signal,
+                        "broker_writes_allowed": (
+                            settings.crypto_multi_asset_paper_authorized
+                            if multi_asset_paper
+                            else not live_signal
+                        ),
                     }
                 else:
                     runtime_state.crypto_graen_promotion = (
@@ -1866,6 +1890,7 @@ def _command_active_strategies() -> list[dict]:
     crypto_mode = str(settings.crypto_execution_mode or "validated")
     direct_paper = crypto_mode == "btc_direct_paper"
     live_signal = crypto_mode == "btc_direct_live_signal"
+    multi_asset_paper = crypto_mode == "multi_asset_paper"
     direct_btc = direct_paper or live_signal
 
     crypto_version = str(
@@ -1889,6 +1914,11 @@ def _command_active_strategies() -> list[dict]:
             settings.btc_direct_live_signal_authorized
         )
         crypto_broker_writes = False
+    elif multi_asset_paper:
+        crypto_signal_authorized = bool(
+            settings.crypto_multi_asset_paper_authorized
+        )
+        crypto_broker_writes = crypto_signal_authorized
     else:
         crypto_signal_authorized = bool(
             crypto_lane
@@ -1904,7 +1934,7 @@ def _command_active_strategies() -> list[dict]:
     crypto_signals_enabled = bool(
         crypto_signal_authorized
         and not runtime_state.paused
-        and (direct_btc or validated_promotion_ready)
+        and (direct_btc or multi_asset_paper or validated_promotion_ready)
     )
 
     return [
@@ -1942,7 +1972,7 @@ def _command_active_strategies() -> list[dict]:
                 "live"
                 if live_signal
                 else "paper"
-                if direct_paper
+                if direct_paper or multi_asset_paper
                 else settings.trading_mode
             ),
             "execution_mode": crypto_mode,
