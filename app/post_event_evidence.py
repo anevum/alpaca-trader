@@ -809,6 +809,9 @@ class PostEventRunSummary:
     incomplete_outcomes: int = 0
     error_outcomes: int = 0
     skipped_complete_outcomes: int = 0
+    measurable_candidates: int = 0
+    unmeasurable_candidates: int = 0
+    unmeasurable_reasons: dict[str, int] | None = None
     reused_existing_evidence: bool = False
 
 
@@ -839,16 +842,30 @@ class PostEventEvidenceRunner:
             await queue.join()
 
     @staticmethod
-    def _forward_outcome_eligible(candidate: dict[str, Any]) -> bool:
-        """Gate only whether a candidate can be identified for measurement.
+    def _forward_outcome_ineligible_reason(
+        candidate: dict[str, Any],
+    ) -> str | None:
+        """Return a durable-evidence reason when exact measurement is impossible.
 
-        Prediction completeness is intentionally not part of this decision.
-        Invalid prices, timestamps, or future data are persisted as explicit
-        per-horizon error/insufficient states by calculate_forward_outcome().
+        Forward outcomes require both a decision-time reference price and the
+        exact completed bar timestamp. Missing either is a candidate-evidence
+        limitation, not seven separate horizon failures.
         """
         identity = candidate.get("candidate_id") or candidate.get("candidate_key")
-        symbol = str(candidate.get("symbol") or "").strip()
-        return identity not in {None, ""} and bool(symbol)
+        if identity in {None, ""}:
+            return "missing_candidate_identity"
+        if not str(candidate.get("symbol") or "").strip():
+            return "missing_symbol"
+        reference_price = d(candidate.get("decision_reference_price"))
+        if reference_price is None or reference_price <= 0:
+            return "missing_decision_reference_price"
+        if _reference_bar_start(candidate) is None:
+            return "decision_reference_bar_timestamp_unavailable"
+        return None
+
+    @classmethod
+    def _forward_outcome_eligible(cls, candidate: dict[str, Any]) -> bool:
+        return cls._forward_outcome_ineligible_reason(candidate) is None
 
     @staticmethod
     def _ads002_research_eligibility(
@@ -1121,11 +1138,22 @@ class PostEventEvidenceRunner:
             computed_at=computed_at,
             summary=summary,
         )
-        outcome_candidates = [
-            candidate
-            for candidate in candidates
-            if self._forward_outcome_eligible(candidate)
-        ]
+        outcome_candidates: list[dict[str, Any]] = []
+        unmeasurable_reasons: dict[str, int] = {}
+        for candidate in candidates:
+            reason = self._forward_outcome_ineligible_reason(candidate)
+            if reason is None:
+                outcome_candidates.append(candidate)
+                continue
+            unmeasurable_reasons[reason] = (
+                unmeasurable_reasons.get(reason, 0) + 1
+            )
+        summary.measurable_candidates = len(outcome_candidates)
+        summary.unmeasurable_candidates = (
+            len(candidates) - len(outcome_candidates)
+        )
+        summary.unmeasurable_reasons = unmeasurable_reasons
+
         for candidate in outcome_candidates:
             provider = str(
                 candidate.get("data_feed")
