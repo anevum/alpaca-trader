@@ -10,9 +10,9 @@ UTC = timezone.utc
 
 def _job() -> dict:
     return {
-        "job_key": "rhen.research.daily:1.0.3:2026-10-05T20:25:00+00:00",
+        "job_key": "rhen.research.daily:1.0.4:2026-10-05T20:25:00+00:00",
         "workflow_id": "rhen.research.daily",
-        "workflow_version": "1.0.3",
+        "workflow_version": "1.0.4",
         "scheduler_version": "anevum-scheduler-v1.0.5",
         "scheduled_at": "2026-10-05T20:25:00+00:00",
         "trigger_type": "schedule",
