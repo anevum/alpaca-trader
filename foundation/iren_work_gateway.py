@@ -122,6 +122,87 @@ def snapshot(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     }
 
 
+def _maintenance_research_control(
+    problems: list[dict[str, Any]],
+    runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    active_states = {"RUNNING", "WAITING", "QUEUED", "BLOCKED"}
+    problem = next(
+        (
+            row
+            for row in problems
+            if str(row.get("status") or "").upper() in active_states
+        ),
+        problems[0] if problems else None,
+    )
+    problem_id = str((problem or {}).get("problem_id") or "")
+    stage = str((problem or {}).get("research_stage") or "").upper()
+    latest = next(
+        (
+            row
+            for row in runs
+            if not problem_id or str(row.get("problem_id") or "") == problem_id
+        ),
+        runs[0] if runs else None,
+    )
+    next_action = str((latest or {}).get("next_action") or "").upper()
+    decision = str((latest or {}).get("decision") or "").upper()
+    rejected = sum(
+        1
+        for row in runs
+        if str(row.get("problem_id") or "") == problem_id
+        and "REJECTED" in str(row.get("decision") or "").upper()
+    )
+
+    mode = "IDLE"
+    reason = "No active frozen research chain is exposed."
+    review_required = False
+    review_kind = None
+
+    if stage == "ADAPTIVE_PROGRAM_EXHAUSTED":
+        mode = "RESEARCH_REVIEW_REQUIRED"
+        reason = (
+            "The bounded hypothesis family is exhausted. Do not restart it. "
+            "A materially new hypothesis family requires a deliberate Work/Codex pass."
+        )
+        review_required = True
+        review_kind = "NEW_HYPOTHESIS_FAMILY"
+    elif (
+        stage == "CANDIDATE_READY_FOR_STRATEGY_REVIEW"
+        or next_action == "PROTECTED_STRATEGY_UPDATE_REVIEW"
+    ):
+        mode = "RELEASE_REVIEW_REQUIRED"
+        reason = (
+            "Evidence reached the protected strategy boundary. Strategy patching "
+            "or production release requires explicit review."
+        )
+        review_required = True
+        review_kind = "STRATEGY_PATCH_OR_RELEASE"
+    elif any(str(row.get("status") or "").upper() == "RUNNING" for row in runs):
+        mode = "AUTOMATED_TEST"
+        reason = "A frozen experiment is running inside its existing methodology."
+    elif stage.startswith("CRYPTO_COMPILED_") or stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
+        mode = "AUTOMATED_TEST"
+        reason = "A frozen research chain may advance through its existing validation gates."
+    elif problem is not None:
+        mode = "OBSERVING"
+        reason = "Research evidence is durable, but no bounded experiment is currently executing."
+
+    return {
+        "schema_version": "research_control.v1",
+        "mode": mode,
+        "reason": reason,
+        "review_required": review_required,
+        "review_kind": review_kind,
+        "work_credit_recommended": review_required,
+        "problem_id": problem_id or None,
+        "stage": stage or None,
+        "decision": decision or None,
+        "next_action": next_action or None,
+        "rejected_generations": rejected,
+    }
+
+
 def maintenance_evidence(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     """Bounded evidence used only to assemble the next maintenance handoff."""
     with conn.cursor() as cur:
@@ -219,6 +300,10 @@ def maintenance_evidence(conn: psycopg.Connection[Any]) -> dict[str, Any]:
 
     return {
         "observed_at": datetime.now().astimezone().isoformat(),
+        "research_control": _maintenance_research_control(
+            graen_problems,
+            graen_runs,
+        ),
         "graen_problems": graen_problems,
         "graen_runs": graen_runs,
         "velum_replays": velum_replays,
