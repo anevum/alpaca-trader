@@ -629,10 +629,22 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
 
         session = self._completed_session_bars(bars, now)
         if len(session) < self.slow_window + 1:
+            metadata: dict[str, Any] = {}
+            if session:
+                latest = session[-1]
+                latest_close = self._d(latest["c"])
+                metadata = {
+                    "bar_time": self._timestamp(latest).isoformat(),
+                    "current_close": str(latest_close),
+                    "evidence_reference_only": True,
+                    "warmup_bar_count": len(session),
+                    "required_bar_count": self.slow_window + 1,
+                }
             return Signal(
                 action="hold",
                 symbol=symbol,
                 reason="not enough completed bars for rolling signal",
+                metadata=metadata,
             )
 
         closes = [self._d(bar["c"]) for bar in session]
