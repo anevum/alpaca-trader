@@ -469,9 +469,17 @@ class ExecutionEngine:
                 observed_at=datetime.now(NY),
             )
 
+        profit_activation_pct = self.settings.profit_protect_activation_pct
+        if isinstance(self.strategy, RollingMomentumVwapStrategy):
+            profit_activation_pct = max(
+                profit_activation_pct,
+                self.settings.target_pct,
+            )
+        state["profit_activation_threshold_pct"] = str(profit_activation_pct)
+
         if (
             self.settings.profit_protect_enabled
-            and peak >= self.settings.profit_protect_activation_pct
+            and peak >= profit_activation_pct
         ):
             floor = max(
                 self.settings.profit_protect_min_pct,
@@ -523,6 +531,10 @@ class ExecutionEngine:
                 f"(entry {entry_price})",
             )
         if current_price >= target_price:
+            if isinstance(self.strategy, RollingMomentumVwapStrategy):
+                state["target_reached"] = True
+                state["target_reached_price"] = str(current_price)
+                return None
             return (
                 "target",
                 f"bot-managed take profit triggered at {current_price} "
@@ -1452,7 +1464,10 @@ class ExecutionEngine:
                     )
                     continue
 
-            if self.settings.max_hold_minutes > 0:
+            if (
+                self.settings.max_hold_minutes > 0
+                and not isinstance(self.strategy, RollingMomentumVwapStrategy)
+            ):
                 if entry_time is not None:
                     held_minutes = (now - entry_time).total_seconds() / 60
                     exit_state["held_minutes"] = held_minutes

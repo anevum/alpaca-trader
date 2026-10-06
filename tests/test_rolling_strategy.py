@@ -257,3 +257,48 @@ def test_position_health_flags_joint_market_and_candidate_failure():
     assert health["regime_ok"] is False
     assert health["candidate_failure_count"] >= 2
     assert health["strong_failure"] is True
+
+
+def test_one_bar_pop_without_multi_bar_persistence_is_rejected():
+    s = strategy()
+    candidate = rising_bars(100)
+    candidate[-3]["c"] = candidate[-4]["c"]
+    candidate[-2]["c"] = str(Decimal(candidate[-3]["c"]) - Decimal("0.05"))
+    candidate[-1]["c"] = str(Decimal(candidate[-2]["c"]) + Decimal("0.10"))
+    candidate[-1]["h"] = str(Decimal(candidate[-1]["c"]) + Decimal("0.03"))
+    candidate[-1]["l"] = str(Decimal(candidate[-1]["c"]) - Decimal("0.03"))
+    candidate[-1]["vw"] = candidate[-1]["c"]
+
+    signal = s.evaluate(
+        bars=candidate,
+        confirmation_bars={"QQQ": rising_bars(200), "SMH": rising_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+
+    assert signal.action == "hold"
+    assert signal.reason == "multi-bar candidate trend is not persistent"
+
+
+def test_market_confirmation_requires_multi_bar_persistence():
+    s = strategy()
+    confirmation = rising_bars(200)
+    confirmation[-3]["c"] = confirmation[-4]["c"]
+    confirmation[-2]["c"] = str(Decimal(confirmation[-3]["c"]) - Decimal("0.10"))
+    confirmation[-1]["c"] = str(Decimal(confirmation[-2]["c"]) + Decimal("0.05"))
+    confirmation[-1]["l"] = str(Decimal(confirmation[-2]["l"]) - Decimal("0.20"))
+    confirmation[-1]["vw"] = confirmation[-1]["c"]
+
+    signal = s.evaluate(
+        bars=rising_bars(100),
+        confirmation_bars={"QQQ": confirmation, "SMH": weak_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 40, 5, tzinfo=NY),
+    )
+
+    assert signal.action == "hold"
+    assert signal.reason == "not enough market confirmations passed"

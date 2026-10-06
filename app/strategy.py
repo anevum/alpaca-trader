@@ -131,36 +131,50 @@ class OpeningRangeVwapStrategy:
         now: datetime,
     ) -> tuple[bool, str, dict[str, str]]:
         session = self._completed_session_bars(bars, now)
-        if len(session) < 2:
+        if len(session) < 4:
             return False, "not enough completed confirmation bars", {}
 
-        previous, current = session[-2], session[-1]
-        current_close = self._d(current["c"])
-        previous_close = self._d(previous["c"])
-        current_low = self._d(current["l"])
-        previous_low = self._d(previous["l"])
+        closes = [self._d(row["c"]) for row in session[-4:]]
+        lows = [self._d(row["l"]) for row in session[-4:]]
+        current_close = closes[-1]
         vwap = self._vwap(session)
+        three_bar_return = (
+            (current_close - closes[0]) / closes[0]
+            if closes[0] > 0 else Decimal("0")
+        )
+        positive_bars = sum(
+            1 for left, right in zip(closes, closes[1:]) if right >= left
+        )
+        no_lower_low_sequence = lows[-1] >= min(lows[-3:-1])
 
         above_vwap = current_close >= vwap
-        not_falling = current_close >= previous_close
-        no_fresh_low = current_low >= previous_low
-        ok = above_vwap and not_falling and no_fresh_low
+        trend_persistent = positive_bars >= 2
+        return_nonnegative = three_bar_return >= Decimal("0")
+        ok = (
+            above_vwap
+            and trend_persistent
+            and return_nonnegative
+            and no_lower_low_sequence
+        )
         details = {
             "close": str(current_close),
-            "previous_close": str(previous_close),
-            "low": str(current_low),
-            "previous_low": str(previous_low),
             "vwap": str(vwap),
+            "three_bar_return_pct": str(three_bar_return),
+            "positive_bars": str(positive_bars),
+            "recent_low": str(lows[-1]),
+            "prior_two_bar_low": str(min(lows[-3:-1])),
         }
         if ok:
-            return True, "confirmation passed", details
-        failed = []
+            return True, "multi-bar confirmation passed", details
+        failed: list[str] = []
         if not above_vwap:
             failed.append("below VWAP")
-        if not not_falling:
-            failed.append("close below previous close")
-        if not no_fresh_low:
-            failed.append("fresh one-bar low")
+        if not trend_persistent:
+            failed.append("multi-bar trend not persistent")
+        if not return_nonnegative:
+            failed.append("three-bar return negative")
+        if not no_lower_low_sequence:
+            failed.append("recent lower low")
         return False, ", ".join(failed), details
 
     @staticmethod
@@ -482,10 +496,15 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
             else Decimal("0")
         )
 
+        recent = closes[-4:] if len(closes) >= 4 else closes
+        recent_down_steps = sum(
+            1 for left, right in zip(recent, recent[1:]) if right < left
+        )
         candidate_checks = {
             "fast_above_slow": fast_average > slow_average,
             "above_fast_average": current_close >= fast_average,
             "positive_momentum": momentum_pct > 0,
+            "multi_bar_structure_intact": recent_down_steps <= 1,
         }
         candidate_failure_count = sum(
             1 for ok in candidate_checks.values() if not ok
@@ -515,7 +534,7 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
             independent_confirmations >= self.regime_min_confirmations
             and regime_passes >= self.regime_min_confirmations
         )
-        strong_failure = (not regime_ok) and candidate_failure_count >= 2
+        strong_failure = (not regime_ok) and candidate_failure_count >= 3
         return {
             "data_ready": True,
             "bar_time": self._timestamp(session[-1]).isoformat(),
@@ -637,6 +656,12 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
 
         fast_above_slow = fast_average > slow_average
         rising = current_close > previous_close
+        recent_closes = closes[-4:]
+        multi_bar_up_steps = sum(
+            1 for left, right in zip(recent_closes, recent_closes[1:])
+            if right >= left
+        )
+        multi_bar_persistent = multi_bar_up_steps >= 2
         momentum_ok = momentum_pct >= self.min_momentum_pct
         vwap_ok = current_close > session_vwap and vwap_edge_pct >= self.min_vwap_edge_pct
         vwap_extension_ok = vwap_edge_pct <= self.max_vwap_extension_pct
@@ -653,6 +678,7 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
             "checks": {
                 "fast_above_slow": fast_above_slow,
                 "rising": rising,
+                "multi_bar_persistent": multi_bar_persistent,
                 "momentum_ok": momentum_ok,
                 "vwap_ok": vwap_ok,
                 "vwap_extension_ok": vwap_extension_ok,
@@ -728,6 +754,13 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
                 action="hold",
                 symbol=symbol,
                 reason="latest completed bar is not rising",
+                metadata=metadata,
+            )
+        if not multi_bar_persistent:
+            return Signal(
+                action="hold",
+                symbol=symbol,
+                reason="multi-bar candidate trend is not persistent",
                 metadata=metadata,
             )
         if not momentum_ok:
