@@ -338,17 +338,17 @@ async def crypto_command_lane_snapshot() -> dict:
     crypto_positions = [
         public_position(position)
         for position in positions
-        if "/" in str(position.get("symbol") or "")
+        if is_crypto_row(position)
     ]
     crypto_orders = [
         public_order(order)
         for order in recent_orders
-        if "/" in str(order.get("symbol") or "")
+        if is_crypto_row(order)
     ]
     crypto_open_orders = [
         public_order(order)
         for order in open_orders
-        if "/" in str(order.get("symbol") or "")
+        if is_crypto_row(order)
     ]
     stats = crypto_trade_stats(
         recent_orders,

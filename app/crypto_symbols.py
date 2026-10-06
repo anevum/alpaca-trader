@@ -15,7 +15,7 @@ def normalized_crypto_row(row: dict[str, Any]) -> dict[str, Any]:
             if canonical.endswith(quote) and len(canonical) > len(quote):
                 canonical = canonical[:-len(quote)] + "/" + quote
                 break
-    return {**row, "symbol": canonical} if canonical != symbol else row
+    return {**row, "symbol": canonical} if canonical != row.get("symbol") else row
 
 
 def is_crypto_row(row: dict[str, Any]) -> bool:
