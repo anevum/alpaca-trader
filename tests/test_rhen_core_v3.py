@@ -640,6 +640,7 @@ def test_router_sends_foundation_compatibility_paths_to_core():
 
     assert "/v1/trading-report-read" in CORE_PREFIXES
     assert "/v1/trading-reconcile" in CORE_PREFIXES
+    assert "/v1/strategy-pipeline" in CORE_PREFIXES
 
 
 def test_router_exposes_sanitized_public_research_projections():
