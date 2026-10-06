@@ -19,7 +19,7 @@ from .config import Settings, get_settings
 from .market_data import MarketDataClient
 from .replay import ReplayEngine
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
-from .velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
+from .velum_core import bootstrap_trade_distribution
 from .velum_manifest import (
     build_run_manifest,
     dataset_fingerprint,
