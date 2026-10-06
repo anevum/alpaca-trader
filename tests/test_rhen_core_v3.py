@@ -994,3 +994,92 @@ def test_compact_storage_keeps_small_incremental_fragmentation_bounded():
     assert result["reason"] == "fragmentation_below_threshold"
     assert not any("incremental_vacuum" in sql for sql in commands)
     assert not any(sql.strip().lower() == "vacuum" for sql in commands)
+
+
+
+def test_storage_shedding_uses_effective_live_bytes_not_sqlite_freelist():
+    import threading
+
+    store = RhenCoreStore.__new__(RhenCoreStore)
+    store._lock = threading.RLock()
+    store.warning_bytes = 500 * 1024 * 1024
+    store.shed_bytes = 750 * 1024 * 1024
+    store._maintenance_error = None
+    store.file_size_bytes = lambda: 760 * 1024 * 1024
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def fetchone(self):
+            return (self.value,)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql):
+            lowered = sql.lower()
+            if "page_count" in lowered:
+                return Result(190000)
+            if "freelist_count" in lowered:
+                return Result(5120)
+            if "page_size" in lowered:
+                return Result(4096)
+            if "auto_vacuum" in lowered:
+                return Result(2)
+            raise AssertionError(sql)
+
+    store.connect = lambda: Connection()
+
+    state = store.storage_state()
+
+    assert state["mb"] == 760.0
+    assert state["physical_warning"] is True
+    assert state["reusable_mb"] == 20.0
+    assert state["effective_mb"] == 740.0
+    assert state["analytics_shedding"] is False
+    assert state["shed_basis"] == "effective_used_bytes"
+
+
+def test_storage_pressure_shortens_high_frequency_retention(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    with store.connect() as conn:
+        for key, age_days in (("old-cycle", 4), ("recent-cycle", 2)):
+            occurred_at = (now - timedelta(days=age_days)).isoformat()
+            conn.execute(
+                """insert into events(
+                    event_key,event_type,occurred_at,run_id,
+                    strategy_version_id,symbol,correlation_id,
+                    source,payload_json,critical,created_at
+                ) values(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    key,
+                    "decision_cycle",
+                    occurred_at,
+                    "run-storage",
+                    "LIVE-TEST",
+                    None,
+                    None,
+                    "test",
+                    "{}",
+                    0,
+                    occurred_at,
+                ),
+            )
+        conn.commit()
+
+    monkeypatch.setattr(store, "storage_state", lambda: {"warning": True})
+    deleted = store.prune(now)
+
+    with store.connect() as conn:
+        rows = conn.execute(
+            "select event_key from events order by event_key"
+        ).fetchall()
+
+    assert deleted["decision_cycles"] == 1
+    assert [row["event_key"] for row in rows] == ["recent-cycle"]

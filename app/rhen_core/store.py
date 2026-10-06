@@ -247,11 +247,22 @@ class RhenCoreStore:
             if allocated_db_bytes > 0
             else 0.0
         )
+        # SQLite freelist pages are physically allocated but immediately
+        # reusable by future writes. Base telemetry shedding on effective live
+        # bytes so reusable pages do not trigger a false storage emergency.
+        reusable_bytes = min(max(reclaimable_db_bytes, 0), max(size, 0))
+        effective_bytes = max(size - reusable_bytes, 0)
         return {
             "bytes": size,
             "mb": round(size / 1024 / 1024, 3),
-            "warning": size >= self.warning_bytes,
-            "analytics_shedding": size >= self.shed_bytes,
+            "effective_bytes": effective_bytes,
+            "effective_mb": round(effective_bytes / 1024 / 1024, 3),
+            "reusable_bytes": reusable_bytes,
+            "reusable_mb": round(reusable_bytes / 1024 / 1024, 3),
+            "warning": effective_bytes >= self.warning_bytes,
+            "physical_warning": size >= self.warning_bytes,
+            "analytics_shedding": effective_bytes >= self.shed_bytes,
+            "shed_basis": "effective_used_bytes",
             "warning_mb": self.warning_bytes // 1024 // 1024,
             "shed_mb": self.shed_bytes // 1024 // 1024,
             "allocated_db_bytes": allocated_db_bytes,
@@ -508,12 +519,24 @@ class RhenCoreStore:
 
     def prune(self, now: datetime | None = None) -> dict[str, int]:
         now = now or datetime.now(UTC)
+        storage = self.storage_state()
+        pressure = bool(storage.get("warning"))
         cuts = {
-            "events": (now - timedelta(days=14)).isoformat(),
-            "cycles": (now - timedelta(days=7)).isoformat(),
-            "positions": (now - timedelta(days=7)).isoformat(),
-            "candidates": (now - timedelta(days=7)).isoformat(),
-            "nostra": (now - timedelta(days=14)).isoformat(),
+            "events": (
+                now - timedelta(days=10 if pressure else 14)
+            ).isoformat(),
+            "cycles": (
+                now - timedelta(days=3 if pressure else 7)
+            ).isoformat(),
+            "positions": (
+                now - timedelta(days=3 if pressure else 7)
+            ).isoformat(),
+            "candidates": (
+                now - timedelta(days=3 if pressure else 7)
+            ).isoformat(),
+            "nostra": (
+                now - timedelta(days=10 if pressure else 14)
+            ).isoformat(),
             "scheduler": (now - timedelta(days=30)).isoformat(),
         }
         deleted: dict[str, int] = {}
