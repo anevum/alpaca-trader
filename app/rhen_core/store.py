@@ -2868,9 +2868,17 @@ class RhenCoreStore:
                    where event_type like 'velum_%'
                       or event_type like 'nostra_%'
                       or event_type like 'graen_%'
-                      or event_type = 'decision_cycle'
                    order by occurred_at desc
                    limit 360"""
+            ).fetchall()
+            shadow_cycle_rows = conn.execute(
+                """select event_key,event_type,occurred_at,run_id,
+                          strategy_version_id,source,payload_json
+                   from events
+                   where event_type = 'decision_cycle'
+                     and payload_json like '%shadow_economics_candidate_count%'
+                   order by occurred_at desc
+                   limit 120"""
             ).fetchall()
 
         graen_runtime, _ = self.get_kv("graen", "runtime", {})
@@ -3118,75 +3126,68 @@ class RhenCoreStore:
         shadow_started_at: str | None = None
         shadow_updated_at: str | None = None
 
+        for row in reversed(shadow_cycle_rows):
+            payload = _loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                continue
+            occurred_at = row["occurred_at"]
+            candidate_count = self._research_number(
+                payload.get("shadow_economics_candidate_count")
+            )
+            if candidate_count is None or candidate_count <= 0:
+                continue
+            shadow_started_at = shadow_started_at or occurred_at
+            shadow_updated_at = occurred_at
+            shadow_methodology = (
+                str(
+                    payload.get("shadow_economics_methodology_version")
+                    or ""
+                )
+                or shadow_methodology
+            )
+            mean_net = self._research_number(
+                payload.get("shadow_economics_mean_net_bps")
+            )
+            best_net = self._research_number(
+                payload.get("shadow_economics_best_net_bps")
+            )
+            admit_rate = self._research_number(
+                payload.get("shadow_economics_admit_rate_pct")
+            )
+            if mean_net is not None:
+                shadow_net_points.append({"at": occurred_at, "value": mean_net})
+                shadow_latest_metrics["mean_expected_net_bps"] = mean_net
+            if best_net is not None:
+                shadow_best_points.append({"at": occurred_at, "value": best_net})
+                shadow_latest_metrics["best_expected_net_bps"] = best_net
+            if admit_rate is not None:
+                shadow_admit_points.append({"at": occurred_at, "value": admit_rate})
+                shadow_latest_metrics["shadow_admission_rate_pct"] = admit_rate
+            shadow_latest_metrics["candidate_count"] = candidate_count
+            events.append({
+                "event_id": str(row["event_key"]),
+                "at": occurred_at,
+                "system": "RHEN",
+                "run_id": "rhen-shadow-economics",
+                "event_type": "shadow_economics_cycle",
+                "stage": "EVIDENCE_COLLECTION",
+                "status": "OBSERVED",
+                "progress_pct": 50,
+                "title": "Opportunity economics shadow",
+                "detail": (
+                    f"{int(candidate_count)} candidates · "
+                    f"{admit_rate:.1f}% shadow-admit"
+                    if admit_rate is not None
+                    else f"{int(candidate_count)} candidates"
+                ),
+            })
+
         for row in reversed(event_rows):
             payload = _loads(row["payload_json"], {})
             if not isinstance(payload, dict):
                 payload = {}
             event_type = str(row["event_type"] or "")
             occurred_at = row["occurred_at"]
-
-            if event_type == "decision_cycle":
-                candidate_count = self._research_number(
-                    payload.get("shadow_economics_candidate_count")
-                )
-                if candidate_count is not None and candidate_count > 0:
-                    shadow_started_at = shadow_started_at or occurred_at
-                    shadow_updated_at = occurred_at
-                    shadow_methodology = (
-                        str(
-                            payload.get(
-                                "shadow_economics_methodology_version"
-                            )
-                            or ""
-                        )
-                        or shadow_methodology
-                    )
-                    mean_net = self._research_number(
-                        payload.get("shadow_economics_mean_net_bps")
-                    )
-                    best_net = self._research_number(
-                        payload.get("shadow_economics_best_net_bps")
-                    )
-                    admit_rate = self._research_number(
-                        payload.get("shadow_economics_admit_rate_pct")
-                    )
-                    if mean_net is not None:
-                        shadow_net_points.append({
-                            "at": occurred_at,
-                            "value": mean_net,
-                        })
-                        shadow_latest_metrics["mean_expected_net_bps"] = mean_net
-                    if best_net is not None:
-                        shadow_best_points.append({
-                            "at": occurred_at,
-                            "value": best_net,
-                        })
-                        shadow_latest_metrics["best_expected_net_bps"] = best_net
-                    if admit_rate is not None:
-                        shadow_admit_points.append({
-                            "at": occurred_at,
-                            "value": admit_rate,
-                        })
-                        shadow_latest_metrics["shadow_admission_rate_pct"] = admit_rate
-                    shadow_latest_metrics["candidate_count"] = candidate_count
-                    events.append({
-                        "event_id": str(row["event_key"]),
-                        "at": occurred_at,
-                        "system": "RHEN",
-                        "run_id": "rhen-shadow-economics",
-                        "event_type": "shadow_economics_cycle",
-                        "stage": "EVIDENCE_COLLECTION",
-                        "status": "OBSERVED",
-                        "progress_pct": 50,
-                        "title": "Opportunity economics shadow",
-                        "detail": (
-                            f"{int(candidate_count)} candidates · "
-                            f"{admit_rate:.1f}% shadow-admit"
-                            if admit_rate is not None
-                            else f"{int(candidate_count)} candidates"
-                        ),
-                    })
-                continue
 
             if event_type.startswith("velum_"):
                 engineering_gate = (
