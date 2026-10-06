@@ -9539,11 +9539,10 @@ class GraenResearchExecutor:
         if promotion and promotion.get("phase") not in {
             "COMPLETE", "RUNTIME_COMPILED"
         }:
-            # An incomplete repository publication does not own the program
-            # when no runtime repository authorization exists; the trusted
-            # local compiler may take over without changing the frozen spec.
-            if self.research_promotion.repository.configured:
-                return problem, None
+            # Preserve the already-frozen hypothesis. The adaptive dispatcher
+            # decides whether to continue repository publication or fall back
+            # to the trusted runtime compiler; generation never mutates it.
+            return problem, None
         if (
             metadata.get("research_implementation_spec")
             and not promotion
