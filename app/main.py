@@ -1649,6 +1649,11 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
         if isinstance(research_payload.get("validation"), dict)
         else None
     )
+    evidence_readiness = (
+        dict(research_payload.get("evidence_readiness") or {})
+        if isinstance(research_payload.get("evidence_readiness"), dict)
+        else None
+    )
     release_gate = (
         dict(research_payload.get("release_gate") or {})
         if isinstance(research_payload.get("release_gate"), dict)
@@ -1704,6 +1709,7 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "available": bool(research_payload.get("available", True)),
         "active": active,
+        "evidence_readiness": evidence_readiness,
         "candidate": candidate,
         "validation": validation,
         "release_gate": release_gate,
