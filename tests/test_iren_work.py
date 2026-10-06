@@ -111,7 +111,7 @@ def test_maintenance_prompt_is_deterministic_read_only_and_grounded_in_iren_stat
     assert result.intent == "MAINTENANCE_PROMPT"
     assert result.job is None
     assert result.response["action_taken"] is False
-    assert result.response["prompt_version"] == "iren-maintenance-v1"
+    assert result.response["prompt_version"] == "iren-maintenance-v2"
     assert result.response["maintenance_focus"] == (
         "focus on Command telemetry and keep trading behavior unchanged"
     )
@@ -123,9 +123,14 @@ def test_maintenance_prompt_is_deterministic_read_only_and_grounded_in_iren_stat
     assert "evidence.loss | severity=warning | reason=runtime_event_loss_increasing" in prompt
     assert "COMMAND | READY | Command | owner=IREN" in prompt
     assert "focus on Command telemetry and keep trading behavior unchanged" in prompt
-    assert "Keep paid model/API worker spending disabled." in prompt
-    assert "no model/API worker was invoked" in prompt
-    assert "do not invent work" in prompt
+    assert "Keep paid model/API worker spending disabled" in prompt
+    assert "No model/API worker was invoked" in prompt
+    assert "Do not manufacture churn" in prompt
+    assert "SYSTEM RESPONSIBILITY MAP" in prompt
+    assert "RESEARCH -> STRATEGY CONTROL LOOP" in prompt
+    assert "JOB + OBJECTIVE ORCHESTRATION" in prompt
+    assert result.response["maintenance_manifest"]["mode"] == "STABILIZE"
+    assert result.response["maintenance_manifest"]["budget"]["primary_objectives"] == 1
 
 
 def test_maintenance_prompt_treats_malformed_topology_as_missing_evidence():
@@ -137,7 +142,7 @@ def test_maintenance_prompt_treats_malformed_topology_as_missing_evidence():
         source="command",
     )
 
-    assert "No service inventory present. Inspect live Railway state before editing." in result.response["maintenance_prompt"]
+    assert "No service inventory supplied. Treat this as an evidence gap, not as healthy." in result.response["maintenance_prompt"]
 
 
 def test_maintenance_prompt_reports_missing_service_inventory_instead_of_inventing_it():
@@ -150,9 +155,167 @@ def test_maintenance_prompt_reports_missing_service_inventory_instead_of_inventi
     )
 
     prompt = result.response["maintenance_prompt"]
-    assert "No service inventory present. Inspect live Railway state before editing." in prompt
+    assert "No service inventory supplied. Treat this as an evidence gap, not as healthy." in prompt
     assert "No pending canonical action." in prompt
     assert "No additional focus supplied." in prompt
+
+
+def test_maintenance_v2_delta_becomes_verify_only_when_nothing_material_changed():
+    data = {"objectives": [], "jobs": [], "commands": []}
+    control = {
+        "state": "HEALTHY",
+        "observed_at": "2026-10-06T08:00:00+00:00",
+        "topology": {"inventory_complete": True, "services": []},
+        "incidents": {},
+    }
+    first = process_command(
+        "maintenance prompt",
+        data,
+        control,
+        requested_by="devon",
+        source="command",
+    )
+    data["commands"] = [{
+        "command_id": "prior",
+        "status": "SUCCEEDED",
+        "result": first.response,
+    }]
+    control["observed_at"] = "2026-10-06T08:05:00+00:00"
+
+    second = process_command(
+        "maintenance prompt",
+        data,
+        control,
+        requested_by="devon",
+        source="command",
+    )
+
+    manifest = second.response["maintenance_manifest"]
+    assert manifest["mode"] == "VERIFY_ONLY"
+    assert manifest["change_count"] == 0
+    assert manifest["changed_since_previous"] is False
+    assert "No material state delta" in second.response["maintenance_prompt"]
+    assert "read-only verification" in second.response["maintenance_prompt"]
+
+
+def test_maintenance_v2_detects_research_change_and_selects_research_mode():
+    data = {"objectives": [], "jobs": [], "commands": []}
+    control = {
+        "state": "HEALTHY",
+        "observed_at": "2026-10-06T08:00:00+00:00",
+        "topology": {"inventory_complete": True, "services": []},
+        "incidents": {},
+    }
+    first = process_command(
+        "maintenance prompt",
+        data,
+        control,
+        requested_by="devon",
+        source="command",
+    )
+    data["commands"] = [{
+        "command_id": "prior",
+        "status": "SUCCEEDED",
+        "result": first.response,
+    }]
+    data["maintenance_evidence"] = {
+        "graen_problems": [{
+            "problem_id": "g-1",
+            "title": "BTC entry selectivity",
+            "status": "RUNNING",
+            "research_stage": "DEVELOPMENT",
+            "candidate_id": "btc-v2",
+            "family": "momentum",
+        }],
+        "graen_runs": [],
+        "velum_replays": [],
+        "nostra_calibrations": [],
+        "nostra_forecasts": [],
+        "strategy_activity_24h": [],
+    }
+
+    second = process_command(
+        "maintenance prompt",
+        data,
+        control,
+        requested_by="devon",
+        source="command",
+    )
+
+    manifest = second.response["maintenance_manifest"]
+    assert manifest["mode"] == "RESEARCH"
+    assert manifest["change_count"] >= 1
+    assert any("GRAEN problem" in item for item in manifest["changes"])
+    prompt = second.response["maintenance_prompt"]
+    assert "BTC entry selectivity" in prompt
+    assert "advance one evidence chain" in prompt
+    assert "do not rewrite its methodology or strategy mid-run" in prompt
+
+
+def test_maintenance_v2_prioritizes_evidence_repair_over_research_activity():
+    data = {
+        "objectives": [],
+        "jobs": [],
+        "commands": [],
+        "maintenance_evidence": {
+            "graen_problems": [{
+                "problem_id": "g-1",
+                "title": "BTC research",
+                "status": "RUNNING",
+                "research_stage": "VALIDATION",
+            }],
+        },
+    }
+    result = process_command(
+        "maintenance prompt",
+        data,
+        {
+            "state": "STALE",
+            "observed_at": "2026-10-06T08:00:00+00:00",
+            "topology": {"inventory_complete": False, "services": []},
+            "incidents": {},
+        },
+        requested_by="devon",
+        source="command",
+    )
+
+    assert result.response["maintenance_manifest"]["mode"] == "EVIDENCE_REPAIR"
+    assert result.response["maintenance_manifest"]["budget"]["parallel_research_threads"] == 0
+
+
+def test_maintenance_v2_tracks_strategy_activity_without_forcing_live_promotion():
+    data = {
+        "objectives": [],
+        "jobs": [],
+        "commands": [],
+        "maintenance_evidence": {
+            "strategy_activity_24h": [{
+                "strategy_version_id": "BTC-CANARY-001",
+                "decision_cycles": 144,
+                "fills": 3,
+                "runtime_errors": 0,
+                "run_count": 1,
+                "last_event_at": "2026-10-06T08:00:00+00:00",
+            }],
+        },
+    }
+    result = process_command(
+        "maintenance prompt",
+        data,
+        {
+            "state": "HEALTHY",
+            "topology": {"inventory_complete": True, "services": []},
+            "incidents": {},
+        },
+        requested_by="devon",
+        source="command",
+    )
+
+    prompt = result.response["maintenance_prompt"]
+    assert "BTC-CANARY-001 | decisions=144 | fills=3 | errors=0 | runs=1" in prompt
+    assert "Never overwrite a working strategy in place." in prompt
+    assert "Do not silently expand broker-write authority" in prompt
+    assert "Paper/forward/canary evidence must remain distinct from live performance." in prompt
 
 
 def test_next_action_uses_ready_dependency_satisfied_objective():

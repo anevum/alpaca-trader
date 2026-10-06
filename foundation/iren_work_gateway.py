@@ -122,6 +122,112 @@ def snapshot(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     }
 
 
+def maintenance_evidence(conn: psycopg.Connection[Any]) -> dict[str, Any]:
+    """Bounded evidence used only to assemble the next maintenance handoff."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select problem_id,title,status,
+                   metadata->>'research_stage' as research_stage,
+                   metadata->>'candidate_id' as candidate_id,
+                   metadata->>'family' as family,
+                   updated_at,started_at,completed_at
+            from graen.problems
+            order by
+              case status when 'RUNNING' then 0 when 'QUEUED' then 1
+                          when 'WAITING' then 2 when 'BLOCKED' then 3 else 4 end,
+              updated_at desc
+            limit 20
+            """
+        )
+        graen_problems = _rows(cur)
+
+        cur.execute(
+            """
+            select run_id,problem_id,status,methodology_version,
+                   result_summary->>'decision' as decision,
+                   result_summary->>'next_action' as next_action,
+                   result_summary->>'strategy_version_id' as strategy_version_id,
+                   started_at,completed_at,created_at
+            from graen.runs
+            order by coalesce(completed_at,started_at,created_at) desc
+            limit 20
+            """
+        )
+        graen_runs = _rows(cur)
+
+        cur.execute(
+            """
+            select replay.replay_id,replay.asset_class,replay.methodology_version,
+                   replay.strategy_version_id,replay.status,
+                   result.result_type,
+                   replay.started_at,replay.completed_at
+            from velum.replays replay
+            left join lateral (
+                select result_type
+                from velum.results
+                where replay_id=replay.replay_id
+                order by created_at desc
+                limit 1
+            ) result on true
+            order by coalesce(replay.completed_at,replay.started_at) desc nulls last
+            limit 20
+            """
+        )
+        velum_replays = _rows(cur)
+
+        cur.execute(
+            """
+            select calibration_id,model_version,methodology_version,
+                   sample_count,created_at
+            from nostra.calibration_runs
+            order by created_at desc
+            limit 8
+            """
+        )
+        nostra_calibrations = _rows(cur)
+
+        cur.execute(
+            """
+            select forecast_id,forecast_key,model_version,methodology_version,
+                   subject,issued_at,observed_at
+            from nostra.forecasts
+            left join nostra.outcomes using (forecast_id)
+            order by issued_at desc
+            limit 12
+            """
+        )
+        nostra_forecasts = _rows(cur)
+
+        cur.execute(
+            """
+            select strategy_version_id,
+                   max(occurred_at) as last_event_at,
+                   count(*) filter (where event_type='decision_cycle') as decision_cycles,
+                   count(*) filter (where event_type='broker_fill') as fills,
+                   count(*) filter (where event_type='runtime_error') as runtime_errors,
+                   count(distinct run_id) as run_count
+            from rhen.events
+            where occurred_at >= now() - interval '24 hours'
+              and strategy_version_id is not null
+            group by strategy_version_id
+            order by max(occurred_at) desc
+            limit 12
+            """
+        )
+        strategy_activity = _rows(cur)
+
+    return {
+        "observed_at": datetime.now().astimezone().isoformat(),
+        "graen_problems": graen_problems,
+        "graen_runs": graen_runs,
+        "velum_replays": velum_replays,
+        "nostra_calibrations": nostra_calibrations,
+        "nostra_forecasts": nostra_forecasts,
+        "strategy_activity_24h": strategy_activity,
+    }
+
+
 def command_create(conn: psycopg.Connection[Any], body: dict[str, Any]) -> dict[str, Any]:
     text = str(body.get("command_text") or "").strip()[:4000]
     source = str(body.get("source") or "iren").strip()[:40] or "iren"
@@ -516,6 +622,7 @@ def handle_work_action(
 ) -> dict[str, Any] | None:
     actions = {
         "iren_work_snapshot",
+        "iren_maintenance_evidence",
         "iren_command_create",
         "iren_commands_claim",
         "iren_command_complete",
@@ -539,6 +646,8 @@ def handle_work_action(
             return handler(conn, body)
         if action == "iren_work_snapshot":
             return snapshot(conn)
+        if action == "iren_maintenance_evidence":
+            return maintenance_evidence(conn)
         if action == "iren_command_create":
             return command_create(conn, body)
         if action == "iren_commands_claim":
