@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from foundation.command_iren import _btc_canary_activity, project_command
+from foundation.command_iren import (
+    _btc_canary_activity,
+    _research_metrics,
+    _research_series,
+    project_command,
+)
 from foundation.cloudflare_access import normalize_team_domain
 
 
@@ -406,3 +411,55 @@ def test_command_projection_preserves_private_btc_canary_state():
     assert projected["btc_canary"]["run_id"] == "BTC-CANARY-001-PAPER-20261004"
     assert projected["btc_canary"]["live_execution_authorized"] is False
 
+
+
+
+def test_research_metrics_extracts_bounded_display_metrics():
+    payload = {
+        "development": {
+            "summary": {
+                "trade_count": 23,
+                "net_expectancy": 0.0125,
+                "profit_factor": 1.42,
+                "max_drawdown": 0.08,
+            }
+        }
+    }
+    metrics = _research_metrics(payload)
+    assert metrics["trades"] == 23
+    assert metrics["expectancy"] == 0.0125
+    assert metrics["profit_factor"] == 1.42
+    assert metrics["max_drawdown"] == 0.08
+
+
+def test_research_series_normalizes_real_equity_curve():
+    payload = {
+        "baseline": {
+            "equity_curve": [
+                {"at": "2026-10-06T00:00:00+00:00", "equity": "100"},
+                {"at": "2026-10-06T01:00:00+00:00", "equity": "101"},
+                {"at": "2026-10-06T02:00:00+00:00", "equity": "99"},
+            ]
+        }
+    }
+    series = _research_series(payload)
+    assert series[0]["label"] == "Normalized return"
+    assert [point["value"] for point in series[0]["points"]] == [0.0, 1.0, -1.0]
+
+
+def test_research_series_builds_cumulative_curve_from_trade_results():
+    payload = {
+        "scenarios": {
+            "high:delay_0": {
+                "trades": [
+                    {"exit_at": "2026-10-01T00:00:00+00:00", "net_return": 0.10},
+                    {"exit_at": "2026-10-02T00:00:00+00:00", "net_return": -0.05},
+                ]
+            }
+        }
+    }
+    series = _research_series(payload)
+    points = series[0]["points"]
+    assert points[0]["value"] == 0.0
+    assert points[1]["value"] == 10.0
+    assert round(points[2]["value"], 3) == 4.5
