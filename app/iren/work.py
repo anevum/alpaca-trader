@@ -183,17 +183,17 @@ def choose_next_action(
         incident = incidents[0]
         return {
             "objective_key": None,
-            "title": f"Resolve {incident['key']}",
+            "title": f"Verify {incident['key']}",
             "owner_system": "IREN",
             "job_type": "CONTROL_VERIFY",
             "protected_action": False,
             "reason": f"open_{incident['severity']}_incident",
             "success_criteria": {"incident_closed": incident["key"]},
             "description": (
-                f"Inspect the live evidence for {incident['key']} "
-                f"({incident['reason']}), determine the safest concrete next action, "
-                "execute only non-protected control-plane work, and escalate any "
-                "protected mutation that requires Devon."
+                f"Re-read the live evidence for {incident['key']} "
+                f"({incident['reason']}) and record whether the incident is still open. "
+                "This control verifies state only; it does not claim to repair an "
+                "arbitrary subsystem fault."
             ),
             "incident": incident,
         }
@@ -246,16 +246,16 @@ def choose_next_action(
         row = blocked_jobs[0]
         return {
             "objective_key": row.get("objective_key"),
-            "title": f"Unblock {row.get('title') or row.get('job_type') or 'IREN work'}",
+            "title": f"Recheck {row.get('title') or row.get('job_type') or 'IREN work'}",
             "owner_system": row.get("owner_system") or "IREN",
             "job_type": "CONTROL_RECONCILE",
             "protected_action": False,
             "reason": "blocked_or_waiting_work",
             "success_criteria": {"job_unblocked": row.get("job_id")},
             "description": (
-                "Inspect why this durable job is waiting or blocked, identify whether "
-                "the missing dependency can be repaired automatically, and escalate "
-                "only if human authority is actually required."
+                "Re-read the durable job and dependency state and record whether the "
+                "blocker has cleared. This control does not claim to repair a dependency "
+                "that has no registered deterministic actuator."
             ),
             "blocked_job_id": row.get("job_id"),
         }
