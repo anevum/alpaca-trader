@@ -585,3 +585,61 @@ def test_prune_removes_nonfinal_forward_evidence(tmp_path, monkeypatch):
     assert "complete-forward" in remaining
     assert "pending-forward" not in remaining
     assert "error-forward" not in remaining
+
+
+
+def test_retired_asset_research_is_historical_only(tmp_path, monkeypatch):
+    import pytest
+
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+
+    with pytest.raises(ValueError, match="retired_asset_class_domain"):
+        store._graen_create_problem(
+            {
+                "title": "retired",
+                "statement": "historical only",
+                "domain": "CRYPTO_STRATEGY_RESEARCH",
+            }
+        )
+
+    # Preserve a representative legacy row as durable history.
+    with store.connect() as conn:
+        conn.execute(
+            """insert into graen_problems(
+                problem_id,problem_key,status,priority,domain,body_json,
+                metadata_json,created_at,updated_at
+            ) values(?,?,?,?,?,?,?,?,?)""",
+            (
+                "legacy-retired",
+                "legacy-retired",
+                "WAITING",
+                100,
+                "CRYPTO_STRATEGY_RESEARCH",
+                json.dumps({"title": "Legacy retired research"}),
+                "{}",
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+
+    current = store._graen_create_problem(
+        {
+            "title": "Current equity research",
+            "statement": "Evaluate a liquid equity mechanism.",
+            "domain": "EQUITY_STRATEGY_RESEARCH",
+            "priority": 50,
+        }
+    )
+    claimed = store._graen_claim({"worker_id": "test"}, research=False)
+
+    assert claimed["problem"]["problem_id"] == current["problem"]["problem_id"]
+    tracking = store.command_research_tracking()
+    assert all(
+        "CRYPTO" not in str(row.get("domain") or "").upper()
+        and "BTC" not in str(row.get("domain") or "").upper()
+        for row in tracking["graen_problems"]
+    )
+    pipeline = store.strategy_pipeline_research()
+    assert pipeline["candidate"]["problem_id"] == current["problem"]["problem_id"]

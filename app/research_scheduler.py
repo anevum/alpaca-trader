@@ -145,6 +145,7 @@ class ResearchReportScheduler:
                         await self._catch_up_latest_completed()
                         catch_up_done = True
                     await self._tick()
+                self.last_error = None
             except Exception as exc:
                 logger.exception("post-close research reporting failed")
                 message = f"research reporting {type(exc).__name__}: {exc}"
