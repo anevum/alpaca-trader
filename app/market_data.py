@@ -38,6 +38,77 @@ class MarketDataClient:
     async def bars(self, symbol: str) -> list[dict[str, Any]]:
         return (await self.bars_many([symbol])).get(symbol.upper(), [])
 
+    async def stock_screener_symbols(self, *, top: int = 100) -> list[str]:
+        """Return a bounded opportunity seed from Alpaca market-wide screeners.
+
+        Screeners are intentionally advisory. If the account/feed cannot use
+        one of them, the remaining sources still contribute; callers may fall
+        back to the broader catalog when all screeners are unavailable.
+        """
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+
+        bounded_top = max(10, min(int(top), 100))
+        requests = (
+            (
+                "/v1beta1/screener/stocks/most-actives",
+                {"by": "volume", "top": bounded_top},
+                ("most_actives",),
+            ),
+            (
+                "/v1beta1/screener/stocks/most-actives",
+                {"by": "trades", "top": bounded_top},
+                ("most_actives",),
+            ),
+            (
+                "/v1beta1/screener/stocks/movers",
+                {"top": min(bounded_top, 50)},
+                ("gainers", "losers"),
+            ),
+        )
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            async def fetch(
+                path: str,
+                params: dict[str, Any],
+                keys: tuple[str, ...],
+            ) -> list[str]:
+                try:
+                    response = await client.get(
+                        f"{self.settings.data_base_url}{path}",
+                        headers=self.headers,
+                        params=params,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                except (httpx.HTTPError, ValueError):
+                    return []
+
+                symbols: list[str] = []
+                for key in keys:
+                    rows = payload.get(key) or []
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        if isinstance(row, dict):
+                            symbol = str(row.get("symbol") or "").upper().strip()
+                        else:
+                            symbol = str(row or "").upper().strip()
+                        if symbol:
+                            symbols.append(symbol)
+                return symbols
+
+            result_sets = await asyncio.gather(
+                *(fetch(path, params, keys) for path, params, keys in requests)
+            )
+
+        return list(dict.fromkeys(
+            symbol
+            for rows in result_sets
+            for symbol in rows
+            if symbol
+        ))
+
     async def bars_many(self, symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
