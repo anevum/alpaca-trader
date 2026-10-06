@@ -4857,6 +4857,7 @@ class RhenCoreStore:
                 "ok": True,
                 "evidence_session": evidence_session,
                 "candidates": equity_rows,
+                "evidence_readiness": self.candidate_evidence_readiness(),
                 "post_event": {
                     "source": "rhen-core",
                     "analytics_only": True,
@@ -4874,6 +4875,7 @@ class RhenCoreStore:
                 "evidence_version": "rhen-post-event-candidates-v2",
                 "evidence_session": post_session,
                 "candidates": rows[:5000],
+                "evidence_readiness": self.candidate_evidence_readiness(),
                 "complete_horizons": {
                     row["candidate_id"]: sorted(
                         int(h)
@@ -4937,6 +4939,7 @@ class RhenCoreStore:
                 "generated_at": _iso(),
                 "latest_daily": daily["payload"] if daily else None,
                 "latest_weekly": weekly["payload"] if weekly else None,
+                "evidence_readiness": self.candidate_evidence_readiness(),
                 "research_questions": [],
                 "weekly_decisions": [],
                 "research_decisions": [],
