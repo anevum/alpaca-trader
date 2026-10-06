@@ -2880,6 +2880,15 @@ class RhenCoreStore:
                    order by occurred_at desc
                    limit 120"""
             ).fetchall()
+            shadow_allocation_rows = conn.execute(
+                """select event_key,event_type,occurred_at,run_id,
+                          strategy_version_id,source,payload_json
+                   from events
+                   where event_type = 'order_intent'
+                     and payload_json like '%shadow_allocation%'
+                   order by occurred_at desc
+                   limit 120"""
+            ).fetchall()
 
         graen_runtime, _ = self.get_kv("graen", "runtime", {})
         problems = []
@@ -3125,6 +3134,14 @@ class RhenCoreStore:
         shadow_methodology: str | None = None
         shadow_started_at: str | None = None
         shadow_updated_at: str | None = None
+        allocation_ratio_points: list[dict[str, Any]] = []
+        allocation_net_points: list[dict[str, Any]] = []
+        allocation_velocity_points: list[dict[str, Any]] = []
+        allocation_methodology: str | None = None
+        allocation_started_at: str | None = None
+        allocation_updated_at: str | None = None
+        allocation_observed = 0
+        allocation_would_allocate = 0
 
         for row in reversed(shadow_cycle_rows):
             payload = _loads(row["payload_json"], {})
@@ -3179,6 +3196,97 @@ class RhenCoreStore:
                     f"{admit_rate:.1f}% shadow-admit"
                     if admit_rate is not None
                     else f"{int(candidate_count)} candidates"
+                ),
+            })
+
+        for row in reversed(shadow_allocation_rows):
+            payload = _loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                continue
+            intent = payload.get("intent")
+            intent = intent if isinstance(intent, dict) else {}
+            intent_payload = intent.get("payload")
+            intent_payload = (
+                intent_payload if isinstance(intent_payload, dict) else {}
+            )
+            candidate_snapshot = intent_payload.get("candidate_snapshot")
+            candidate_snapshot = (
+                candidate_snapshot
+                if isinstance(candidate_snapshot, dict)
+                else {}
+            )
+            allocation = candidate_snapshot.get("shadow_allocation")
+            if not isinstance(allocation, dict):
+                continue
+            if allocation.get("research_only") is not True:
+                continue
+            if allocation.get("execution_authority") is True:
+                continue
+
+            occurred_at = row["occurred_at"]
+            live_safe = self._research_number(
+                allocation.get("live_safe_notional")
+            )
+            shadow_notional = self._research_number(
+                allocation.get("shadow_notional")
+            )
+            expected_net_bps = self._research_number(
+                allocation.get("expected_net_bps")
+            )
+            velocity = self._research_number(
+                allocation.get("capital_velocity_per_minute")
+            )
+            ratio_pct = None
+            if (
+                live_safe is not None
+                and live_safe > 0
+                and shadow_notional is not None
+                and shadow_notional >= 0
+            ):
+                ratio_pct = shadow_notional / live_safe * 100.0
+
+            allocation_observed += 1
+            if allocation.get("would_allocate") is True:
+                allocation_would_allocate += 1
+            allocation_started_at = allocation_started_at or occurred_at
+            allocation_updated_at = occurred_at
+            allocation_methodology = (
+                str(allocation.get("methodology_version") or "")
+                or allocation_methodology
+            )
+            if ratio_pct is not None:
+                allocation_ratio_points.append({
+                    "at": occurred_at,
+                    "value": round(ratio_pct, 6),
+                })
+            if expected_net_bps is not None:
+                allocation_net_points.append({
+                    "at": occurred_at,
+                    "value": expected_net_bps,
+                })
+            if velocity is not None:
+                allocation_velocity_points.append({
+                    "at": occurred_at,
+                    "value": velocity,
+                })
+
+            events.append({
+                "event_id": str(row["event_key"]),
+                "at": occurred_at,
+                "system": "RHEN",
+                "run_id": "rhen-shadow-allocation",
+                "event_type": "shadow_allocation_observed",
+                "stage": "EVIDENCE_COLLECTION",
+                "status": "OBSERVED",
+                "progress_pct": 50,
+                "title": "Capital allocation shadow",
+                "detail": (
+                    (
+                        f"{ratio_pct:.1f}% of live-safe notional · "
+                        f"{'allocate' if allocation.get('would_allocate') is True else 'skip'}"
+                    )
+                    if ratio_pct is not None
+                    else str(allocation.get("reason") or "observed")
                 ),
             })
 
@@ -3384,6 +3492,92 @@ class RhenCoreStore:
                     "execution_authority": False,
                     "changes_live_decision": False,
                     "chart_basis": "decision_cycle_shadow_economics",
+                    "inactive_time_drawn": False,
+                },
+            })
+
+        if allocation_updated_at is not None:
+            allocation_metrics: dict[str, float] = {
+                "selected_entry_count": float(allocation_observed),
+                "would_allocate_count": float(allocation_would_allocate),
+                "shadow_allocation_rate_pct": round(
+                    allocation_would_allocate
+                    / max(allocation_observed, 1)
+                    * 100.0,
+                    4,
+                ),
+            }
+            if allocation_ratio_points:
+                allocation_metrics["mean_shadow_to_live_pct"] = round(
+                    sum(point["value"] for point in allocation_ratio_points)
+                    / len(allocation_ratio_points),
+                    6,
+                )
+            if allocation_net_points:
+                allocation_metrics["mean_expected_net_bps"] = round(
+                    sum(point["value"] for point in allocation_net_points)
+                    / len(allocation_net_points),
+                    6,
+                )
+            if allocation_velocity_points:
+                allocation_metrics[
+                    "mean_capital_velocity_per_minute"
+                ] = round(
+                    sum(
+                        point["value"]
+                        for point in allocation_velocity_points
+                    )
+                    / len(allocation_velocity_points),
+                    10,
+                )
+
+            allocation_series: list[dict[str, Any]] = []
+            if len(allocation_ratio_points) > 1:
+                allocation_series.append({
+                    "key": "shadow_to_live_pct",
+                    "label": "Shadow / live-safe notional",
+                    "unit": "%",
+                    "points": allocation_ratio_points[-120:],
+                })
+            if len(allocation_net_points) > 1:
+                allocation_series.append({
+                    "key": "allocation_expected_net_bps",
+                    "label": "Expected net edge",
+                    "unit": " bps",
+                    "points": allocation_net_points[-120:],
+                })
+            if len(allocation_velocity_points) > 1:
+                allocation_series.append({
+                    "key": "capital_velocity_per_minute",
+                    "label": "Capital velocity",
+                    "unit": "",
+                    "points": allocation_velocity_points[-120:],
+                })
+
+            runs.append({
+                "run_id": "rhen-shadow-allocation",
+                "system": "RHEN",
+                "kind": "SHADOW_ALLOCATION",
+                "title": "Capital allocation shadow",
+                "status": "OBSERVING",
+                "stage": "EVIDENCE_COLLECTION",
+                "progress_pct": 50,
+                "problem_id": None,
+                "candidate_id": None,
+                "methodology_version": allocation_methodology,
+                "strategy_version_id": None,
+                "started_at": allocation_started_at,
+                "completed_at": None,
+                "updated_at": allocation_updated_at,
+                "metrics": allocation_metrics,
+                "series": allocation_series,
+                "artifact_count": 0,
+                "detail": {
+                    "research_only": True,
+                    "execution_authority": False,
+                    "changes_live_decision": False,
+                    "bounded_by_live_safe_notional": True,
+                    "chart_basis": "selected_entry_shadow_allocation",
                     "inactive_time_drawn": False,
                 },
             })
