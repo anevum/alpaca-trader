@@ -257,13 +257,187 @@ def _operator_projection(
         },
     }
 
+def _as_number(value: Any) -> float | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+_RESEARCH_METRIC_ALIASES = {
+    "trade_count": "trades",
+    "trades": "trades",
+    "closed_trades": "trades",
+    "independent_days": "independent_days",
+    "independent_day_blocks": "independent_days",
+    "expectancy_per_trade": "expectancy",
+    "expectancy_per_trade_pct": "expectancy_pct",
+    "net_expectancy": "expectancy",
+    "profit_factor": "profit_factor",
+    "max_drawdown": "max_drawdown",
+    "max_drawdown_pct": "max_drawdown_pct",
+    "net_return": "net_return",
+    "return_pct": "return_pct",
+    "win_rate": "win_rate",
+    "win_rate_pct": "win_rate_pct",
+    "sample_count": "sample_count",
+    "candidate_count": "candidate_count",
+}
+
+
+def _research_metrics(value: Any, *, depth: int = 0) -> dict[str, float]:
+    """Extract a bounded set of display metrics from persisted research output."""
+    metrics: dict[str, float] = {}
+    if depth > 4:
+        return metrics
+    if isinstance(value, dict):
+        for key, raw in value.items():
+            alias = _RESEARCH_METRIC_ALIASES.get(str(key))
+            if alias and alias not in metrics:
+                number = _as_number(raw)
+                if number is not None:
+                    metrics[alias] = number
+            if isinstance(raw, (dict, list)):
+                nested = _research_metrics(raw, depth=depth + 1)
+                for nested_key, nested_value in nested.items():
+                    metrics.setdefault(nested_key, nested_value)
+    elif isinstance(value, list):
+        for raw in value[:24]:
+            nested = _research_metrics(raw, depth=depth + 1)
+            for nested_key, nested_value in nested.items():
+                metrics.setdefault(nested_key, nested_value)
+    return metrics
+
+
+def _find_research_list(value: Any, key: str, *, depth: int = 0) -> list[Any] | None:
+    if depth > 5:
+        return None
+    if isinstance(value, dict):
+        direct = value.get(key)
+        if isinstance(direct, list):
+            return direct
+        preferred = (
+            "baseline", "result", "development", "validation", "holdout",
+            "primary", "high", "base", "low", "scenarios", "stage_results",
+        )
+        for child_key in preferred:
+            child = value.get(child_key)
+            found = _find_research_list(child, key, depth=depth + 1)
+            if found is not None:
+                return found
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                found = _find_research_list(child, key, depth=depth + 1)
+                if found is not None:
+                    return found
+    elif isinstance(value, list):
+        for child in value[:12]:
+            found = _find_research_list(child, key, depth=depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _research_series(value: Any) -> list[dict[str, Any]]:
+    """Build real chart points from persisted replay equity/trade evidence."""
+    curve = _find_research_list(value, "equity_curve")
+    if curve:
+        rows: list[tuple[str | None, float]] = []
+        for index, point in enumerate(curve):
+            if not isinstance(point, dict):
+                continue
+            equity = _as_number(point.get("equity"))
+            if equity is None:
+                continue
+            rows.append((str(point.get("at") or index), equity))
+        if rows:
+            base = rows[0][1]
+            if base:
+                step = max(1, len(rows) // 240)
+                sampled = rows[::step]
+                if sampled[-1] != rows[-1]:
+                    sampled.append(rows[-1])
+                return [{
+                    "key": "normalized_return",
+                    "label": "Normalized return",
+                    "unit": "%",
+                    "points": [
+                        {
+                            "at": stamp,
+                            "value": round(((equity / base) - 1.0) * 100.0, 6),
+                        }
+                        for stamp, equity in sampled
+                    ],
+                }]
+
+    trades = _find_research_list(value, "trades")
+    if trades:
+        equity = 1.0
+        points: list[dict[str, Any]] = [{"at": "start", "value": 0.0}]
+        for index, trade in enumerate(trades[:500]):
+            if not isinstance(trade, dict):
+                continue
+            trade_return = _as_number(trade.get("net_return"))
+            if trade_return is None:
+                trade_return = _as_number(trade.get("return_pct"))
+            if trade_return is None:
+                continue
+            # VELUM stores return_pct as a unit fraction in replay results.
+            equity *= 1.0 + trade_return
+            points.append({
+                "at": str(
+                    trade.get("exit_at")
+                    or trade.get("entry_at")
+                    or index + 1
+                ),
+                "value": round((equity - 1.0) * 100.0, 6),
+            })
+        if len(points) > 1:
+            step = max(1, len(points) // 240)
+            sampled = points[::step]
+            if sampled[-1] != points[-1]:
+                sampled.append(points[-1])
+            return [{
+                "key": "trade_return",
+                "label": "Cumulative net return",
+                "unit": "%",
+                "points": sampled,
+            }]
+    return []
+
+
+def _serialize_research(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if hasattr(value, "hex") and not isinstance(value, (str, bytes, dict, list)):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _serialize_research(raw) for key, raw in value.items()}
+    if isinstance(value, list):
+        return [_serialize_research(raw) for raw in value]
+    return value
+
+
 def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
-    """Private, sanitized research/replay trace for the Command terminal."""
+    """Private research/replay observability for the 3-second Command poll."""
+    now = datetime.now(UTC)
     with conn.cursor() as cur:
         cur.execute(
             """
             select
                 problem_id,title,status,metadata->>'research_stage' as research_stage,
+                metadata->>'candidate_id' as candidate_id,
+                metadata->>'hypothesis' as hypothesis,
+                metadata->>'family' as family,
+                metadata->>'mechanism' as mechanism,
+                metadata->>'campaign_id' as campaign_id,
                 updated_at,started_at,completed_at
             from graen.problems
             order by
@@ -273,56 +447,456 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             limit 50
             """
         )
-        graen_problems = _rows([
+        graen_problems = [
             dict(zip([column.name for column in cur.description], row))
             for row in cur.fetchall()
-        ])
+        ]
 
         cur.execute(
             """
             select
-                run_id,problem_id,status,methodology_version,
-                result_summary->>'state' as result_state,
-                result_summary->>'error' as error,
+                run_id,problem_id,status,methodology_version,result_summary,
                 started_at,completed_at,created_at
             from graen.runs
             order by started_at desc
             limit 80
             """
         )
-        graen_runs = _rows([
+        graen_runs = [
             dict(zip([column.name for column in cur.description], row))
             for row in cur.fetchall()
-        ])
+        ]
 
         cur.execute(
             """
-            select status,started_at,completed_at
-            from velum.replays
-            order by coalesce(completed_at,started_at) desc nulls last
+            select
+                artifact_id,problem_id,run_id,artifact_type,methodology_version,
+                content,created_at
+            from graen.artifacts
+            order by created_at desc
+            limit 160
+            """
+        )
+        graen_artifacts = [
+            dict(zip([column.name for column in cur.description], row))
+            for row in cur.fetchall()
+        ]
+
+        cur.execute(
+            """
+            select
+                replay.replay_id,replay.asset_class,replay.methodology_version,
+                replay.strategy_version_id,replay.range_start,replay.range_end,
+                replay.status,replay.started_at,replay.completed_at,
+                result.result_type,result.summary
+            from velum.replays replay
+            left join lateral (
+                select result_type,summary
+                from velum.results
+                where replay_id=replay.replay_id
+                order by created_at desc
+                limit 1
+            ) result on true
+            order by coalesce(replay.completed_at,replay.started_at) desc nulls last
+            limit 50
+            """
+        )
+        velum_replays = [
+            dict(zip([column.name for column in cur.description], row))
+            for row in cur.fetchall()
+        ]
+
+        cur.execute(
+            """
+            select event_id,event_key,event_type,occurred_at,source,run_id,
+                   strategy_version_id,payload
+            from rhen.events
+            where event_type in (
+                'velum_replay_progress',
+                'velum_replay_result',
+                'velum_graen_candidate_replay'
+            )
+               or strategy_version_id like 'CRYPTO-XSECT-PAPER-%'
+            order by occurred_at desc,event_id desc
+            limit 320
+            """
+        )
+        research_events = [
+            dict(zip([column.name for column in cur.description], row))
+            for row in cur.fetchall()
+        ]
+
+        cur.execute(
+            """
+            select calibration_id,model_version,methodology_version,range_start,
+                   range_end,sample_count,metrics,created_at
+            from nostra.calibration_runs
+            order by created_at desc
+            limit 30
+            """
+        )
+        nostra_calibrations = [
+            dict(zip([column.name for column in cur.description], row))
+            for row in cur.fetchall()
+        ]
+
+        cur.execute(
+            """
+            select f.forecast_id,f.forecast_key,f.model_version,f.methodology_version,
+                   f.subject,f.horizon_start,f.horizon_end,f.issued_at,f.prediction,
+                   o.observed_at,o.outcome,o.scoring
+            from nostra.forecasts f
+            left join nostra.outcomes o on o.forecast_id=f.forecast_id
+            order by f.issued_at desc
             limit 40
             """
         )
-        velum_replays = _rows([
+        nostra_forecasts = [
             dict(zip([column.name for column in cur.description], row))
             for row in cur.fetchall()
-        ])
+        ]
+
+        cur.execute(
+            """
+            select worker_id,runtime_version,deployment_id,heartbeat_at,
+                   active_problem_id,queue_depth,last_error,updated_at
+            from graen.runtime_state
+            where singleton=true
+            limit 1
+            """
+        )
+        runtime_row = cur.fetchone()
+        graen_runtime = (
+            dict(zip([column.name for column in cur.description], runtime_row))
+            if runtime_row else None
+        )
+
+    problems_by_id = {
+        str(row.get("problem_id")): row
+        for row in graen_problems
+        if row.get("problem_id") is not None
+    }
+    artifacts_by_run: dict[str, list[dict[str, Any]]] = {}
+    for artifact in reversed(graen_artifacts):
+        run_id = artifact.get("run_id")
+        if run_id is None:
+            continue
+        artifacts_by_run.setdefault(str(run_id), []).append(artifact)
+
+    runs: list[dict[str, Any]] = []
+    for row in graen_runs:
+        run_id = str(row.get("run_id") or "")
+        summary = dict(row.get("result_summary") or {})
+        problem = problems_by_id.get(str(row.get("problem_id") or ""), {})
+        artifacts = artifacts_by_run.get(run_id, [])
+        richest = summary
+        for artifact in reversed(artifacts):
+            content = artifact.get("content")
+            if isinstance(content, dict) and (
+                _research_series(content) or len(_research_metrics(content)) > len(_research_metrics(richest))
+            ):
+                richest = content
+                break
+        status = str(row.get("status") or "UNKNOWN").upper()
+        if status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            progress = 100
+        elif status == "WAITING":
+            progress = 80
+        elif status == "BLOCKED":
+            progress = 70
+        elif status == "RUNNING":
+            progress = min(85, 25 + len(artifacts) * 12)
+        else:
+            progress = min(60, len(artifacts) * 10)
+        runs.append({
+            "run_id": run_id,
+            "system": "GRAEN",
+            "kind": "RESEARCH",
+            "title": problem.get("title") or summary.get("research_batch_id") or "GRAEN research run",
+            "status": status,
+            "stage": problem.get("research_stage") or summary.get("state") or summary.get("status"),
+            "progress_pct": progress,
+            "problem_id": str(row.get("problem_id") or "") or None,
+            "candidate_id": problem.get("candidate_id") or summary.get("candidate_id"),
+            "methodology_version": row.get("methodology_version") or summary.get("methodology_version"),
+            "strategy_version_id": summary.get("strategy_version_id"),
+            "started_at": row.get("started_at"),
+            "completed_at": row.get("completed_at"),
+            "updated_at": row.get("completed_at") or row.get("started_at") or row.get("created_at"),
+            "metrics": _research_metrics(richest),
+            "series": _research_series(richest),
+            "artifact_count": len(artifacts),
+            "detail": {
+                "decision": summary.get("decision"),
+                "next_action": summary.get("next_action"),
+                "hypothesis": problem.get("hypothesis"),
+                "family": problem.get("family"),
+                "mechanism": problem.get("mechanism"),
+                "campaign_id": problem.get("campaign_id"),
+            },
+        })
+
+    for replay in velum_replays:
+        summary = dict(replay.get("summary") or {})
+        status = str(replay.get("status") or "UNKNOWN").upper()
+        runs.append({
+            "run_id": str(replay.get("replay_id") or ""),
+            "system": "VELUM",
+            "kind": "REPLAY",
+            "title": (
+                str(replay.get("asset_class") or "research").upper()
+                + " replay"
+            ),
+            "status": status,
+            "stage": replay.get("result_type") or "REPLAY",
+            "progress_pct": 100 if status in {"SUCCEEDED", "COMPLETED", "FAILED"} else 55,
+            "methodology_version": replay.get("methodology_version"),
+            "strategy_version_id": replay.get("strategy_version_id"),
+            "started_at": replay.get("started_at"),
+            "completed_at": replay.get("completed_at"),
+            "updated_at": replay.get("completed_at") or replay.get("started_at"),
+            "metrics": _research_metrics(summary),
+            "series": _research_series(summary),
+            "detail": {
+                "asset_class": replay.get("asset_class"),
+                "range_start": replay.get("range_start"),
+                "range_end": replay.get("range_end"),
+            },
+        })
+
+    # VELUM candidate replays persist full result evidence in rhen.events even when
+    # they are not represented by the generic velum.replays table.
+    velum_event_runs: dict[str, dict[str, Any]] = {}
+    paper_events: dict[str, list[dict[str, Any]]] = {}
+    events: list[dict[str, Any]] = []
+    for row in reversed(research_events):
+        payload = dict(row.get("payload") or {})
+        event_type = str(row.get("event_type") or "")
+        occurred_at = row.get("occurred_at")
+        strategy_version_id = row.get("strategy_version_id")
+        if event_type.startswith("velum_"):
+            run_id = str(
+                payload.get("graen_run_id")
+                or (payload.get("run_manifest") or {}).get("velum_run_id")
+                or payload.get("problem_id")
+                or row.get("event_key")
+                or row.get("event_id")
+            )
+            current = velum_event_runs.setdefault(run_id, {
+                "run_id": run_id,
+                "system": "VELUM",
+                "kind": "CANDIDATE_REPLAY",
+                "title": payload.get("candidate_id") or "VELUM candidate replay",
+                "status": "RUNNING",
+                "stage": "QUEUED",
+                "progress_pct": 0,
+                "problem_id": payload.get("problem_id"),
+                "candidate_id": payload.get("candidate_id"),
+                "methodology_version": payload.get("candidate_methodology") or payload.get("methodology_version"),
+                "strategy_version_id": strategy_version_id,
+                "started_at": occurred_at,
+                "completed_at": None,
+                "updated_at": occurred_at,
+                "metrics": {},
+                "series": [],
+                "detail": {},
+            })
+            current["updated_at"] = occurred_at
+            if event_type == "velum_replay_progress":
+                current["stage"] = payload.get("phase") or current["stage"]
+                current["progress_pct"] = int(_as_number(payload.get("progress_pct")) or 0)
+                current["status"] = payload.get("status") or "RUNNING"
+                current["detail"] = {
+                    **dict(current.get("detail") or {}),
+                    "bar_coverage": payload.get("bar_coverage"),
+                    "replay_timeframe": payload.get("replay_timeframe"),
+                }
+            else:
+                current["status"] = "COMPLETED"
+                current["stage"] = "COMPLETE"
+                current["progress_pct"] = 100
+                current["completed_at"] = occurred_at
+                current["candidate_id"] = payload.get("candidate_id") or current.get("candidate_id")
+                current["title"] = current["candidate_id"] or current["title"]
+                current["metrics"] = _research_metrics(payload)
+                current["series"] = _research_series(payload)
+                current["detail"] = {
+                    **dict(current.get("detail") or {}),
+                    "engineering_gate": payload.get("engineering_gate"),
+                    "evidence_role": payload.get("evidence_role"),
+                    "bar_coverage": payload.get("bar_coverage"),
+                }
+            events.append({
+                "event_id": str(row.get("event_id") or row.get("event_key") or ""),
+                "at": occurred_at,
+                "system": "VELUM",
+                "run_id": run_id,
+                "event_type": event_type,
+                "stage": payload.get("phase") or current.get("stage"),
+                "status": payload.get("status") or current.get("status"),
+                "progress_pct": payload.get("progress_pct"),
+                "title": payload.get("candidate_id") or current.get("title"),
+                "detail": payload.get("message") or payload.get("reason"),
+            })
+        if str(strategy_version_id or "").startswith("CRYPTO-XSECT-PAPER-"):
+            key = str(row.get("run_id") or strategy_version_id)
+            paper_events.setdefault(key, []).append(row)
+
+    known_velum_ids = {run["run_id"] for run in runs if run["system"] == "VELUM"}
+    runs.extend(
+        run for run_id, run in velum_event_runs.items()
+        if run_id not in known_velum_ids
+    )
+
+    for run_id, rows in paper_events.items():
+        latest = rows[-1]
+        latest_at = latest.get("occurred_at")
+        series_points: list[dict[str, Any]] = []
+        fills = 0
+        for event in rows:
+            payload = dict(event.get("payload") or {})
+            event_type = str(event.get("event_type") or "")
+            if event_type == "position_metrics":
+                value = _as_number(payload.get("current_return_pct"))
+                if value is not None:
+                    series_points.append({
+                        "at": _serialize_research(event.get("occurred_at")),
+                        "value": round(value * 100.0, 6),
+                    })
+            if event_type == "broker_fill":
+                fills += 1
+        age = (
+            (now - latest_at).total_seconds()
+            if isinstance(latest_at, datetime)
+            else 10_000
+        )
+        runs.append({
+            "run_id": run_id,
+            "system": "RHEN",
+            "kind": "PAPER_TEST",
+            "title": str(latest.get("strategy_version_id") or "Crypto paper strategy"),
+            "status": "RUNNING" if 0 <= age <= 180 else "IDLE",
+            "stage": "PAPER_FORWARD",
+            "progress_pct": 50 if 0 <= age <= 180 else 100,
+            "strategy_version_id": latest.get("strategy_version_id"),
+            "started_at": rows[0].get("occurred_at"),
+            "completed_at": None,
+            "updated_at": latest_at,
+            "metrics": {"fills": float(fills), "events": float(len(rows))},
+            "series": ([{
+                "key": "paper_return",
+                "label": "Open-position return",
+                "unit": "%",
+                "points": series_points[-240:],
+            }] if series_points else []),
+            "detail": {"paper_only": True, "live_authority": False},
+        })
+        for event in rows[-80:]:
+            payload = dict(event.get("payload") or {})
+            events.append({
+                "event_id": str(event.get("event_id") or event.get("event_key") or ""),
+                "at": event.get("occurred_at"),
+                "system": "RHEN",
+                "run_id": run_id,
+                "event_type": event.get("event_type"),
+                "stage": "PAPER_FORWARD",
+                "status": "OBSERVED",
+                "title": str(event.get("strategy_version_id") or "Paper strategy"),
+                "detail": payload.get("cycle_outcome") or payload.get("reason"),
+            })
+
+    for row in nostra_calibrations:
+        metrics = dict(row.get("metrics") or {})
+        metrics.setdefault("sample_count", row.get("sample_count"))
+        runs.append({
+            "run_id": str(row.get("calibration_id") or ""),
+            "system": "NOSTRA",
+            "kind": "CALIBRATION",
+            "title": str(row.get("model_version") or "NOSTRA calibration"),
+            "status": "COMPLETED",
+            "stage": "CALIBRATION",
+            "progress_pct": 100,
+            "methodology_version": row.get("methodology_version"),
+            "started_at": row.get("range_start"),
+            "completed_at": row.get("created_at"),
+            "updated_at": row.get("created_at"),
+            "metrics": _research_metrics(metrics),
+            "series": [],
+            "detail": {
+                "range_start": row.get("range_start"),
+                "range_end": row.get("range_end"),
+            },
+        })
+
+    for row in nostra_forecasts:
+        prediction = dict(row.get("prediction") or {})
+        scoring = dict(row.get("scoring") or {})
+        runs.append({
+            "run_id": str(row.get("forecast_id") or ""),
+            "system": "NOSTRA",
+            "kind": "FORECAST",
+            "title": str(row.get("subject") or row.get("forecast_key") or "NOSTRA forecast"),
+            "status": "SCORED" if row.get("observed_at") else "OPEN",
+            "stage": "OUTCOME_SCORED" if row.get("observed_at") else "FORECAST_OPEN",
+            "progress_pct": 100 if row.get("observed_at") else 50,
+            "methodology_version": row.get("methodology_version"),
+            "started_at": row.get("issued_at"),
+            "completed_at": row.get("observed_at"),
+            "updated_at": row.get("observed_at") or row.get("issued_at"),
+            "metrics": _research_metrics(scoring or prediction),
+            "series": [],
+            "detail": {
+                "model_version": row.get("model_version"),
+                "horizon_start": row.get("horizon_start"),
+                "horizon_end": row.get("horizon_end"),
+                "prediction": prediction,
+                "outcome": row.get("outcome"),
+            },
+        })
+
+    def sort_stamp(run: dict[str, Any]) -> float:
+        value = run.get("updated_at") or run.get("started_at")
+        if isinstance(value, datetime):
+            return value.timestamp()
+        parsed = _parse_stamp(value)
+        return parsed.timestamp() if parsed else 0.0
+
+    runs.sort(key=sort_stamp, reverse=True)
+    events.sort(
+        key=lambda row: (
+            _parse_stamp(_serialize_research(row.get("at"))) or datetime.min.replace(tzinfo=UTC)
+        ),
+        reverse=True,
+    )
 
     def serialized(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            {
-                key: value.isoformat() if isinstance(value, datetime) else str(value) if hasattr(value, "hex") else value
-                for key, value in row.items()
-            }
-            for row in rows
-        ]
+        return [_serialize_research(row) for row in rows]
 
     return {
         "graen_problems": serialized(graen_problems),
-        "graen_runs": serialized(graen_runs),
+        "graen_runs": serialized([
+            {
+                **row,
+                "result_state": dict(row.get("result_summary") or {}).get("state"),
+                "error": dict(row.get("result_summary") or {}).get("error"),
+            }
+            for row in graen_runs
+        ]),
         "velum_replays": serialized(velum_replays),
+        "graen_runtime": _serialize_research(graen_runtime),
+        "observability": {
+            "schema_version": "research_observability.v1",
+            "updated_at": now.isoformat(),
+            "poll_seconds": 3,
+            "runs": serialized(runs[:140]),
+            "events": serialized(events[:220]),
+            "authority": {
+                "read_only": True,
+                "research_only": True,
+                "live_trading_performance_mixed": False,
+            },
+        },
     }
-
 
 def _btc_canary_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
     """Compact private BTC canary state for the fast Command observation poll."""
