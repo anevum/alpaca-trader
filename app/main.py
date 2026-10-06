@@ -1462,6 +1462,21 @@ async def scheduler_calendar(
     }
 
 
+def crypto_preflight_policy_valid() -> bool:
+    if not settings.crypto_execution_enabled:
+        return True
+    mode = str(settings.crypto_execution_mode or "")
+    if mode == "btc_direct_live_signal":
+        return bool(settings.btc_direct_live_signal_authorized)
+    if mode == "btc_direct_paper":
+        return bool(settings.btc_direct_paper_authorized)
+    if mode == "multi_asset_paper":
+        return bool(settings.crypto_multi_asset_paper_authorized)
+    if mode == "validated":
+        return bool(settings.crypto_lane_enabled and settings.execution_authorized)
+    return False
+
+
 @app.post("/v1/scheduler/preflight")
 async def scheduler_preflight(
     request: SchedulerSessionRequest,
@@ -1487,7 +1502,7 @@ async def scheduler_preflight(
         "startup_reconciled": bool(runtime_state.startup_reconciled),
         "reconciliation_safe": bool(runtime_state.reconciliation_safe),
         "market_session_valid": True,
-        "crypto_execution_disabled": not bool(settings.crypto_execution_enabled),
+        "crypto_execution_policy_valid": crypto_preflight_policy_valid(),
     }
     payload = {
         "ok": all(checks.values()),
