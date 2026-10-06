@@ -232,6 +232,9 @@ class RhenCoreStore:
                 "market", "momentum_pct", "vwap_edge_pct", "relative_volume_ratio",
                 "trend_persistence", "quality_score", "current_close",
                 "confirmation_passes", "regime_passes",
+                "opportunity_score", "estimated_net_edge_pct",
+                "expected_gross_move_pct", "return_5m", "return_15m",
+                "return_60m", "range_60m_pct",
             )
             if features.get(k) is not None
         }
@@ -281,6 +284,41 @@ class RhenCoreStore:
             )
             if payload.get(k) is not None
         }
+        def numeric(value: Any) -> float | None:
+            if value in (None, "") or isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if number == number else None
+
+        opportunity_scores: list[float] = []
+        net_edges: list[float] = []
+        expected_moves: list[float] = []
+        for candidate in candidates:
+            features = candidate.get("features")
+            features = features if isinstance(features, dict) else {}
+            score = numeric(features.get("opportunity_score"))
+            if score is not None:
+                opportunity_scores.append(score)
+            edge = numeric(features.get("estimated_net_edge_pct"))
+            if edge is None:
+                cost_model = features.get("cost_model")
+                if isinstance(cost_model, dict):
+                    edge = numeric(cost_model.get("estimated_net_edge_pct"))
+            if edge is not None:
+                net_edges.append(edge)
+            expected = numeric(features.get("expected_gross_move_pct"))
+            if expected is not None:
+                expected_moves.append(expected)
+        if opportunity_scores:
+            summary["top_opportunity_score"] = max(opportunity_scores)
+        if net_edges:
+            summary["best_estimated_net_edge_pct"] = max(net_edges)
+        if expected_moves:
+            summary["best_expected_gross_move_pct"] = max(expected_moves)
+
         runtime = payload.get("runtime") or {}
         summary["runtime"] = {
             k: runtime.get(k)
@@ -2959,36 +2997,21 @@ class RhenCoreStore:
                         })
                 if row["event_type"] == "decision_cycle":
                     decision_cycles += 1
-                    candidates = payload.get("candidates")
-                    candidates = candidates if isinstance(candidates, list) else []
-                    candidate_scores: list[float] = []
-                    candidate_net_edges: list[float] = []
-                    for candidate in candidates:
-                        if not isinstance(candidate, dict):
-                            continue
-                        features = candidate.get("features")
-                        features = features if isinstance(features, dict) else {}
-                        score = self._research_number(features.get("opportunity_score"))
-                        if score is not None:
-                            candidate_scores.append(score * 100.0)
-                        edge = self._research_number(features.get("estimated_net_edge_pct"))
-                        if edge is None:
-                            cost_model = features.get("cost_model")
-                            if isinstance(cost_model, dict):
-                                edge = self._research_number(
-                                    cost_model.get("estimated_net_edge_pct")
-                                )
-                        if edge is not None:
-                            candidate_net_edges.append(edge * 100.0)
-                    if candidate_scores:
+                    score = self._research_number(
+                        payload.get("top_opportunity_score")
+                    )
+                    edge = self._research_number(
+                        payload.get("best_estimated_net_edge_pct")
+                    )
+                    if score is not None:
                         score_points.append({
                             "at": row["occurred_at"],
-                            "value": round(max(candidate_scores), 6),
+                            "value": round(score * 100.0, 6),
                         })
-                    if candidate_net_edges:
+                    if edge is not None:
                         net_edge_points.append({
                             "at": row["occurred_at"],
-                            "value": round(max(candidate_net_edges), 6),
+                            "value": round(edge * 100.0, 6),
                         })
                     qualified = self._research_number(payload.get("qualified_count"))
                     scanned = self._research_number(payload.get("candidate_count"))
