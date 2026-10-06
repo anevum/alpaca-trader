@@ -76,6 +76,70 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
     assert all("huge_duplicate_blob" not in row["feature_json"] for row in rows)
 
 
+def test_crypto_paper_decision_cycles_drive_command_scan_charts(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    start = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+    events = []
+    for index in range(2):
+        observed = start + timedelta(seconds=30 * index)
+        events.append(
+            {
+                "event_key": f"crypto-paper-cycle-{index}",
+                "event_type": "decision_cycle",
+                "occurred_at": observed.isoformat(),
+                "run_id": "crypto-paper-run",
+                "strategy_version_id": "CRYPTO-XSECT-PAPER-TEST",
+                "source": "test",
+                "payload": {
+                    "cycle_key": f"crypto-paper-cycle-{index}",
+                    "market_lane": "crypto",
+                    "candidate_count": 3,
+                    "qualified_count": index,
+                    "rejected_count": 3 - index,
+                    "cycle_outcome": "crypto scan completed",
+                    "candidates": [
+                        {
+                            "candidate_id": f"candidate-{index}",
+                            "symbol": "BTC/USD",
+                            "observed_at": observed.isoformat(),
+                            "action": "buy" if index else "hold",
+                            "qualified": bool(index),
+                            "final_decision": "selected" if index else "rejected",
+                            "market_lane": "crypto",
+                            "strategy_version_id": "CRYPTO-XSECT-PAPER-TEST",
+                            "features": {
+                                "market": "crypto",
+                                "opportunity_score": 0.002 + index * 0.001,
+                                "estimated_net_edge_pct": 0.001 + index * 0.0005,
+                                "expected_gross_move_pct": 0.006,
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+
+    store.ingest_events(events)
+    tracking = store.command_research_tracking()
+    paper = next(
+        row
+        for row in tracking["observability"]["runs"]
+        if row["system"] == "RHEN"
+        and row["strategy_version_id"] == "CRYPTO-XSECT-PAPER-TEST"
+    )
+    series = {row["key"]: row for row in paper["series"]}
+
+    assert len(series["opportunity_score"]["points"]) == 2
+    assert series["opportunity_score"]["points"][-1]["value"] == 0.3
+    assert len(series["estimated_net_edge"]["points"]) == 2
+    assert series["estimated_net_edge"]["points"][-1]["value"] == 0.15
+    assert len(series["qualified_candidates"]["points"]) == 2
+    assert paper["metrics"]["decision_cycles"] == 2.0
+    assert paper["detail"]["inactive_time_drawn"] is False
+
+
 def test_position_metrics_are_bucketed_to_prevent_poll_rate_growth(
     tmp_path, monkeypatch
 ):
