@@ -617,7 +617,35 @@ class IrenWorkEngine:
         )
 
     async def snapshot(self) -> dict[str, Any]:
-        return await self.gateway("iren_work_snapshot")
+        snapshot = await self.gateway("iren_work_snapshot")
+        settings = dict(snapshot.get("settings") or {})
+
+        # Native RHEN Core replaced the old SQL settings table during the
+        # consolidation. Keep the durable state visible, but allow deployment
+        # policy to explicitly restore/disable bounded maintenance autopilot.
+        raw_enabled = os.getenv("IREN_AUTOPILOT_ENABLED")
+        if raw_enabled is not None:
+            settings["autopilot_enabled"] = raw_enabled.strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+            settings["autopilot_enabled_source"] = "environment"
+        else:
+            settings.setdefault("autopilot_enabled", True)
+            settings["autopilot_enabled_source"] = "durable_state"
+
+        raw_cap = os.getenv("IREN_AUTOPILOT_MAX_JOBS_PER_DAY")
+        if raw_cap is not None:
+            try:
+                settings["autopilot_max_jobs_per_day"] = max(
+                    1, min(12, int(raw_cap))
+                )
+            except ValueError:
+                settings.setdefault("autopilot_max_jobs_per_day", 3)
+        else:
+            settings.setdefault("autopilot_max_jobs_per_day", 3)
+
+        snapshot["settings"] = settings
+        return snapshot
 
     async def enqueue_command(self, command: str, *, source: str, requested_by: str) -> dict[str, Any]:
         return await self.gateway(

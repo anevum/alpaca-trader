@@ -448,6 +448,7 @@ def test_unified_iren_owns_every_enabled_registry_workflow(monkeypatch):
     assert "rhen.session_close" in owned
     assert "velum.equity.replay" in owned
     assert "graen.btc.discovery" in owned
+    assert "graen.research.adaptive" in owned
 
 
 def test_scheduled_daily_research_does_not_require_model_api():
@@ -471,3 +472,27 @@ def test_scheduled_daily_research_does_not_require_model_api():
         "2026-10-05",
         invoke_model=False,
     )
+
+
+def test_iren_dispatches_adaptive_research_without_legacy_autorun():
+    runtime = object.__new__(SchedulerRuntime)
+    runtime.scheduler_headers = {"x-anevum-scheduler-token": "test"}
+    runtime._post = AsyncMock(
+        return_value={"status": "DISPATCHED", "dispatched": True}
+    )
+    item = ScheduledItem(
+        workflow(
+            workflow_id="graen.research.adaptive",
+            implementation_target="graen_adaptive_research",
+        ),
+        datetime(2026, 10, 6, 4, 35, tzinfo=UTC),
+        "2026-10-06T04:35:00+00:00",
+        {},
+    )
+
+    result = asyncio.run(runtime._execute(item))
+
+    assert result["status"] == "DISPATCHED"
+    args, kwargs = runtime._post.await_args
+    assert args[0].endswith("/v1/adaptive/tick")
+    assert kwargs["timeout"] == 30

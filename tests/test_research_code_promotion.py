@@ -46,7 +46,7 @@ def ci(head="head", passed=True):
         "path": ".github/workflows/ci.yml", "pull_requests": [{"number": 1}],
         "run_number": 1, "status": "completed", "conclusion": "success" if passed else "failure",
         "jobs": [{"name": name, "status": "completed", "conclusion": "success"} for name in
-            ("test", "iren-command", "graen-autonomy", "research-promotion")],
+            ("test", "velum-graen", "graen-forward-shadow", "codex-postgres", "graen-v14-ml")],
     }]
 
 
@@ -187,7 +187,7 @@ class Repository(GitHubRepository):
         return 1
 
     async def pr(self, number):
-        return {"head": {"sha": "head"}, "base": {"ref": "iren-runtime-boundary-20260930"},
+        return {"head": {"sha": "head"}, "base": {"ref": "main"},
             "state": "open", "merged": False}
 
     async def diff(self, number):

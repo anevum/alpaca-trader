@@ -14,6 +14,12 @@ from app.market_data import MarketDataClient
 from app.graen.service import GraenGateway
 from app.graen.research_promotion import ResearchPromotion, engineering_problem_ids
 from app.graen.research_director_client import ResearchDirectorClient
+from app.graen.adaptive_hypothesis import (
+    MAX_GENERATIONS as ADAPTIVE_MAX_GENERATIONS,
+    PROGRAM_ID as ADAPTIVE_PROGRAM_ID,
+    build_spec as build_adaptive_spec,
+    conservative_exposure_ledger,
+)
 from graen.crypto.research_v7 import (
     CONTEXT_UNIVERSE,
     METHODOLOGY_VERSION as V7_METHODOLOGY_VERSION,
@@ -473,6 +479,11 @@ class GraenResearchExecutor:
         ).strip()
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
+        self.adaptive_task: asyncio.Task | None = None
+        self.adaptive_last_started_at: datetime | None = None
+        self.adaptive_last_completed_at: datetime | None = None
+        self.adaptive_last_error: str | None = None
+        self.adaptive_last_result: dict[str, Any] | None = None
         self.started_at = datetime.now(UTC)
         self.last_heartbeat_at: datetime | None = None
         self.last_claim_at: datetime | None = None
@@ -510,6 +521,7 @@ class GraenResearchExecutor:
                 and self.settings.credentials_configured
                 and not violations
                 and self.last_error is None
+                and self.adaptive_last_error is None
             ),
             "system": "GRAEN",
             "service": "graen-research-executor",
@@ -555,6 +567,31 @@ class GraenResearchExecutor:
             "last_completion_at": self.last_completion_at.isoformat() if self.last_completion_at else None,
             "last_error": self.last_error,
             "last_result": self.last_result,
+            "adaptive_research": {
+                "scheduled_by": "IREN",
+                "legacy_campaign_autorun": False,
+                "in_progress": bool(
+                    self.adaptive_task is not None
+                    and not self.adaptive_task.done()
+                ),
+                "last_started_at": (
+                    self.adaptive_last_started_at.isoformat()
+                    if self.adaptive_last_started_at else None
+                ),
+                "last_completed_at": (
+                    self.adaptive_last_completed_at.isoformat()
+                    if self.adaptive_last_completed_at else None
+                ),
+                "last_error": self.adaptive_last_error,
+                "last_result": self.adaptive_last_result,
+                "allowed_stages": [
+                    "RESEARCH_IMPLEMENTATION_REQUIRED",
+                    "CRYPTO_COMPILED_DEVELOPMENT",
+                    "CRYPTO_COMPILED_VALIDATION",
+                    "CRYPTO_COMPILED_HOLDOUT",
+                ],
+                "live_promotion_authority": False,
+            },
             "research_window": {
                 "generic_v7": {
                     "development_start": DEVELOPMENT_START.isoformat(),
@@ -609,6 +646,12 @@ class GraenResearchExecutor:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
+        if self.adaptive_task is not None:
+            self.adaptive_task.cancel()
+            await asyncio.gather(
+                self.adaptive_task, return_exceptions=True
+            )
+            self.adaptive_task = None
 
     async def _heartbeat(self) -> None:
         await self.gateway.executor_heartbeat(
@@ -9338,6 +9381,359 @@ class GraenResearchExecutor:
             return diagnostic
         return None
 
+    @staticmethod
+    def _adaptive_problem(
+        snapshot: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        for problem in snapshot.get("problems") or []:
+            if not isinstance(problem, Mapping):
+                continue
+            metadata = (
+                problem.get("metadata")
+                if isinstance(problem.get("metadata"), Mapping)
+                else {}
+            )
+            if metadata.get("adaptive_program_id") == ADAPTIVE_PROGRAM_ID:
+                return problem
+        return None
+
+    @staticmethod
+    def _adaptive_search_history(
+        snapshot: Mapping[str, Any],
+        problem: Mapping[str, Any],
+    ) -> list[str]:
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        history = [
+            str(row)
+            for row in metadata.get("adaptive_search_history") or []
+            if row
+        ][-49:]
+        problem_id = str(problem.get("problem_id") or "")
+        for run in snapshot.get("runs") or []:
+            if (
+                not isinstance(run, Mapping)
+                or str(run.get("problem_id") or "") != problem_id
+            ):
+                continue
+            summary = (
+                run.get("result_summary")
+                if isinstance(run.get("result_summary"), Mapping)
+                else {}
+            )
+            candidate_id = str(summary.get("candidate_id") or "")
+            if not candidate_id:
+                continue
+            entry = (
+                candidate_id
+                + ":"
+                + str(summary.get("state") or run.get("status") or "UNKNOWN")
+                + ":"
+                + str(summary.get("decision") or "UNKNOWN")
+            )
+            if entry not in history:
+                history.append(entry)
+            break
+        return history[-50:]
+
+    async def _ensure_adaptive_hypothesis(
+        self,
+        snapshot: Mapping[str, Any],
+    ) -> tuple[Mapping[str, Any], dict[str, Any] | None]:
+        problem = self._adaptive_problem(snapshot)
+        if problem is None:
+            created = await self.gateway.create_problem(
+                {
+                    "title": "GRAEN Adaptive Flow Research",
+                    "statement": (
+                        "Continuously generate bounded research-only crypto "
+                        "programs from the trusted flow-pressure compiler. "
+                        "Development may use inspected history; validation and "
+                        "holdout must remain sealed after hypothesis freeze."
+                    ),
+                    "domain": PROBLEM_DOMAIN,
+                    "priority": 96,
+                    "source": "GRAEN_ADAPTIVE_RESEARCH",
+                    "requested_by": "IREN",
+                    "constraints": {
+                        "research_only": True,
+                        "execution_authority": False,
+                        "broker_orders_possible": False,
+                        "production_promotion_authority": False,
+                        "legacy_campaigns_forbidden": True,
+                    },
+                    "success_criteria": {
+                        "generated_program_compiles": True,
+                        "development_gate_required": True,
+                        "sealed_validation_required": True,
+                        "sealed_holdout_required": True,
+                        "independent_velum_required_before_review": True,
+                    },
+                    "metadata": {
+                        "adaptive_program_id": ADAPTIVE_PROGRAM_ID,
+                        "adaptive_generation": 0,
+                        "adaptive_search_history": [],
+                        "research_stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
+                    },
+                }
+            )
+            problem = created.get("problem")
+            if not isinstance(problem, Mapping):
+                raise RuntimeError("adaptive_problem_create_failed")
+            snapshot = await self.gateway.snapshot()
+            problem = self._adaptive_problem(snapshot) or problem
+
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        stage = str(metadata.get("research_stage") or "")
+        promotion = (
+            metadata.get("code_promotion")
+            if isinstance(metadata.get("code_promotion"), Mapping)
+            else {}
+        )
+
+        # A frozen/in-flight spec owns the problem until it either compiles,
+        # completes a research stage, or is rejected. Never mutate it in place.
+        if stage != "RESEARCH_IMPLEMENTATION_REQUIRED":
+            return problem, None
+        if promotion and promotion.get("phase") != "COMPLETE":
+            return problem, None
+        if (
+            metadata.get("research_implementation_spec")
+            and not promotion
+        ):
+            return problem, None
+
+        generation = int(metadata.get("adaptive_generation") or 0) + 1
+        if generation > ADAPTIVE_MAX_GENERATIONS:
+            queued = await self.gateway.queue_research_stage(
+                problem_id=str(problem["problem_id"]),
+                stage="ADAPTIVE_PROGRAM_EXHAUSTED",
+                metadata={
+                    "adaptive_program_id": ADAPTIVE_PROGRAM_ID,
+                    "adaptive_generation": generation - 1,
+                    "next_action": "TRUSTED_COMPILER_EXTENSION_REQUIRED",
+                    "execution_authority": False,
+                },
+            )
+            return (
+                queued.get("problem") or problem,
+                {
+                    "status": "EXHAUSTED",
+                    "generation": generation - 1,
+                    "next_action": "TRUSTED_COMPILER_EXTENSION_REQUIRED",
+                },
+            )
+
+        now = datetime.now(UTC)
+        ledger_payload = conservative_exposure_ledger(now)
+        exposure = await self.gateway.record_artifact(
+            problem_id=str(problem["problem_id"]),
+            run_id=None,
+            artifact_type="RESEARCH_CORPUS_EXPOSURE_LEDGER",
+            methodology_version="graen.adaptive-flow.v1",
+            content=ledger_payload,
+        )
+        artifact = exposure.get("artifact")
+        exposure_id = (
+            str(artifact.get("artifact_id"))
+            if isinstance(artifact, Mapping)
+            and artifact.get("artifact_id")
+            else ""
+        )
+        if not exposure_id:
+            raise RuntimeError("adaptive_exposure_ledger_not_persisted")
+
+        history = self._adaptive_search_history(snapshot, problem)
+        spec = build_adaptive_spec(
+            generation,
+            exposure_artifact_id=exposure_id,
+            search_history=history,
+            now=now,
+        )
+        queued = await self.gateway.queue_research_stage(
+            problem_id=str(problem["problem_id"]),
+            stage="RESEARCH_IMPLEMENTATION_REQUIRED",
+            metadata={
+                "adaptive_program_id": ADAPTIVE_PROGRAM_ID,
+                "adaptive_generation": generation,
+                "adaptive_search_history": history,
+                "research_implementation_spec": spec,
+                "code_promotion": {},
+                "code_promotion_revision": 0,
+                "code_promotion_lease": {},
+                "code_prespec_artifact_id": None,
+                "compiled_specification_hash": None,
+                "adaptive_hypothesis_frozen_at": now.isoformat(),
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            },
+        )
+        updated = queued.get("problem")
+        if not isinstance(updated, Mapping):
+            raise RuntimeError("adaptive_hypothesis_queue_failed")
+        return updated, {
+            "status": "FROZEN",
+            "generation": generation,
+            "hypothesis_id": spec["hypothesis_id"],
+            "validation_start": spec["corpus"]["validation"][0],
+            "holdout_end": spec["corpus"]["holdout"][1],
+            "execution_authority": False,
+        }
+
+    async def adaptive_once(self) -> dict[str, Any]:
+        """Advance only the canonical generated-research lane.
+
+        This deliberately excludes the archived V7-V15 campaign bootstrap and
+        recovery graph. IREN may call it continuously without resurrecting
+        superseded research programs.
+        """
+        snapshot = await self.gateway.snapshot()
+        adaptive_problem, generated = await self._ensure_adaptive_hypothesis(
+            snapshot
+        )
+        snapshot = await self.gateway.snapshot()
+        promotion_results: list[dict[str, Any]] = []
+
+        adaptive_id = str(adaptive_problem.get("problem_id") or "")
+        eligible = {
+            problem_id
+            for problem_id in engineering_problem_ids(snapshot)
+            if problem_id == adaptive_id
+        }
+        for problem_id in list(eligible)[:1]:
+            state = await self.research_promotion.tick(problem_id)
+            promotion_results.append(
+                {
+                    "problem_id": problem_id,
+                    "phase": state.get("phase"),
+                    "blocked_reason": state.get("blocked_reason"),
+                    "protected_decision_required": bool(
+                        state.get("protected_decision_required")
+                    ),
+                }
+            )
+            snapshot = await self.gateway.snapshot()
+
+        claimed = await self.gateway.claim_adaptive_research_problem(
+            worker_id=self.worker_id + "-adaptive",
+            runtime_version=RUNTIME_VERSION,
+            methodology_version="graen.compiled-adaptive.v1",
+            domain=PROBLEM_DOMAIN,
+        )
+        problem = claimed.get("problem")
+        run = claimed.get("run")
+        if not isinstance(problem, Mapping) or not isinstance(run, Mapping):
+            await self._heartbeat()
+            return {
+                "status": "IDLE",
+                "claimed": False,
+                "research_promotion": promotion_results,
+                "generated_hypothesis": generated,
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            }
+
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        stage = str(metadata.get("research_stage") or "")
+        if stage not in {
+            "CRYPTO_COMPILED_DEVELOPMENT",
+            "CRYPTO_COMPILED_VALIDATION",
+            "CRYPTO_COMPILED_HOLDOUT",
+        }:
+            raise RuntimeError("adaptive_claim_returned_noncompiled_stage")
+
+        self.active_problem_id = problem_id
+        self.last_claim_at = datetime.now(UTC)
+        try:
+            result = await self._execute_compiled_hypothesis(problem, run)
+            return {
+                **result,
+                "research_promotion": promotion_results,
+                "generated_hypothesis": generated,
+                "adaptive_stage": stage,
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            }
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"[:1000]
+            try:
+                await self.gateway.block_research_claim(
+                    problem_id=problem_id,
+                    run_id=run_id,
+                    worker_id=self.worker_id + "-adaptive",
+                    error=failure,
+                )
+            finally:
+                self.active_problem_id = None
+            raise
+
+    async def _run_adaptive_dispatch(self) -> None:
+        self.adaptive_last_started_at = datetime.now(UTC)
+        try:
+            result = await self.adaptive_once()
+            self.adaptive_last_result = dict(result)
+            self.adaptive_last_error = None
+            self.adaptive_last_completed_at = datetime.now(UTC)
+            print(
+                "GRAEN_ADAPTIVE_RESEARCH_RESULT",
+                {
+                    "status": result.get("status"),
+                    "claimed": result.get("claimed"),
+                    "adaptive_stage": result.get("adaptive_stage"),
+                    "research_promotion": result.get("research_promotion"),
+                    "execution_authority": False,
+                    "live_execution_authorized": False,
+                },
+                flush=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.adaptive_last_error = (
+                f"{type(exc).__name__}: {exc}"[:1000]
+            )
+            self.adaptive_last_completed_at = datetime.now(UTC)
+            print(
+                "GRAEN_ADAPTIVE_RESEARCH_FAILED",
+                {
+                    "error": self.adaptive_last_error,
+                    "execution_authority": False,
+                    "live_execution_authorized": False,
+                },
+                flush=True,
+            )
+
+    async def dispatch_adaptive(self) -> dict[str, Any]:
+        if self.adaptive_task is not None and not self.adaptive_task.done():
+            return {
+                "status": "ALREADY_RUNNING",
+                "dispatched": False,
+                "execution_authority": False,
+            }
+        self.adaptive_task = asyncio.create_task(
+            self._run_adaptive_dispatch(),
+            name="graen-adaptive-research",
+        )
+        return {
+            "status": "DISPATCHED",
+            "dispatched": True,
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
         r2h_velum_transport_recovery = (
@@ -9823,6 +10219,28 @@ async def btc_discovery_tick(x_anevum_scheduler_token: str | None = Header(defau
         from .btc_discovery import BtcDiscoveryJob
         _btc_discovery_job = BtcDiscoveryJob(runtime.settings)
     return await _btc_discovery_job.tick()
+
+
+@app.post("/v1/adaptive/tick")
+async def adaptive_research_tick(
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    import hmac
+    expected = os.getenv("TRADING_INGEST_TOKEN", "").strip()
+    if (
+        not expected
+        or not x_anevum_scheduler_token
+        or not hmac.compare_digest(
+            expected, x_anevum_scheduler_token
+        )
+    ):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if os.getenv("RHEN_UNIFIED_ROLE") != "graen-research":
+        raise HTTPException(
+            status_code=409,
+            detail="adaptive_research_requires_unified_runtime",
+        )
+    return await runtime.dispatch_adaptive()
 
 
 @app.get("/live")
