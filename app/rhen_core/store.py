@@ -16,10 +16,9 @@ UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
 
 CRITICAL_EVENT_TYPES = {
-    "btc_discovery_stage", "velum_graen_candidate_replay",
     "order_intent", "broker_order", "broker_fill", "order_update",
     "position_opened", "position_closed", "reconciliation",
-    "runtime_error", "crypto_runtime_error", "strategy_promotion",
+    "runtime_error", "strategy_promotion",
 }
 
 
