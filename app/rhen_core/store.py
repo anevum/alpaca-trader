@@ -876,20 +876,51 @@ class RhenCoreStore:
                 (domain,),
             ).fetchall()
             selected = None
+            waiting_until: str | None = None
             for candidate in rows:
                 metadata = _loads(candidate["metadata_json"], {})
                 promotion = dict(metadata.get("code_promotion") or {})
+                stage = str(metadata.get("research_stage") or "")
                 if (
-                    str(metadata.get("research_stage") or "") in allowed
-                    and promotion.get("phase") == "COMPLETE"
+                    stage not in allowed
+                    or promotion.get("phase") != "COMPLETE"
                 ):
-                    selected = candidate
-                    break
+                    continue
+
+                # Confirmatory data is time-sealed. A generated program may be
+                # deployed now, but VALIDATION/HOLDOUT cannot be claimed until
+                # the entire frozen window has elapsed.
+                spec = dict(
+                    promotion.get("prespec")
+                    or metadata.get("research_implementation_spec")
+                    or {}
+                )
+                stage_name = stage.removeprefix(
+                    "CRYPTO_COMPILED_"
+                ).lower()
+                try:
+                    end_raw = spec["corpus"][stage_name][1]
+                    stage_end = datetime.fromisoformat(
+                        str(end_raw).replace("Z", "+00:00")
+                    )
+                    if stage_end.tzinfo is None:
+                        stage_end = stage_end.replace(tzinfo=UTC)
+                    stage_end = stage_end.astimezone(UTC)
+                except (KeyError, IndexError, TypeError, ValueError):
+                    continue
+                if datetime.now(UTC) < stage_end:
+                    if waiting_until is None or stage_end.isoformat() < waiting_until:
+                        waiting_until = stage_end.isoformat()
+                    continue
+
+                selected = candidate
+                break
             if selected is None:
                 return {
                     "ok": True,
                     "problem": None,
                     "run": None,
+                    "waiting_until": waiting_until,
                     "execution_authority": False,
                 }
 
