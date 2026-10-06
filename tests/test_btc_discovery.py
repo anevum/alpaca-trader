@@ -609,6 +609,44 @@ def test_incomplete_development_data_waits_without_consuming_candidate(tmp_path,
     assert state['last_error'].startswith('CorpusUnavailable:')
 
 
+def test_resumed_development_clears_stale_waiting_for_data_state(tmp_path, monkeypatch):
+    monkeypatch.setenv('RHEN_CORE_DB_PATH', str(tmp_path/'core.db'))
+    job = BtcDiscoveryJob(Settings())
+    state = {
+        'version': VERSION,
+        'contract': chrono_contract(datetime(2026, 10, 6, tzinfo=UTC)),
+        'stage': 'DEVELOPMENT',
+        'status': 'WAITING_FOR_DATA',
+        'running': False,
+        'last_error': 'CorpusUnavailable:historical provider gap',
+        'candidates': {
+            key: {**value, 'stage':'DEVELOPMENT', 'status':'QUEUED', 'history':[],
+                  'results':{}, 'rejection_reasons':[]}
+            for key, value in catalog().items()
+        },
+    }
+    job.save(state)
+
+    async def available(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(job, '_load_corpus', available)
+    monkeypatch.setattr(ContinuousReplayEngine, 'run_btc_direct',
+                        lambda *a, **k: evidence(expectancy=-.01))
+
+    result = asyncio.run(job.tick())
+    persisted = read_state(job.store)
+
+    assert result['state'] == 'SEARCHING'
+    assert persisted['status'] == 'SEARCHING'
+    assert persisted['last_error'] is None
+    assert persisted['running'] is False
+    current = persisted['candidates'][persisted['current_candidate_id']]
+    assert current['status'] == 'REJECTED'
+    assert current['history'] == ['DEVELOPMENT']
+    assert current['rejection_reasons']
+
+
 def test_exhausted_state_from_data_only_rejections_is_recoverable(tmp_path, monkeypatch):
     from app.graen.btc_discovery import _reset_incomplete_development_rows
     monkeypatch.setenv('RHEN_CORE_DB_PATH', str(tmp_path/'core.db'))

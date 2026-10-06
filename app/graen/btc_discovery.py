@@ -457,6 +457,10 @@ class BtcDiscoveryJob:
             index = STAGES.index(stage)
             if row["history"] != list(STAGES[:index]):
                 raise ValueError("btc_lifecycle_stage_skip_blocked")
+            if stage == "DEVELOPMENT":
+                # A prior corpus outage must not remain the canonical pipeline
+                # state once research has resumed on accepted/available data.
+                state["status"] = "SEARCHING"
             state.update(running=True, current_candidate_id=row["candidate_id"], last_error=None)
             row["status"] = "RUNNING"
             self.save(state)  # Evidence exposure committed before any stage reads.
