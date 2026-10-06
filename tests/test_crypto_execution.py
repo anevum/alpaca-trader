@@ -54,6 +54,7 @@ def _risk_settings(**overrides):
         crypto_execution_enabled=True,
         execution_authorized=True,
         crypto_max_concurrent_positions=1,
+        crypto_max_new_entries_per_cycle=1,
         crypto_max_order_notional=Decimal("5"),
         crypto_max_total_position_notional=Decimal("10"),
         max_total_position_notional=Decimal("250"),
@@ -113,6 +114,9 @@ def test_crypto_risk_blocks_duplicate_crypto_position():
 
 
 class FakeBroker:
+    def __init__(self):
+        self.submissions = []
+
     async def account(self):
         return {
             "cash": "100",
@@ -132,6 +136,7 @@ class FakeBroker:
         return []
 
     async def submit_crypto_market_buy(self, symbol, qty, client_order_id):
+        self.submissions.append((symbol, qty, client_order_id))
         return {
             "id": "crypto-buy-1",
             "symbol": symbol,
@@ -198,8 +203,8 @@ class AlwaysBuyStrategy:
         )
 
 
-def _engine_settings():
-    return SimpleNamespace(
+def _engine_settings(**overrides):
+    values = dict(
         crypto_lane_enabled=True,
         crypto_execution_enabled=True,
         execution_authorized=True,
@@ -212,6 +217,9 @@ def _engine_settings():
         crypto_order_notional=Decimal("5"),
         crypto_confirmation_symbols=("ETH/USD",),
         crypto_max_spread_pct=Decimal("0.005"),
+        crypto_estimated_round_trip_fee_pct=Decimal("0.005"),
+        crypto_estimated_round_trip_slippage_pct=Decimal("0.001"),
+        crypto_min_net_edge_pct=Decimal("0.002"),
         crypto_reentry_cooldown_minutes=15,
         crypto_stop_pct=Decimal("0.0035"),
         crypto_target_pct=Decimal("0.005"),
@@ -263,7 +271,10 @@ def _engine_settings():
             "no_lookahead_verified": True,
         },
         order_owner_tag="deadbeef",
+        crypto_multi_asset_paper_authorized=False,
     )
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def test_crypto_execution_engine_submits_crypto_only_order():
@@ -298,3 +309,133 @@ def test_crypto_position_filter_excludes_equities():
     ]
     selected = CryptoExecutionEngine._crypto_positions(positions)
     assert [position["symbol"] for position in selected] == ["BTC/USD"]
+
+
+
+class MultiAssetUniverse:
+    async def active_symbols(self, *, now=None):
+        return ("BTC/USD", "ETH/USD", "SOL/USD")
+
+
+class MultiAssetMarketData(FakeMarketData):
+    async def bars_many(self, symbols):
+        now = datetime.now(timezone.utc)
+        rows = []
+        for i in range(70):
+            price = Decimal("100") + Decimal(i) * Decimal("0.03")
+            rows.append({
+                "t": (now.replace(microsecond=0)).isoformat(),
+                "o": str(price - Decimal("0.01")),
+                "h": str(price + Decimal("0.03")),
+                "l": str(price - Decimal("0.03")),
+                "c": str(price),
+                "v": "100",
+                "n": 10,
+            })
+        return {symbol: list(rows) for symbol in symbols}
+
+
+class RankedBuyStrategy:
+    strategy_version_id = "CRYPTO-XSECT-PAPER-TEST"
+
+    def evaluate(self, **kwargs):
+        symbol = kwargs["symbol"]
+        scores = {
+            "BTC/USD": (Decimal("0.030"), Decimal("0.030")),
+            "ETH/USD": (Decimal("0.025"), Decimal("0.025")),
+            "SOL/USD": (Decimal("0.020"), Decimal("0.020")),
+        }
+        expected_move, score = scores[symbol]
+        return Signal(
+            action="buy",
+            symbol=symbol,
+            notional=kwargs["order_notional"],
+            reference_price=Decimal("100"),
+            stop_price=Decimal("99"),
+            take_profit_price=Decimal("102"),
+            reason="ranked paper candidate",
+            metadata={
+                "market": "crypto",
+                "session_model": "24x7",
+                "expected_gross_move_pct": str(expected_move),
+                "opportunity_score": str(score),
+            },
+        )
+
+
+def test_multi_asset_paper_submits_top_two_and_counts_virtual_exposure():
+    state = RuntimeState()
+    state.begin_crypto_cycle("crypto-multi-test")
+    broker = FakeBroker()
+    settings = _engine_settings(
+        crypto_execution_mode="multi_asset_paper",
+        crypto_multi_asset_paper_authorized=True,
+        crypto_calibration_promoted=False,
+        crypto_max_concurrent_positions=3,
+        crypto_max_new_entries_per_cycle=2,
+        crypto_max_total_position_notional=Decimal("15"),
+        crypto_max_entries_24h=12,
+    )
+    engine = CryptoExecutionEngine(
+        settings,
+        broker,
+        FakeMarketData(),
+        RankedBuyStrategy(),
+        state,
+        MultiAssetUniverse(),
+        ledger=None,
+    )
+    result = asyncio.run(engine.run_once())
+    assert result["action"] == "submitted"
+    assert [row["symbol"] for row in result["orders"]] == ["BTC/USD", "ETH/USD"]
+    assert [row[0] for row in broker.submissions] == ["BTC/USD", "ETH/USD"]
+
+
+def test_multi_asset_paper_cost_gate_blocks_target_that_cannot_clear_costs():
+    state = RuntimeState()
+    state.begin_crypto_cycle("crypto-cost-test")
+    settings = _engine_settings(
+        crypto_execution_mode="multi_asset_paper",
+        crypto_multi_asset_paper_authorized=True,
+        crypto_max_concurrent_positions=3,
+        crypto_max_new_entries_per_cycle=2,
+        crypto_estimated_round_trip_fee_pct=Decimal("0.015"),
+        crypto_estimated_round_trip_slippage_pct=Decimal("0.005"),
+        crypto_min_net_edge_pct=Decimal("0.010"),
+    )
+    engine = CryptoExecutionEngine(
+        settings,
+        FakeBroker(),
+        FakeMarketData(),
+        RankedBuyStrategy(),
+        state,
+        MultiAssetUniverse(),
+        ledger=None,
+    )
+    result = asyncio.run(engine.run_once())
+    assert result["action"] == "hold"
+    assert all(
+        "estimated crypto move does not clear fees" in reason
+        for reason in result["scan_reasons"].values()
+    )
+
+
+def test_multi_asset_paper_requires_explicit_paper_authority():
+    state = RuntimeState()
+    state.begin_crypto_cycle("crypto-auth-test")
+    settings = _engine_settings(
+        crypto_execution_mode="multi_asset_paper",
+        crypto_multi_asset_paper_authorized=False,
+    )
+    engine = CryptoExecutionEngine(
+        settings,
+        FakeBroker(),
+        FakeMarketData(),
+        RankedBuyStrategy(),
+        state,
+        MultiAssetUniverse(),
+        ledger=None,
+    )
+    result = asyncio.run(engine.run_once())
+    assert result["action"] == "blocked"
+    assert "not explicitly authorized" in result["reason"]
