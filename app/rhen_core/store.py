@@ -936,40 +936,174 @@ class RhenCoreStore:
     def scheduler_claim(
         self, job: dict[str, Any]
     ) -> dict[str, Any]:
-        key = str(job.get("job_key") or "")
+        key = str(job.get("job_key") or "").strip()
         if not key:
             raise ValueError("job_key_required")
-        now = _iso()
+
+        now_dt = datetime.now(UTC)
+        now = now_dt.isoformat()
+        max_attempts = max(1, min(10, int(job.get("max_attempts") or 1)))
+        allow_retry = bool(job.get("allow_retry", False))
+        retry_delay_seconds = max(
+            0,
+            min(3600, int(job.get("retry_delay_seconds") or 0)),
+        )
+        lease_seconds = max(
+            60,
+            min(3600, int(job.get("lease_seconds") or 1800)),
+        )
+        retryable = {
+            "transient_infrastructure",
+            "dependency_unavailable",
+            "evidence_unavailable",
+        }
+
         with self._lock, self.connect() as conn:
             existing = conn.execute(
                 "select * from scheduler_runs where job_key=?",
                 (key,),
             ).fetchone()
-            if (
-                existing
-                and existing["status"] in {"RUNNING", "SUCCEEDED", "NOOP"}
-            ):
+
+            if existing is None:
+                payload = {
+                    **dict(job),
+                    "_scheduler_attempt": 1,
+                    "_scheduler_claimed_at": now,
+                }
+                conn.execute(
+                    """insert into scheduler_runs(
+                        job_key,status,payload_json,scheduled_at,started_at,updated_at
+                    ) values(?,?,?,?,?,?)""",
+                    (
+                        key,
+                        "RUNNING",
+                        _json(payload),
+                        job.get("scheduled_at"),
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+                return {
+                    "ok": True,
+                    "claimed": True,
+                    "job_key": key,
+                    "attempt": 1,
+                    "max_attempts": max_attempts,
+                }
+
+            status = str(existing["status"] or "")
+            payload = _loads(existing["payload_json"], {})
+            attempt = max(1, int(payload.get("_scheduler_attempt") or 1))
+            existing_max = max(
+                1,
+                int(payload.get("max_attempts") or max_attempts),
+            )
+            effective_max = max(existing_max, max_attempts)
+
+            if status in {"SUCCEEDED", "NOOP", "MISSED", "SKIPPED", "STALE"}:
                 return {
                     "ok": True,
                     "claimed": False,
-                    "run": dict(existing),
+                    "duplicate": True,
+                    "status": status,
+                    "attempt": attempt,
+                    "max_attempts": effective_max,
                 }
-            payload = dict(job)
+
+            if status == "RUNNING":
+                started_at = existing["started_at"]
+                try:
+                    started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    started = now_dt
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=UTC)
+                lease_expired = (now_dt - started.astimezone(UTC)).total_seconds() >= lease_seconds
+                if not lease_expired or attempt >= effective_max:
+                    return {
+                        "ok": True,
+                        "claimed": False,
+                        "busy": not lease_expired,
+                        "exhausted": lease_expired and attempt >= effective_max,
+                        "status": status,
+                        "attempt": attempt,
+                        "max_attempts": effective_max,
+                    }
+
+            if status == "FAILED":
+                completion = payload.get("completion")
+                completion = completion if isinstance(completion, dict) else {}
+                classification = str(
+                    completion.get("error_classification") or ""
+                )
+                if (
+                    not allow_retry
+                    or classification not in retryable
+                    or attempt >= effective_max
+                ):
+                    return {
+                        "ok": True,
+                        "claimed": False,
+                        "exhausted": attempt >= effective_max,
+                        "retryable": classification in retryable,
+                        "status": status,
+                        "attempt": attempt,
+                        "max_attempts": effective_max,
+                    }
+                updated_at = existing["updated_at"]
+                try:
+                    updated = datetime.fromisoformat(
+                        str(updated_at).replace("Z", "+00:00")
+                    )
+                except (TypeError, ValueError):
+                    updated = now_dt
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=UTC)
+                delay = min(
+                    3600,
+                    retry_delay_seconds * (2 ** max(0, attempt - 1)),
+                )
+                retry_at = updated.astimezone(UTC) + timedelta(seconds=delay)
+                if delay > 0 and now_dt < retry_at:
+                    return {
+                        "ok": True,
+                        "claimed": False,
+                        "retry_waiting": True,
+                        "retry_at": retry_at.isoformat(),
+                        "status": status,
+                        "attempt": attempt,
+                        "max_attempts": effective_max,
+                    }
+
+            next_attempt = attempt + 1
+            payload.update(
+                {
+                    **dict(job),
+                    "_scheduler_attempt": next_attempt,
+                    "_scheduler_claimed_at": now,
+                }
+            )
             conn.execute(
-                """insert into scheduler_runs(
-                    job_key,status,payload_json,scheduled_at,started_at,updated_at
-                ) values(?,?,?,?,?,?)
-                on conflict(job_key) do update
-                set status='RUNNING', payload_json=excluded.payload_json,
-                    started_at=excluded.started_at,
-                    updated_at=excluded.updated_at""",
-                (
-                    key, "RUNNING", _json(payload), job.get("scheduled_at"),
-                    now, now,
-                ),
+                """update scheduler_runs
+                set status='RUNNING',
+                    payload_json=?,
+                    started_at=?,
+                    completed_at=null,
+                    updated_at=?
+                where job_key=?""",
+                (_json(payload), now, now, key),
             )
             conn.commit()
-        return {"ok": True, "claimed": True, "job_key": key}
+            return {
+                "ok": True,
+                "claimed": True,
+                "job_key": key,
+                "attempt": next_attempt,
+                "max_attempts": effective_max,
+                "retry": status == "FAILED",
+                "recovered": status == "RUNNING",
+            }
 
     def scheduler_complete(
         self, body: dict[str, Any]

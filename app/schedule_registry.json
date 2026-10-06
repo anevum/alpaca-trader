@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.5",
+  "scheduler_version": "anevum-scheduler-v1.0.6",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -112,7 +112,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "research_agent_daily",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "protected_action_level": "research_only"
     },
     {

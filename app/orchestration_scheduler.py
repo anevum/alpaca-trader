@@ -387,20 +387,20 @@ class SchedulerRuntime:
     @property
     def enabled(self) -> bool:
         if os.getenv("RHEN_UNIFIED_ROLE") == "iren":
-            return True  # The bounded BTC job uses the consolidated scheduler.
+            # In the consolidated runtime IREN is the single scheduler owner.
+            # Other child processes inherit the disabled flag so there is no
+            # second scheduler competing for the same durable job keys.
+            return True
         raw = os.getenv("RHEN_CANONICAL_SCHEDULER_ENABLED")
         if raw is None:
             return True
         return raw.strip().lower() in {"1", "true", "yes", "on"}
 
     def workflow_enabled(self, workflow: dict[str, Any]) -> bool:
-        if not workflow.get("enabled"):
-            return False
-        if os.getenv("RHEN_UNIFIED_ROLE") == "iren" and not _truthy("RHEN_CANONICAL_SCHEDULER_ENABLED"):
-            # Preserve the existing equity/reporting clocks when the old full
-            # orchestration registry is intentionally disabled in RHEN Core.
-            return workflow.get("implementation_target") == "graen_btc_discovery"
-        return True
+        # The registry remains the authoritative workflow set. In unified mode
+        # IREN owns every enabled workflow, including equity/reporting clocks,
+        # daily research, VELUM replay, weekly review, and bounded BTC discovery.
+        return bool(workflow.get("enabled"))
 
     async def start(self) -> None:
         if not self.enabled:
@@ -705,7 +705,10 @@ class SchedulerRuntime:
             )
 
         if target == "research_agent_daily":
-            return await self._research_review("daily", str(session), invoke_model=True)
+            # Scheduled research must remain functional without a paid model API.
+            # Semantic/model review stays available for explicit operator-driven
+            # work, but the daily operating workflow is deterministic by default.
+            return await self._research_review("daily", str(session), invoke_model=False)
 
         if target == "weekly_operating_review":
             operating = await self._post(
@@ -717,7 +720,7 @@ class SchedulerRuntime:
             research = await self._research_review(
                 "weekly",
                 str(session),
-                invoke_model=True,
+                invoke_model=False,
             )
             return {
                 "operating_review": operating,
