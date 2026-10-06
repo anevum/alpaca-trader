@@ -37,6 +37,22 @@ def _text(value: Any) -> str:
 
 def normalize_command(command: str) -> str:
     value = re.sub(r"\s+", " ", command.strip().lower().replace("’", "\'")).rstrip(" ?!.")
+    if (
+        value in {
+            "maintenance prompt",
+            "codex maintenance prompt",
+            "prepare maintenance prompt",
+            "generate maintenance prompt",
+            "generate codex maintenance prompt",
+            "new codex maintenance prompt",
+        }
+        or value.startswith("maintenance prompt:")
+        or value.startswith("codex maintenance prompt:")
+        or value.startswith("prepare maintenance prompt:")
+        or value.startswith("generate maintenance prompt:")
+        or value.startswith("generate codex maintenance prompt:")
+    ):
+        return "MAINTENANCE_PROMPT"
     if value in {"prepare for codex", "prepare codex handoff", "codex handoff", "what should codex do next", "prepare work for codex"}:
         return "CODEX_HANDOFF"
     if value in {"verify codex handoff", "verify codex", "check codex work"}:
@@ -283,6 +299,173 @@ def _status_message(summary: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _maintenance_focus(command: str) -> str:
+    match = re.match(
+        r"^\s*(?:maintenance prompt|codex maintenance prompt|prepare maintenance prompt|"
+        r"generate maintenance prompt|generate codex maintenance prompt|new codex maintenance prompt)"
+        r"(?:\s*[:\-]\s*|\s+for\s+)?(.*)$",
+        command,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1).strip())[:1000]
+
+
+def _prompt_value(value: Any, fallback: str = "—", limit: int = 260) -> str:
+    text = re.sub(r"\s+", " ", _text(value))
+    return (text or fallback)[:limit]
+
+
+def render_maintenance_prompt(
+    snapshot: dict[str, Any],
+    control_state: dict[str, Any],
+    *,
+    focus: str = "",
+) -> str:
+    objectives = [
+        row for row in list(snapshot.get("objectives") or [])
+        if str(row.get("status") or "").upper() in {"ACTIVE", "READY", "BLOCKED"}
+    ][:10]
+    jobs = [
+        row for row in list(snapshot.get("jobs") or [])
+        if str(row.get("status") or "").upper() in ACTIVE_JOB_STATES
+    ][:10]
+    incidents = _open_incidents(control_state)[:12]
+    topology = control_state.get("topology") or {}
+    services = topology.get("services") if isinstance(topology, dict) else []
+    services = services if isinstance(services, list) else []
+    current = choose_next_action(snapshot, control_state)
+    active_handoffs = codex.active_handoffs(snapshot)
+
+    lines = [
+        "Continue ANEVUM/RHEN maintenance from the CURRENT actual state. "
+        "Do not restart architecture analysis or redo completed work.",
+        "",
+        "Canonical repositories:",
+        "- Backend/runtime: anevum/alpaca-trader",
+        "- Frontend/Command: anevum/anevum-web",
+        "",
+        "IREN control snapshot:",
+        f"- State: {_prompt_value(control_state.get('state'), 'UNKNOWN')}",
+        f"- Observed at: {_prompt_value(control_state.get('observed_at'))}",
+        f"- Inventory complete: {'YES' if topology.get('inventory_complete') is True else 'NO/UNKNOWN'}",
+        "",
+        "Runtime services:",
+    ]
+    if services:
+        for row in services[:12]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                "- "
+                + _prompt_value(row.get("service_name") or row.get("service_id"), "service")
+                + " | status=" + _prompt_value(row.get("status"), "UNKNOWN")
+                + " | ready=" + (
+                    "YES" if row.get("readiness") is True
+                    else "NO" if row.get("readiness") is False
+                    else "UNKNOWN"
+                )
+                + " | revision=" + _prompt_value(row.get("revision"))
+                + " | deployment=" + _prompt_value(row.get("deployment"))
+            )
+    else:
+        lines.append("- No service inventory present. Inspect live Railway state before editing.")
+
+    lines.extend(["", "Open incidents:"])
+    if incidents:
+        for row in incidents:
+            lines.append(
+                "- " + _prompt_value(row.get("key"), "incident")
+                + " | severity=" + _prompt_value(row.get("severity"), "warning")
+                + " | reason=" + _prompt_value(row.get("reason"), "unspecified")
+            )
+    else:
+        lines.append("- None reported.")
+
+    lines.extend(["", "Active objectives:"])
+    if objectives:
+        for row in objectives:
+            lines.append(
+                "- " + _prompt_value(row.get("objective_key"), "objective")
+                + " | " + _prompt_value(row.get("status"), "UNKNOWN")
+                + " | " + _prompt_value(row.get("title"), "Untitled")
+                + " | owner=" + _prompt_value(row.get("owner_system"), "IREN")
+            )
+    else:
+        lines.append("- None.")
+
+    lines.extend(["", "Active work:"])
+    if jobs:
+        for row in jobs:
+            lines.append(
+                "- " + _prompt_value(row.get("job_id"), "job")
+                + " | " + _prompt_value(row.get("status"), "UNKNOWN")
+                + " | " + _prompt_value(row.get("job_type"), "WORK")
+                + " | " + _prompt_value(row.get("title"), "Untitled")
+                + " | owner=" + _prompt_value(row.get("owner_system"), "IREN")
+            )
+    else:
+        lines.append("- None.")
+
+    lines.extend(["", "IREN next action:"])
+    if current:
+        lines.append(
+            "- " + _prompt_value(current.get("title"), "Untitled")
+            + " | mode=" + codex.mode(current)
+            + " | reason=" + _prompt_value(current.get("reason"), "unspecified")
+        )
+    else:
+        lines.append("- No pending canonical action.")
+
+    lines.extend(["", "Tracked Codex handoffs:"])
+    if active_handoffs:
+        for row in active_handoffs[:4]:
+            result = row.get("result") or {}
+            package = result.get("package") or {}
+            lines.append(
+                "- " + _prompt_value(package.get("title") or row.get("title"), "handoff")
+                + " | status=" + _prompt_value(result.get("handoff_status"), row.get("status") or "UNKNOWN")
+                + " | objective=" + _prompt_value(row.get("objective_key"))
+                + " | base=" + _prompt_value(package.get("base_sha"), "—", 12)
+            )
+        lines.append("- Inspect and continue/verify active handoffs before creating overlapping work.")
+    else:
+        lines.append("- None active.")
+
+    lines.extend([
+        "",
+        "Operator focus:",
+        "- " + (_prompt_value(focus, "", 1000) if focus else
+               "No additional focus supplied. Perform the highest-value maintenance pass supported by current evidence."),
+        "",
+        "Execution instructions:",
+        "1. Inspect CURRENT main in both repositories, applicable AGENTS.md files, current GitHub CI, "
+        "current Railway deployments, and current Command/IREN state before editing. "
+        "Treat this snapshot as context, not authority.",
+        "2. Reconcile this snapshot against live evidence. Do not act on stale assumptions, old PRs, "
+        "obsolete services, or legacy architecture.",
+        "3. Preserve the current ANEVUM/RHEN architecture and naming. Consolidate rather than duplicate. "
+        "Do not reintroduce retired infrastructure.",
+        "4. Identify the highest-value concrete maintenance/update work consistent with the operator focus "
+        "and current evidence. If a safe code fix is clear, implement it; do not stop at analysis.",
+        "5. Add or update focused tests, run the relevant full CI, and verify the deployed result with "
+        "GitHub plus Railway/Cloudflare evidence.",
+        "6. Preserve RHEN live strategy, risk controls, broker behavior, position sizing, execution permissions, "
+        "credentials, and capital behavior unless the operator explicitly authorizes a change to those protected areas.",
+        "7. Keep paid model/API worker spending disabled. Do not add autonomous spending, credential changes, "
+        "destructive infrastructure actions, or silent live-trading behavior changes.",
+        "8. Do not fabricate health, telemetry, research progress, trades, deployment state, or completion. "
+        "If evidence is missing, surface the missing evidence.",
+        "9. If there is no real maintenance need, say so and do not invent work.",
+        "10. Finish with exact changes made, tests/CI results, deployed state, unresolved blockers, "
+        "and the next concrete action if one exists.",
+        "",
+        "This prompt was assembled deterministically from IREN state; no model/API worker was invoked.",
+    ])
+    return "\n".join(lines)
+
+
 def status_summary(snapshot: dict[str, Any], control_state: dict[str, Any]) -> dict[str, Any]:
     objectives = list(snapshot.get("objectives") or [])
     jobs = list(snapshot.get("jobs") or [])
@@ -517,6 +700,21 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
     if intent == "STATUS":
         return CommandResult(intent, summary)
 
+    if intent == "MAINTENANCE_PROMPT":
+        focus = _maintenance_focus(command)
+        return CommandResult(intent, {
+            **summary,
+            "message": "Maintenance Codex prompt prepared from current IREN state.",
+            "maintenance_prompt": render_maintenance_prompt(
+                snapshot,
+                control_state,
+                focus=focus,
+            ),
+            "maintenance_focus": focus,
+            "prompt_version": "iren-maintenance-v1",
+            "action_taken": False,
+        })
+
     if intent == "NEXT":
         if not action:
             return CommandResult(intent, {
@@ -607,6 +805,7 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
         "message": "Unsupported control.",
         "supported_actions": [
             "status",
+            "maintenance prompt",
             "what's next?",
             "do that",
             "what needs me?",
