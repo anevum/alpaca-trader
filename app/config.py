@@ -156,6 +156,96 @@ class Settings(BaseSettings):
         default="SPY,QQQ,SMH", alias="UNIVERSE_ALWAYS_INCLUDE"
     )
 
+    # Continuous U.S. equity lane. This is a separate execution regime from
+    # regular-session equities because Alpaca extended-hours orders must be
+    # limit orders and liquidity/spread behavior is materially different.
+    extended_equity_lane_enabled: bool = Field(
+        default=False, alias="EXTENDED_EQUITY_LANE_ENABLED"
+    )
+    extended_equity_execution_enabled: bool = Field(
+        default=False, alias="EXTENDED_EQUITY_EXECUTION_ENABLED"
+    )
+    extended_equity_live_acknowledge: str = Field(
+        default="NO", alias="I_ACKNOWLEDGE_EXTENDED_EQUITY_LIVE"
+    )
+    extended_equity_strategy_version_id: str = Field(
+        default="RHEN-EXT-2026-10-06-001",
+        alias="EXTENDED_EQUITY_STRATEGY_VERSION_ID",
+    )
+    extended_equity_poll_seconds: int = Field(
+        default=30, alias="EXTENDED_EQUITY_POLL_SECONDS"
+    )
+    extended_equity_universe_refresh_seconds: int = Field(
+        default=600, alias="EXTENDED_EQUITY_UNIVERSE_REFRESH_SECONDS"
+    )
+    extended_equity_universe_size: int = Field(
+        default=24, alias="EXTENDED_EQUITY_UNIVERSE_SIZE"
+    )
+    extended_equity_symbols_raw: str = Field(
+        default=(
+            "SPY,QQQ,IWM,DIA,AAPL,MSFT,NVDA,AMD,AMZN,META,GOOGL,"
+            "TSLA,AVGO,NFLX,PLTR,COIN,MSTR,SMH,XLF,XLK,XLE,GLD,TLT,USO"
+        ),
+        alias="EXTENDED_EQUITY_SYMBOLS",
+    )
+    extended_equity_confirmation_symbols_raw: str = Field(
+        default="SPY,QQQ", alias="EXTENDED_EQUITY_CONFIRMATION_SYMBOLS"
+    )
+    extended_equity_fast_window: int = Field(
+        default=3, alias="EXTENDED_EQUITY_FAST_WINDOW"
+    )
+    extended_equity_slow_window: int = Field(
+        default=8, alias="EXTENDED_EQUITY_SLOW_WINDOW"
+    )
+    extended_equity_min_momentum_pct: Decimal = Field(
+        default=Decimal("0.0007"), alias="EXTENDED_EQUITY_MIN_MOMENTUM_PCT"
+    )
+    extended_equity_max_vwap_extension_pct: Decimal = Field(
+        default=Decimal("0.006"), alias="EXTENDED_EQUITY_MAX_VWAP_EXTENSION_PCT"
+    )
+    extended_equity_stop_pct: Decimal = Field(
+        default=Decimal("0.004"), alias="EXTENDED_EQUITY_STOP_PCT"
+    )
+    extended_equity_target_pct: Decimal = Field(
+        default=Decimal("0.006"), alias="EXTENDED_EQUITY_TARGET_PCT"
+    )
+    extended_equity_max_hold_minutes: int = Field(
+        default=45, alias="EXTENDED_EQUITY_MAX_HOLD_MINUTES"
+    )
+    extended_equity_max_entries_per_session: int = Field(
+        default=3, alias="EXTENDED_EQUITY_MAX_ENTRIES_PER_SESSION"
+    )
+    extended_equity_max_quote_age_seconds: int = Field(
+        default=45, alias="EXTENDED_EQUITY_MAX_QUOTE_AGE_SECONDS"
+    )
+    extended_equity_max_bar_age_seconds: int = Field(
+        default=120, alias="EXTENDED_EQUITY_MAX_BAR_AGE_SECONDS"
+    )
+    extended_equity_max_spread_pct: Decimal = Field(
+        default=Decimal("0.004"), alias="EXTENDED_EQUITY_MAX_SPREAD_PCT"
+    )
+    overnight_max_spread_pct: Decimal = Field(
+        default=Decimal("0.006"), alias="OVERNIGHT_MAX_SPREAD_PCT"
+    )
+    extended_equity_limit_buffer_pct: Decimal = Field(
+        default=Decimal("0.0005"), alias="EXTENDED_EQUITY_LIMIT_BUFFER_PCT"
+    )
+    extended_equity_handoff_flat_minutes: int = Field(
+        default=5, alias="EXTENDED_EQUITY_HANDOFF_FLAT_MINUTES"
+    )
+    extended_equity_weekend_flat_time_raw: str = Field(
+        default="19:45", alias="EXTENDED_EQUITY_WEEKEND_FLAT_TIME"
+    )
+    extended_equity_data_feed: str = Field(
+        default="iex", alias="EXTENDED_EQUITY_DATA_FEED"
+    )
+    overnight_data_feed: str = Field(
+        default="overnight", alias="OVERNIGHT_DATA_FEED"
+    )
+    extended_equity_min_price: Decimal = Field(
+        default=Decimal("5.00"), alias="EXTENDED_EQUITY_MIN_PRICE"
+    )
+
     crypto_lane_enabled: bool = Field(default=False, alias="CRYPTO_LANE_ENABLED")
     crypto_execution_enabled: bool = Field(
         default=False, alias="CRYPTO_EXECUTION_ENABLED"
@@ -453,6 +543,18 @@ class Settings(BaseSettings):
         return parse_csv(self.universe_always_include_raw)
 
     @property
+    def extended_equity_symbols(self) -> tuple[str, ...]:
+        return parse_csv(self.extended_equity_symbols_raw)
+
+    @property
+    def extended_equity_confirmation_symbols(self) -> tuple[str, ...]:
+        return parse_csv(self.extended_equity_confirmation_symbols_raw)
+
+    @property
+    def extended_equity_weekend_flat_time(self) -> time:
+        return parse_hhmm(self.extended_equity_weekend_flat_time_raw)
+
+    @property
     def crypto_promotion_evidence(self) -> dict:
         try:
             value = json.loads(self.crypto_promotion_evidence_json or "{}")
@@ -543,6 +645,20 @@ class Settings(BaseSettings):
     @property
     def execution_authorized(self) -> bool:
         return self.paper_execution_authorized or self.live_execution_authorized
+
+    @property
+    def extended_equity_execution_authorized(self) -> bool:
+        if not (
+            self.extended_equity_lane_enabled
+            and self.extended_equity_execution_enabled
+        ):
+            return False
+        if self.trading_mode == "paper":
+            return self.paper_execution_authorized
+        return (
+            self.live_execution_authorized
+            and self.extended_equity_live_acknowledge == "YES"
+        )
 
     @property
     def btc_direct_paper_authorized(self) -> bool:
@@ -711,6 +827,88 @@ class Settings(BaseSettings):
             )
         if not 60 <= self.universe_refresh_seconds <= 3600:
             raise ValueError("UNIVERSE_REFRESH_SECONDS must be between 60 and 3600")
+        if not 15 <= self.extended_equity_poll_seconds <= 300:
+            raise ValueError(
+                "EXTENDED_EQUITY_POLL_SECONDS must be between 15 and 300"
+            )
+        if not 60 <= self.extended_equity_universe_refresh_seconds <= 3600:
+            raise ValueError(
+                "EXTENDED_EQUITY_UNIVERSE_REFRESH_SECONDS must be between 60 and 3600"
+            )
+        if not 1 <= self.extended_equity_universe_size <= 100:
+            raise ValueError(
+                "EXTENDED_EQUITY_UNIVERSE_SIZE must be between 1 and 100"
+            )
+        if not self.extended_equity_symbols:
+            raise ValueError("EXTENDED_EQUITY_SYMBOLS cannot be empty")
+        if not self.extended_equity_confirmation_symbols:
+            raise ValueError(
+                "EXTENDED_EQUITY_CONFIRMATION_SYMBOLS cannot be empty"
+            )
+        if not (
+            1
+            <= self.extended_equity_fast_window
+            < self.extended_equity_slow_window
+            <= 60
+        ):
+            raise ValueError(
+                "extended equity windows must satisfy 1 <= fast < slow <= 60"
+            )
+        if not Decimal("0") <= self.extended_equity_min_momentum_pct < Decimal("0.05"):
+            raise ValueError(
+                "EXTENDED_EQUITY_MIN_MOMENTUM_PCT must be between 0 and 0.05"
+            )
+        if not Decimal("0") < self.extended_equity_stop_pct < Decimal("0.10"):
+            raise ValueError("EXTENDED_EQUITY_STOP_PCT must be between 0 and 0.10")
+        if not Decimal("0") < self.extended_equity_target_pct < Decimal("0.20"):
+            raise ValueError("EXTENDED_EQUITY_TARGET_PCT must be between 0 and 0.20")
+        if not 1 <= self.extended_equity_max_hold_minutes <= 720:
+            raise ValueError(
+                "EXTENDED_EQUITY_MAX_HOLD_MINUTES must be between 1 and 720"
+            )
+        if not 0 <= self.extended_equity_max_entries_per_session <= 100:
+            raise ValueError(
+                "EXTENDED_EQUITY_MAX_ENTRIES_PER_SESSION must be between 0 and 100"
+            )
+        if not 5 <= self.extended_equity_max_quote_age_seconds <= 300:
+            raise ValueError(
+                "EXTENDED_EQUITY_MAX_QUOTE_AGE_SECONDS must be between 5 and 300"
+            )
+        if not 30 <= self.extended_equity_max_bar_age_seconds <= 600:
+            raise ValueError(
+                "EXTENDED_EQUITY_MAX_BAR_AGE_SECONDS must be between 30 and 600"
+            )
+        if not Decimal("0") < self.extended_equity_max_spread_pct < Decimal("0.10"):
+            raise ValueError(
+                "EXTENDED_EQUITY_MAX_SPREAD_PCT must be between 0 and 0.10"
+            )
+        if not Decimal("0") < self.overnight_max_spread_pct < Decimal("0.10"):
+            raise ValueError("OVERNIGHT_MAX_SPREAD_PCT must be between 0 and 0.10")
+        if not Decimal("0") <= self.extended_equity_limit_buffer_pct < Decimal("0.02"):
+            raise ValueError(
+                "EXTENDED_EQUITY_LIMIT_BUFFER_PCT must be between 0 and 0.02"
+            )
+        if not 1 <= self.extended_equity_handoff_flat_minutes <= 30:
+            raise ValueError(
+                "EXTENDED_EQUITY_HANDOFF_FLAT_MINUTES must be between 1 and 30"
+            )
+        _ = self.extended_equity_weekend_flat_time
+        if self.extended_equity_data_feed not in {"iex", "sip", "delayed_sip"}:
+            raise ValueError(
+                "EXTENDED_EQUITY_DATA_FEED must be iex, sip, or delayed_sip"
+            )
+        if self.overnight_data_feed != "overnight":
+            raise ValueError("OVERNIGHT_DATA_FEED must be overnight")
+        if self.extended_equity_min_price < Decimal("1"):
+            raise ValueError("EXTENDED_EQUITY_MIN_PRICE must be at least 1")
+        if (
+            self.trading_mode == "live"
+            and self.extended_equity_execution_enabled
+            and self.extended_equity_live_acknowledge not in {"NO", "YES"}
+        ):
+            raise ValueError(
+                "I_ACKNOWLEDGE_EXTENDED_EQUITY_LIVE must be YES or NO"
+            )
         if not 1 <= self.crypto_universe_size <= 100:
             raise ValueError("CRYPTO_UNIVERSE_SIZE must be between 1 and 100")
         if not 60 <= self.crypto_universe_refresh_seconds <= 3600:
