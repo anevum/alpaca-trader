@@ -113,9 +113,11 @@ class DynamicUniverse:
             raise RuntimeError("dynamic universe returned no eligible equities")
 
         eligible_set = set(eligible)
+        screener = getattr(self.market_data, "stock_screener_symbols", None)
+        screened_rows = await screener(top=100) if callable(screener) else []
         screened = [
             symbol
-            for symbol in await self.market_data.stock_screener_symbols(top=100)
+            for symbol in screened_rows
             if symbol in eligible_set
         ]
         always = [
