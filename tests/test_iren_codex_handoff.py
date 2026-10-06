@@ -156,6 +156,34 @@ def test_github_discovery_ambiguous_fails_closed():
     assert not r["association_valid"]
 
 
+def test_engine_github_evidence_is_direct_and_does_not_require_executor(monkeypatch):
+    monkeypatch.delenv("IREN_EXECUTOR_URL", raising=False)
+    monkeypatch.setenv("IREN_GITHUB_TOKEN", "g" * 40)
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "anevum/alpaca-trader")
+
+    async def gateway(action, **payload):
+        return {}
+
+    engine = IrenWorkEngine(gateway, control)
+    assert engine.executor_url == ""
+
+    async def github_get(path):
+        assert path == "branches/main"
+        return {"commit": {"sha": SHA}}
+
+    monkeypatch.setattr(engine, "_github_get", github_get)
+    evidence = asyncio.run(engine._github_evidence())
+
+    assert evidence["main_sha"] == SHA
+    assert evidence["model_invoked"] is False
+
+
+def test_github_verification_uses_actions_checks_not_legacy_status_api():
+    source = __import__("inspect").getsource(inspect_github)
+    assert "check-runs?per_page=100" in source
+    assert 'commits/{sha}/status' not in source
+
+
 def test_engine_prepare_and_deterministic_path_without_paid_calls(monkeypatch):
     calls=[]
     async def run(software):
