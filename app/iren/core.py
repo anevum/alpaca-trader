@@ -152,7 +152,19 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
             key = row.get("workflow_id", "")
             if key not in latest or _workflow_run_key(row) > _workflow_run_key(latest[key]):
                 latest[key] = row
+    registered_workflows_raw = scheduler.get("workflow_ids")
+    registered_workflows = (
+        {str(value) for value in registered_workflows_raw if value}
+        if isinstance(registered_workflows_raw, list)
+        else None
+    )
     for key, row in latest.items():
+        # A durable failed run remains historical after its workflow is retired.
+        # Do not keep IREN degraded for a scheduler target that no longer exists
+        # in the canonical registry. Older observations without workflow_ids
+        # retain the previous compatibility behavior.
+        if registered_workflows is not None and key not in registered_workflows:
+            continue
         if key.startswith("verification.") or not fresh(row.get("scheduled_at"), now, 86400):
             continue
         if key in {"rhen.preflight", "rhen.market_open"}:
