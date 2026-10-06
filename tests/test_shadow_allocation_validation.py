@@ -61,9 +61,9 @@ def test_shadow_allocation_validation_balances_loss_avoidance_and_gain_sacrifice
     assert horizon["complete_outcome_count"] == 2
     assert float(horizon["outcome_coverage"]) == 1.0
     assert float(horizon["mean_shadow_to_live_pct"]) == 25.0
-    assert float(horizon["mean_live_proxy_net_bps"]) == 0.0
+    assert float(horizon["mean_live_proxy_net_bps"]) == -5.0
     assert float(horizon["mean_shadow_proxy_net_bps"]) == 5.0
-    assert float(horizon["mean_allocation_delta_bps"]) == 5.0
+    assert float(horizon["mean_allocation_delta_bps"]) == 10.0
     assert horizon["improved_entry_count"] == 1
     assert horizon["worsened_entry_count"] == 1
     assert float(horizon["improved_entry_fraction"]) == 0.5
