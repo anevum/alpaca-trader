@@ -377,6 +377,9 @@ class ResearchReportScheduler:
             "incomplete_outcomes": summary.incomplete_outcomes,
             "error_outcomes": summary.error_outcomes,
             "skipped_complete_outcomes": summary.skipped_complete_outcomes,
+            "measurable_candidates": summary.measurable_candidates,
+            "unmeasurable_candidates": summary.unmeasurable_candidates,
+            "unmeasurable_reasons": summary.unmeasurable_reasons or {},
             "reused_existing_evidence": summary.reused_existing_evidence,
             "analytics_only": True,
         }
@@ -1111,6 +1114,23 @@ class ResearchReportScheduler:
         if int(outcome_status.get("error_rows") or 0):
             daily_warnings.append(
                 "One or more candidate forward-outcome measurements failed and remain explicitly recorded as errors."
+            )
+        post_event_summary = self.last_post_event_summary or {}
+        unmeasurable_candidates = int(
+            post_event_summary.get("unmeasurable_candidates") or 0
+        )
+        if unmeasurable_candidates:
+            reasons = post_event_summary.get("unmeasurable_reasons") or {}
+            rendered = ", ".join(
+                f"{key}={value}"
+                for key, value in sorted(reasons.items())
+                if value
+            )
+            daily_warnings.append(
+                "Forward-outcome measurement excluded "
+                f"{unmeasurable_candidates} candidates lacking exact durable "
+                "decision evidence"
+                + (f" ({rendered})." if rendered else ".")
             )
         shadow_horizons = shadow_economics_validation.get("horizons") or []
         shadow_observed = [

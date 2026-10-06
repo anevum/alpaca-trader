@@ -987,3 +987,84 @@ def test_post_event_runner_does_not_persist_transient_forward_outcomes():
         event["event_type"] == "candidate_forward_outcome"
         for event in sink.events
     )
+
+
+
+def test_post_event_runner_counts_unmeasurable_candidate_once_not_per_horizon():
+    reference_bar = datetime(2026, 9, 25, 10, 0, tzinfo=NY)
+    measurable = candidate(reference_bar)
+    missing_bar_time = {
+        **candidate(reference_bar),
+        "candidate_id": 2,
+        "symbol": "QQQ",
+        "features": {},
+    }
+    missing_price = {
+        **candidate(reference_bar),
+        "candidate_id": 3,
+        "symbol": "SMH",
+        "decision_reference_price": None,
+    }
+
+    class MarketData:
+        async def market_calendar_details(self, *, start, end):
+            return [{"date": start, "open": "09:30", "close": "16:00"}]
+
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {
+                "SPY": [
+                    bar(
+                        reference_bar + timedelta(minutes=minute),
+                        str(
+                            Decimal("100")
+                            + Decimal(minute) / Decimal("100")
+                        ),
+                    )
+                    for minute in range(1, 61)
+                ]
+            }
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def reader(**params):
+        return {
+            "candidates": [measurable, missing_bar_time, missing_price],
+            "complete_horizons": {},
+            "post_event_complete": False,
+        }
+
+    sink = Sink()
+    runner = PostEventEvidenceRunner(
+        settings=type(
+            "Settings",
+            (),
+            {"data_feed": "iex", "bar_timeframe": "1Min"},
+        )(),
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=reader,
+    )
+
+    summary = asyncio.run(runner.run_session(date(2026, 9, 25)))
+
+    assert summary.measurable_candidates == 1
+    assert summary.unmeasurable_candidates == 2
+    assert summary.unmeasurable_reasons == {
+        "decision_reference_bar_timestamp_unavailable": 1,
+        "missing_decision_reference_price": 1,
+    }
+    assert summary.complete_outcomes == 7
+    assert summary.error_outcomes == 0
+    assert summary.incomplete_outcomes == 0
+    forward = [
+        event
+        for event in sink.events
+        if event["event_type"] == "candidate_forward_outcome"
+    ]
+    assert len(forward) == 7
+    assert {event["symbol"] for event in forward} == {"SPY"}
