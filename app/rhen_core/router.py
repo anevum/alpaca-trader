@@ -28,6 +28,11 @@ MODULES = {
     "preopen": "http://127.0.0.1:8118/health",
 }
 
+PUBLIC_MODULE_ROUTES = {
+    "/v1/research/readiness/public": "http://127.0.0.1:8114/v1/readiness/public",
+    "/v1/research/theory/public": "http://127.0.0.1:8114/v1/theory/public",
+}
+
 CORE_PREFIXES = (
     "/v1/events",
     "/v1/trading-report-read",
@@ -128,17 +133,23 @@ async def core_status() -> Response:
 )
 async def proxy(path: str, request: Request) -> Response:
     route = "/" + path
-    target = (
-        CORE_URL
-        if route == "/core"
-        or route.startswith("/core/")
-        or route.startswith(CORE_PREFIXES)
-        else EXECUTION_URL
-    )
-    if route == "/core":
-        route = "/"
-    elif route.startswith("/core/"):
-        route = route[len("/core"):]
+    public_module_target = PUBLIC_MODULE_ROUTES.get(route)
+    if public_module_target:
+        target_url = public_module_target
+    else:
+        target = (
+            CORE_URL
+            if route == "/core"
+            or route.startswith("/core/")
+            or route.startswith(CORE_PREFIXES)
+            else EXECUTION_URL
+        )
+        if route == "/core":
+            route = "/"
+        elif route.startswith("/core/"):
+            route = route[len("/core"):]
+        target_url = target + route
+
     headers = {
         key: value
         for key, value in request.headers.items()
@@ -149,7 +160,7 @@ async def proxy(path: str, request: Request) -> Response:
         try:
             response = await client.request(
                 request.method,
-                target + route,
+                target_url,
                 params=request.query_params,
                 headers=headers,
                 content=body,
