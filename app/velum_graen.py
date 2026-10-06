@@ -46,6 +46,15 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
     evaluate_btc_4h_consensus_replay as evaluate_v14_r2h_replay,
     spec_from_dict as v14_r2h_spec_from_dict,
 )
+from graen.crypto.flow_pressure import (
+    METHODOLOGY_VERSION as FLOW_PRESSURE_METHODOLOGY_VERSION,
+    evaluate_stage as evaluate_flow_pressure_stage,
+)
+from graen.engineering import (
+    digest as engineering_digest,
+    stamp as engineering_stamp,
+    validate_spec as validate_engineering_spec,
+)
 
 
 METHODOLOGY_VERSION = "velum-graen-candidate-replay-v6"
@@ -64,6 +73,16 @@ def replay_fetch_contract(
         # scored as replay evidence. The frozen candidate is defined on 4-hour
         # bars, so VELUM must not inherit its generic high-frequency timeframe.
         return ("BTC/USD",), start - timedelta(days=260), end, "4Hour"
+    if candidate_methodology == FLOW_PRESSURE_METHODOLOGY_VERSION:
+        # Adaptive flow-pressure programs are frozen on 5-minute bars across
+        # this fixed research universe. Fetch one extra day for indicator
+        # warmup, but score only the sealed stage windows in the prespec.
+        return (
+            ("BTC/USD", "ETH/USD", "SOL/USD"),
+            start - timedelta(days=2),
+            end,
+            "5Min",
+        )
     return (
         tuple(GRAEN_CONTEXT_UNIVERSE),
         start - timedelta(hours=8),
@@ -117,6 +136,78 @@ def replay_candidate(
     end: datetime,
     seed: int = 91000,
 ) -> dict[str, Any]:
+    if candidate_methodology == FLOW_PRESSURE_METHODOLOGY_VERSION:
+        spec = dict(candidate_spec)
+        spec_hash = validate_engineering_spec(spec)
+        expected_start = engineering_stamp(
+            spec["corpus"]["development"][0]
+        )
+        expected_end = engineering_stamp(spec["corpus"]["holdout"][1])
+        if start != expected_start or end != expected_end:
+            raise ValueError("flow_pressure_velum_replay_window_mismatch")
+
+        predecessor = None
+        stage_results: dict[str, dict[str, Any]] = {}
+        reasons: list[str] = []
+        for stage_name in ("development", "validation", "holdout"):
+            result = evaluate_flow_pressure_stage(
+                bars_by_symbol,
+                spec=spec,
+                stage=stage_name,
+                predecessor=predecessor,
+            )
+            stage_results[stage_name] = result
+            if result.get("passed") is not True:
+                reasons.extend(
+                    stage_name + ":" + str(reason)
+                    for reason in result.get("reasons") or []
+                )
+                break
+            predecessor = {
+                **result,
+                "artifact_id": (
+                    "velum:"
+                    + stage_name
+                    + ":"
+                    + engineering_digest(result)[:24]
+                ),
+            }
+
+        verified = (
+            len(stage_results) == 3
+            and all(
+                row.get("passed") is True
+                for row in stage_results.values()
+            )
+        )
+        if not verified and not reasons:
+            reasons.append("independent_replay_incomplete")
+
+        return {
+            "methodology_version": METHODOLOGY_VERSION,
+            "candidate_methodology": candidate_methodology,
+            "candidate_id": spec["hypothesis_id"],
+            "candidate_family": spec["mechanism"],
+            "candidate_spec": spec,
+            "spec_hash": spec_hash,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "stage_results": stage_results,
+            "engineering_gate": {
+                "passed": verified,
+                "reasons": reasons,
+            },
+            "evidence_role": "POST_HOLDOUT_ENGINEERING_REPLAY",
+            "independent_confirmatory_evidence": False,
+            "statistical_promotion_authority": False,
+            "research_only": True,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+            "risk_or_sizing_authority": False,
+            "live_configuration_changed": False,
+            "promotion_authorized": False,
+        }
+
     if candidate_methodology == V14_R2H_METHODOLOGY_VERSION:
         spec = v14_r2h_spec_from_dict(candidate_spec)
         canonical_spec = v14_r2h_candidate_spec()
