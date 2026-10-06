@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from app.crypto_layer import (
+    CryptoCrossSectionalPaperStrategy,
     CryptoRollingMomentumStrategy,
     CryptoScanner,
     CryptoUniverse,
@@ -127,3 +128,44 @@ def test_crypto_scanner_does_not_overwrite_equity_scan_state():
     assert result["action"] == "hold"
     assert "BTC/USD" in state.crypto_last_completed_scan
     assert state.last_completed_scan == {}
+
+
+
+def test_cross_sectional_paper_strategy_emits_rankable_cost_candidate():
+    strategy = CryptoCrossSectionalPaperStrategy(
+        fast_window=3,
+        slow_window=8,
+        min_momentum_pct=Decimal("0.0005"),
+        min_vwap_edge_pct=Decimal("0"),
+        stop_pct=Decimal("0.008"),
+        target_pct=Decimal("0.012"),
+        entry_start=datetime.strptime("00:00", "%H:%M").time(),
+        entry_cutoff=datetime.strptime("23:59", "%H:%M").time(),
+        confirmation_symbols=(),
+        min_confirmations=0,
+        regime_window=5,
+        regime_min_confirmations=0,
+        regime_min_return_pct=Decimal("0"),
+        max_vwap_extension_pct=Decimal("0.08"),
+        strategy_version_id="CRYPTO-XSECT-PAPER-TEST",
+    )
+    start = datetime(2026, 10, 6, 0, 0, tzinfo=NY)
+    closes = [
+        str(Decimal("100") + Decimal(index) * Decimal("0.04"))
+        for index in range(70)
+    ]
+    bars = _bars(start, closes)
+
+    signal = strategy.evaluate(
+        bars=bars,
+        confirmation_bars={},
+        symbol="ETH/USD",
+        has_position=False,
+        order_notional=Decimal("5"),
+        now=start + timedelta(minutes=72),
+    )
+
+    assert signal.action == "buy"
+    assert signal.metadata["strategy_family"] == "cross_sectional_intraday_paper"
+    assert Decimal(signal.metadata["expected_gross_move_pct"]) >= Decimal("0.012")
+    assert Decimal(signal.metadata["opportunity_score"]) > 0
