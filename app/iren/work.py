@@ -1978,6 +1978,9 @@ class IrenWorkEngine:
                         evidence["metrics"] = state.get("metrics") or {}
                     elif incident_key.startswith("configuration."):
                         evidence["configuration_baseline"] = state.get("configuration_baseline") or {}
+                        evidence["configuration_current"] = state.get("configuration_current") or {}
+                        evidence["configuration_drift"] = state.get("configuration_drift") or {}
+                        evidence["configuration_review"] = state.get("configuration_review") or {}
                     criteria = {
                         "incident_closed": incident_key if incident_key and not still_open else False,
                     }

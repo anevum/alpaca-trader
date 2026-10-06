@@ -8,6 +8,8 @@ import json
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.protected_configuration import diff_snapshots, legacy_partial_drift
+
 UTC = timezone.utc
 
 
@@ -95,14 +97,45 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
             issue("evidence.loss", "warning", "runtime_event_loss_increasing")
     config = observation.get("configuration", {})
     baseline = previous.get("configuration_baseline")
-    if previous.get("version") != policy["version"]:
-        baseline = None
+    configuration_drift = None
+    configuration_review = previous.get("configuration_review")
     if not config.get("fingerprint"):
         issue("configuration.unavailable", "warning", "protected_configuration_unobserved")
-    elif baseline and baseline["fingerprint"] != config["fingerprint"]:
+    elif baseline and baseline.get("fingerprint") != config["fingerprint"]:
         issue("configuration.drift", "critical", "protected_configuration_changed")
+        if baseline.get("snapshot") and config.get("schema_version") == "rhen_protected_configuration.v2":
+            configuration_drift = diff_snapshots(baseline["snapshot"], config)
+        else:
+            configuration_drift = legacy_partial_drift(baseline, config)
+        configuration_review = {
+            "status": "CONFIGURATION_REVIEW_REQUIRED",
+            "baseline_fingerprint": baseline.get("fingerprint"),
+            "current_fingerprint": config.get("fingerprint"),
+            "comparison_completeness": configuration_drift["comparison_completeness"],
+            "current_snapshot": config if config.get("schema_version") == "rhen_protected_configuration.v2" else None,
+        }
     elif not baseline:
-        baseline = {**config, "observed_at": observation["observed_at"], "basis": "observed_production_baseline"}
+        if config.get("schema_version") == "rhen_protected_configuration.v2":
+            issue(
+                "configuration.review_required",
+                "critical",
+                "protected_configuration_baseline_acceptance_required",
+            )
+            configuration_review = {
+                "status": "CONFIGURATION_REVIEW_REQUIRED",
+                "baseline_fingerprint": None,
+                "current_fingerprint": config.get("fingerprint"),
+                "comparison_completeness": "unavailable",
+                "current_snapshot": config,
+            }
+        else:
+            baseline = {
+                **config,
+                "observed_at": observation["observed_at"],
+                "basis": "observed_production_baseline",
+            }
+    elif baseline.get("fingerprint") == config.get("fingerprint"):
+        configuration_review = None
     scheduler = observation.get("scheduler", {})
     scheduler_enabled = scheduler.get("enabled") is not False
     if scheduler_enabled:
@@ -178,6 +211,9 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
         "version": policy["version"], "observed_at": observation["observed_at"], "state": state,
         "source_commit": observation.get("source_commit"), "incidents": incidents,
         "configuration_baseline": baseline,
+        "configuration_current": config,
+        "configuration_drift": configuration_drift,
+        "configuration_review": configuration_review,
         "services": services,
         "scheduler": scheduler,
         "logical_subsystems": {"NOSTRA": "WAITING_ACTIVATION", "RESEARCH_AGENT": "ON_DEMAND_SLEEP_ALLOWED"},
