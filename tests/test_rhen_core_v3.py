@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 from app.rhen_core.store import RhenCoreStore
-from app.rhen_core.supervisor import PROCESSES, ProcessSpec, _child_env
+from app.rhen_core.supervisor import PROCESSES, ProcessSpec, _child_env, _wait_tcp_ready
 from app.rhen_core.router import enabled_modules
 
 
@@ -643,3 +643,71 @@ def test_retired_asset_research_is_historical_only(tmp_path, monkeypatch):
     )
     pipeline = store.strategy_pipeline_research()
     assert pipeline["candidate"]["problem_id"] == current["problem"]["problem_id"]
+
+
+
+def test_nostra_work_preserves_equity_candidate_lane(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "nostra-equity-cycle",
+                "event_type": "decision_cycle",
+                "occurred_at": now.isoformat(),
+                "run_id": "run-equity",
+                "strategy_version_id": "LIVE-TEST",
+                "source": "test",
+                "payload": {
+                    "cycle_key": "nostra-equity-cycle",
+                    "market_lane": "us_equity",
+                    "candidate_count": 1,
+                    "qualified_count": 1,
+                    "rejected_count": 0,
+                    "candidates": [
+                        {
+                            "candidate_id": "nostra-equity:AAPL",
+                            "symbol": "AAPL",
+                            "observed_at": now.isoformat(),
+                            "qualified": True,
+                            "final_decision": "selected",
+                            "market_lane": "us_equity",
+                            "strategy_version_id": "LIVE-TEST",
+                            "features": {"momentum_pct": 0.001},
+                        }
+                    ],
+                },
+            }
+        ]
+    )
+
+    work = store.nostra_work(now + timedelta(minutes=1))
+
+    assert work["forecast_candidates"][0]["market_lane"] == "us_equity"
+
+
+def test_supervisor_readiness_wait_uses_local_listener(monkeypatch):
+    calls = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def connect(address, timeout):
+        calls.append((address, timeout))
+        return Connection()
+
+    monkeypatch.setattr(
+        "app.rhen_core.supervisor.socket.create_connection",
+        connect,
+    )
+
+    _wait_tcp_ready(
+        ProcessSpec("core-test", "example:app", 8123),
+        timeout_seconds=0.5,
+    )
+
+    assert calls == [(("127.0.0.1", 8123), 0.25)]
