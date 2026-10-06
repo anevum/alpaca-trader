@@ -7,7 +7,7 @@ from .core import fresh
 OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "CRYPTO_EDGE"}
 
 INVENTORY = {
-    "RHEN": ("SERVICE", "alpaca-trader", "Live execution; protected trading runtime"),
+    "RHEN": ("SERVICE", "rhen", "Live execution; protected trading runtime"),
     "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; broker-isolated research"),
     "GRAEN": ("SERVICE", "graen", "Independent mathematical and theoretical research runtime"),
     "GRAEN_EXECUTOR": ("WORKER", "graen-research-executor", "Independent research executor; no broker-order authority"),
