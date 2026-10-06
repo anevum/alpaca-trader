@@ -474,7 +474,7 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
                 content,created_at
             from graen.artifacts
             order by created_at desc
-            limit 100
+            limit 48
             """
         )
         graen_artifacts = [
@@ -518,7 +518,7 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             )
                or strategy_version_id like 'CRYPTO-XSECT-PAPER-%'
             order by occurred_at desc,event_id desc
-            limit 320
+            limit 120
             """
         )
         research_events = [
@@ -995,8 +995,8 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             "schema_version": "research_observability.v1",
             "updated_at": now.isoformat(),
             "poll_seconds": 3,
-            "runs": serialized(runs[:80]),
-            "events": serialized(events[:160]),
+            "runs": serialized(runs[:64]),
+            "events": serialized(events[:120]),
             "authority": {
                 "read_only": True,
                 "research_only": True,
