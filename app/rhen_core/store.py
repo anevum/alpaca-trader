@@ -523,6 +523,117 @@ class RhenCoreStore:
             "created_at": row["created_at"],
         }
 
+    def _graen_recover_orphaned_runs(
+        self, body: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Fail closed on stale research claims no worker heartbeat owns."""
+        active_problem_id = str(body.get("active_problem_id") or "").strip()
+        current_deployment_id = str(body.get("deployment_id") or "").strip()
+        stale_seconds = max(
+            900,
+            min(
+                86400,
+                int(os.getenv("GRAEN_STALE_RUN_SECONDS", "14400")),
+            ),
+        )
+        now_dt = datetime.now(UTC)
+        now = now_dt.isoformat()
+        cutoff = now_dt - timedelta(seconds=stale_seconds)
+        recovered: list[dict[str, Any]] = []
+
+        def started_at(row: sqlite3.Row) -> datetime:
+            try:
+                value = datetime.fromisoformat(
+                    str(row["started_at"] or "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                value = now_dt
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
+
+        with self._lock, self.connect() as conn:
+            rows = conn.execute(
+                """select r.run_id,r.problem_id,r.worker_id,r.deployment_id,
+                          r.started_at,r.result_json,p.metadata_json
+                   from graen_runs r
+                   join graen_problems p on p.problem_id=r.problem_id
+                   where r.status='RUNNING' and p.status='RUNNING'
+                   order by r.started_at asc"""
+            ).fetchall()
+            protected = {
+                str(row["problem_id"])
+                for row in rows
+                if str(row["problem_id"]) == active_problem_id
+                or started_at(row) > cutoff
+            }
+            stale_by_problem: dict[str, list[sqlite3.Row]] = {}
+            for row in rows:
+                problem_id = str(row["problem_id"])
+                if problem_id in protected:
+                    continue
+                stale_by_problem.setdefault(problem_id, []).append(row)
+
+            for problem_id, stale_rows in stale_by_problem.items():
+                run_ids = [str(row["run_id"]) for row in stale_rows]
+                previous_deployments = sorted(
+                    {
+                        str(row["deployment_id"])
+                        for row in stale_rows
+                        if row["deployment_id"]
+                    }
+                )
+                recovery = {
+                    "reason": "stale_executor_run_without_active_heartbeat",
+                    "recovered_at": now,
+                    "run_ids": run_ids,
+                    "previous_deployment_ids": previous_deployments,
+                    "current_deployment_id": current_deployment_id or None,
+                    "stale_after_seconds": stale_seconds,
+                    "execution_authority": False,
+                }
+                for row in stale_rows:
+                    result = _loads(row["result_json"], {})
+                    result.update(
+                        {
+                            "state": "ORPHANED_RUNTIME_RECOVERED",
+                            "recovery": recovery,
+                        }
+                    )
+                    conn.execute(
+                        """update graen_runs
+                           set status='CANCELLED',result_json=?,completed_at=?
+                           where run_id=? and status='RUNNING'""",
+                        (_json(result), now, row["run_id"]),
+                    )
+
+                problem_row = conn.execute(
+                    """select metadata_json from graen_problems
+                       where problem_id=? and status='RUNNING'""",
+                    (problem_id,),
+                ).fetchone()
+                if problem_row is None:
+                    continue
+                metadata = _loads(problem_row["metadata_json"], {})
+                metadata["stale_run_recovery"] = recovery
+                conn.execute(
+                    """update graen_problems
+                       set status='BLOCKED',metadata_json=?,updated_at=?,
+                           completed_at=null
+                       where problem_id=? and status='RUNNING'""",
+                    (_json(metadata), now, problem_id),
+                )
+                recovered.append(
+                    {
+                        "problem_id": problem_id,
+                        "run_ids": run_ids,
+                        "status": "BLOCKED",
+                        "reason": recovery["reason"],
+                    }
+                )
+            conn.commit()
+        return recovered
+
     def graen_action(
         self, action: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -533,6 +644,7 @@ class RhenCoreStore:
                 body, research=action == "claim_research_problem"
             )
         if action in {"heartbeat", "executor_heartbeat"}:
+            recovered = self._graen_recover_orphaned_runs(body)
             runtime = {
                 k: body.get(k)
                 for k in (
@@ -543,7 +655,11 @@ class RhenCoreStore:
             }
             runtime["heartbeat_at"] = _iso()
             self.set_kv("graen", "runtime", runtime)
-            return {"ok": True, "runtime_state": runtime}
+            return {
+                "ok": True,
+                "runtime_state": runtime,
+                "recovered_stale_runs": recovered,
+            }
         if action == "queue_research_stage":
             return self._graen_queue_stage(body)
         if action == "record_artifact":
