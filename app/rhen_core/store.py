@@ -867,6 +867,7 @@ class RhenCoreStore:
             "CRYPTO_COMPILED_DEVELOPMENT",
             "CRYPTO_COMPILED_VALIDATION",
             "CRYPTO_COMPILED_HOLDOUT",
+            "CRYPTO_COMPILED_VELUM",
         }
         with self._lock, self.connect() as conn:
             rows = conn.execute(
@@ -891,29 +892,34 @@ class RhenCoreStore:
 
                 # Confirmatory data is time-sealed. A generated program may be
                 # deployed now, but VALIDATION/HOLDOUT cannot be claimed until
-                # the entire frozen window has elapsed.
-                spec = dict(
-                    promotion.get("prespec")
-                    or metadata.get("research_implementation_spec")
-                    or {}
-                )
-                stage_name = stage.removeprefix(
-                    "CRYPTO_COMPILED_"
-                ).lower()
-                try:
-                    end_raw = spec["corpus"][stage_name][1]
-                    stage_end = datetime.fromisoformat(
-                        str(end_raw).replace("Z", "+00:00")
+                # the entire frozen window has elapsed. VELUM is a post-holdout
+                # independent replay and has no additional maturity window.
+                if stage != "CRYPTO_COMPILED_VELUM":
+                    spec = dict(
+                        promotion.get("prespec")
+                        or metadata.get("research_implementation_spec")
+                        or {}
                     )
-                    if stage_end.tzinfo is None:
-                        stage_end = stage_end.replace(tzinfo=UTC)
-                    stage_end = stage_end.astimezone(UTC)
-                except (KeyError, IndexError, TypeError, ValueError):
-                    continue
-                if datetime.now(UTC) < stage_end:
-                    if waiting_until is None or stage_end.isoformat() < waiting_until:
-                        waiting_until = stage_end.isoformat()
-                    continue
+                    stage_name = stage.removeprefix(
+                        "CRYPTO_COMPILED_"
+                    ).lower()
+                    try:
+                        end_raw = spec["corpus"][stage_name][1]
+                        stage_end = datetime.fromisoformat(
+                            str(end_raw).replace("Z", "+00:00")
+                        )
+                        if stage_end.tzinfo is None:
+                            stage_end = stage_end.replace(tzinfo=UTC)
+                        stage_end = stage_end.astimezone(UTC)
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        continue
+                    if datetime.now(UTC) < stage_end:
+                        if (
+                            waiting_until is None
+                            or stage_end.isoformat() < waiting_until
+                        ):
+                            waiting_until = stage_end.isoformat()
+                        continue
 
                 selected = candidate
                 break
