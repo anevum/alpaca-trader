@@ -485,6 +485,21 @@ class RhenCoreStore:
             )
             deleted["nostra"] = cur.rowcount
             cur = conn.execute(
+                """delete from events
+                where critical=0
+                  and event_type='candidate_forward_outcome'
+                  and payload_json not like '%"status":"complete"%'"""
+            )
+            deleted["incomplete_forward_outcomes"] = cur.rowcount
+            cur = conn.execute(
+                """delete from events
+                where critical=0
+                  and event_type='live_offline_comparison'
+                  and occurred_at < ?""",
+                (cuts["candidates"],),
+            )
+            deleted["live_offline_comparisons"] = cur.rowcount
+            cur = conn.execute(
                 """delete from scheduler_runs
                 where status <> 'RUNNING'
                   and coalesce(completed_at, scheduled_at, updated_at) < ?""",
