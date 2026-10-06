@@ -135,7 +135,10 @@ class ExecutionEngine:
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
                 continue
-            if not str(order.get("client_order_id", "")).startswith(prefix):
+            client_order_id = str(order.get("client_order_id", ""))
+            if not client_order_id.startswith(prefix):
+                continue
+            if "-ext-" in client_order_id:
                 continue
             submitted = order.get("submitted_at")
             if not submitted:
@@ -159,7 +162,10 @@ class ExecutionEngine:
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
                 continue
-            if not str(order.get("client_order_id", "")).startswith(prefix):
+            client_order_id = str(order.get("client_order_id", ""))
+            if not client_order_id.startswith(prefix):
+                continue
+            if "-ext-" in client_order_id:
                 continue
             raw_stamp = order.get("filled_at") or order.get("submitted_at")
             if not raw_stamp:
