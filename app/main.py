@@ -1195,6 +1195,24 @@ def _runtime_configuration_snapshot() -> dict:
         "volatility_stop_enabled": settings.volatility_stop_enabled,
         "profit_protect_enabled": settings.profit_protect_enabled,
         "thesis_exit_enabled": settings.thesis_exit_enabled,
+        "extended_equity_lane_enabled": settings.extended_equity_lane_enabled,
+        "extended_equity_execution_enabled": (
+            settings.extended_equity_execution_enabled
+        ),
+        "extended_equity_execution_authorized": (
+            settings.extended_equity_execution_authorized
+        ),
+        "extended_equity_strategy_version_id": (
+            settings.extended_equity_strategy_version_id
+        ),
+        "extended_equity_poll_seconds": settings.extended_equity_poll_seconds,
+        "extended_equity_universe_size": settings.extended_equity_universe_size,
+        "extended_equity_symbols": list(settings.extended_equity_symbols),
+        "extended_equity_confirmation_symbols": list(
+            settings.extended_equity_confirmation_symbols
+        ),
+        "extended_equity_data_feed": settings.extended_equity_data_feed,
+        "overnight_data_feed": settings.overnight_data_feed,
         "crypto_lane_enabled": settings.crypto_lane_enabled,
         "crypto_execution_enabled": settings.crypto_execution_enabled,
         "crypto_universe_size": settings.crypto_universe_size,
@@ -2093,6 +2111,13 @@ def _command_active_strategies() -> list[dict]:
         and not settings.scan_only
     )
 
+    extended_lane = bool(
+        equity_enabled and settings.extended_equity_lane_enabled
+    )
+    extended_broker_writes = bool(
+        extended_lane and settings.extended_equity_execution_authorized
+    )
+
     crypto_lane = bool(
         settings.crypto_lane_enabled or settings.crypto_execution_enabled
     )
@@ -2170,6 +2195,40 @@ def _command_active_strategies() -> list[dict]:
                 and not runtime_state.paused
             ),
             "manual_approval_required": False,
+        },
+        {
+            "owner": "RHEN",
+            "lane": "extended_equities",
+            "strategy_version_id": (
+                settings.extended_equity_strategy_version_id or None
+            ),
+            "strategy_name": "extended_rolling_momentum",
+            "status": "ACTIVE" if extended_lane else "DISABLED",
+            "trading_mode": settings.trading_mode,
+            "execution_mode": (
+                (extended_equity_engine.last_session or {}).get("session")
+                or "extended_equity_24x5"
+            ),
+            "execution_enabled": bool(
+                settings.extended_equity_execution_enabled
+            ),
+            "signal_authorized": extended_lane,
+            "signals_enabled": bool(
+                extended_lane and not runtime_state.paused
+            ),
+            "execution_authorized": extended_broker_writes,
+            "broker_writes_allowed": extended_broker_writes,
+            "entries_enabled": bool(
+                extended_broker_writes
+                and runtime_state.entries_enabled
+                and not runtime_state.paused
+            ),
+            "manual_approval_required": bool(
+                settings.trading_mode == "live"
+                and extended_lane
+                and settings.extended_equity_execution_enabled
+                and not settings.extended_equity_execution_authorized
+            ),
         },
         {
             "owner": "RHEN",
