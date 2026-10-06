@@ -125,7 +125,7 @@ def test_maintenance_prompt_is_deterministic_read_only_and_grounded_in_iren_stat
     assert "focus on Command telemetry and keep trading behavior unchanged" in prompt
     assert "Keep paid model/API worker spending disabled" in prompt
     assert "No model/API worker was invoked" in prompt
-    assert "do not manufacture churn" in prompt
+    assert "Do not manufacture churn" in prompt
     assert "SYSTEM RESPONSIBILITY MAP" in prompt
     assert "RESEARCH -> STRATEGY CONTROL LOOP" in prompt
     assert "JOB + OBJECTIVE ORCHESTRATION" in prompt
@@ -314,7 +314,7 @@ def test_maintenance_v2_tracks_strategy_activity_without_forcing_live_promotion(
     prompt = result.response["maintenance_prompt"]
     assert "BTC-CANARY-001 | decisions=144 | fills=3 | errors=0 | runs=1" in prompt
     assert "Never overwrite a working strategy in place." in prompt
-    assert "do not silently expand broker-write authority" in prompt
+    assert "Do not silently expand broker-write authority" in prompt
     assert "Paper/forward/canary evidence must remain distinct from live performance." in prompt
 
 
