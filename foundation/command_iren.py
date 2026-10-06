@@ -854,6 +854,93 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
             },
         })
 
+
+    for row in graen_runs:
+        run_id = str(row.get("run_id") or "")
+        summary = dict(row.get("result_summary") or {})
+        problem = problems_by_id.get(str(row.get("problem_id") or ""), {})
+        events.append({
+            "event_id": "graen-run:" + run_id,
+            "at": row.get("completed_at") or row.get("started_at") or row.get("created_at"),
+            "system": "GRAEN",
+            "run_id": run_id,
+            "event_type": "graen_run",
+            "stage": problem.get("research_stage") or summary.get("state") or summary.get("status"),
+            "status": row.get("status"),
+            "progress_pct": next(
+                (
+                    run.get("progress_pct")
+                    for run in runs
+                    if run.get("system") == "GRAEN" and run.get("run_id") == run_id
+                ),
+                None,
+            ),
+            "title": problem.get("title") or summary.get("research_batch_id") or "GRAEN research run",
+            "detail": summary.get("decision") or summary.get("next_action") or summary.get("error"),
+        })
+    for artifact in graen_artifacts:
+        run_id = str(artifact.get("run_id") or "")
+        if not run_id:
+            continue
+        events.append({
+            "event_id": "graen-artifact:" + str(artifact.get("artifact_id") or ""),
+            "at": artifact.get("created_at"),
+            "system": "GRAEN",
+            "run_id": run_id,
+            "event_type": "artifact_persisted",
+            "stage": artifact.get("artifact_type"),
+            "status": "PERSISTED",
+            "title": artifact.get("artifact_type") or "GRAEN artifact",
+            "detail": artifact.get("methodology_version"),
+        })
+    for replay in velum_replays:
+        replay_id = str(replay.get("replay_id") or "")
+        events.append({
+            "event_id": "velum-replay:" + replay_id,
+            "at": replay.get("completed_at") or replay.get("started_at"),
+            "system": "VELUM",
+            "run_id": replay_id,
+            "event_type": "velum_replay",
+            "stage": replay.get("result_type") or "REPLAY",
+            "status": replay.get("status"),
+            "progress_pct": (
+                100
+                if str(replay.get("status") or "").upper()
+                in {"SUCCEEDED", "COMPLETED", "FAILED"}
+                else 55
+            ),
+            "title": str(replay.get("asset_class") or "research").upper() + " replay",
+            "detail": replay.get("strategy_version_id") or replay.get("methodology_version"),
+        })
+    for row in nostra_calibrations:
+        run_id = str(row.get("calibration_id") or "")
+        events.append({
+            "event_id": "nostra-calibration:" + run_id,
+            "at": row.get("created_at"),
+            "system": "NOSTRA",
+            "run_id": run_id,
+            "event_type": "calibration_completed",
+            "stage": "CALIBRATION",
+            "status": "COMPLETED",
+            "progress_pct": 100,
+            "title": row.get("model_version") or "NOSTRA calibration",
+            "detail": "sample_count=" + str(row.get("sample_count") or 0),
+        })
+    for row in nostra_forecasts:
+        run_id = str(row.get("forecast_id") or "")
+        events.append({
+            "event_id": "nostra-forecast:" + run_id,
+            "at": row.get("observed_at") or row.get("issued_at"),
+            "system": "NOSTRA",
+            "run_id": run_id,
+            "event_type": "forecast_scored" if row.get("observed_at") else "forecast_issued",
+            "stage": "OUTCOME_SCORED" if row.get("observed_at") else "FORECAST_OPEN",
+            "status": "SCORED" if row.get("observed_at") else "OPEN",
+            "progress_pct": 100 if row.get("observed_at") else 50,
+            "title": row.get("subject") or row.get("forecast_key") or "NOSTRA forecast",
+            "detail": row.get("model_version"),
+        })
+
     def sort_stamp(run: dict[str, Any]) -> float:
         value = run.get("updated_at") or run.get("started_at")
         if isinstance(value, datetime):
