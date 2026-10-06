@@ -159,9 +159,9 @@ def test_status_message_reports_state_and_next_action():
 
     assert summary["control_state"] == "DEGRADED"
     assert summary["open_incidents"][0]["key"] == "evidence.loss"
-    assert summary["next_action"]["title"] == "Resolve evidence.loss"
+    assert summary["next_action"]["title"] == "Verify evidence.loss"
     assert "IREN is DEGRADED." in summary["message"]
-    assert "Next: Resolve evidence.loss." in summary["message"]
+    assert "Next: Verify evidence.loss." in summary["message"]
 
 
 def test_active_objective_is_actionable_when_no_ready_objective_exists():
@@ -441,7 +441,7 @@ def test_autopilot_skips_already_verified_open_incident_and_advances():
     )
     assert decision["should_create"] is True
     assert decision["action"]["objective_key"] == "CAPS"
-    assert "Resolve workflow.rhen.session_close" in decision["skipped_actions"]
+    assert "Verify workflow.rhen.session_close" in decision["skipped_actions"]
 
 
 def test_autopilot_daily_cap_uses_new_york_business_day():
