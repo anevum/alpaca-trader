@@ -31,7 +31,12 @@ class ResearchGateway:
         return {
             "accept": "application/json",
             "content-type": "application/json",
+            # Native RHEN Core accepts the generic ingest token for evidence
+            # reads but requires the research-gateway header for audit writes.
+            # Send both aliases with the same bounded research token so the
+            # client works across the native and legacy gateway contracts.
             "x-anevum-ingest-token": self.token,
+            "x-rhen-research-gateway-token": self.token,
         }
 
     async def fetch_document(self) -> Mapping[str, Any]:
