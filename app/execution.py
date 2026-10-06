@@ -276,6 +276,16 @@ class ExecutionEngine:
                 item for item in buy_fills.get(symbol, [])
                 if item[0] <= stamp
             ]
+
+            # A RHEN hard-stop fill is loss evidence by construction even when
+            # the compact recent-order fixture/API row does not carry both
+            # entry and exit fill prices. Preserve price-based attribution when
+            # complete fills are available.
+            if "-stop-" in client_order_id and (
+                exit_price <= 0 or not prior_buys
+            ):
+                exits.append((stamp, client_order_id, True))
+                continue
             if exit_price <= 0 or not prior_buys:
                 continue
 
