@@ -538,11 +538,23 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
         return CommandResult(intent, {"message": "Items requiring human authority.", "items": decisions, **summary})
     if intent in {"EXECUTE_NEXT", "FIX"}:
         action = summary.get("next_action") or choose_next_action(snapshot, control_state)
+        execution_mode = codex.mode(action)
+        if execution_mode == "codex/manual software":
+            return CommandResult(intent, {
+                **summary,
+                "message": (
+                    "Software work is manual in the zero-cost control plane. "
+                    "Use 'prepare for Codex' to create a bounded handoff; no paid model job was queued."
+                ),
+                "next_action": action,
+                "execution_mode": execution_mode,
+            })
         job = build_job(action, requested_by, source)
         return CommandResult(intent, {
             **summary,
             "message": f"IREN queued: {action.get('title')}.",
             "next_action": action,
+            "execution_mode": execution_mode,
         }, job)
     return CommandResult(intent, {
         **summary,
