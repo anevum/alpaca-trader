@@ -203,7 +203,7 @@ bounded when its 200-event runtime buffer is saturated.
 
 ## Deployment
 
-The repository includes `Dockerfile` and `railway.toml`. Railway service: `alpaca-trader` (RHEN runtime).
+The repository includes `Dockerfile` and `railway.toml`. Canonical system: RHEN. The current Railway service and GitHub repository still retain the legacy `alpaca-trader` label during the controlled naming cutover; runtime identity is RHEN and repository-dependent IREN controls accept both the legacy name and `anevum/rhen` during migration.
 
 
 ## Durable canonical trading ledger
