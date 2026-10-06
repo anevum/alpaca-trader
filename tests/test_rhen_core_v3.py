@@ -1162,6 +1162,83 @@ def test_command_research_tracking_exposes_canonical_runs_and_queue(
     assert pipeline["research"]["graen_runs"][0]["run_id"] == run_id
 
 
+def test_command_research_tracking_charts_graen_generation_evidence(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Adaptive acceleration research",
+            "domain": "CRYPTO_STRATEGY",
+            "priority": 96,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+
+    run_ids = []
+    for generation, expectancy in ((1, -0.0010), (2, 0.0005)):
+        store.graen_action(
+            "queue_research_stage",
+            {
+                "problem_id": problem_id,
+                "stage": "CRYPTO_COMPILED_DEVELOPMENT",
+                "metadata": {
+                    "candidate_id": f"CRYPTO-ACCEL-ADAPTIVE-{generation:03d}",
+                    "target_lane": "crypto",
+                },
+            },
+        )
+        claimed = store.graen_action(
+            "claim_research_problem",
+            {
+                "worker_id": f"graen-generation-{generation}",
+                "domain": "CRYPTO_STRATEGY",
+                "methodology_version": "graen-crypto-cross-sectional-acceleration-v1",
+            },
+        )
+        run_id = claimed["run"]["run_id"]
+        run_ids.append(run_id)
+        store.graen_action(
+            "complete_research_problem",
+            {
+                "problem_id": problem_id,
+                "run_id": run_id,
+                "status": "WAITING",
+                "result_summary": {
+                    "state": "COMPILED_CANDIDATE_REJECTED",
+                    "decision": "CONTINUE_RESEARCH",
+                    "candidate_id": f"CRYPTO-ACCEL-ADAPTIVE-{generation:03d}",
+                    "scenarios": {
+                        "high": {
+                            "primary": {
+                                "trade_count": 10 + generation,
+                                "trades_per_day": 0.4 + generation * 0.1,
+                                "expectancy_per_trade": expectancy,
+                                "win_rate": 0.4 + generation * 0.05,
+                                "profit_factor": 0.8 + generation * 0.2,
+                                "max_drawdown": -0.02 + generation * 0.005,
+                            }
+                        }
+                    },
+                },
+            },
+        )
+
+    observability = store.command_research_tracking()["observability"]
+    latest = next(
+        row for row in observability["runs"] if row["run_id"] == run_ids[-1]
+    )
+    series = {row["key"]: row for row in latest["series"]}
+
+    assert len(series["graen_expectancy"]["points"]) == 2
+    assert series["graen_expectancy"]["points"][0]["value"] == -0.1
+    assert series["graen_expectancy"]["points"][1]["value"] == 0.05
+    assert len(series["graen_trades"]["points"]) == 2
+    assert latest["detail"]["chart_basis"] == "graen_generation_gate_evidence"
+    assert latest["detail"]["inactive_time_drawn"] is False
+
+
 def test_strategy_pipeline_active_btc_still_owns_primary_projection(
     tmp_path, monkeypatch
 ):
