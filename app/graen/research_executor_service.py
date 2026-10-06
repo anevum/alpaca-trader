@@ -17,6 +17,7 @@ from app.graen.research_director_client import ResearchDirectorClient
 from app.graen.adaptive_hypothesis import (
     MAX_GENERATIONS as ADAPTIVE_MAX_GENERATIONS,
     PROGRAM_ID as ADAPTIVE_PROGRAM_ID,
+    SUPERSEDES_PROGRAM_ID as ADAPTIVE_SUPERSEDES_PROGRAM_ID,
     build_spec as build_adaptive_spec,
     conservative_exposure_ledger,
 )
@@ -206,7 +207,7 @@ from graen.crypto.btc_r2h_breakout_v15 import (
 
 
 UTC = timezone.utc
-RUNTIME_VERSION = "graen-research-executor-v1.31.0"
+RUNTIME_VERSION = "graen-research-executor-v1.32.0"
 PROBLEM_DOMAIN = "CRYPTO_STRATEGY_RESEARCH"
 
 DEVELOPMENT_START = datetime(2025, 5, 1, tzinfo=UTC)
@@ -4734,6 +4735,9 @@ class GraenResearchExecutor:
         if holdout_end.tzinfo is None:
             holdout_end = holdout_end.replace(tzinfo=UTC)
 
+        from graen.engineering import methodology_for_mechanism
+        candidate_methodology = methodology_for_mechanism(spec["mechanism"])
+
         try:
             replay = await self._replay_in_velum(
                 problem_id=problem_id,
@@ -4741,7 +4745,7 @@ class GraenResearchExecutor:
                 campaign_id=ADAPTIVE_PROGRAM_ID,
                 epoch_index=0,
                 generation=generation,
-                candidate_methodology="graen-crypto-flow-pressure-v1",
+                candidate_methodology=candidate_methodology,
                 candidate_spec=spec,
                 replay_start=development_start.astimezone(UTC),
                 replay_end=holdout_end.astimezone(UTC),
@@ -4840,7 +4844,14 @@ class GraenResearchExecutor:
 
     async def _execute_compiled_hypothesis(self, problem, run):
         from importlib import import_module
-        from graen.engineering import IntegrityError, digest, stage_window, validate_spec
+        from graen.engineering import (
+            IntegrityError,
+            digest,
+            evaluator_module_for_mechanism,
+            methodology_for_mechanism,
+            stage_window,
+            validate_spec,
+        )
         metadata = problem.get("metadata") or {}
         promotion = metadata.get("code_promotion") or {}
         spec = promotion.get("prespec") or {}
@@ -4867,11 +4878,14 @@ class GraenResearchExecutor:
                 )
             evaluate_program = implementation.evaluate
         else:
-            from graen.crypto.flow_pressure import evaluate_stage
             from graen.engineering import compile_bundle, verify_bundle
 
             bundle = compile_bundle(spec)
             verify_bundle(spec, bundle)
+            evaluator = import_module(
+                evaluator_module_for_mechanism(spec["mechanism"])
+            )
+            evaluate_stage = evaluator.evaluate_stage
 
             def evaluate_program(
                 bars,
@@ -4909,7 +4923,10 @@ class GraenResearchExecutor:
             start, end = stage_window(spec, stage, predecessor)
             await self.gateway.record_artifact(
                 problem_id=str(problem["problem_id"]), run_id=str(run["run_id"]),
-                artifact_type="COMPILED_STAGE_OPENED", methodology_version="graen-crypto-flow-pressure-v1",
+                artifact_type="COMPILED_STAGE_OPENED",
+                methodology_version=methodology_for_mechanism(
+                    spec["mechanism"]
+                ),
                 content={"spec_hash": spec_hash, "stage": stage, "epoch": spec["epoch"],
                          "fetch_start": start.isoformat(), "fetch_end_exclusive": end.isoformat()},
             )
@@ -4935,7 +4952,10 @@ class GraenResearchExecutor:
             )
             await self.gateway.record_artifact(
                 problem_id=str(problem["problem_id"]), run_id=str(run["run_id"]),
-                artifact_type="COMPILED_STAGE_RESULT", methodology_version="graen-crypto-flow-pressure-v1",
+                artifact_type="COMPILED_STAGE_RESULT",
+                methodology_version=methodology_for_mechanism(
+                    spec["mechanism"]
+                ),
                 content=result,
             )
         # Terminal stages must leave the claimable research stage. Otherwise
@@ -9645,12 +9665,13 @@ class GraenResearchExecutor:
         if problem is None:
             created = await self.gateway.create_problem(
                 {
-                    "title": "GRAEN Adaptive Flow Research",
+                    "title": "GRAEN Adaptive Cross-Sectional Research V2",
                     "statement": (
-                        "Continuously generate bounded research-only crypto "
-                        "programs from the trusted flow-pressure compiler. "
-                        "Development may use inspected history; validation and "
-                        "holdout must remain sealed after hypothesis freeze."
+                        "Generate a finite research-only cross-sectional crypto "
+                        "program after the bounded flow-pressure V1 search was "
+                        "exhausted. Development may use inspected history; "
+                        "validation and holdout remain sealed after hypothesis "
+                        "freeze, and VELUM remains mandatory before review."
                     ),
                     "domain": PROBLEM_DOMAIN,
                     "priority": 96,
@@ -9672,8 +9693,13 @@ class GraenResearchExecutor:
                     },
                     "metadata": {
                         "adaptive_program_id": ADAPTIVE_PROGRAM_ID,
+                        "supersedes_adaptive_program_id": (
+                            ADAPTIVE_SUPERSEDES_PROGRAM_ID
+                        ),
                         "adaptive_generation": 0,
-                        "adaptive_search_history": [],
+                        "adaptive_search_history": [
+                            ADAPTIVE_SUPERSEDES_PROGRAM_ID + ":EXHAUSTED"
+                        ],
                         "research_stage": "RESEARCH_IMPLEMENTATION_REQUIRED",
                     },
                 }
@@ -9740,7 +9766,7 @@ class GraenResearchExecutor:
             problem_id=str(problem["problem_id"]),
             run_id=None,
             artifact_type="RESEARCH_CORPUS_EXPOSURE_LEDGER",
-            methodology_version="graen.adaptive-flow.v1",
+            methodology_version="graen.adaptive-cross-sectional.v2",
             content=ledger_payload,
         )
         artifact = exposure.get("artifact")
@@ -9830,7 +9856,7 @@ class GraenResearchExecutor:
             problem_id=str(problem["problem_id"]),
             run_id=None,
             artifact_type="RESEARCH_RUNTIME_COMPILED_BUNDLE",
-            methodology_version="graen.runtime-compiler.v1",
+            methodology_version="graen.runtime-compiler.v2",
             content={
                 "spec_hash": spec_hash,
                 "bundle_hash": bundle_hash,
@@ -9956,7 +9982,7 @@ class GraenResearchExecutor:
         claimed = await self.gateway.claim_adaptive_research_problem(
             worker_id=self.worker_id + "-adaptive",
             runtime_version=RUNTIME_VERSION,
-            methodology_version="graen.compiled-adaptive.v1",
+            methodology_version="graen.compiled-adaptive.v2",
             domain=PROBLEM_DOMAIN,
         )
         problem = claimed.get("problem")
