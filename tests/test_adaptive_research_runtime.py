@@ -275,3 +275,45 @@ def test_runtime_compiler_persists_exact_bundle_without_repository_write():
     queue_kwargs = gateway.queue_research_stage.await_args.kwargs
     assert queue_kwargs["stage"] == "CRYPTO_COMPILED_DEVELOPMENT"
     assert queue_kwargs["metadata"]["code_promotion"]["phase"] == "RUNTIME_COMPILED"
+
+
+def test_adaptive_velum_stage_claims_after_holdout_gate_without_new_time_window(
+    tmp_path,
+):
+    store = RhenCoreStore(tmp_path / "rhen-core.db")
+    now = datetime.now(UTC)
+    problem_id, spec = _adaptive_problem(store, now)
+    store.graen_action(
+        "queue_research_stage",
+        {
+            "problem_id": problem_id,
+            "stage": "CRYPTO_COMPILED_VELUM",
+            "metadata": {
+                "research_implementation_spec": spec,
+                "compiled_specification_hash": digest(spec),
+                "code_promotion": {
+                    "phase": "RUNTIME_COMPILED",
+                    "spec_hash": digest(spec),
+                    "prespec": spec,
+                    "resume_stage": "CRYPTO_COMPILED_DEVELOPMENT",
+                },
+            },
+        },
+    )
+
+    claimed = store.graen_action(
+        "claim_adaptive_research_problem",
+        {
+            "worker_id": "adaptive",
+            "runtime_version": "test",
+            "methodology_version": "test",
+            "domain": "CRYPTO_STRATEGY_RESEARCH",
+        },
+    )
+
+    assert claimed["problem"]["problem_id"] == problem_id
+    assert (
+        claimed["problem"]["metadata"]["research_stage"]
+        == "CRYPTO_COMPILED_VELUM"
+    )
+    assert claimed["run"]["status"] == "RUNNING"

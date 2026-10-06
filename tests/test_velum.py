@@ -44,6 +44,11 @@ from graen.crypto.btc_4h_consensus_v14_r2h import (
     METHODOLOGY_VERSION as V14_R2H_METHODOLOGY_VERSION,
     candidate_spec as v14_r2h_candidate_spec,
 )
+from app.graen.adaptive_hypothesis import build_spec as build_adaptive_spec
+from graen.crypto.flow_pressure import (
+    METHODOLOGY_VERSION as FLOW_PRESSURE_METHODOLOGY_VERSION,
+)
+from graen.engineering import digest as engineering_digest
 
 
 class HoldStrategy:
@@ -555,3 +560,69 @@ def test_legacy_candidate_fetch_remains_single_request():
         assert len(bars["BTC/USD"]) == 1
 
     asyncio.run(scenario())
+
+
+def test_velum_independently_replays_adaptive_flow_program(monkeypatch):
+    frozen_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    spec = build_adaptive_spec(
+        1,
+        exposure_artifact_id="00000000-0000-0000-0000-000000000001",
+        search_history=["fixture"],
+        now=frozen_at,
+    )
+    seen = []
+
+    def fake_flow_stage(bars, *, spec, stage, predecessor=None):
+        seen.append((stage, predecessor))
+        return {
+            "stage": stage,
+            "passed": True,
+            "reasons": [],
+            "spec_hash": engineering_digest(spec),
+            "epoch": spec["epoch"],
+            "candidate_id": spec["hypothesis_id"],
+            "scenarios": {},
+            "research_only": True,
+            "execution_authority": False,
+        }
+
+    monkeypatch.setattr(
+        velum_graen,
+        "evaluate_flow_pressure_stage",
+        fake_flow_stage,
+    )
+    start = datetime.fromisoformat(spec["corpus"]["development"][0])
+    end = datetime.fromisoformat(spec["corpus"]["holdout"][1])
+
+    result = velum_graen.replay_candidate(
+        {},
+        candidate_spec=spec,
+        candidate_methodology=FLOW_PRESSURE_METHODOLOGY_VERSION,
+        start=start,
+        end=end,
+    )
+
+    assert [row[0] for row in seen] == [
+        "development",
+        "validation",
+        "holdout",
+    ]
+    assert seen[0][1] is None
+    assert seen[1][1]["artifact_id"].startswith("velum:development:")
+    assert result["engineering_gate"] == {"passed": True, "reasons": []}
+    assert result["candidate_id"] == spec["hypothesis_id"]
+    assert result["research_only"] is True
+    assert result["execution_authority"] is False
+    assert result["promotion_authorized"] is False
+
+    symbols, fetch_start, fetch_end, timeframe = (
+        velum_graen.replay_fetch_contract(
+            FLOW_PRESSURE_METHODOLOGY_VERSION,
+            start=start,
+            end=end,
+        )
+    )
+    assert symbols == ("BTC/USD", "ETH/USD", "SOL/USD")
+    assert fetch_start == start - timedelta(days=2)
+    assert fetch_end == end
+    assert timeframe == "5Min"

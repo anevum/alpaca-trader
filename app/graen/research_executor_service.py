@@ -589,6 +589,7 @@ class GraenResearchExecutor:
                     "CRYPTO_COMPILED_DEVELOPMENT",
                     "CRYPTO_COMPILED_VALIDATION",
                     "CRYPTO_COMPILED_HOLDOUT",
+                    "CRYPTO_COMPILED_VELUM",
                 ],
                 "live_promotion_authority": False,
             },
@@ -4683,6 +4684,160 @@ class GraenResearchExecutor:
             return False
 
 
+    async def _execute_compiled_velum(
+        self,
+        problem: Mapping[str, Any],
+        run: Mapping[str, Any],
+        *,
+        spec: Mapping[str, Any],
+        spec_hash: str,
+    ) -> dict[str, Any]:
+        problem_id = str(problem["problem_id"])
+        run_id = str(run["run_id"])
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        generation = int(metadata.get("adaptive_generation") or 1)
+
+        if not self.velum_configured:
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "CANDIDATE_WAITING_FOR_VELUM",
+                    "decision": "CONTINUE_RESEARCH",
+                    "candidate_id": spec["hypothesis_id"],
+                    "spec_hash": spec_hash,
+                    "next_action": "WAIT_FOR_VELUM_CONFIGURATION",
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+                next_stage="CRYPTO_COMPILED_VELUM",
+                next_metadata={
+                    "compiled_specification_hash": spec_hash,
+                    "velum_retry_required": True,
+                },
+            )
+
+        development_start = datetime.fromisoformat(
+            str(spec["corpus"]["development"][0]).replace("Z", "+00:00")
+        )
+        holdout_end = datetime.fromisoformat(
+            str(spec["corpus"]["holdout"][1]).replace("Z", "+00:00")
+        )
+        if development_start.tzinfo is None:
+            development_start = development_start.replace(tzinfo=UTC)
+        if holdout_end.tzinfo is None:
+            holdout_end = holdout_end.replace(tzinfo=UTC)
+
+        try:
+            replay = await self._replay_in_velum(
+                problem_id=problem_id,
+                graen_run_id=run_id,
+                campaign_id=ADAPTIVE_PROGRAM_ID,
+                epoch_index=0,
+                generation=generation,
+                candidate_methodology="graen-crypto-flow-pressure-v1",
+                candidate_spec=spec,
+                replay_start=development_start.astimezone(UTC),
+                replay_end=holdout_end.astimezone(UTC),
+                seed=97000 + generation,
+            )
+        except Exception as exc:
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "CANDIDATE_VELUM_RETRY_REQUIRED",
+                    "decision": "CONTINUE_RESEARCH",
+                    "candidate_id": spec["hypothesis_id"],
+                    "spec_hash": spec_hash,
+                    "velum_error": f"{type(exc).__name__}: {exc}"[:500],
+                    "next_action": "RETRY_VELUM_CANDIDATE_REPLAY",
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+                next_stage="CRYPTO_COMPILED_VELUM",
+                next_metadata={
+                    "compiled_specification_hash": spec_hash,
+                    "velum_retry_required": True,
+                },
+            )
+
+        recorded = await self.gateway.record_artifact(
+            problem_id=problem_id,
+            run_id=run_id,
+            artifact_type="COMPILED_VELUM_REPLAY_RESULT",
+            methodology_version="velum-graen-candidate-replay-v7",
+            content=replay,
+        )
+        artifact = recorded.get("artifact")
+        artifact_id = (
+            str(artifact.get("artifact_id"))
+            if isinstance(artifact, Mapping)
+            and artifact.get("artifact_id")
+            else None
+        )
+        gate = (
+            replay.get("engineering_gate")
+            if isinstance(replay.get("engineering_gate"), Mapping)
+            else {}
+        )
+        if gate.get("passed") is not True:
+            return await self._finalize(
+                problem=problem,
+                run=run,
+                status="WAITING",
+                summary={
+                    "state": "COMPILED_VELUM_REJECTED",
+                    "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                    "candidate_id": spec["hypothesis_id"],
+                    "spec_hash": spec_hash,
+                    "velum_artifact_id": artifact_id,
+                    "velum_reasons": list(gate.get("reasons") or []),
+                    "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+                    "research_only": True,
+                    "execution_authority": False,
+                    "broker_orders_possible": False,
+                },
+                next_stage="RESEARCH_IMPLEMENTATION_REQUIRED",
+                next_metadata={
+                    "compiled_specification_hash": spec_hash,
+                    "last_velum_artifact_id": artifact_id,
+                },
+            )
+
+        return await self._finalize(
+            problem=problem,
+            run=run,
+            status="WAITING",
+            summary={
+                "state": "CANDIDATE_READY_FOR_STRATEGY_REVIEW",
+                "decision": "PROTECTED_PROMOTION_REVIEW_REQUIRED",
+                "candidate_id": spec["hypothesis_id"],
+                "spec_hash": spec_hash,
+                "velum_artifact_id": artifact_id,
+                "next_action": "PROTECTED_STRATEGY_UPDATE_REVIEW",
+                "research_only": True,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+                "live_promotion_authority": False,
+            },
+            next_stage="CANDIDATE_READY_FOR_STRATEGY_REVIEW",
+            next_metadata={
+                "compiled_specification_hash": spec_hash,
+                "velum_artifact_id": artifact_id,
+                "velum_passed": True,
+                "protected_promotion_required": True,
+            },
+        )
+
     async def _execute_compiled_hypothesis(self, problem, run):
         from importlib import import_module
         from graen.engineering import IntegrityError, digest, stage_window, validate_spec
@@ -4730,7 +4885,15 @@ class GraenResearchExecutor:
                     stage=stage,
                     predecessor=predecessor,
                 )
-        stage = str(metadata.get("research_stage", "")).removeprefix("CRYPTO_COMPILED_").lower()
+        raw_stage = str(metadata.get("research_stage", ""))
+        if raw_stage == "CRYPTO_COMPILED_VELUM":
+            return await self._execute_compiled_velum(
+                problem,
+                run,
+                spec=spec,
+                spec_hash=spec_hash,
+            )
+        stage = raw_stage.removeprefix("CRYPTO_COMPILED_").lower()
         if stage not in {"development", "validation", "holdout"}:
             raise IntegrityError("compiled_stage_not_supported")
         prior = await self.gateway._request("POST", {
@@ -4778,7 +4941,8 @@ class GraenResearchExecutor:
         # Terminal stages must leave the claimable research stage. Otherwise
         # WAITING would repeatedly claim the same exhausted candidate.
         next_stage = (
-            "CANDIDATE_READY_FOR_VELUM" if result.get("passed") is True and stage == "holdout"
+            "CRYPTO_COMPILED_VELUM"
+            if result.get("passed") is True and stage == "holdout"
             else "RESEARCH_IMPLEMENTATION_REQUIRED"
         )
         if result.get("passed") is True and stage != "holdout":
