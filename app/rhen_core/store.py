@@ -53,6 +53,11 @@ def _iso(value: Any = None) -> str:
 def _hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
 
+def _retired_research_domain(value: Any) -> bool:
+    normalized = str(value or "").strip().upper()
+    return "CRYPTO" in normalized or "BTC" in normalized
+
+
 
 class RhenCoreStore:
     """Single-writer bounded RHEN Core state store."""
@@ -1285,6 +1290,9 @@ class RhenCoreStore:
     def _graen_create_problem(
         self, body: dict[str, Any]
     ) -> dict[str, Any]:
+        domain = str(body.get("domain") or "GENERAL_RESEARCH")
+        if _retired_research_domain(domain):
+            raise ValueError("retired_asset_class_domain")
         problem_id = str(body.get("problem_id") or uuid4())
         material = {
             k: body.get(k)
@@ -1308,7 +1316,7 @@ class RhenCoreStore:
                 (
                     problem_id, problem_key, "QUEUED",
                     int(body.get("priority") or 50),
-                    str(body.get("domain") or "GENERAL_RESEARCH"),
+                    domain,
                     _json(material), _json(metadata), now, now,
                 ),
             )
@@ -1324,8 +1332,14 @@ class RhenCoreStore:
     ) -> dict[str, Any]:
         domain = str(body.get("domain") or "")
         worker = str(body.get("worker_id") or "graen")
+        if domain and _retired_research_domain(domain):
+            return {"ok": True, "problem": None, "run": None}
         with self._lock, self.connect() as conn:
-            clauses = ["status in ('QUEUED','WAITING')"]
+            clauses = [
+                "status in ('QUEUED','WAITING')",
+                "upper(domain) not like '%CRYPTO%'",
+                "upper(domain) not like '%BTC%'",
+            ]
             args: list[Any] = []
             if research and domain:
                 clauses.append("domain=?")
@@ -2218,6 +2232,8 @@ class RhenCoreStore:
             problem_row = conn.execute(
                 """select status,body_json,metadata_json,updated_at
                 from graen_problems
+                where upper(domain) not like '%CRYPTO%'
+                  and upper(domain) not like '%BTC%'
                 order by
                   case status
                     when 'RUNNING' then 0
@@ -2766,6 +2782,8 @@ class RhenCoreStore:
         with self.connect() as conn:
             problem_rows = conn.execute(
                 """select * from graen_problems
+                where upper(domain) not like '%CRYPTO%'
+                  and upper(domain) not like '%BTC%'
                 order by
                   case status
                     when 'RUNNING' then 0
