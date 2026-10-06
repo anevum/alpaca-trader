@@ -723,38 +723,92 @@ class IrenWorkEngine:
                     result = CommandResult("CODEX_ASSOCIATE", {"message": "PR associated; independent verification is pending."})
                     job_row = associated.get("job")
                 elif result.intent == "CODEX_VERIFY":
-                    await self._reconcile_handoffs(force=True)
-                    result = CommandResult("CODEX_VERIFY", {"message": "Codex verification checked. See the handoff evidence and blockers."})
-                elif result.intent in {"CODEX_HANDOFF", "NEXT", "EXECUTE_NEXT"}:
                     active = codex.active_handoffs(snapshot)
-                    action = (result.response or {}).get("next_action") or {}
-                    if active and result.intent in {"CODEX_HANDOFF", "NEXT"}:
+                    if not active:
+                        result = CommandResult(
+                            "CODEX_VERIFY",
+                            {
+                                **result.response,
+                                "message": "No active Codex handoff to verify.",
+                                "action_taken": False,
+                            },
+                        )
+                    else:
+                        await self._reconcile_handoffs(force=True)
+                        result = CommandResult(
+                            "CODEX_VERIFY",
+                            {
+                                **result.response,
+                                "message": "Handoff verification refreshed from current GitHub evidence.",
+                                "action_taken": True,
+                            },
+                        )
+                elif result.intent == "CODEX_HANDOFF":
+                    active = codex.active_handoffs(snapshot)
+                    action = (result.response or {}).get("next_action")
+                    if active:
                         job_row = active[0]
-                        if result.intent == "CODEX_HANDOFF":
-                            github = await self._github_evidence()
-                            created = await self.gateway("iren_handoff_prepare", objective_key=job_row["objective_key"],
-                                main_sha=github["main_sha"], command_id=str(command_id), requested_by=requested_by)
-                            job_row = created["job"]
-                        result = CommandResult(result.intent, {**result.response, "message": "Continue the prepared Codex handoff. Copy the canonical prompt below.",
-                            "execution_mode": "codex/manual software"})
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "An active Codex handoff already exists.",
+                                "execution_mode": "codex/manual software",
+                                "action_taken": False,
+                            },
+                        )
+                    elif not action:
+                        pass
                     elif codex.mode(action) == "protected/requires Devon":
-                        result = CommandResult(result.intent, {**result.response, "message": "This objective requires Devon. No executable handoff or expanded authority was created.",
-                            "execution_mode": "protected/requires Devon"})
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "This objective requires owner authority. No Codex handoff was created.",
+                                "execution_mode": "protected/requires Devon",
+                                "action_taken": False,
+                            },
+                        )
                     elif codex.mode(action) == "codex/manual software":
                         github = await self._github_evidence()
-                        created = await self.gateway("iren_handoff_prepare", objective_key=action.get("objective_key"),
-                            main_sha=github["main_sha"], command_id=str(command_id), requested_by=requested_by)
+                        created = await self.gateway(
+                            "iren_handoff_prepare",
+                            objective_key=action.get("objective_key"),
+                            main_sha=github["main_sha"],
+                            command_id=str(command_id),
+                            requested_by=requested_by,
+                        )
                         job_row = created["job"]
                         package = (job_row.get("result") or {}).get("package") or {}
-                        _emit_work_event("iren_codex_prepared", handoff_id=job_row.get("job_id"),
-                            objective_key=package.get("objective_key"), base_sha=package.get("base_sha"),
-                            prompt_chars=len(package.get("prompt") or ""), package_digest=package.get("package_digest"),
-                            title=package.get("title"), paid_model_execution=False)
-                        result = CommandResult(result.intent, {**result.response, "message": "Codex handoff prepared. Copy the complete prompt; paid execution remains disabled.",
-                            "execution_mode": "codex/manual software"})
-                    elif result.intent == "CODEX_HANDOFF":
-                        result = CommandResult(result.intent, {**result.response, "message": "The next action is deterministic; no Codex handoff is needed. Use do that.",
-                            "execution_mode": "deterministic"})
+                        _emit_work_event(
+                            "iren_codex_prepared",
+                            handoff_id=job_row.get("job_id"),
+                            objective_key=package.get("objective_key"),
+                            base_sha=package.get("base_sha"),
+                            prompt_chars=len(package.get("prompt") or ""),
+                            package_digest=package.get("package_digest"),
+                            title=package.get("title"),
+                            paid_model_execution=False,
+                        )
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "Codex handoff prepared.",
+                                "execution_mode": "codex/manual software",
+                                "action_taken": True,
+                            },
+                        )
+                    else:
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "The pending action is deterministic; no Codex handoff was created.",
+                                "execution_mode": "deterministic",
+                                "action_taken": False,
+                            },
+                        )
                 if result.job:
                     created = await self.gateway("iren_job_create", job=result.job)
                     job_row = created.get("job")
