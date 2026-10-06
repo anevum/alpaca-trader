@@ -14,13 +14,13 @@ LEGACY_REPOSITORY = "anevum/alpaca-trader"
 RENAMED_REPOSITORY = "anevum/rhen"
 ALLOWED_REPOSITORIES = frozenset({LEGACY_REPOSITORY, RENAMED_REPOSITORY})
 # Backward-compatible default while the GitHub repository still has its legacy name.
-REPOSITORY = LEGACY_REPOSITORY
+REPOSITORY = RENAMED_REPOSITORY
 
 
 def configured_repository(env: Mapping[str, str] | None = None) -> str:
     values = os.environ if env is None else env
-    value = str(values.get("IREN_GITHUB_REPOSITORY") or LEGACY_REPOSITORY).strip()
-    return value or LEGACY_REPOSITORY
+    value = str(values.get("IREN_GITHUB_REPOSITORY") or RENAMED_REPOSITORY).strip()
+    return value or RENAMED_REPOSITORY
 
 
 def repository_allowed(value: Any) -> bool:
@@ -32,10 +32,10 @@ ALLOWED_PREFIXES = ("app/iren/", "foundation/iren_", "tests/test_iren_", "docs/i
 ALLOWED_FILES = {"foundation/command_iren.py"}
 PROTECTED = (
     "RHEN strategy logic, risk controls, stops, targets, position sizing, capital allocation, "
-    "broker behavior, live execution permissions, crypto execution, credentials, API spending "
+    "broker behavior, live execution permissions, asset-class authority, credentials, API spending "
     "limits, destructive infrastructure actions, legal/publication actions and external capital behavior"
 )
-REQUIRED_CHECKS = {"test", "velum-graen", "graen-forward-shadow", "inventory", "codex-postgres"}
+REQUIRED_CHECKS = {"test", "codex-postgres"}
 
 
 def digest(value: Any) -> str:

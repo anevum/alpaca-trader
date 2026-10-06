@@ -88,7 +88,7 @@ class IrenController:
                     "error_type": type(last_error).__name__ if last_error else "UnknownError",
                 }
             await asyncio.gather(*(probe(item) for item in POLICY["services"]))
-            fallback_targets = ("VELUM", "CRYPTO_EDGE")
+            fallback_targets = ("VELUM",)
             fallback_required = [
                 name
                 for name in fallback_targets

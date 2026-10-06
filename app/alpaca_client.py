@@ -16,31 +16,6 @@ from .cash_flow import (
 )
 
 
-def _canonical_crypto_symbols(payload: Any) -> Any:
-    """Adapt Alpaca's compact USD crypto positions to our pair identity.
-
-    Only broker-classified crypto assets are converted. An equity ticker ending
-    in USD is never inferred to be crypto. Keep the exact provider symbol for
-    execution evidence and preserve all other broker fields.
-    """
-    if isinstance(payload, list):
-        return [_canonical_crypto_symbols(item) for item in payload]
-    if not isinstance(payload, dict):
-        return payload
-    asset_class = str(payload.get("asset_class") or payload.get("class") or "").lower()
-    symbol = str(payload.get("symbol") or "")
-    if asset_class != "crypto" or "/" in symbol:
-        return payload
-    upper = symbol.upper()
-    if not upper.endswith("USD") or len(upper) <= 3:
-        return payload
-    return {
-        **payload,
-        "symbol": upper[:-3] + "/USD",
-        "broker_symbol": symbol,
-    }
-
-
 class AlpacaClient:
     """Thin Alpaca Trading API client.
 
@@ -107,7 +82,7 @@ class AlpacaClient:
                 ) from exc
             if response.status_code == 204:
                 return None
-            return _canonical_crypto_symbols(response.json())
+            return response.json()
 
         raise RuntimeError("unreachable broker request retry state")
 
@@ -322,67 +297,6 @@ class AlpacaClient:
             "/v2/orders:by_client_order_id",
             allow_404=True,
             params={"client_order_id": client_order_id},
-        )
-
-    async def submit_crypto_market_buy(
-        self,
-        symbol: str,
-        qty: str,
-        client_order_id: str,
-    ) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            "/v2/orders",
-            json={
-                "symbol": symbol.upper(),
-                "qty": qty,
-                "side": "buy",
-                "type": "market",
-                "time_in_force": "gtc",
-                "client_order_id": client_order_id,
-            },
-        )
-
-    async def submit_crypto_market_sell(
-        self,
-        symbol: str,
-        qty: str,
-        client_order_id: str,
-    ) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            "/v2/orders",
-            json={
-                "symbol": symbol.upper(),
-                "qty": qty,
-                "side": "sell",
-                "type": "market",
-                "time_in_force": "gtc",
-                "client_order_id": client_order_id,
-            },
-        )
-
-    async def submit_crypto_stop_limit_sell(
-        self,
-        symbol: str,
-        qty: str,
-        stop_price: str,
-        limit_price: str,
-        client_order_id: str,
-    ) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            "/v2/orders",
-            json={
-                "symbol": symbol.upper(),
-                "qty": qty,
-                "side": "sell",
-                "type": "stop_limit",
-                "time_in_force": "gtc",
-                "stop_price": stop_price,
-                "limit_price": limit_price,
-                "client_order_id": client_order_id,
-            },
         )
 
     async def submit_market_buy(

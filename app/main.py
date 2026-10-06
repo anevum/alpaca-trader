@@ -20,19 +20,6 @@ from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .extended_equity import ExtendedEquityEngine
-from .crypto_execution import CryptoExecutionEngine
-from .crypto_stats import crypto_trade_stats
-from .crypto_promotion import fetch_crypto_promotion_status
-from .crypto_layer import (
-    CryptoCrossSectionalPaperStrategy,
-    CryptoMarketDataClient,
-    CryptoRollingMomentumStrategy,
-    CryptoScanner,
-    CryptoUniverse,
-)
-from .btc_direct_strategy import BtcDirectSwingStrategy
-from .btc_day_preview import BtcDayPreview
-from .crypto_symbols import is_crypto_row, normalized_crypto_row
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .protected_configuration import build_protected_configuration
@@ -104,65 +91,6 @@ extended_equity_engine = ExtendedEquityEngine(
     client,
     market_data,
     runtime_state,
-    ledger=event_sink,
-)
-crypto_market_data = CryptoMarketDataClient(settings)
-btc_day_preview = BtcDayPreview(crypto_market_data, settings)
-if settings.crypto_execution_mode in {
-    "btc_direct_paper",
-    "btc_direct_live_signal",
-}:
-    crypto_strategy = BtcDirectSwingStrategy()
-else:
-    crypto_strategy_class = (
-        CryptoCrossSectionalPaperStrategy
-        if settings.crypto_execution_mode == "multi_asset_paper"
-        else CryptoRollingMomentumStrategy
-    )
-    crypto_strategy = crypto_strategy_class(
-        fast_window=settings.crypto_fast_window,
-        slow_window=settings.crypto_slow_window,
-        min_momentum_pct=settings.crypto_min_momentum_pct,
-        min_vwap_edge_pct=settings.crypto_min_vwap_edge_pct,
-        stop_pct=settings.crypto_stop_pct,
-        target_pct=settings.crypto_target_pct,
-        entry_start=settings.entry_start,
-        entry_cutoff=settings.entry_cutoff,
-        confirmation_symbols=settings.crypto_confirmation_symbols,
-        min_confirmations=settings.crypto_min_confirmations,
-        regime_window=settings.crypto_regime_window,
-        regime_min_confirmations=settings.crypto_regime_min_confirmations,
-        regime_min_return_pct=settings.crypto_regime_min_return_pct,
-        max_vwap_extension_pct=settings.crypto_max_vwap_extension_pct,
-        volatility_stop_enabled=settings.crypto_volatility_stop_enabled,
-        volatility_stop_multiplier=settings.crypto_volatility_stop_multiplier,
-        volatility_stop_lookback_bars=settings.crypto_volatility_lookback_bars,
-        max_dynamic_stop_pct=settings.crypto_max_dynamic_stop_pct,
-        strategy_version_id=settings.crypto_strategy_version_id,
-        model_version=settings.crypto_model_version,
-        calibration_version=settings.crypto_calibration_version,
-        calibration_promoted=settings.crypto_calibration_promoted,
-        regime_version=settings.crypto_regime_version,
-        execution_adapter_version=settings.crypto_execution_adapter_version,
-        feature_volatility_lookback=settings.crypto_volatility_lookback_bars,
-    )
-crypto_universe = CryptoUniverse(
-    settings, client, crypto_market_data, runtime_state
-)
-crypto_scanner = CryptoScanner(
-    settings,
-    crypto_market_data,
-    crypto_strategy,
-    runtime_state,
-    crypto_universe,
-)
-crypto_engine = CryptoExecutionEngine(
-    settings,
-    client,
-    crypto_market_data,
-    crypto_strategy,
-    runtime_state,
-    crypto_universe,
     ledger=event_sink,
 )
 research_reports = ResearchReportScheduler(
@@ -251,9 +179,8 @@ def scheduler_configuration_snapshot() -> dict:
             "max_portfolio_stop_risk_pct": settings.max_portfolio_stop_risk_pct,
         },
         "asset_authority": {
-            "long_us_equities_etfs": True,
-            "crypto": False,
-            "options": False,
+            "live_asset_scope": "long_us_equities_etfs_only",
+            "options_research_only": True,
             "short_equities": False,
             "leverage_expansion": False,
         },
@@ -353,145 +280,13 @@ def command_account_history_payload(history: dict) -> dict:
     }
 
 
-async def crypto_command_lane_snapshot() -> dict:
-    account, positions, open_orders, recent_orders = await asyncio.gather(
-        client.account(),
-        client.positions(),
-        client.open_orders(),
-        client.recent_orders(limit=100),
-    )
-    positions = [normalized_crypto_row(row) for row in positions]
-    open_orders = [normalized_crypto_row(row) for row in open_orders]
-    recent_orders = [normalized_crypto_row(row) for row in recent_orders]
-    crypto_positions = [
-        public_position(position)
-        for position in positions
-        if is_crypto_row(position)
-    ]
-    crypto_orders = [
-        public_order(order)
-        for order in recent_orders
-        if is_crypto_row(order)
-    ]
-    crypto_open_orders = [
-        public_order(order)
-        for order in open_orders
-        if is_crypto_row(order)
-    ]
-    stats = crypto_trade_stats(
-        recent_orders,
-        positions,
-        strategy_version_id=settings.crypto_strategy_version_id,
-        strategy_family=settings.crypto_strategy_family,
-        start_at=settings.crypto_stats_start_at,
-        include_manual_btc=(
-            settings.crypto_execution_mode == "btc_direct_live_signal"
-        ),
-    )
-    history = [
-        event
-        for event in runtime_state.decision_history
-        if str(event.get("kind") or "").startswith("crypto")
-        or "/" in str(event.get("symbol") or "")
-    ][:100]
-    return {
-        "lane": "crypto",
-        "observed_at": (
-            runtime_state.crypto_last_execution_at
-            or runtime_state.crypto_last_scan_at
-            or runtime_state.crypto_last_market_data_at
-            or runtime_state.last_poll_at
-        ),
-        "trading_mode": settings.trading_mode,
-        "execution_mode": settings.crypto_execution_mode,
-        "execution_enabled": settings.crypto_execution_enabled,
-        "execution_authorized": (
-            settings.btc_direct_paper_authorized
-            if settings.crypto_execution_mode == "btc_direct_paper"
-            else settings.btc_direct_live_signal_authorized
-            if settings.crypto_execution_mode == "btc_direct_live_signal"
-            else settings.crypto_multi_asset_paper_authorized
-            if settings.crypto_execution_mode == "multi_asset_paper"
-            else settings.execution_authorized
-        ),
-        "broker_writes_allowed": (
-            False
-            if settings.crypto_execution_mode == "btc_direct_live_signal"
-            else settings.crypto_multi_asset_paper_authorized
-            if settings.crypto_execution_mode == "multi_asset_paper"
-            else (
-                settings.crypto_execution_enabled
-                and settings.execution_authorized
-            )
-        ),
-        "strategy_version_id": settings.crypto_strategy_version_id,
-        "strategy_family": settings.crypto_strategy_family,
-        "paper_selection": crypto_engine.paper_selection.snapshot(),
-        "intraday_preview": btc_day_preview.snapshot,
-        "stats": stats,
-        "last_decision": runtime_state.crypto_last_decision,
-        "last_signal": runtime_state.crypto_last_signal,
-        "last_scan": runtime_state.crypto_last_completed_scan,
-        "last_order": runtime_state.crypto_last_order,
-        "last_error": runtime_state.crypto_last_error,
-        "last_execution_at": runtime_state.crypto_last_execution_at,
-        "last_scan_at": runtime_state.crypto_last_scan_at,
-        "last_market_data_at": runtime_state.crypto_last_market_data_at,
-        "scanner_healthy": runtime_state.crypto_scanner_healthy,
-        "execution_healthy": runtime_state.crypto_execution_healthy,
-        "active_positions": runtime_state.crypto_active_positions,
-        "aggregate_exposure": runtime_state.crypto_aggregate_exposure,
-        "pending_approval": runtime_state.crypto_pending_approval,
-        "positions": crypto_positions,
-        "open_orders": crypto_open_orders,
-        "recent_orders": crypto_orders[:30],
-        "history": history,
-        "account": {
-            "equity": str(account.get("equity", "0")),
-            "cash": str(account.get("cash", "0")),
-            "buying_power": str(account.get("buying_power", "0")),
-        },
-        "runtime": (
-            runtime_provenance.as_dict()
-            if runtime_provenance is not None
-            else None
-        ),
-    }
-
-
-async def fetch_crypto_paper_canary_snapshot() -> dict | None:
-    base = str(settings.crypto_paper_canary_url or "").strip().rstrip("/")
-    token = str(settings.trading_ingest_token or "").strip()
-    if not base or not token or settings.crypto_only_runtime:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=4.0) as http:
-            response = await http.get(
-                base + "/v1/internal/crypto-command",
-                headers={"x-anevum-scheduler-token": token},
-            )
-        payload = response.json() if response.content else {}
-        if response.status_code >= 400 or not isinstance(payload, dict):
-            raise RuntimeError("paper canary returned invalid response")
-        return {"available": True, **payload}
-    except Exception as exc:
-        return {
-            "available": False,
-            "lane": "crypto",
-            "trading_mode": "paper",
-            "execution_mode": "btc_direct_paper",
-            "last_error": f"{type(exc).__name__}: paper canary unavailable",
-        }
-
-
 async def command_snapshot() -> dict:
-    account, clock, positions, open_orders, recent_orders, crypto_paper = await asyncio.gather(
+    account, clock, positions, open_orders, recent_orders = await asyncio.gather(
         client.account(),
         client.clock(),
         client.positions(),
         client.open_orders(),
         client.recent_orders(limit=100),
-        fetch_crypto_paper_canary_snapshot(),
     )
     try:
         account_history = command_account_history_payload(
@@ -516,16 +311,6 @@ async def command_snapshot() -> dict:
         for order in recent_orders
         if str(order.get("client_order_id", "")).startswith("anevum-")
     ]
-    crypto_stats = crypto_trade_stats(
-        recent_orders,
-        positions,
-        strategy_version_id=settings.crypto_strategy_version_id,
-        strategy_family=settings.crypto_strategy_family,
-        start_at=settings.crypto_stats_start_at,
-        include_manual_btc=(
-            settings.crypto_execution_mode == "btc_direct_live_signal"
-        ),
-    )
     entry_count = engine._entry_orders_today(recent_orders)
     equity = Decimal(str(account.get("equity", "0")))
     last_equity = Decimal(str(account.get("last_equity", "0")))
@@ -628,11 +413,6 @@ async def command_snapshot() -> dict:
             "extended_equity_execution_authorized": (
                 settings.extended_equity_execution_authorized
             ),
-            "crypto_lane_enabled": settings.crypto_lane_enabled,
-            "crypto_execution_enabled": settings.crypto_execution_enabled,
-            "crypto_universe_size": settings.crypto_universe_size,
-            "crypto_poll_seconds": settings.crypto_poll_seconds,
-            "crypto_confirmation_symbols": list(settings.crypto_confirmation_symbols),
         },
         "account": {
             "equity": str(account.get("equity", "0")),
@@ -648,11 +428,7 @@ async def command_snapshot() -> dict:
             "account_blocked": bool(account.get("account_blocked")),
         },
         "account_history": account_history,
-        "crypto_stats": crypto_stats,
-        "crypto_approval": runtime_state.crypto_pending_approval,
         "extended_equity": extended_equity_engine.snapshot(),
-        "crypto_live": await crypto_command_lane_snapshot(),
-        "crypto_paper": crypto_paper,
         "strategy": {
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
@@ -1011,7 +787,6 @@ async def extended_equity_monitor_loop():
         if (
             settings.extended_equity_lane_enabled
             and settings.credentials_configured
-            and not settings.crypto_only_runtime
         ):
             try:
                 result = await extended_equity_engine.run_once()
@@ -1057,102 +832,6 @@ async def extended_equity_monitor_loop():
             await asyncio.wait_for(
                 _stop.wait(),
                 timeout=settings.extended_equity_poll_seconds,
-            )
-        except asyncio.TimeoutError:
-            pass
-
-
-async def crypto_monitor_loop():
-    """Independent 24/7 crypto market lane; shadow execution until validated."""
-    while not _stop.is_set():
-        if settings.crypto_lane_enabled and settings.credentials_configured:
-            try:
-                runtime_state.begin_crypto_cycle(uuid4().hex)
-                if settings.crypto_execution_mode in {
-                    "btc_direct_paper",
-                    "btc_direct_live_signal",
-                    "multi_asset_paper",
-                }:
-                    live_signal = (
-                        settings.crypto_execution_mode == "btc_direct_live_signal"
-                    )
-                    multi_asset_paper = (
-                        settings.crypto_execution_mode == "multi_asset_paper"
-                    )
-                    runtime_state.crypto_graen_promotion = {
-                        "status": (
-                            "LIVE_SIGNAL"
-                            if live_signal
-                            else "PAPER_DISCOVERY"
-                            if multi_asset_paper
-                            else "DIRECT_EXECUTION"
-                        ),
-                        "promotion_ready": False,
-                        "reason": (
-                            "multi-asset paper discovery collects evidence "
-                            "without requiring promoted GRAEN/ADS state"
-                            if multi_asset_paper
-                            else (
-                                "RHEN BTC direct runtime does not depend on "
-                                "GRAEN/NOSTRA/ADS promotion"
-                            )
-                        ),
-                        "execution_class": (
-                            "BTC_DIRECT_LIVE_SIGNAL"
-                            if live_signal
-                            else "MULTI_ASSET_PAPER_DISCOVERY"
-                            if multi_asset_paper
-                            else "BTC_DIRECT_PAPER"
-                        ),
-                        "strategy_version_id": settings.crypto_strategy_version_id,
-                        "live_execution_authorized": False,
-                        "broker_writes_allowed": (
-                            settings.crypto_multi_asset_paper_authorized
-                            if multi_asset_paper
-                            else not live_signal
-                        ),
-                    }
-                else:
-                    runtime_state.crypto_graen_promotion = (
-                        await fetch_crypto_promotion_status(settings)
-                    )
-                result = await crypto_engine.run_once()
-                # Read-only hypothesis observation; cannot affect execution decisions.
-                await btc_day_preview.observe()
-                print(
-                    "CRYPTO_EXECUTION_CYCLE",
-                    {
-                        "execution_enabled": settings.crypto_execution_enabled,
-                        "execution_mode": settings.crypto_execution_mode,
-                        "action": result.get("action"),
-                        "symbol": result.get("symbol"),
-                        "reason": result.get("reason"),
-                    },
-                    flush=True,
-                )
-            except Exception as exc:
-                runtime_state.crypto_scanner_healthy = False
-                runtime_state.crypto_execution_healthy = False
-                runtime_state.crypto_last_error = f"{type(exc).__name__}: {exc}"
-                runtime_state.crypto_last_decision = (
-                    f"crypto lane error: {type(exc).__name__}: {exc}"
-                )
-                runtime_state.record_event(
-                    kind="crypto_runtime_error",
-                    action="error",
-                    message=runtime_state.crypto_last_decision,
-                    payload={"market": "crypto"},
-                    correlation_id=runtime_state.crypto_current_correlation_id,
-                )
-                print(
-                    "CRYPTO_LOOP_ERROR",
-                    {"error": runtime_state.crypto_last_decision},
-                    flush=True,
-                )
-        try:
-            await asyncio.wait_for(
-                _stop.wait(),
-                timeout=settings.crypto_poll_seconds,
             )
         except asyncio.TimeoutError:
             pass
@@ -1233,18 +912,6 @@ def _runtime_configuration_snapshot() -> dict:
         ),
         "extended_equity_data_feed": settings.extended_equity_data_feed,
         "overnight_data_feed": settings.overnight_data_feed,
-        "crypto_lane_enabled": settings.crypto_lane_enabled,
-        "crypto_execution_enabled": settings.crypto_execution_enabled,
-        "crypto_universe_size": settings.crypto_universe_size,
-        "crypto_poll_seconds": settings.crypto_poll_seconds,
-        "crypto_quote_currencies": sorted(settings.crypto_quote_currencies),
-        "crypto_confirmation_symbols": list(settings.crypto_confirmation_symbols),
-        "crypto_strategy_version_id": settings.crypto_strategy_version_id,
-        "crypto_strategy_family": settings.crypto_strategy_family,
-        "crypto_stats_start_at": (
-            settings.crypto_stats_start_at.isoformat()
-            if settings.crypto_stats_start_at else None
-        ),
     }
 
 
@@ -1258,9 +925,6 @@ async def lifespan(app: FastAPI):
             "execution_enabled": settings.execution_enabled,
             "bot_armed": settings.bot_armed,
             "live_trading": settings.live_trading,
-            "crypto_only_runtime": settings.crypto_only_runtime,
-            "crypto_execution_mode": settings.crypto_execution_mode,
-            "crypto_research_enabled": settings.crypto_research_enabled,
             "extended_equity_lane_enabled": settings.extended_equity_lane_enabled,
             "extended_equity_execution_enabled": (
                 settings.extended_equity_execution_enabled
@@ -1403,33 +1067,6 @@ async def lifespan(app: FastAPI):
                 ),
             },
         )
-    if settings.crypto_lane_enabled:
-        runtime_state.record_event(
-            kind="crypto_runtime",
-            action="startup",
-            message=(
-                "24/7 crypto lane online; "
-                + ("live entry flag enabled" if settings.crypto_execution_enabled else "live entries gated")
-            ),
-            reason=(
-                f"strategy={settings.crypto_strategy_version_id}; "
-                f"model={settings.crypto_model_version}; "
-                f"calibration={settings.crypto_calibration_version}; "
-                f"regime={settings.crypto_regime_version}"
-            ),
-            payload={
-                "market_lane": "crypto",
-                "strategy_family": settings.crypto_strategy_family,
-                "strategy_version_id": settings.crypto_strategy_version_id,
-                "model_version": settings.crypto_model_version,
-                "calibration_version": settings.crypto_calibration_version,
-                "regime_version": settings.crypto_regime_version,
-                "execution_adapter_version": settings.crypto_execution_adapter_version,
-                "execution_enabled": settings.crypto_execution_enabled,
-                "calibration_promoted": settings.crypto_calibration_promoted,
-            },
-        )
-
     equity_task: asyncio.Task | None = None
     extended_equity_task: asyncio.Task | None = None
     slack_market_task: asyncio.Task | None = None
@@ -1456,9 +1093,6 @@ async def lifespan(app: FastAPI):
         )
     slack_market_task = asyncio.create_task(slack_market_observer_loop())
 
-    # V4.3 retires crypto/BTC execution authority. The legacy crypto engine may
-    # remain importable during decommission, but no runtime task is started and
-    # therefore no autonomous crypto broker-write path is reachable.
     yield
     _stop.set()
     if equity_task is not None:
@@ -1524,74 +1158,7 @@ async def health():
         "research_reporting": research_reports.status(),
         "slack_notifications": slack_notifier.status(),
         "runtime_provenance": runtime_provenance.as_dict() if runtime_provenance else None,
-        "crypto": {
-            "enabled": settings.crypto_lane_enabled,
-            "execution_enabled": settings.crypto_execution_enabled,
-            "session_model": "24x7",
-            "market_lane": "crypto",
-            "strategy_family": settings.crypto_strategy_family,
-            "strategy_version_id": settings.crypto_strategy_version_id,
-            "model_version": settings.crypto_model_version,
-            "intraday_preview": btc_day_preview.snapshot,
-            "calibration_version": settings.crypto_calibration_version,
-            "regime_version": settings.crypto_regime_version,
-            "execution_adapter_version": settings.crypto_execution_adapter_version,
-            "calibration_promoted": settings.crypto_calibration_promoted,
-            "graen_promotion": runtime_state.crypto_graen_promotion,
-            "scanner_healthy": runtime_state.crypto_scanner_healthy,
-            "execution_healthy": runtime_state.crypto_execution_healthy,
-            "execution_mode": settings.crypto_execution_mode,
-            "broker_writes_allowed": (
-                settings.crypto_execution_mode != "btc_direct_live_signal"
-            ),
-            "last_market_data_at": runtime_state.crypto_last_market_data_at,
-            "last_scan_at": runtime_state.crypto_last_scan_at,
-            "symbols_scanned": runtime_state.crypto_candidates_generated,
-            "candidates_generated": runtime_state.crypto_candidates_generated,
-            "qualified_candidates": runtime_state.crypto_qualified_candidates,
-            "rejection_counts": runtime_state.crypto_rejection_counts,
-            "active_positions": runtime_state.crypto_active_positions,
-            "aggregate_exposure_utilization_pct": (
-                round(
-                    float(Decimal(runtime_state.crypto_aggregate_exposure)
-                          / settings.crypto_max_total_position_notional) * 100.0,
-                    3,
-                )
-                if settings.crypto_max_total_position_notional > 0 else None
-            ),
-            "forward_evidence": runtime_state.crypto_forward_evidence_state,
-            "latest_replay": runtime_state.crypto_replay_state,
-            "breaker_state": runtime_state.crypto_breaker_state,
-            "protective_order_status": runtime_state.crypto_protective_status,
-            "universe_source": runtime_state.crypto_universe_source,
-            "active_count": len(runtime_state.crypto_universe_active_symbols),
-            "candidate_count": runtime_state.crypto_universe_candidate_count,
-            "eligible_count": runtime_state.crypto_universe_eligible_count,
-            "active_symbols": runtime_state.crypto_universe_active_symbols,
-            "updated_at": runtime_state.crypto_universe_updated_at,
-            "error": runtime_state.crypto_universe_error,
-            "last_decision": runtime_state.crypto_last_decision,
-            "last_signal": runtime_state.crypto_last_signal,
-            "last_scan": runtime_state.crypto_last_completed_scan,
-            "last_order": runtime_state.crypto_last_order,
-            "last_error": runtime_state.crypto_last_error,
-            "last_execution_at": runtime_state.crypto_last_execution_at,
-            "execution_context": runtime_state.crypto_last_execution_context,
-            "pending_approval": runtime_state.crypto_pending_approval,
-            "risk": {
-                "order_notional": str(settings.crypto_order_notional),
-                "max_order_notional": str(settings.crypto_max_order_notional),
-                "max_total_position_notional": str(
-                    settings.crypto_max_total_position_notional
-                ),
-                "max_concurrent_positions": settings.crypto_max_concurrent_positions,
-                "max_entries_24h": settings.crypto_max_entries_24h,
-                "max_spread_pct": str(settings.crypto_max_spread_pct),
-                "stop_pct": str(settings.crypto_stop_pct),
-                "target_pct": str(settings.crypto_target_pct),
-                "max_hold_minutes": settings.crypto_max_hold_minutes,
-            },
-        },
+
     }
 
 
@@ -1625,21 +1192,6 @@ async def scheduler_calendar(
     }
 
 
-def crypto_preflight_policy_valid() -> bool:
-    if not settings.crypto_execution_enabled:
-        return True
-    mode = str(settings.crypto_execution_mode or "")
-    if mode == "btc_direct_live_signal":
-        return bool(settings.btc_direct_live_signal_authorized)
-    if mode == "btc_direct_paper":
-        return bool(settings.btc_direct_paper_authorized)
-    if mode == "multi_asset_paper":
-        return bool(settings.crypto_multi_asset_paper_authorized)
-    if mode == "validated":
-        return bool(settings.crypto_lane_enabled and settings.execution_authorized)
-    return False
-
-
 @app.post("/v1/scheduler/preflight")
 async def scheduler_preflight(
     request: SchedulerSessionRequest,
@@ -1665,7 +1217,6 @@ async def scheduler_preflight(
         "startup_reconciled": bool(runtime_state.startup_reconciled),
         "reconciliation_safe": bool(runtime_state.reconciliation_safe),
         "market_session_valid": True,
-        "crypto_execution_policy_valid": crypto_preflight_policy_valid(),
     }
     payload = {
         "ok": all(checks.values()),
@@ -1861,50 +1412,6 @@ async def status(authorization: str | None = Header(default=None)):
         },
         "persistence": event_sink.status(),
         "research_reporting": research_reports.status(),
-        "crypto": {
-            "enabled": settings.crypto_lane_enabled,
-            "execution_enabled": settings.crypto_execution_enabled,
-            "session_model": "24x7",
-            "market_lane": "crypto",
-            "strategy_family": settings.crypto_strategy_family,
-            "strategy_version_id": settings.crypto_strategy_version_id,
-            "model_version": settings.crypto_model_version,
-            "calibration_version": settings.crypto_calibration_version,
-            "regime_version": settings.crypto_regime_version,
-            "execution_adapter_version": settings.crypto_execution_adapter_version,
-            "calibration_promoted": settings.crypto_calibration_promoted,
-            "graen_promotion": runtime_state.crypto_graen_promotion,
-            "scanner_healthy": runtime_state.crypto_scanner_healthy,
-            "execution_healthy": runtime_state.crypto_execution_healthy,
-            "universe": {
-                "source": runtime_state.crypto_universe_source,
-                "active_symbols": runtime_state.crypto_universe_active_symbols,
-                "candidate_count": runtime_state.crypto_universe_candidate_count,
-                "eligible_count": runtime_state.crypto_universe_eligible_count,
-                "updated_at": runtime_state.crypto_universe_updated_at,
-                "error": runtime_state.crypto_universe_error,
-            },
-            "scan": {
-                "last_scan_at": runtime_state.crypto_last_scan_at,
-                "last_market_data_at": runtime_state.crypto_last_market_data_at,
-                "symbols_scanned": runtime_state.crypto_candidates_generated,
-                "candidates_generated": runtime_state.crypto_candidates_generated,
-                "qualified_candidates": runtime_state.crypto_qualified_candidates,
-                "rejection_counts": runtime_state.crypto_rejection_counts,
-            },
-            "positions": {
-                "active_count": runtime_state.crypto_active_positions,
-                "aggregate_exposure": runtime_state.crypto_aggregate_exposure,
-                "max_aggregate_exposure": str(settings.crypto_max_total_position_notional),
-            },
-            "recent_orders": runtime_state.crypto_recent_orders,
-            "last_order": runtime_state.crypto_last_order,
-            "protective_order_status": runtime_state.crypto_protective_status,
-            "forward_evidence": runtime_state.crypto_forward_evidence_state,
-            "latest_replay": runtime_state.crypto_replay_state,
-            "breaker_state": runtime_state.crypto_breaker_state,
-            "last_error": runtime_state.crypto_last_error,
-        },
         "runtime": {
             "started_at": runtime_state.started_at,
             "last_poll_at": runtime_state.last_poll_at,
@@ -1955,45 +1462,6 @@ async def orders(authorization: str | None = Header(default=None)):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
-@app.get("/v1/crypto/stats")
-async def crypto_stats_endpoint(authorization: str | None = Header(default=None)):
-    require_admin(authorization)
-    try:
-        positions, recent_orders = await asyncio.gather(
-            client.positions(),
-            client.recent_orders(limit=500),
-        )
-        return {
-            "ok": True,
-            "market": "crypto",
-            "execution_mode": settings.crypto_execution_mode,
-            "execution_enabled": settings.crypto_execution_enabled,
-            "stats": crypto_trade_stats(
-                recent_orders,
-                positions,
-                strategy_version_id=settings.crypto_strategy_version_id,
-                strategy_family=settings.crypto_strategy_family,
-                start_at=settings.crypto_stats_start_at,
-                include_manual_btc=(
-                    settings.crypto_execution_mode == "btc_direct_live_signal"
-                ),
-            ),
-            "runtime": {
-                "last_decision": runtime_state.crypto_last_decision,
-                "last_signal": runtime_state.crypto_last_signal,
-                "last_order": runtime_state.crypto_last_order,
-                "last_error": runtime_state.crypto_last_error,
-                "last_execution_at": runtime_state.crypto_last_execution_at,
-                "pending_approval": runtime_state.crypto_pending_approval,
-                "broker_writes_allowed": (
-                    settings.crypto_execution_mode != "btc_direct_live_signal"
-                ),
-            },
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-
 @app.post("/v1/run-once")
 async def run_once(authorization: str | None = Header(default=None)):
     require_admin(authorization)
@@ -2028,16 +1496,6 @@ async def resume_paper(authorization: str | None = Header(default=None)):
     runtime_state.paused = False
     runtime_state.last_decision = "paper runtime resumed by administrator"
     return {"paused": False}
-
-
-@app.get("/v1/internal/crypto-command")
-async def internal_crypto_command(
-    x_anevum_scheduler_token: str | None = Header(default=None),
-):
-    if not settings.crypto_only_runtime:
-        raise HTTPException(status_code=404, detail="Not found")
-    require_scheduler_token(x_anevum_scheduler_token)
-    return await crypto_command_lane_snapshot()
 
 
 @app.get("/v1/command/session")
@@ -2115,81 +1573,22 @@ async def _rhen_core_strategy_pipeline() -> dict:
 
 
 def _command_active_strategies() -> list[dict]:
-    equity_enabled = not bool(settings.crypto_only_runtime)
     equity_broker_writes = bool(
-        equity_enabled
-        and settings.execution_enabled
+        settings.execution_enabled
         and settings.execution_authorized
         and not settings.scan_only
     )
-
-    extended_lane = bool(
-        equity_enabled and settings.extended_equity_lane_enabled
-    )
+    extended_lane = bool(settings.extended_equity_lane_enabled)
     extended_broker_writes = bool(
         extended_lane and settings.extended_equity_execution_authorized
     )
-
-    crypto_lane = bool(
-        settings.crypto_lane_enabled or settings.crypto_execution_enabled
-    )
-    crypto_mode = str(settings.crypto_execution_mode or "validated")
-    direct_paper = crypto_mode == "btc_direct_paper"
-    live_signal = crypto_mode == "btc_direct_live_signal"
-    multi_asset_paper = crypto_mode == "multi_asset_paper"
-    direct_btc = direct_paper or live_signal
-
-    crypto_version = str(
-        getattr(crypto_strategy, "strategy_version_id", None)
-        or settings.crypto_strategy_version_id
-        or ""
-    )
-    crypto_name = str(
-        getattr(crypto_strategy, "strategy_family", None)
-        or settings.crypto_strategy_family
-        or crypto_version
-    )
-
-    if direct_paper:
-        crypto_signal_authorized = bool(
-            settings.btc_direct_paper_authorized
-        )
-        crypto_broker_writes = crypto_signal_authorized
-    elif live_signal:
-        crypto_signal_authorized = bool(
-            settings.btc_direct_live_signal_authorized
-        )
-        crypto_broker_writes = False
-    elif multi_asset_paper:
-        crypto_signal_authorized = bool(
-            settings.crypto_multi_asset_paper_authorized
-        )
-        crypto_broker_writes = crypto_signal_authorized
-    else:
-        crypto_signal_authorized = bool(
-            crypto_lane
-            and settings.crypto_execution_enabled
-            and settings.execution_authorized
-        )
-        crypto_broker_writes = crypto_signal_authorized
-
-    validated_promotion_ready = bool(
-        runtime_state.crypto_graen_promotion.get("promotion_ready")
-        and settings.crypto_calibration_promoted
-    )
-    crypto_signals_enabled = bool(
-        crypto_signal_authorized
-        and not runtime_state.paused
-        and (direct_btc or multi_asset_paper or validated_promotion_ready)
-    )
-
     return [
         {
             "owner": "RHEN",
             "lane": "equities",
             "strategy_version_id": settings.strategy_version_id or None,
             "strategy_name": settings.strategy_name,
-            "status": "ACTIVE" if equity_enabled else "DISABLED",
+            "status": "ACTIVE",
             "trading_mode": settings.trading_mode,
             "execution_mode": "equity_live_runtime",
             "execution_enabled": bool(settings.execution_enabled),
@@ -2211,9 +1610,7 @@ def _command_active_strategies() -> list[dict]:
         {
             "owner": "RHEN",
             "lane": "extended_equities",
-            "strategy_version_id": (
-                settings.extended_equity_strategy_version_id or None
-            ),
+            "strategy_version_id": settings.extended_equity_strategy_version_id or None,
             "strategy_name": "extended_rolling_momentum",
             "status": "ACTIVE" if extended_lane else "DISABLED",
             "trading_mode": settings.trading_mode,
@@ -2221,13 +1618,9 @@ def _command_active_strategies() -> list[dict]:
                 (extended_equity_engine.last_session or {}).get("session")
                 or "extended_equity_24x5"
             ),
-            "execution_enabled": bool(
-                settings.extended_equity_execution_enabled
-            ),
+            "execution_enabled": bool(settings.extended_equity_execution_enabled),
             "signal_authorized": extended_lane,
-            "signals_enabled": bool(
-                extended_lane and not runtime_state.paused
-            ),
+            "signals_enabled": bool(extended_lane and not runtime_state.paused),
             "execution_authorized": extended_broker_writes,
             "broker_writes_allowed": extended_broker_writes,
             "entries_enabled": bool(
@@ -2242,37 +1635,7 @@ def _command_active_strategies() -> list[dict]:
                 and not settings.extended_equity_execution_authorized
             ),
         },
-        {
-            "owner": "RHEN",
-            "lane": "crypto",
-            "strategy_version_id": crypto_version or None,
-            "strategy_name": crypto_name,
-            "status": "ACTIVE" if crypto_lane else "DISABLED",
-            "trading_mode": (
-                "live"
-                if live_signal
-                else "paper"
-                if direct_paper or multi_asset_paper
-                else settings.trading_mode
-            ),
-            "execution_mode": crypto_mode,
-            "execution_enabled": bool(settings.crypto_execution_enabled),
-            "signal_authorized": crypto_signal_authorized,
-            "signals_enabled": crypto_signals_enabled,
-            "execution_authorized": crypto_broker_writes,
-            "broker_writes_allowed": crypto_broker_writes,
-            "entries_enabled": bool(
-                crypto_signals_enabled and crypto_broker_writes
-            ),
-            "manual_approval_required": live_signal,
-            "pending_approval": (
-                runtime_state.crypto_pending_approval
-                if live_signal
-                else None
-            ),
-        },
     ]
-
 
 def _command_strategy_pipeline(research_payload: dict) -> dict:
     active = _command_active_strategies()
@@ -2338,7 +1701,6 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
     release_gate["production_authority_changed"] = False
     return {
         "schema_version": "strategy_pipeline.v1",
-        "btc_discovery": research_payload.get("btc_discovery"),
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "available": bool(research_payload.get("available", True)),
         "active": active,

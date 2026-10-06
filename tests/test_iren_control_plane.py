@@ -29,9 +29,6 @@ def observation(seconds=0):
         "services": {
             "RHEN": {"ok": True, "startup_reconciled": True, "reconciliation_safe": True,
                 "strategy_version_id": POLICY["expected_strategy"],
-                "crypto_execution_enabled": False,
-                "crypto_execution_mode": "btc_direct_live_signal",
-                "crypto_broker_writes_allowed": False,
                 "persistence": {"enabled": True, "last_sent_at": stamp, "dropped_count": 0}},
             "VELUM": {"ok": True, "broker_orders_possible": False},
             "PREOPEN": {"ok": True},
@@ -106,24 +103,6 @@ def test_protected_failures_open_immediately(field, value, key):
     state, events = reduce_state({}, obs, POLICY)
     assert state["state"] == "ATTENTION_REQUIRED"
     assert any(e["key"] == key and e["transition"] == "OPEN" for e in events)
-
-
-def test_approval_only_crypto_is_healthy_but_broker_write_authority_is_critical():
-    obs = observation()
-    obs["services"]["RHEN"]["crypto_execution_enabled"] = True
-    obs["services"]["RHEN"]["crypto_execution_mode"] = "btc_direct_live_signal"
-    obs["services"]["RHEN"]["crypto_broker_writes_allowed"] = False
-    state, events = reduce_state({}, obs, POLICY)
-    assert state["state"] == "HEALTHY"
-    assert not any(e["key"] == "safety.crypto_execution" for e in events)
-
-    obs = observation(60)
-    obs["services"]["RHEN"]["crypto_execution_enabled"] = True
-    obs["services"]["RHEN"]["crypto_execution_mode"] = "btc_direct_live_signal"
-    obs["services"]["RHEN"]["crypto_broker_writes_allowed"] = True
-    state, events = reduce_state(state, obs, POLICY)
-    assert state["state"] == "ATTENTION_REQUIRED"
-    assert any(e["key"] == "safety.crypto_execution" for e in events)
 
 
 def test_warning_hysteresis_recovery_restart_and_recurrence():

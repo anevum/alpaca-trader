@@ -16,18 +16,15 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from .config import Settings, get_settings
-from .crypto_layer import CryptoRollingMomentumStrategy
 from .market_data import MarketDataClient
 from .replay import ReplayEngine
 from .strategy import OpeningRangeVwapStrategy, RollingMomentumVwapStrategy
-from .velum_core import ContinuousReplayEngine, bootstrap_trade_distribution
-from .crypto_velum import run_crypto_challengers
+from .velum_core import bootstrap_trade_distribution
 from .velum_manifest import (
     build_run_manifest,
     dataset_fingerprint,
     evidence_fingerprint,
 )
-from .velum_graen import GRAEN_CONTEXT_UNIVERSE, replay_candidate, replay_fetch_contract
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -54,49 +51,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
 async def _run_blocking(func: Any, /, *args: Any, **kwargs: Any) -> Any:
     """Keep CPU-heavy deterministic replay work off the FastAPI event loop."""
     return await asyncio.to_thread(func, *args, **kwargs)
-
-
-async def _fetch_candidate_replay_bars(
-    market_data: MarketDataClient,
-    symbols: tuple[str, ...],
-    *,
-    start: datetime,
-    end: datetime,
-    chunk_days: int | None = None,
-) -> tuple[dict[str, list[dict[str, Any]]], int]:
-    """Fetch a replay corpus with bounded requests when the candidate requires it."""
-    if chunk_days is None:
-        rows = await market_data.historical_crypto_bars_many(
-            list(symbols),
-            start=start,
-            end=end,
-        )
-        return rows, 1
-
-    merged: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
-    chunk_start = start
-    chunk_count = 0
-    while chunk_start < end:
-        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
-        rows = await market_data.historical_crypto_bars_many(
-            list(symbols),
-            start=chunk_start,
-            end=chunk_end - timedelta(microseconds=1),
-        )
-        for symbol in symbols:
-            merged[symbol].extend(rows.get(symbol, []) or [])
-        chunk_count += 1
-        chunk_start = chunk_end
-
-    clean: dict[str, list[dict[str, Any]]] = {}
-    for symbol in symbols:
-        by_stamp: dict[str, dict[str, Any]] = {}
-        for row in merged.get(symbol, []):
-            stamp = str(row.get("t") or row.get("timestamp") or "")
-            if stamp:
-                by_stamp[stamp] = row
-        clean[symbol] = [by_stamp[key] for key in sorted(by_stamp)]
-    return clean, chunk_count
 
 
 def _build_equity_strategy(settings: Settings):
@@ -133,73 +87,6 @@ def _build_equity_strategy(settings: Settings):
     )
 
 
-def _crypto_settings(settings: Settings) -> Settings:
-    configured_symbols = os.getenv("VELUM_CRYPTO_SYMBOLS", "").strip()
-    configured_confirmations = os.getenv(
-        "VELUM_CRYPTO_CONFIRMATION_SYMBOLS", ""
-    ).strip()
-    symbols = configured_symbols or ",".join(settings.crypto_always_include)
-    confirmations = configured_confirmations or ",".join(
-        settings.crypto_confirmation_symbols
-    )
-    return settings.model_copy(
-        update={
-            "strategy_name": "rolling_momentum_vwap",
-            "allowed_symbols_raw": symbols,
-            "scan_symbols_raw": symbols,
-            "confirmation_symbols_raw": confirmations,
-            "dynamic_universe_enabled": False,
-            "fast_window": settings.crypto_fast_window,
-            "slow_window": settings.crypto_slow_window,
-            "min_momentum_pct": settings.crypto_min_momentum_pct,
-            "min_vwap_edge_pct": settings.crypto_min_vwap_edge_pct,
-            "stop_pct": settings.crypto_stop_pct,
-            "target_pct": settings.crypto_target_pct,
-            "regime_window": settings.crypto_regime_window,
-            "regime_min_return_pct": settings.crypto_regime_min_return_pct,
-            "max_vwap_extension_pct": settings.crypto_max_vwap_extension_pct,
-            "volatility_stop_enabled": settings.crypto_volatility_stop_enabled,
-            "volatility_stop_multiplier": settings.crypto_volatility_stop_multiplier,
-            "volatility_stop_lookback_bars": settings.crypto_volatility_lookback_bars,
-            "max_dynamic_stop_pct": settings.crypto_max_dynamic_stop_pct,
-            "max_hold_minutes": settings.crypto_max_hold_minutes,
-        }
-    )
-
-
-def _build_crypto_strategy(settings: Settings) -> CryptoRollingMomentumStrategy:
-    return CryptoRollingMomentumStrategy(
-        fast_window=settings.fast_window,
-        slow_window=settings.slow_window,
-        min_momentum_pct=settings.min_momentum_pct,
-        min_vwap_edge_pct=settings.min_vwap_edge_pct,
-        stop_pct=settings.stop_pct,
-        target_pct=settings.target_pct,
-        entry_start=settings.entry_start,
-        entry_cutoff=settings.entry_cutoff,
-        confirmation_symbols=settings.confirmation_symbols,
-        min_confirmations=min(settings.min_confirmations, len(settings.confirmation_symbols)),
-        regime_window=settings.regime_window,
-        regime_min_confirmations=min(
-            settings.regime_min_confirmations,
-            len(settings.confirmation_symbols),
-        ),
-        regime_min_return_pct=settings.regime_min_return_pct,
-        max_vwap_extension_pct=settings.max_vwap_extension_pct,
-        volatility_stop_enabled=settings.volatility_stop_enabled,
-        volatility_stop_multiplier=settings.volatility_stop_multiplier,
-        volatility_stop_lookback_bars=settings.volatility_stop_lookback_bars,
-        max_dynamic_stop_pct=settings.max_dynamic_stop_pct,
-        strategy_version_id=settings.crypto_strategy_version_id,
-        model_version=settings.crypto_model_version,
-        calibration_version=settings.crypto_calibration_version,
-        calibration_promoted=settings.crypto_calibration_promoted,
-        regime_version=settings.crypto_regime_version,
-        execution_adapter_version=settings.crypto_execution_adapter_version,
-        feature_volatility_lookback=settings.crypto_volatility_lookback_bars,
-    )
-
-
 class VelumRuntime:
     """Always-on research replay worker. It has no broker-order authority."""
 
@@ -213,25 +100,14 @@ class VelumRuntime:
         self.last_success_at: str | None = None
         self.last_error: str | None = None
         self.last_equity_session: str | None = None
-        self.last_crypto_window_end: str | None = None
         self.last_equity_summary: dict[str, Any] | None = None
-        self.last_crypto_summary: dict[str, Any] | None = None
         self.last_equity_run_id: str | None = None
-        self.last_crypto_run_id: str | None = None
 
         self.poll_seconds = _env_int("VELUM_POLL_SECONDS", 60, minimum=30)
-        self.crypto_interval_minutes = _env_int(
-            "VELUM_CRYPTO_INTERVAL_MINUTES", 60, minimum=15
-        )
-        self.crypto_window_hours = _env_int(
-            "VELUM_CRYPTO_WINDOW_HOURS", 24, minimum=2
-        )
         self.bootstrap_paths = _env_int("VELUM_BOOTSTRAP_PATHS", 500, minimum=50)
         self.initial_equity = _env_decimal("VELUM_INITIAL_EQUITY", "100")
         self.equity_spread_bps = _env_decimal("VELUM_EQUITY_SPREAD_BPS", "5")
         self.equity_slippage_bps = _env_decimal("VELUM_EQUITY_SLIPPAGE_BPS", "2")
-        self.crypto_spread_bps = _env_decimal("VELUM_CRYPTO_SPREAD_BPS", "10")
-        self.crypto_slippage_bps = _env_decimal("VELUM_CRYPTO_SLIPPAGE_BPS", "5")
         self.enabled = _env_bool("VELUM_ENABLED", True)
         self.autorun = _env_bool("VELUM_AUTORUN", True)
         self.run_lock = asyncio.Lock()
@@ -262,13 +138,8 @@ class VelumRuntime:
             "last_success_at": self.last_success_at,
             "last_error": self.last_error,
             "last_equity_session": self.last_equity_session,
-            "last_crypto_window_end": self.last_crypto_window_end,
             "last_equity_summary": self.last_equity_summary,
-            "last_crypto_summary": self.last_crypto_summary,
             "last_equity_run_id": self.last_equity_run_id,
-            "last_crypto_run_id": self.last_crypto_run_id,
-            "crypto_interval_minutes": self.crypto_interval_minutes,
-            "crypto_window_hours": self.crypto_window_hours,
         }
 
     async def start(self) -> None:
@@ -323,12 +194,6 @@ class VelumRuntime:
         if session is not None and session.isoformat() != self.last_equity_session:
             await self._run_equity(session)
 
-        if getattr(self.settings, "crypto_research_enabled", False):
-            crypto_end = self._crypto_bucket_end(current)
-            crypto_key = crypto_end.isoformat()
-            if crypto_key != self.last_crypto_window_end:
-                await self._run_crypto(crypto_end)
-
         self.last_success_at = datetime.now(timezone.utc).isoformat()
 
     async def _latest_completed_equity_session(
@@ -350,11 +215,6 @@ class VelumRuntime:
             )
         ]
         return completed[-1] if completed else None
-
-    def _crypto_bucket_end(self, now_utc: datetime) -> datetime:
-        minute = int(now_utc.timestamp() // 60)
-        bucket = minute - (minute % self.crypto_interval_minutes)
-        return datetime.fromtimestamp(bucket * 60, tz=timezone.utc)
 
     async def _run_equity(self, session: date) -> None:
         strategy = _build_equity_strategy(self.settings)
@@ -451,122 +311,6 @@ class VelumRuntime:
             + " | return: " + f'{baseline["summary"]["return_pct"] * 100:.3f}%'
             + " | mode: research-only"
         )
-
-    async def _run_crypto(self, end: datetime) -> None:
-        crypto_settings = _crypto_settings(self.settings)
-        strategy = _build_crypto_strategy(crypto_settings)
-        engine = ContinuousReplayEngine(crypto_settings, strategy)
-        start = end - timedelta(hours=self.crypto_window_hours)
-        symbols = list(dict.fromkeys([
-            *crypto_settings.scan_symbols,
-            *crypto_settings.confirmation_symbols,
-        ]))
-        bars = await self.market_data.historical_crypto_bars_many(
-            symbols,
-            start=start,
-            end=end,
-        )
-        baseline = await _run_blocking(
-            engine.run,
-            bars,
-            initial_equity=self.initial_equity,
-            spread_bps=self.crypto_spread_bps,
-            slippage_bps=self.crypto_slippage_bps,
-        )
-        stress = await _run_blocking(
-            engine.run,
-            bars,
-            initial_equity=self.initial_equity,
-            spread_bps=self.crypto_spread_bps * Decimal("2"),
-            slippage_bps=self.crypto_slippage_bps * Decimal("2"),
-        )
-        seed = int(end.strftime("%Y%m%d%H"))
-        bootstrap = await _run_blocking(
-            bootstrap_trade_distribution,
-            baseline["trades"],
-            paths=self.bootstrap_paths,
-            seed=seed,
-        )
-        challenger_experiment = await _run_blocking(
-            run_crypto_challengers,
-            settings=crypto_settings,
-            bars_by_symbol=bars,
-            initial_equity=self.initial_equity,
-            spread_bps=self.crypto_spread_bps,
-            slippage_bps=self.crypto_slippage_bps,
-            equity_settings=self.settings,
-        )
-        coverage = {symbol: len(bars.get(symbol, [])) for symbol in symbols}
-        payload = self._payload(
-            asset_class="crypto",
-            start=start,
-            end=end,
-            baseline=baseline,
-            stress=stress,
-            bootstrap=bootstrap,
-            coverage=coverage,
-            strategy_version_id=crypto_settings.crypto_strategy_version_id or None,
-            notes={
-                "market_session": "24x7",
-                "crypto_location": crypto_settings.crypto_location,
-                "symbols": list(crypto_settings.scan_symbols),
-                "confirmation_symbols": list(crypto_settings.confirmation_symbols),
-                "strategy_version_id": crypto_settings.crypto_strategy_version_id,
-                "model_version": crypto_settings.crypto_model_version,
-                "calibration_version": crypto_settings.crypto_calibration_version,
-                "regime_version": crypto_settings.crypto_regime_version,
-                "execution_adapter_version": crypto_settings.crypto_execution_adapter_version,
-            },
-        )
-        payload["challenger_experiment"] = challenger_experiment
-        manifest = build_run_manifest(
-            asset_class="crypto",
-            mode="REPLAY",
-            methodology_version=payload["methodology_version"],
-            start=start,
-            end=end,
-            dataset_hash=await _run_blocking(dataset_fingerprint, bars),
-            coverage=coverage,
-            strategy_version_id=crypto_settings.crypto_strategy_version_id or None,
-            strategy=baseline["strategy"],
-            execution_assumptions=baseline["assumptions"],
-            random_seed=seed,
-            runtime_git_commit=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            evidence_hash=await _run_blocking(evidence_fingerprint, payload),
-        )
-        payload["run_manifest"] = manifest
-        await self._emit(
-            "velum_replay_result",
-            payload,
-            key_suffix=(
-                "crypto:"
-                + end.isoformat()
-                + ":"
-                + str(self.crypto_window_hours)
-                + "h:"
-                + manifest["velum_run_id"]
-            ),
-        )
-        self.last_crypto_window_end = end.isoformat()
-        self.last_crypto_run_id = manifest["velum_run_id"]
-        self.last_crypto_summary = payload["baseline"]["summary"]
-        print(
-            "VELUM_CRYPTO_COMPLETE",
-            {
-                "window_end": self.last_crypto_window_end,
-                "trades": baseline["summary"]["trades"],
-                "return_pct": baseline["summary"]["return_pct"],
-            },
-            flush=True,
-        )
-        if _env_bool("VELUM_SLACK_CRYPTO_EVERY_RUN", False):
-            await self._slack(
-                "*VELUM // CRYPTO REPLAY COMPLETE*\\n"
-                + "window end: " + end.isoformat()
-                + " | trades: " + str(baseline["summary"]["trades"])
-                + " | return: " + f'{baseline["summary"]["return_pct"] * 100:.3f}%'
-                + " | mode: 24/7 research-only"
-            )
 
     def _payload(
         self,
@@ -685,35 +429,6 @@ class VelumEquityRequest(BaseModel):
     scheduled_at: datetime | None = None
 
 
-class VelumCryptoRequest(BaseModel):
-    window_end: datetime
-    scheduled_at: datetime | None = None
-
-
-class VelumGraenCandidateRequest(BaseModel):
-    problem_id: str
-    graen_run_id: str
-    campaign_id: str
-    epoch_index: int
-    generation: int
-    candidate_methodology: str = "graen-crypto-autonomous-v8"
-    candidate_spec: dict[str, Any]
-    replay_start: datetime
-    replay_end: datetime
-    seed: int = 91000
-
-
-def require_graen_token(x_graen_velum_token: str | None) -> None:
-    expected = os.getenv("VELUM_GRAEN_TOKEN", "").strip()
-    if len(expected) < 32:
-        raise HTTPException(status_code=503, detail="GRAEN replay token is not configured")
-    if x_graen_velum_token is None or not hmac.compare_digest(
-        x_graen_velum_token,
-        expected,
-    ):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
 def require_scheduler_token(x_anevum_scheduler_token: str | None) -> None:
     expected = str(getattr(settings, "trading_ingest_token", "") or "").strip()
     if not expected:
@@ -743,45 +458,6 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="ANEVUM VELUM", lifespan=lifespan)
 
 
-@app.post("/v1/graen/btc-direct-replay")
-async def btc_direct_replay(body: dict[str, Any], x_anevum_scheduler_token: str | None = Header(default=None)):
-    require_scheduler_token(x_anevum_scheduler_token)
-    if os.getenv("RHEN_UNIFIED_ROLE") != "velum":
-        raise HTTPException(status_code=409, detail="unified_velum_required")
-    from .graen.btc_discovery import NAMESPACE, read_state
-    from .rhen_core.store import RhenCoreStore
-    from .btc_discovery_contract import STAGES, candidate_strategy, fingerprint, gate
-    from .crypto_layer import CryptoMarketDataClient
-    store = RhenCoreStore()
-    state = read_state(store)
-    row = (state.get("candidates") or {}).get(body.get("candidate_id"))
-    if not row or row.get("history") != list(STAGES[:3]) or state.get("stage") != "VELUM_REPLAY":
-        raise HTTPException(status_code=409, detail="btc_replay_lifecycle_invalid")
-    engine = ContinuousReplayEngine(velum.settings, candidate_strategy(row))
-    data = CryptoMarketDataClient(velum.settings)
-    receipts = {}
-    reasons = []
-    previous = None
-    for stage in STAGES[:3]:
-        start, end = (datetime.fromisoformat(x) for x in state["contract"][stage.lower()])
-        # Fetch independently; do not trust GRAEN's cached data or prepared signals.
-        fetched = await data.historical_bars_many(["BTC/USD"], start=start - timedelta(days=35), end=end - timedelta(microseconds=1), timeframe="1Hour")
-        result = await _run_blocking(engine.run_btc_direct, fetched.get("BTC/USD") or [], start=start, end=end, candidate=row)
-        original = row["results"][stage]
-        if fingerprint(original) != fingerprint(result):
-            reasons.append(stage + ":independent_replay_mismatch")
-        reasons.extend(stage + ":" + reason for reason in gate(result, previous))
-        previous = result
-        receipts[stage] = {"dataset_fingerprint": result["dataset_fingerprint"], "result_fingerprint": fingerprint(result)}
-    receipt = {"verified": not reasons, "owner": "VELUM", "candidate_id": row["candidate_id"],
-               "candidate_fingerprint": row["fingerprint"], "receipts": receipts, "rejection_reasons": reasons,
-               "live_authority": False}
-    store.set_kv(NAMESPACE, "velum_receipt:" + row["candidate_id"], receipt)
-    store.ingest_events([{"event_key": "btc-velum:" + row["candidate_id"], "event_type": "velum_graen_candidate_replay",
-                         "occurred_at": datetime.now(timezone.utc).isoformat(), "source": "VELUM", "strategy_version_id": row["candidate_id"], "payload": receipt}])
-    return receipt
-
-
 @app.get("/health")
 async def health():
     current = velum.status()
@@ -799,203 +475,6 @@ async def health():
 @app.get("/status")
 async def status():
     return velum.status()
-
-
-@app.post("/v1/graen/candidate-replay")
-async def graen_candidate_replay(
-    request: VelumGraenCandidateRequest,
-    x_graen_velum_token: str | None = Header(default=None),
-):
-    require_graen_token(x_graen_velum_token)
-    if request.replay_start.tzinfo is None or request.replay_end.tzinfo is None:
-        raise HTTPException(status_code=422, detail="replay range must be timezone-aware")
-    start = request.replay_start.astimezone(timezone.utc)
-    end = request.replay_end.astimezone(timezone.utc)
-    now = datetime.now(timezone.utc)
-    if not start < end:
-        raise HTTPException(status_code=422, detail="invalid replay range")
-    if end > now:
-        raise HTTPException(status_code=409, detail="replay range is not complete")
-    if end - start > timedelta(days=180):
-        raise HTTPException(status_code=422, detail="replay range exceeds 180 days")
-
-    replay_symbols, fetch_start, fetch_end, fetch_timeframe = replay_fetch_contract(
-        request.candidate_methodology,
-        start=start,
-        end=end,
-    )
-    replay_market_data = velum.market_data
-    if fetch_timeframe is not None:
-        replay_market_data = MarketDataClient(
-            velum.settings.model_copy(update={"bar_timeframe": fetch_timeframe})
-        )
-    replay_chunk_days = 60 if fetch_timeframe == "4Hour" else None
-    async with velum.run_lock:
-        progress_key = (
-            request.problem_id
-            + ":"
-            + str(request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id") or "unknown")
-            + ":"
-            + end.isoformat()
-        )
-        await velum._emit(
-            "velum_replay_progress",
-            {
-                "system": "VELUM",
-                "problem_id": request.problem_id,
-                "graen_run_id": request.graen_run_id,
-                "campaign_id": request.campaign_id,
-                "candidate_methodology": request.candidate_methodology,
-                "candidate_id": request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id"),
-                "phase": "FETCHING_CORPUS",
-                "status": "RUNNING",
-                "progress_pct": 15,
-                "replay_fetch_start": fetch_start.isoformat(),
-                "replay_fetch_end": fetch_end.isoformat(),
-                "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
-                "broker_orders_possible": False,
-                "execution_authority": False,
-            },
-            key_suffix=progress_key + ":fetching",
-        )
-        bars, replay_fetch_chunks = await _fetch_candidate_replay_bars(
-            replay_market_data,
-            tuple(replay_symbols),
-            start=fetch_start,
-            end=fetch_end,
-            chunk_days=replay_chunk_days,
-        )
-        bar_coverage = {
-            symbol: len(bars.get(symbol, []))
-            for symbol in replay_symbols
-        }
-        await velum._emit(
-            "velum_replay_progress",
-            {
-                "system": "VELUM",
-                "problem_id": request.problem_id,
-                "graen_run_id": request.graen_run_id,
-                "campaign_id": request.campaign_id,
-                "candidate_methodology": request.candidate_methodology,
-                "candidate_id": request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id"),
-                "phase": "CORPUS_READY",
-                "status": "RUNNING",
-                "progress_pct": 40,
-                "bar_coverage": bar_coverage,
-                "replay_fetch_chunks": replay_fetch_chunks,
-                "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
-                "broker_orders_possible": False,
-                "execution_authority": False,
-            },
-            key_suffix=progress_key + ":corpus-ready",
-        )
-        await velum._emit(
-            "velum_replay_progress",
-            {
-                "system": "VELUM",
-                "problem_id": request.problem_id,
-                "graen_run_id": request.graen_run_id,
-                "campaign_id": request.campaign_id,
-                "candidate_methodology": request.candidate_methodology,
-                "candidate_id": request.candidate_spec.get("candidate_id") or request.candidate_spec.get("hypothesis_id"),
-                "phase": "REPLAYING",
-                "status": "RUNNING",
-                "progress_pct": 55,
-                "bar_coverage": bar_coverage,
-                "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
-                "broker_orders_possible": False,
-                "execution_authority": False,
-            },
-            key_suffix=progress_key + ":replaying",
-        )
-        result = await _run_blocking(
-            replay_candidate,
-            bars,
-            candidate_spec=request.candidate_spec,
-            candidate_methodology=request.candidate_methodology,
-            start=start,
-            end=end,
-            seed=request.seed,
-        )
-        result.update({
-            "system": "VELUM",
-            "problem_id": request.problem_id,
-            "graen_run_id": request.graen_run_id,
-            "campaign_id": request.campaign_id,
-            "candidate_methodology": request.candidate_methodology,
-            "epoch_index": request.epoch_index,
-            "generation": request.generation,
-            "bar_coverage": bar_coverage,
-            "replay_fetch_start": fetch_start.isoformat(),
-            "replay_fetch_end": fetch_end.isoformat(),
-            "replay_timeframe": fetch_timeframe or velum.settings.bar_timeframe,
-            "replay_fetch_chunks": replay_fetch_chunks,
-            "runtime_git_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-        })
-        await velum._emit(
-            "velum_replay_progress",
-            {
-                "system": "VELUM",
-                "problem_id": request.problem_id,
-                "graen_run_id": request.graen_run_id,
-                "campaign_id": request.campaign_id,
-                "candidate_methodology": request.candidate_methodology,
-                "candidate_id": result.get("candidate_id"),
-                "phase": "PERSISTING_EVIDENCE",
-                "status": "RUNNING",
-                "progress_pct": 90,
-                "bar_coverage": bar_coverage,
-                "engineering_gate": result.get("engineering_gate"),
-                "broker_orders_possible": False,
-                "execution_authority": False,
-            },
-            key_suffix=progress_key + ":persisting",
-        )
-        emitted = await velum._emit(
-            "velum_graen_candidate_replay",
-            result,
-            key_suffix=(
-                request.problem_id
-                + ":"
-                + str(result.get("candidate_id") or "unknown")
-                + ":"
-                + end.isoformat()
-            ),
-        )
-        result["evidence_emitted"] = emitted
-        await velum._emit(
-            "velum_replay_progress",
-            {
-                "system": "VELUM",
-                "problem_id": request.problem_id,
-                "graen_run_id": request.graen_run_id,
-                "campaign_id": request.campaign_id,
-                "candidate_methodology": request.candidate_methodology,
-                "candidate_id": result.get("candidate_id"),
-                "phase": "COMPLETE",
-                "status": "COMPLETED",
-                "progress_pct": 100,
-                "bar_coverage": bar_coverage,
-                "engineering_gate": result.get("engineering_gate"),
-                "evidence_emitted": emitted,
-                "broker_orders_possible": False,
-                "execution_authority": False,
-            },
-            key_suffix=progress_key + ":complete",
-        )
-        if result["engineering_gate"]["passed"]:
-            await velum._slack(
-                "*VELUM // GRAEN CANDIDATE REPLAY PASS*\n"
-                + str(result.get("candidate_id") or "unknown")
-                + " | research-only | forward shadow required"
-            )
-        return {
-            "ok": True,
-            "result": result,
-            "broker_orders_possible": False,
-            "execution_authority": False,
-            "promotion_authorized": False,
-        }
 
 
 @app.post("/v1/scheduler/equity")
@@ -1040,48 +519,5 @@ async def scheduler_equity(
             "session": velum.last_equity_session,
             "velum_run_id": velum.last_equity_run_id,
             "summary": velum.last_equity_summary,
-            "broker_orders_possible": False,
-        }
-
-
-@app.post("/v1/scheduler/crypto")
-async def scheduler_crypto(
-    request: VelumCryptoRequest,
-    x_anevum_scheduler_token: str | None = Header(default=None),
-):
-    require_scheduler_token(x_anevum_scheduler_token)
-    if not getattr(velum.settings, "crypto_research_enabled", False):
-        return {
-            "ok": True,
-            "disabled": True,
-            "reason": "legacy crypto replay research disabled",
-            "broker_orders_possible": False,
-        }
-    if request.window_end.tzinfo is None:
-        raise HTTPException(status_code=422, detail="window_end must be timezone-aware")
-    window_end = request.window_end.astimezone(timezone.utc)
-    if window_end > datetime.now(timezone.utc):
-        raise HTTPException(status_code=409, detail="crypto replay window is not complete")
-    expected_bucket = velum._crypto_bucket_end(window_end)
-    if expected_bucket != window_end.replace(second=0, microsecond=0):
-        raise HTTPException(status_code=422, detail="window_end is not aligned to VELUM cadence")
-
-    async with velum.run_lock:
-        window_key = window_end.isoformat()
-        if velum.last_crypto_window_end == window_key:
-            return {
-                "ok": True,
-                "duplicate": True,
-                "window_end": window_key,
-                "velum_run_id": velum.last_crypto_run_id,
-                "broker_orders_possible": False,
-            }
-        await velum._run_crypto(window_end)
-        return {
-            "ok": True,
-            "duplicate": False,
-            "window_end": velum.last_crypto_window_end,
-            "velum_run_id": velum.last_crypto_run_id,
-            "summary": velum.last_crypto_summary,
             "broker_orders_possible": False,
         }

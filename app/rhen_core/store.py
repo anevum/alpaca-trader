@@ -16,10 +16,9 @@ UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
 
 CRITICAL_EVENT_TYPES = {
-    "btc_discovery_stage", "velum_graen_candidate_replay",
     "order_intent", "broker_order", "broker_fill", "order_update",
     "position_opened", "position_closed", "reconciliation",
-    "runtime_error", "crypto_runtime_error", "strategy_promotion",
+    "runtime_error", "strategy_promotion",
 }
 
 
@@ -869,8 +868,6 @@ class RhenCoreStore:
             return self._compiled_stage_evidence(body)
         if action == "shadow_checkpoint":
             return self._shadow_checkpoint(body)
-        if action == "crypto_promotion_status":
-            return self._crypto_promotion_status(body)
         if action == "research_promotion_claim":
             return self._research_promotion_claim(body)
         if action == "research_promotion_save":
@@ -1075,7 +1072,7 @@ class RhenCoreStore:
                 if (
                     previous.get("phase") != "RESUME"
                     or state.get("resume_stage")
-                    != "CRYPTO_COMPILED_DEVELOPMENT"
+                    != "STRATEGY_COMPILED_DEVELOPMENT"
                     or not state.get("merge_sha")
                     or not state.get("deployment_id")
                     or not state.get("executor_heartbeat_at")
@@ -1121,7 +1118,7 @@ class RhenCoreStore:
             )
             if state.get("phase") == "COMPLETE":
                 metadata["research_stage"] = (
-                    "CRYPTO_COMPILED_DEVELOPMENT"
+                    "STRATEGY_COMPILED_DEVELOPMENT"
                 )
                 metadata["compiled_specification_hash"] = state.get(
                     "spec_hash"
@@ -1175,10 +1172,10 @@ class RhenCoreStore:
         domain = str(body.get("domain") or "")
         worker = str(body.get("worker_id") or "graen-adaptive")
         allowed = {
-            "CRYPTO_COMPILED_DEVELOPMENT",
-            "CRYPTO_COMPILED_VALIDATION",
-            "CRYPTO_COMPILED_HOLDOUT",
-            "CRYPTO_COMPILED_VELUM",
+            "STRATEGY_COMPILED_DEVELOPMENT",
+            "STRATEGY_COMPILED_VALIDATION",
+            "STRATEGY_COMPILED_HOLDOUT",
+            "STRATEGY_COMPILED_VELUM",
         }
         with self._lock, self.connect() as conn:
             rows = conn.execute(
@@ -1205,14 +1202,14 @@ class RhenCoreStore:
                 # deployed now, but VALIDATION/HOLDOUT cannot be claimed until
                 # the entire frozen window has elapsed. VELUM is a post-holdout
                 # independent replay and has no additional maturity window.
-                if stage != "CRYPTO_COMPILED_VELUM":
+                if stage != "STRATEGY_COMPILED_VELUM":
                     spec = dict(
                         promotion.get("prespec")
                         or metadata.get("research_implementation_spec")
                         or {}
                     )
                     stage_name = stage.removeprefix(
-                        "CRYPTO_COMPILED_"
+                        "STRATEGY_COMPILED_"
                     ).lower()
                     try:
                         end_raw = spec["corpus"][stage_name][1]
@@ -1577,75 +1574,6 @@ class RhenCoreStore:
             elif payload.get("stage") == predecessor:
                 prior = {**payload, "artifact_id": artifact["artifact_id"]}
         return {"ok": True, "current": current, "predecessor": prior}
-
-    def _crypto_promotion_status(
-        self, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        requested = dict(body.get("execution_contract") or {})
-        keys = (
-            "strategy_family", "strategy_version_id", "model_version",
-            "calibration_version", "regime_version",
-            "execution_adapter_version",
-        )
-        normalized = {k: str(requested.get(k) or "").strip() for k in keys}
-        if any(not normalized[k] for k in keys):
-            return {
-                "ok": True,
-                "status": "GATED",
-                "promotion_ready": False,
-                "reason": "incomplete_execution_contract",
-                "execution_contract": normalized,
-                "execution_authority": False,
-                "live_execution_authorized": False,
-            }
-        with self.connect() as conn:
-            rows = conn.execute(
-                """select * from graen_artifacts
-                where artifact_type like 'CRYPTO_%PROMOTION_READY%'
-                order by created_at desc limit 100"""
-            ).fetchall()
-        for row in rows:
-            artifact = self._artifact(row)
-            payload = artifact["content"]
-            contract = {
-                k: str((payload.get("execution_contract") or {}).get(k) or "").strip()
-                for k in keys
-            }
-            passed = bool(
-                payload.get("statistical_promotion_ready") is True
-                or payload.get("promotion_ready") is True
-                or (
-                    payload.get("passed") is True
-                    and str(payload.get("stage") or "").upper() == "HOLDOUT"
-                )
-            )
-            if contract == normalized and passed:
-                return {
-                    "ok": True,
-                    "status": "PROMOTION_READY",
-                    "promotion_ready": True,
-                    "reason": "matching_protected_research_artifact",
-                    "execution_contract": normalized,
-                    "artifact": {
-                        k: artifact.get(k)
-                        for k in (
-                            "artifact_id", "problem_id", "run_id",
-                            "artifact_type", "methodology_version",
-                            "created_at",
-                        )
-                    },
-                    "execution_authority": False,
-                    "live_execution_authorized": False,
-                }
-        return {
-            "ok": True,
-            "status": "GATED",
-            "promotion_ready": False,
-            "reason": "no_matching_promotion_artifact",
-            "execution_contract": normalized,
-            "execution_authority": False,
-            "live_execution_authorized": False,
-        }
 
     def scheduler_claim(
         self, job: dict[str, Any]
@@ -2126,7 +2054,7 @@ class RhenCoreStore:
         )
         errors_2h = sum(
             event.get("event_type") in {
-                "runtime_error", "crypto_runtime_error"
+                "runtime_error"
             }
             for event in recent_2h
         )
@@ -2181,10 +2109,6 @@ class RhenCoreStore:
             "runtime_error": (
                 "warning",
                 "Runtime reported an operational exception.",
-            ),
-            "crypto_runtime_error": (
-                "warning",
-                "Crypto runtime reported an operational exception.",
             ),
         }
         public_types = set(event_labels)
@@ -2806,7 +2730,7 @@ class RhenCoreStore:
         ):
             mode = "AUTOMATED_TEST"
             reason = "A frozen experiment is running; autonomous execution is limited to its defined methodology."
-        elif stage.startswith("CRYPTO_COMPILED_") or stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
+        elif stage.startswith("STRATEGY_COMPILED_") or stage == "RESEARCH_IMPLEMENTATION_REQUIRED":
             mode = "AUTOMATED_TEST"
             reason = "A frozen research chain may advance through development, validation, holdout, and replay."
         elif active_problem is not None:
@@ -2868,15 +2792,6 @@ class RhenCoreStore:
                    where event_type like 'velum_%'
                       or event_type like 'nostra_%'
                       or event_type like 'graen_%'
-                      or strategy_version_id like 'CRYPTO-XSECT-PAPER-%'
-                      or (
-                        event_type = 'decision_cycle'
-                        and json_extract(payload_json, '$.market_lane') = 'crypto'
-                      )
-                      or (
-                        event_type = 'position_metrics'
-                        and json_extract(payload_json, '$.market') = 'crypto'
-                      )
                    order by occurred_at desc
                    limit 360"""
             ).fetchall()
@@ -3118,7 +3033,6 @@ class RhenCoreStore:
         events: list[dict[str, Any]] = []
         velum_runs: dict[str, dict[str, Any]] = {}
         nostra_runs: dict[str, dict[str, Any]] = {}
-        paper_groups: dict[str, list[dict[str, Any]]] = {}
 
         for row in reversed(event_rows):
             payload = _loads(row["payload_json"], {})
@@ -3273,186 +3187,8 @@ class RhenCoreStore:
                     "detail": None,
                 })
 
-            strategy_version = str(row["strategy_version_id"] or "")
-            candidate_strategy_version = ""
-            if event_type == "decision_cycle":
-                candidates = payload.get("candidates")
-                if isinstance(candidates, list):
-                    for candidate in candidates:
-                        if not isinstance(candidate, dict):
-                            continue
-                        value = str(candidate.get("strategy_version_id") or "")
-                        if value.startswith("CRYPTO-XSECT-PAPER-"):
-                            candidate_strategy_version = value
-                            break
-            crypto_tracking_event = (
-                strategy_version.startswith("CRYPTO-XSECT-PAPER-")
-                or bool(candidate_strategy_version)
-                or (
-                    event_type == "decision_cycle"
-                    and str(payload.get("market_lane") or "").lower() == "crypto"
-                )
-                or (
-                    event_type == "position_metrics"
-                    and str(payload.get("market") or "").lower() == "crypto"
-                )
-            )
-            if crypto_tracking_event:
-                paper_groups.setdefault(
-                    str(row["run_id"] or candidate_strategy_version or strategy_version),
-                    []
-                ).append({
-                    "event_key": row["event_key"],
-                    "event_type": event_type,
-                    "occurred_at": occurred_at,
-                    "strategy_version_id": strategy_version,
-                    "candidate_strategy_version_id": candidate_strategy_version,
-                    "payload": payload,
-                })
-
         runs.extend(velum_runs.values())
         runs.extend(nostra_runs.values())
-
-        for run_key, rows in paper_groups.items():
-            latest = rows[-1]
-            paper_strategy_version = next(
-                (
-                    str(row.get("candidate_strategy_version_id") or row.get("strategy_version_id") or "")
-                    for row in reversed(rows)
-                    if str(
-                        row.get("candidate_strategy_version_id")
-                        or row.get("strategy_version_id")
-                        or ""
-                    ).startswith("CRYPTO-XSECT-PAPER-")
-                ),
-                "",
-            )
-            if not paper_strategy_version:
-                # Keep direct BTC/live crypto telemetry out of the paper-test lane.
-                continue
-
-            return_points: list[dict[str, Any]] = []
-            score_points: list[dict[str, Any]] = []
-            net_edge_points: list[dict[str, Any]] = []
-            qualified_points: list[dict[str, Any]] = []
-            scanned_points: list[dict[str, Any]] = []
-            rejected_points: list[dict[str, Any]] = []
-            fills = 0
-            decision_cycles = 0
-            for row in rows:
-                payload = row["payload"]
-                if row["event_type"] == "position_metrics":
-                    value = self._research_number(payload.get("current_return_pct"))
-                    if value is not None:
-                        return_points.append({
-                            "at": row["occurred_at"],
-                            "value": round(value * 100.0, 6),
-                        })
-                if row["event_type"] == "decision_cycle":
-                    decision_cycles += 1
-                    score = self._research_number(
-                        payload.get("top_opportunity_score")
-                    )
-                    edge = self._research_number(
-                        payload.get("best_estimated_net_edge_pct")
-                    )
-                    if score is not None:
-                        score_points.append({
-                            "at": row["occurred_at"],
-                            "value": round(score * 100.0, 6),
-                        })
-                    if edge is not None:
-                        net_edge_points.append({
-                            "at": row["occurred_at"],
-                            "value": round(edge * 100.0, 6),
-                        })
-                    qualified = self._research_number(payload.get("qualified_count"))
-                    scanned = self._research_number(payload.get("candidate_count"))
-                    rejected = self._research_number(payload.get("rejected_count"))
-                    if qualified is not None:
-                        qualified_points.append({
-                            "at": row["occurred_at"],
-                            "value": qualified,
-                        })
-                    if scanned is not None:
-                        scanned_points.append({
-                            "at": row["occurred_at"],
-                            "value": scanned,
-                        })
-                    if rejected is not None:
-                        rejected_points.append({
-                            "at": row["occurred_at"],
-                            "value": rejected,
-                        })
-                if row["event_type"] in {"broker_fill", "crypto_fill"}:
-                    fills += 1
-
-            chart_series: list[dict[str, Any]] = []
-            for key, label, unit, points in (
-                ("opportunity_score", "Top opportunity score", "%", score_points),
-                ("estimated_net_edge", "Best estimated net edge", "%", net_edge_points),
-                ("qualified_candidates", "Qualified candidates", "", qualified_points),
-                ("scanned_candidates", "Scanned candidates", "", scanned_points),
-                ("rejected_candidates", "Rejected candidates", "", rejected_points),
-                ("paper_return", "Open-position return", "%", return_points),
-            ):
-                if len(points) > 1:
-                    chart_series.append({
-                        "key": key,
-                        "label": label,
-                        "unit": unit,
-                        "points": points[-120:],
-                    })
-
-            runs.append({
-                "run_id": run_key,
-                "system": "RHEN",
-                "kind": "PAPER_TEST",
-                "title": paper_strategy_version,
-                "status": "RUNNING",
-                "stage": "PAPER_FORWARD",
-                "progress_pct": 50,
-                "problem_id": None,
-                "candidate_id": None,
-                "methodology_version": None,
-                "strategy_version_id": paper_strategy_version,
-                "started_at": rows[0]["occurred_at"],
-                "completed_at": None,
-                "updated_at": latest["occurred_at"],
-                "metrics": {
-                    "fills": float(fills),
-                    "events": float(len(rows)),
-                    "decision_cycles": float(decision_cycles),
-                    "latest_qualified_candidates": (
-                        qualified_points[-1]["value"] if qualified_points else 0.0
-                    ),
-                    "latest_scanned_candidates": (
-                        scanned_points[-1]["value"] if scanned_points else 0.0
-                    ),
-                },
-                "series": chart_series,
-                "detail": {
-                    "paper_only": True,
-                    "live_authority": False,
-                    "chart_basis": "decision_cycle_and_position_evidence",
-                    "inactive_time_drawn": False,
-                },
-            })
-            for row in rows[-60:]:
-                events.append({
-                    "event_id": str(row["event_key"]),
-                    "at": row["occurred_at"],
-                    "system": "RHEN",
-                    "run_id": run_key,
-                    "event_type": row["event_type"],
-                    "stage": "PAPER_FORWARD",
-                    "status": "OBSERVED",
-                    "title": paper_strategy_version,
-                    "detail": (
-                        row["payload"].get("cycle_outcome")
-                        or row["payload"].get("reason")
-                    ),
-                })
 
         # The run/artifact records themselves are durable events. Include them
         # so a selected GRAEN run always has a trace even without a replay.
@@ -3522,30 +3258,6 @@ class RhenCoreStore:
 
     def strategy_pipeline_research(self) -> dict[str, Any]:
         """Return the durable Command research and strategy lifecycle projection."""
-        from app.graen.btc_discovery import projection
-        btc = projection(self)
-        btc_state = str(btc.get("state") or "NOT_STARTED").upper()
-        btc_has_forward_paper = bool(
-            btc.get("paper_candidate_id") or btc.get("paper_runtime")
-        )
-        btc_owns_primary_pipeline = (
-            btc_state not in {"NOT_STARTED", "EXHAUSTED", "REJECTED"}
-            or btc_has_forward_paper
-        )
-        if btc_owns_primary_pipeline:
-            current = btc.get("candidate") or {}
-            verification = (current.get("results") or {}).get("VELUM_REPLAY") or {}
-            tracking = self.command_research_tracking()
-            return {"schema_version": "strategy_pipeline_research.v1", "btc_discovery": btc,
-                    "candidate": {**current, "owner": "GRAEN", "lane": "crypto", "updated_at": btc.get("updated_at"),
-                                  "title": current.get("candidate_id"), "supersedes_strategy_version_id": None} if current else None,
-                    "validation": {"owner": "VELUM", "candidate_id": current.get("candidate_id"),
-                                   "status": "VERIFIED" if verification.get("verified") else "WAITING",
-                                   "observed_at": btc.get("updated_at") if verification else None},
-                    "release_gate": {"owner": "IREN", "status": btc["state"], "target_lane": "paper",
-                                     "reason": "Paper evidence only; live strategy and live broker-write authority remain protected.",
-                                     "automatic_promotion": False, "production_authority_changed": False},
-                    "research": tracking}
         tracking = self.command_research_tracking()
         problems = list(tracking.get("graen_problems") or [])
         runs = list(tracking.get("graen_runs") or [])
@@ -3564,16 +3276,7 @@ class RhenCoreStore:
             None,
         )
         if selected_problem is not None:
-            domain = str(selected_problem.get("domain") or "").upper()
-            lane = str(selected_problem.get("target_lane") or "").lower()
-            if lane not in {"crypto", "equities"}:
-                lane = (
-                    "crypto"
-                    if "CRYPTO" in domain
-                    else "equities"
-                    if "EQUITY" in domain or "STOCK" in domain
-                    else "unknown"
-                )
+            lane = "equities"
             selected_run = next(
                 (
                     row
@@ -3655,7 +3358,6 @@ class RhenCoreStore:
 
         return {
             "schema_version": "strategy_pipeline_research.v1",
-            "btc_discovery": btc,
             "candidate": candidate,
             "validation": validation,
             "release_gate": {
@@ -3793,7 +3495,7 @@ class RhenCoreStore:
             candidate_rows = conn.execute(
                 """select * from candidates
                 where observed_at >= ?
-                  and lower(coalesce(market_lane,''))='crypto'
+                  and lower(coalesce(market_lane,'')) in ('us_equity','us_equity_extended','equities','')
                 order by observed_at asc limit 500""",
                 (forecast_start,),
             ).fetchall()
@@ -4084,120 +3786,9 @@ class RhenCoreStore:
             ][:200],
         }
 
-    def _promotion_evidence(self) -> dict[str, Any]:
-        complete = []
-        for event in self._event_rows(
-            event_types={"candidate_forward_outcome"},
-            limit=50000,
-            newest_first=True,
-        ):
-            payload = event.get("payload") or {}
-            if payload.get("status") != "complete":
-                continue
-            lane = str(payload.get("market_lane") or "").lower()
-            version = str(
-                payload.get("strategy_version_id")
-                or event.get("strategy_version_id")
-                or ""
-            ).upper()
-            if lane == "crypto" or version.startswith("CRYPTO-"):
-                complete.append(event)
-
-        ids: set[str] = set()
-        hours: set[int] = set()
-        weekdays: set[int] = set()
-        pairs: set[str] = set()
-        observed: list[datetime] = []
-        mfes: list[float] = []
-        maes: list[float] = []
-        for event in complete:
-            payload = event.get("payload") or {}
-            identity = str(
-                payload.get("candidate_id")
-                or payload.get("candidate_key")
-                or ""
-            )
-            if identity:
-                ids.add(identity)
-            raw_stamp = (
-                (payload.get("details") or {}).get("reference_effective_at")
-                or payload.get("candidate_observed_at")
-                or event.get("occurred_at")
-            )
-            try:
-                stamp = datetime.fromisoformat(
-                    str(raw_stamp).replace("Z", "+00:00")
-                )
-                if stamp.tzinfo is None:
-                    stamp = stamp.replace(tzinfo=UTC)
-                stamp = stamp.astimezone(UTC)
-                observed.append(stamp)
-                hours.add(stamp.hour)
-                weekdays.add(stamp.weekday())
-            except (TypeError, ValueError):
-                pass
-            symbol = str(
-                event.get("symbol") or payload.get("symbol") or ""
-            ).upper()
-            if symbol:
-                pairs.add(symbol)
-            for key, target in (
-                ("max_favorable_return", mfes),
-                ("max_adverse_return", maes),
-            ):
-                try:
-                    target.append(float(payload[key]))
-                except (KeyError, TypeError, ValueError):
-                    pass
-
-        return {
-            "methodology_version": "rhen-core-v3-crypto-promotion",
-            "market_lane": "crypto",
-            "resolved_candidate_predictions": len(ids),
-            "paper_round_trips": 0,
-            "paper_round_trip_source": "crypto_execution_disabled",
-            "utc_hours_covered": sorted(hours),
-            "weekdays_covered": sorted(weekdays),
-            "volatility_regimes": [],
-            "liquidity_regimes": [],
-            "pairs_covered": sorted(pairs),
-            "coverage_first_observed_at": (
-                min(observed).isoformat() if observed else None
-            ),
-            "coverage_last_observed_at": (
-                max(observed).isoformat() if observed else None
-            ),
-            "metrics": {
-                "net_expectancy_after_costs": None,
-                "brier_score": None,
-                "log_loss": None,
-                "calibration_intercept": None,
-                "calibration_slope": None,
-                "discrimination": None,
-                "max_drawdown": None,
-                "tail_loss": None,
-                "mfe": sum(mfes) / len(mfes) if mfes else None,
-                "mae": sum(maes) / len(maes) if maes else None,
-                "slippage": None,
-                "spread_sensitivity": None,
-                "regime_stability": None,
-                "time_of_week_stability": None,
-            },
-            "net_expectancy_positive_after_high_costs": False,
-            "walk_forward_passed": False,
-            "holdout_passed": False,
-            "dependence_adjusted": False,
-            "multiplicity_adjusted": False,
-            "no_lookahead_verified": False,
-            "source": "rhen-core:candidate_forward_outcome",
-            "execution_authority": False,
-        }
-
     def _candidate_report_rows(
         self,
         session: str,
-        *,
-        crypto: bool | None,
     ) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -4241,12 +3832,7 @@ class RhenCoreStore:
             if self._session_date(row["observed_at"]) != session:
                 continue
             lane = str(row["market_lane"] or "").lower()
-            is_crypto = lane == "crypto" or str(
-                row["strategy_version_id"] or ""
-            ).upper().startswith("CRYPTO-")
-            if crypto is True and not is_crypto:
-                continue
-            if crypto is False and is_crypto:
+            if lane not in {"", "us_equity", "us_equity_extended", "equities"}:
                 continue
             identity = str(row["candidate_key"])
             features = _loads(row["feature_json"], {})
@@ -4367,7 +3953,7 @@ class RhenCoreStore:
             if not (start <= parsed <= end):
                 continue
             lane = str(row["market_lane"] or "").lower()
-            if lane == "crypto":
+            if lane not in {"", "us_equity", "us_equity_extended", "equities"}:
                 continue
             bucket = candidate_grouped.setdefault(
                 session,
@@ -4586,40 +4172,9 @@ class RhenCoreStore:
         if latest == "graen_shadow":
             return self._shadow_report(params.get("shadow_candidate_id"))
 
-        if str(params.get("crypto_promotion") or "") in {
-            "1", "true", "True"
-        }:
-            return {"ok": True, "evidence": self._promotion_evidence()}
-
-        crypto_session = params.get("crypto_evidence_session")
-        if crypto_session:
-            rows = self._candidate_report_rows(
-                crypto_session,
-                crypto=True,
-            )
-            rows = [
-                row
-                for row in rows
-                if sum(
-                    1
-                    for outcome in row["forward_outcomes"].values()
-                    if outcome.get("status") == "complete"
-                )
-                < 7
-            ][:5000]
-            return {
-                "ok": True,
-                "evidence_version": "rhen-crypto-forward-evidence-v2",
-                "evidence_session": crypto_session,
-                "candidates": rows,
-            }
-
         evidence_session = params.get("evidence_session")
         if evidence_session:
-            rows = self._candidate_report_rows(
-                evidence_session,
-                crypto=False,
-            )
+            rows = self._candidate_report_rows(evidence_session)
             equity_rows = []
             for row in rows[:5000]:
                 copy = dict(row)
@@ -4660,10 +4215,7 @@ class RhenCoreStore:
 
         post_session = params.get("post_event_evidence_session")
         if post_session:
-            rows = self._candidate_report_rows(
-                post_session,
-                crypto=False,
-            )
+            rows = self._candidate_report_rows(post_session)
             return {
                 "ok": True,
                 "evidence_version": "rhen-post-event-candidates-v2",
