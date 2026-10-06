@@ -111,3 +111,16 @@ def test_public_readiness_sanitizes_internal_question_identity():
     assert "research_question_id" not in payload["monitors"][0]
     assert payload["model_invoked"] is False
     assert payload["persisted"] is False
+
+
+def test_research_gateway_sends_native_write_auth_alias():
+    from app.research_agent.gateway import ResearchGateway
+
+    token = "x" * 64
+    headers = ResearchGateway(
+        "http://127.0.0.1:8102/v1/research-agent-gateway",
+        token,
+    )._headers()
+
+    assert headers["x-anevum-ingest-token"] == token
+    assert headers["x-rhen-research-gateway-token"] == token
