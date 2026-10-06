@@ -93,15 +93,35 @@ def _aggregate_recovery(rows: list[dict[str, Any]], allowed: set[datetime]) -> l
 
 
 def _reset_incomplete_development_rows(state: dict[str, Any]) -> bool:
+    """Return pre-evidence DEVELOPMENT failures to the queue without losing diagnostics.
+
+    A candidate is consumed only by actual strategy evidence. Historical builds could
+    mark a candidate REJECTED when corpus/infrastructure validation raised before a
+    DEVELOPMENT result existed. Those rows have no lifecycle history and no results,
+    so they are safe to migrate back to QUEUED regardless of the older truncated
+    exception text. Preserve the original exception under non_consumptive_failures.
+    """
     reset = False
     for row in (state.get("candidates") or {}).values():
-        reasons = row.get("rejection_reasons") or []
-        if (row.get("stage") == "DEVELOPMENT" and row.get("status") == "REJECTED"
-                and not row.get("history") and len(reasons) == 1
-                and "incomplete_hourly_corpus" in reasons[0]):
-            row["status"] = "QUEUED"
-            row["rejection_reasons"] = []
-            reset = True
+        reasons = list(row.get("rejection_reasons") or [])
+        pre_evidence_failure = (
+            row.get("stage") == "DEVELOPMENT"
+            and row.get("status") == "REJECTED"
+            and not row.get("history")
+            and not row.get("results")
+            and bool(reasons)
+            and all(str(reason).startswith("stage_failed:") for reason in reasons)
+        )
+        if not pre_evidence_failure:
+            continue
+        archived = list(row.get("non_consumptive_failures") or [])
+        for reason in reasons:
+            if reason not in archived:
+                archived.append(reason)
+        row["non_consumptive_failures"] = archived
+        row["status"] = "QUEUED"
+        row["rejection_reasons"] = []
+        reset = True
     if reset:
         state["stage"] = "DEVELOPMENT"
         state["status"] = "WAITING_FOR_DATA"
@@ -382,7 +402,10 @@ class BtcDiscoveryJob:
                 paper_progress(self.store, state)
                 self.save(state)
                 return projection(self.store)
-            if state.get("status") == "EXHAUSTED" and _reset_incomplete_development_rows(state):
+            # Migrate legacy pre-evidence DEVELOPMENT failures on every development
+            # tick, including WAITING_FOR_DATA. The old EXHAUSTED-only migration left
+            # already-waiting production state falsely counting candidates as consumed.
+            if state.get("stage") == "DEVELOPMENT" and _reset_incomplete_development_rows(state):
                 self.save(state)
             if state.get("status") in {"REJECTED", "EXHAUSTED"}:
                 return projection(self.store)
