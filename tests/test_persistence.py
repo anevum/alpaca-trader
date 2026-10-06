@@ -13,6 +13,7 @@ class CapturingSink(TradingEventSink):
             trading_ingest_token="token",
             trading_run_id="run-1",
             strategy_version_id="version-1",
+            target_pct="0.005",
             ledger_reconcile_seconds=60,
             trading_run_started_at=datetime(2026, 9, 24, 13, 30, tzinfo=timezone.utc),
         )
@@ -373,6 +374,9 @@ def test_decision_cycle_event_is_deterministic_and_preserves_unavailable_quote()
     assert candidate["quote"]["ask"] is None
     assert candidate["quote"]["midpoint"] is None
     assert candidate["forward_outcomes_status"] == "pending"
+    assert candidate["shadow_economics"]["research_only"] is True
+    assert candidate["shadow_economics"]["execution_authority"] is False
+    assert candidate["shadow_economics"]["changes_live_decision"] is False
 
 
 def _complete_ads_metadata():

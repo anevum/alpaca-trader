@@ -13,6 +13,7 @@ from foundation.outbox import DurableEventOutbox, FoundationShadowSink
 
 from .config import Settings
 from .cash_flow import day_pnl, risk_reference_equity
+from .shadow_economics import candidate_shadow_economics
 from .research_agent.ads002 import (
     METHODOLOGY_VERSION as ADS002_METHODOLOGY_VERSION,
     pretrade_composite as ads002_pretrade_composite,
@@ -711,6 +712,30 @@ class TradingEventSink:
             )
         return by_symbol
 
+    def _shadow_economics_safe(
+        self,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep shadow-economics failures isolated from live execution/evidence."""
+        try:
+            return candidate_shadow_economics(
+                target_pct=self.settings.target_pct,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            return {
+                "schema_version": "shadow_opportunity_economics.v1",
+                "methodology_version": "rhen-shadow-economics-v1",
+                "research_only": True,
+                "execution_authority": False,
+                "changes_live_decision": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "shadow_admission": {
+                    "would_admit": None,
+                    "reason": "shadow_economics_unavailable",
+                },
+            }
+
     @staticmethod
     def _candidate_final_decision(
         symbol: str,
@@ -788,6 +813,7 @@ class TradingEventSink:
                 symbol=symbol,
                 metadata=metadata,
             )
+            shadow_economics = self._shadow_economics_safe(metadata)
             candidates.append(
                 {
                     "symbol": symbol.upper(),
@@ -873,6 +899,7 @@ class TradingEventSink:
                         "market": "us_equity",
                     },
                     "ads002": ads002_shadow,
+                    "shadow_economics": shadow_economics,
                     "ads002_v2": (
                         ads002_v2_by_symbol.get(symbol.upper())
                         or self._ads002_v2_missing_state(
@@ -994,6 +1021,7 @@ class TradingEventSink:
             symbol=signal.symbol,
             metadata=metadata,
         )
+        shadow_economics = self._shadow_economics_safe(metadata)
         decision_scan = getattr(signal, "_evidence_decision_scan", None)
         ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(
             decision_scan if isinstance(decision_scan, dict) else {}
@@ -1113,6 +1141,9 @@ class TradingEventSink:
                             "live_strategy_version": strategy_version_id,
                         },
                         "ads002": None if is_extended_equity else ads002_shadow,
+                        "shadow_economics": (
+                            None if is_extended_equity else shadow_economics
+                        ),
                         "ads002_v2": None if is_extended_equity else ads002_v2,
                     },
                 },
