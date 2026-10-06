@@ -943,3 +943,47 @@ def test_crypto_forward_outcome_carries_promotion_context():
         "realized_volatility": "0.0012",
         "spread_bps": "7.5",
     }
+
+
+def test_post_event_runner_does_not_persist_transient_forward_outcomes():
+    reference_bar = datetime(2026, 9, 25, 15, 59, tzinfo=NY)
+    row = {
+        **candidate(reference_bar),
+        "candidate_id": 9001,
+        "candidate_key": "transient-outcome",
+    }
+
+    class MarketData:
+        async def market_calendar_details(self, *, start, end):
+            return [{"date": start, "open": "09:30", "close": "16:00"}]
+
+        async def historical_bars_many(self, symbols, *, start, end):
+            return {"SPY": []}
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, **event):
+            self.events.append(event)
+
+    async def reader(**params):
+        return {"candidates": [row]}
+
+    sink = Sink()
+    runner = PostEventEvidenceRunner(
+        settings=type("Settings", (), {"data_feed": "iex", "bar_timeframe": "1Min"})(),
+        market_data=MarketData(),
+        event_sink=sink,
+        evidence_reader=reader,
+    )
+
+    summary = asyncio.run(runner.run_session(date(2026, 9, 25)))
+
+    assert summary.complete_outcomes == 0
+    assert summary.incomplete_outcomes == len(FORWARD_HORIZONS_MINUTES)
+    assert summary.outcome_events == 0
+    assert not any(
+        event["event_type"] == "candidate_forward_outcome"
+        for event in sink.events
+    )
