@@ -13,7 +13,7 @@ def test_report_read_preserves_candidate_fields_and_forward_outcomes():
 
 def test_daily_report_persists_asc005_session_and_rolling_artifacts():
     source = Path("app/research_scheduler.py").read_text()
-    assert 'DAILY_REPORT_VERSION = "rhen-daily-v1.6"' in source
+    assert 'DAILY_REPORT_VERSION = "rhen-daily-v1.7"' in source
     assert "_build_counterfactual_lab" in source
     assert '"session_searches": session_searches' in source
     assert '"rolling_searches": rolling_searches' in source
@@ -55,3 +55,17 @@ def test_daily_report_persists_shadow_allocation_validation_without_authority():
     assert '"automatic_application_authorized": False' in validator
     assert '"promotion_authorized": False' in validator
     assert '"execution_authority": False' in validator
+
+
+
+def test_daily_v17_carries_forward_evidence_readiness_without_authority():
+    scheduler = Path("app/research_scheduler.py").read_text()
+    store = Path("app/rhen_core/store.py").read_text()
+
+    assert '"evidence_readiness": payload.get("evidence_readiness") or {}' in scheduler
+    assert '"readiness": evidence_readiness' in scheduler
+    assert '"evidence_readiness": evidence_readiness' in scheduler
+    assert '"candidate_evidence_readiness.v2"' in store
+    assert '"execution_authority": False' in store
+    assert '"changes_live_decision": False' in store
+    assert '"AWAITING_MEASURABLE_COHORT"' in store
