@@ -183,17 +183,17 @@ def choose_next_action(
         incident = incidents[0]
         return {
             "objective_key": None,
-            "title": f"Resolve {incident['key']}",
+            "title": f"Verify {incident['key']}",
             "owner_system": "IREN",
             "job_type": "CONTROL_VERIFY",
             "protected_action": False,
             "reason": f"open_{incident['severity']}_incident",
             "success_criteria": {"incident_closed": incident["key"]},
             "description": (
-                f"Inspect the live evidence for {incident['key']} "
-                f"({incident['reason']}), determine the safest concrete next action, "
-                "execute only non-protected control-plane work, and escalate any "
-                "protected mutation that requires Devon."
+                f"Re-read the live evidence for {incident['key']} "
+                f"({incident['reason']}) and record whether the incident is still open. "
+                "This control verifies state only; it does not claim to repair an "
+                "arbitrary subsystem fault."
             ),
             "incident": incident,
         }
@@ -246,34 +246,21 @@ def choose_next_action(
         row = blocked_jobs[0]
         return {
             "objective_key": row.get("objective_key"),
-            "title": f"Unblock {row.get('title') or row.get('job_type') or 'IREN work'}",
+            "title": f"Recheck {row.get('title') or row.get('job_type') or 'IREN work'}",
             "owner_system": row.get("owner_system") or "IREN",
             "job_type": "CONTROL_RECONCILE",
             "protected_action": False,
             "reason": "blocked_or_waiting_work",
             "success_criteria": {"job_unblocked": row.get("job_id")},
             "description": (
-                "Inspect why this durable job is waiting or blocked, identify whether "
-                "the missing dependency can be repaired automatically, and escalate "
-                "only if human authority is actually required."
+                "Re-read the durable job and dependency state and record whether the "
+                "blocker has cleared. This control does not claim to repair a dependency "
+                "that has no registered deterministic actuator."
             ),
             "blocked_job_id": row.get("job_id"),
         }
 
-    return {
-        "objective_key": None,
-        "title": "Reconcile system and derive next objective",
-        "owner_system": "IREN",
-        "job_type": "CONTROL_RECONCILE",
-        "protected_action": False,
-        "reason": "continuous_planner_fallback",
-        "success_criteria": {"next_action_derived": True},
-        "description": (
-            "Re-read live control state, objectives, jobs, schedules, and incidents; "
-            "identify the highest-value safe next action and surface it as the current "
-            "IREN objective."
-        ),
-    }
+    return None
 
 
 def _status_message(summary: dict[str, Any]) -> str:
@@ -281,8 +268,7 @@ def _status_message(summary: dict[str, Any]) -> str:
     incidents = list(summary.get("open_incidents") or [])
     active_jobs = int(summary.get("active_jobs") or 0)
     waiting_jobs = int(summary.get("waiting_jobs") or 0)
-    next_action = summary.get("next_action") or {}
-    next_title = str(next_action.get("title") or "Reconcile system and derive next objective")
+    next_action = summary.get("next_action")
     parts = [f"IREN is {state}."]
     if incidents:
         parts.append(f"{len(incidents)} incident{'s are' if len(incidents) != 1 else ' is'} open.")
@@ -290,7 +276,10 @@ def _status_message(summary: dict[str, Any]) -> str:
         parts.append("No control-plane incidents are open.")
     if active_jobs:
         parts.append(f"{active_jobs} active job{'s' if active_jobs != 1 else ''}; {waiting_jobs} waiting or blocked.")
-    parts.append(f"Next: {next_title}.")
+    if isinstance(next_action, dict) and next_action.get("title"):
+        parts.append(f"Next: {next_action['title']}.")
+    else:
+        parts.append("No pending control action.")
     return " ".join(parts)
 
 
@@ -523,46 +512,99 @@ class CommandResult:
 def process_command(command: str, snapshot: dict[str, Any], control_state: dict[str, Any], *, requested_by: str, source: str) -> CommandResult:
     intent = normalize_command(command)
     summary = status_summary(snapshot, control_state)
+    action = summary.get("next_action")
+
     if intent == "STATUS":
         return CommandResult(intent, summary)
-    if intent in {"NEXT", "CODEX_HANDOFF"}:
-        action = summary.get("next_action")
-        title = str((action or {}).get("title") or "Reconcile system and derive next objective")
+
+    if intent == "NEXT":
+        if not action:
+            return CommandResult(intent, {
+                **summary,
+                "message": "No pending safe action.",
+                "execution_mode": "idle",
+                "action_taken": False,
+            })
+        execution_mode = codex.mode(action)
         return CommandResult(intent, {
             **summary,
-            "message": f"Next: {title}. " + ("Prepare for Codex to create the canonical software package." if codex.mode(action) == "codex/manual software" else "IREN can execute this deterministic action." if codex.mode(action) == "deterministic" else "Devon’s authorization is required."),
-            "execution_mode": codex.mode(action),
+            "message": f"Next: {action.get('title')}.",
+            "execution_mode": execution_mode,
+            "action_taken": False,
         })
+
+    if intent == "CODEX_HANDOFF":
+        if not action:
+            return CommandResult(intent, {
+                **summary,
+                "message": "No pending software objective. No Codex handoff was created.",
+                "execution_mode": "idle",
+                "action_taken": False,
+            })
+        execution_mode = codex.mode(action)
+        return CommandResult(intent, {
+            **summary,
+            "message": (
+                f"Prepare Codex handoff: {action.get('title')}."
+                if execution_mode == "codex/manual software"
+                else "The pending action is not software work; no Codex handoff is needed."
+                if execution_mode == "deterministic"
+                else "This action requires owner authority; no Codex handoff was created."
+            ),
+            "execution_mode": execution_mode,
+            "action_taken": False,
+        })
+
     if intent == "DECISIONS":
-        decisions = [row for row in snapshot.get("jobs") or [] if row.get("status") == "NEEDS_APPROVAL" or row.get("requires_human") is True]
-        return CommandResult(intent, {"message": "Items requiring human authority.", "items": decisions, **summary})
+        decisions = [
+            row
+            for row in snapshot.get("jobs") or []
+            if row.get("status") == "NEEDS_APPROVAL" or row.get("requires_human") is True
+        ]
+        return CommandResult(intent, {
+            **summary,
+            "message": (
+                f"{len(decisions)} owner decision{'s' if len(decisions) != 1 else ''} pending."
+                if decisions
+                else "No owner decisions are pending."
+            ),
+            "items": decisions,
+            "action_taken": False,
+        })
+
     if intent in {"EXECUTE_NEXT", "FIX"}:
-        action = summary.get("next_action") or choose_next_action(snapshot, control_state)
+        if not action:
+            return CommandResult(intent, {
+                **summary,
+                "message": "No pending safe action. Nothing executed.",
+                "execution_mode": "idle",
+                "action_taken": False,
+            })
         execution_mode = codex.mode(action)
         if execution_mode == "codex/manual software":
             return CommandResult(intent, {
                 **summary,
-                "message": (
-                    "Software work is manual in the zero-cost control plane. "
-                    "Use 'prepare for Codex' to create a bounded handoff; no paid model job was queued."
-                ),
+                "message": "Software work requires a manual Codex handoff. Nothing was queued.",
                 "next_action": action,
                 "execution_mode": execution_mode,
+                "action_taken": False,
             })
         job = build_job(action, requested_by, source)
         return CommandResult(intent, {
             **summary,
-            "message": f"IREN queued: {action.get('title')}.",
+            "message": (
+                f"Queued {action.get('title')} for owner approval."
+                if job.get("status") == "NEEDS_APPROVAL"
+                else f"Queued {action.get('title')}."
+            ),
             "next_action": action,
             "execution_mode": execution_mode,
+            "action_taken": True,
         }, job)
+
     return CommandResult(intent, {
         **summary,
-        "message": (
-            "Free-form directive not executed. IREN has no conversational model worker in "
-            "the zero-cost control plane. Use an explicit deterministic control or prepare "
-            "a manual Codex handoff."
-        ),
+        "message": "Unsupported control.",
         "supported_actions": [
             "status",
             "what's next?",
@@ -571,6 +613,7 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
             "prepare for Codex",
             "verify Codex handoff",
         ],
+        "action_taken": False,
     })
 
 
@@ -680,38 +723,92 @@ class IrenWorkEngine:
                     result = CommandResult("CODEX_ASSOCIATE", {"message": "PR associated; independent verification is pending."})
                     job_row = associated.get("job")
                 elif result.intent == "CODEX_VERIFY":
-                    await self._reconcile_handoffs(force=True)
-                    result = CommandResult("CODEX_VERIFY", {"message": "Codex verification checked. See the handoff evidence and blockers."})
-                elif result.intent in {"CODEX_HANDOFF", "NEXT", "EXECUTE_NEXT"}:
                     active = codex.active_handoffs(snapshot)
-                    action = (result.response or {}).get("next_action") or {}
-                    if active and result.intent in {"CODEX_HANDOFF", "NEXT"}:
+                    if not active:
+                        result = CommandResult(
+                            "CODEX_VERIFY",
+                            {
+                                **result.response,
+                                "message": "No active Codex handoff to verify.",
+                                "action_taken": False,
+                            },
+                        )
+                    else:
+                        await self._reconcile_handoffs(force=True)
+                        result = CommandResult(
+                            "CODEX_VERIFY",
+                            {
+                                **result.response,
+                                "message": "Handoff verification refreshed from current GitHub evidence.",
+                                "action_taken": True,
+                            },
+                        )
+                elif result.intent == "CODEX_HANDOFF":
+                    active = codex.active_handoffs(snapshot)
+                    action = (result.response or {}).get("next_action")
+                    if active:
                         job_row = active[0]
-                        if result.intent == "CODEX_HANDOFF":
-                            github = await self._github_evidence()
-                            created = await self.gateway("iren_handoff_prepare", objective_key=job_row["objective_key"],
-                                main_sha=github["main_sha"], command_id=str(command_id), requested_by=requested_by)
-                            job_row = created["job"]
-                        result = CommandResult(result.intent, {**result.response, "message": "Continue the prepared Codex handoff. Copy the canonical prompt below.",
-                            "execution_mode": "codex/manual software"})
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "An active Codex handoff already exists.",
+                                "execution_mode": "codex/manual software",
+                                "action_taken": False,
+                            },
+                        )
+                    elif not action:
+                        pass
                     elif codex.mode(action) == "protected/requires Devon":
-                        result = CommandResult(result.intent, {**result.response, "message": "This objective requires Devon. No executable handoff or expanded authority was created.",
-                            "execution_mode": "protected/requires Devon"})
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "This objective requires owner authority. No Codex handoff was created.",
+                                "execution_mode": "protected/requires Devon",
+                                "action_taken": False,
+                            },
+                        )
                     elif codex.mode(action) == "codex/manual software":
                         github = await self._github_evidence()
-                        created = await self.gateway("iren_handoff_prepare", objective_key=action.get("objective_key"),
-                            main_sha=github["main_sha"], command_id=str(command_id), requested_by=requested_by)
+                        created = await self.gateway(
+                            "iren_handoff_prepare",
+                            objective_key=action.get("objective_key"),
+                            main_sha=github["main_sha"],
+                            command_id=str(command_id),
+                            requested_by=requested_by,
+                        )
                         job_row = created["job"]
                         package = (job_row.get("result") or {}).get("package") or {}
-                        _emit_work_event("iren_codex_prepared", handoff_id=job_row.get("job_id"),
-                            objective_key=package.get("objective_key"), base_sha=package.get("base_sha"),
-                            prompt_chars=len(package.get("prompt") or ""), package_digest=package.get("package_digest"),
-                            title=package.get("title"), paid_model_execution=False)
-                        result = CommandResult(result.intent, {**result.response, "message": "Codex handoff prepared. Copy the complete prompt; paid execution remains disabled.",
-                            "execution_mode": "codex/manual software"})
-                    elif result.intent == "CODEX_HANDOFF":
-                        result = CommandResult(result.intent, {**result.response, "message": "The next action is deterministic; no Codex handoff is needed. Use do that.",
-                            "execution_mode": "deterministic"})
+                        _emit_work_event(
+                            "iren_codex_prepared",
+                            handoff_id=job_row.get("job_id"),
+                            objective_key=package.get("objective_key"),
+                            base_sha=package.get("base_sha"),
+                            prompt_chars=len(package.get("prompt") or ""),
+                            package_digest=package.get("package_digest"),
+                            title=package.get("title"),
+                            paid_model_execution=False,
+                        )
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "Codex handoff prepared.",
+                                "execution_mode": "codex/manual software",
+                                "action_taken": True,
+                            },
+                        )
+                    else:
+                        result = CommandResult(
+                            result.intent,
+                            {
+                                **result.response,
+                                "message": "The pending action is deterministic; no Codex handoff was created.",
+                                "execution_mode": "deterministic",
+                                "action_taken": False,
+                            },
+                        )
                 if result.job:
                     created = await self.gateway("iren_job_create", job=result.job)
                     job_row = created.get("job")
