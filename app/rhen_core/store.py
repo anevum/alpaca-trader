@@ -3788,11 +3788,37 @@ class RhenCoreStore:
             cycles += 1
 
         rate = round(ready / total * 100.0, 4) if total > 0 else None
+        if cycles == 0 or total == 0:
+            state = "AWAITING_MEASURABLE_COHORT"
+            next_action = (
+                "Collect the first post-fix live decision cycle before "
+                "evaluating forward-outcome coverage."
+            )
+        elif ready == total:
+            state = "READY"
+            next_action = (
+                "Continue collecting mature forward outcomes from the "
+                "measurement-ready cohort."
+            )
+        elif ready > 0:
+            state = "PARTIAL"
+            next_action = (
+                "Keep measurable candidates in validation and investigate "
+                "the remaining missing decision-time references."
+            )
+        else:
+            state = "DEGRADED"
+            next_action = (
+                "Forward validation is blocked for the sampled cohort; "
+                "repair decision-time price/time evidence before using it."
+            )
         return {
-            "schema_version": "candidate_evidence_readiness.v1",
+            "schema_version": "candidate_evidence_readiness.v2",
+            "state": state,
             "research_only": True,
             "execution_authority": False,
             "changes_live_decision": False,
+            "measurement_contract": "exact_decision_price_plus_completed_bar_time",
             "sampled_cycles": cycles,
             "candidate_count": total,
             "measurement_ready_count": ready,
@@ -3801,6 +3827,7 @@ class RhenCoreStore:
             "missing_bar_time_count": missing_bar_time,
             "evidence_reference_only_count": reference_only,
             "latest_observed_at": latest_at,
+            "next_action": next_action,
         }
 
     def strategy_pipeline_research(self) -> dict[str, Any]:
