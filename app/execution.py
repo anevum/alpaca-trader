@@ -264,59 +264,48 @@ class ExecutionEngine:
             if stamp is None or stamp.date() != now.date():
                 continue
 
-            stop_like = (
-                "-stop-" in client_order_id
-                or "-hardstop-" in client_order_id
-            )
-            is_loss = stop_like
-            if stop_like:
-                symbol = str(order.get("symbol", "")).upper()
-                exit_price = Decimal(
-                    str(order.get("filled_avg_price") or "0")
-                )
-                prior_buys = [
-                    item for item in buy_fills.get(symbol, [])
-                    if item[0] <= stamp
-                ]
-                if exit_price > 0 and prior_buys:
-                    entry_price = prior_buys[-1][1]
-                    is_loss = exit_price < entry_price
+            symbol = str(order.get("symbol", "")).upper()
+            exit_price = Decimal(str(order.get("filled_avg_price") or "0"))
+            prior_buys = [
+                item for item in buy_fills.get(symbol, [])
+                if item[0] <= stamp
+            ]
+            if exit_price <= 0 or not prior_buys:
+                continue
 
+            entry_price = prior_buys[-1][1]
+            is_loss = exit_price < entry_price
             exits.append((stamp, client_order_id, is_loss))
 
         exits.sort(key=lambda item: item[0], reverse=True)
         streak = 0
-        latest_stop: datetime | None = None
-        for stamp, client_order_id, is_loss in exits:
-            stop_like = (
-                "-stop-" in client_order_id
-                or "-hardstop-" in client_order_id
-            )
-            if not stop_like or not is_loss:
+        latest_loss: datetime | None = None
+        for stamp, _client_order_id, is_loss in exits:
+            if not is_loss:
                 break
             streak += 1
-            if latest_stop is None:
-                latest_stop = stamp
+            if latest_loss is None:
+                latest_loss = stamp
 
         detail = {
             "streak": streak,
             "limit": limit,
             "cooldown_minutes": cooldown,
-            "latest_stop_at": latest_stop.isoformat() if latest_stop else None,
+            "latest_loss_at": latest_loss.isoformat() if latest_loss else None,
         }
-        if streak < limit or latest_stop is None:
+        if streak < limit or latest_loss is None:
             return True, "", detail
 
-        minutes_since_stop = (now - latest_stop).total_seconds() / 60
-        detail["minutes_since_stop"] = minutes_since_stop
-        if minutes_since_stop >= cooldown:
+        minutes_since_loss = (now - latest_loss).total_seconds() / 60
+        detail["minutes_since_loss"] = minutes_since_loss
+        if minutes_since_loss >= cooldown:
             return True, "", detail
 
         return (
             False,
             (
-                f"loss-streak cooldown active after {streak} consecutive stop exits "
-                f"({minutes_since_stop:.1f}/{cooldown} min)"
+                f"loss-streak cooldown active after {streak} consecutive realized losses "
+                f"({minutes_since_loss:.1f}/{cooldown} min)"
             ),
             detail,
         )
