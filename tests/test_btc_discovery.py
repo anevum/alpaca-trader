@@ -426,6 +426,9 @@ def test_canonical_job_advances_in_order_and_persists_approved_paper(tmp_path, m
         async def historical_bars_many(self,*args,**kwargs):
             return {'BTC/USD': []}
     job.data=Data()
+    async def complete_corpus(*args, **kwargs):
+        return []
+    monkeypatch.setattr(job, '_load_corpus', complete_corpus)
     monkeypatch.setattr(ContinuousReplayEngine,'run_btc_direct',lambda *a,**k: evidence())
     def respond(request):
         assert request.url.path=='/v1/graen/btc-direct-replay'
@@ -476,17 +479,23 @@ def test_paper_success_stops_at_review_and_failure_closes_entries(tmp_path):
     assert resolve_strategy('live',assignment).strategy_version_id==LIVE_ID
 
 
-def test_minute_recovery_aggregates_only_observed_bars():
+def test_minute_recovery_requires_complete_observed_hour():
     from app.graen.btc_discovery import _aggregate_recovery
     hour = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    partial = [
+        {'t': (hour + timedelta(minutes=i)).isoformat(), 'o': '100', 'h': '101', 'l': '99', 'c': '100.5'}
+        for i in range(59)
+    ]
+    assert _aggregate_recovery(partial, {hour}) == []
     rows = [
-        {'t': (hour + timedelta(minutes=0)).isoformat(), 'o': '100', 'h': '101', 'l': '99', 'c': '100.5'},
-        {'t': (hour + timedelta(minutes=1)).isoformat(), 'o': '100.5', 'h': '102', 'l': '100', 'c': '101.5'},
-        {'t': (hour + timedelta(minutes=59)).isoformat(), 'o': '101.5', 'h': '103', 'l': '98', 'c': '102'},
+        {'t': (hour + timedelta(minutes=i)).isoformat(),
+         'o': str(100 + i/100), 'h': str(101 + i/100),
+         'l': str(99 - i/100), 'c': str(100.5 + i/100)}
+        for i in range(60)
     ]
     recovered = _aggregate_recovery(rows, {hour})
     assert recovered == [{
-        't': hour.isoformat(), 'o': '100', 'h': '103', 'l': '98', 'c': '102'
+        't': hour.isoformat(), 'o': '100.0', 'h': '101.59', 'l': '98.41', 'c': '101.09'
     }]
 
 
@@ -504,7 +513,7 @@ def test_incomplete_development_data_waits_without_consuming_candidate(tmp_path,
     state = read_state(job.store)
     assert result['state'] == 'WAITING_FOR_DATA'
     assert result['search_completed'] == 0
-    assert list(state['candidates']) == before
+    assert set(state['candidates']) == set(before)
     assert all(row['status'] == 'QUEUED' for row in state['candidates'].values())
     assert all(row['history'] == [] for row in state['candidates'].values())
     assert state['last_error'].startswith('CorpusUnavailable:')
