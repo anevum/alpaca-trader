@@ -424,3 +424,50 @@ def test_velum_crypto_replay_recovery_uses_new_job_key():
         {"window_end": "2026-10-05T19:00:00+00:00"},
     )
     assert previous.job_key != recovery.job_key
+
+
+def test_unified_iren_owns_every_enabled_registry_workflow(monkeypatch):
+    monkeypatch.setenv("RHEN_UNIFIED_ROLE", "iren")
+    monkeypatch.setenv("RHEN_CANONICAL_SCHEDULER_ENABLED", "false")
+    runtime = SchedulerRuntime()
+
+    enabled = {
+        row["workflow_id"]
+        for row in runtime.workflows
+        if row.get("enabled")
+    }
+    owned = {
+        row["workflow_id"]
+        for row in runtime.workflows
+        if runtime.workflow_enabled(row)
+    }
+
+    assert runtime.enabled is True
+    assert owned == enabled
+    assert "rhen.research.daily" in owned
+    assert "rhen.session_close" in owned
+    assert "velum.equity.replay" in owned
+    assert "graen.btc.discovery" in owned
+
+
+def test_scheduled_daily_research_does_not_require_model_api():
+    runtime = object.__new__(SchedulerRuntime)
+    runtime._research_review = AsyncMock(return_value={"status": "NOOP", "persisted": True})
+    item = ScheduledItem(
+        workflow(
+            workflow_id="rhen.research.daily",
+            implementation_target="research_agent_daily",
+        ),
+        datetime(2026, 10, 5, 20, 25, tzinfo=UTC),
+        "2026-10-05",
+        {"session": "2026-10-05"},
+    )
+
+    result = asyncio.run(runtime._execute(item))
+
+    assert result["status"] == "NOOP"
+    runtime._research_review.assert_awaited_once_with(
+        "daily",
+        "2026-10-05",
+        invoke_model=False,
+    )
