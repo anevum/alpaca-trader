@@ -299,27 +299,22 @@ def test_command_projection_has_real_state_not_fabricated_activity(tmp_path):
     assert 'trades' not in projected['candidate']['results']['HOLDOUT']['scenarios']['HIGH:delay_2']
 
 
-def test_unified_runtime_has_one_scheduled_btc_research_authority(monkeypatch):
-    for role in ('graen', 'graen-research', 'crypto-research', 'velum'):
-        spec = next(x for x in PROCESSES if x.name == role)
-        env = _child_env(spec)
-        if role in ('graen', 'graen-research'):
-            assert env['GRAEN_RESEARCH_AUTORUN'] == 'false'
-        if role == 'crypto-research':
-            assert env['GRAEN_LEGACY_BTC_RUNTIME_DISABLED'] == 'true'
-        if role == 'velum':
-            assert env['VELUM_AUTORUN'] == 'false'
+def test_unified_runtime_has_no_scheduled_btc_research_authority(monkeypatch):
     from app.orchestration_scheduler import SchedulerRuntime
+
     monkeypatch.setenv('RHEN_UNIFIED_ROLE', 'iren')
     monkeypatch.setenv('RHEN_CANONICAL_SCHEDULER_ENABLED', 'false')
     runtime = SchedulerRuntime()
     active = [w for w in runtime.workflows if runtime.workflow_enabled(w)]
     enabled = [w for w in runtime.workflows if w.get('enabled')]
+
     assert [w['workflow_id'] for w in active] == [w['workflow_id'] for w in enabled]
-    assert sum(
-        w['implementation_target'] == 'graen_btc_discovery'
+    assert not any(
+        'btc' in w['workflow_id'].lower()
+        or 'crypto' in w['workflow_id'].lower()
+        or w.get('implementation_target') == 'graen_btc_discovery'
         for w in active
-    ) == 1
+    )
     assert runtime.enabled
 
 

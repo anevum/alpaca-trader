@@ -117,17 +117,19 @@ runtime can consume detailed real-time history for every asset continuously.
 
 ## Asset-class scope
 
-- Regular U.S. equities: live execution path exists.
-- Extended / overnight U.S. equities: separate 24/5 regime; live broker writes stay
-  behind their explicit authorization gate.
-- Crypto: execution path exists, but research must model fee/spread/slippage costs
-  explicitly and should not target fee-insensitive penny churn.
-- Options: Alpaca data/trading capability exists, but RHEN V4 does not represent an
-  options execution path as active. Build read-only research/evidence before any
-  promotion decision.
-- Short equities: not represented as an active execution authority. Treat future
-  support as a protected asset-class change, not an implicit extension of the long
-  strategy.
+- Regular U.S. equities and ETFs: live long-only execution authority.
+- Extended / overnight U.S. equities: the same long-only asset authority in a
+  separate 24/5 execution regime; broker writes remain behind explicit session
+  authorization and Alpaca-compatible order mechanics.
+- Crypto / BTC: removed from active runtime, scheduling, research dispatch,
+  configuration authority, Command, and strategy handoffs. Historical crypto
+  evidence may remain read-only for provenance only.
+- Options: read-only research/intelligence for bounded top-underlying analysis.
+  Options orders have no execution authority.
+- Short equities: no execution authority.
+- Leverage expansion: no execution authority.
+
+Adding or restoring any asset class or broker-write path is a protected change.
 
 ## Command V4
 
@@ -137,7 +139,7 @@ Command is organized by operator question rather than subsystem branding.
 
 What is trading now?
 
-Shows broker account truth, positions, orders, regular/extended/crypto lanes,
+Shows broker account truth, positions, orders, regular and extended-equity lanes,
 active universe, exposure and live performance.
 
 ### Discover

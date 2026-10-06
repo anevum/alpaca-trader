@@ -1415,15 +1415,7 @@ async def lifespan(app: FastAPI):
     slack_market_task: asyncio.Task | None = None
     research_started = False
 
-    if settings.crypto_only_runtime:
-        runtime_state.set_reconciliation(
-            {
-                "safe_to_enter": False,
-                "reason": "equity runtime disabled on dedicated crypto service",
-            },
-            startup=True,
-        )
-    elif settings.credentials_configured and not settings.scan_only:
+    if settings.credentials_configured and not settings.scan_only:
         runtime_state.begin_cycle(uuid4().hex)
         await reconcile_broker_state(startup=True, force=True)
     elif settings.scan_only:
@@ -1435,24 +1427,24 @@ async def lifespan(app: FastAPI):
         runtime_state.startup_reconciled = True
         runtime_state.reconciliation_safe = False
 
-    if not settings.crypto_only_runtime:
-        await research_reports.start()
-        research_started = True
-        equity_task = asyncio.create_task(monitor_loop())
-        if settings.extended_equity_lane_enabled:
-            extended_equity_task = asyncio.create_task(
-                extended_equity_monitor_loop()
-            )
-        slack_market_task = asyncio.create_task(slack_market_observer_loop())
+    await research_reports.start()
+    research_started = True
+    equity_task = asyncio.create_task(monitor_loop())
+    if settings.extended_equity_lane_enabled:
+        extended_equity_task = asyncio.create_task(
+            extended_equity_monitor_loop()
+        )
+    slack_market_task = asyncio.create_task(slack_market_observer_loop())
 
-    crypto_task = asyncio.create_task(crypto_monitor_loop())
+    # V4.3 retires crypto/BTC execution authority. The legacy crypto engine may
+    # remain importable during decommission, but no runtime task is started and
+    # therefore no autonomous crypto broker-write path is reachable.
     yield
     _stop.set()
     if equity_task is not None:
         await equity_task
     if extended_equity_task is not None:
         await extended_equity_task
-    await crypto_task
     if slack_market_task is not None:
         await slack_market_task
     if research_started:

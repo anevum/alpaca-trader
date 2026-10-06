@@ -36,12 +36,13 @@ def test_registry_contains_one_owner_for_required_workflows():
         "rhen.session_close",
         "rhen.research.daily",
         "velum.equity.replay",
-        "velum.crypto.replay",
         "graen.research.checkpoint",
         "rhen.weekly_review",
         "iren.scheduler.health",
     }
     assert required.issubset(ids)
+    assert "velum.crypto.replay" not in ids
+    assert "graen.btc.discovery" not in ids
     nostra = [row for row in registry["workflows"] if row["subsystem"] == "NOSTRA"]
     assert nostra == []
     independent = {
