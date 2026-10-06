@@ -260,3 +260,29 @@ def test_post_event_generation_uses_purpose_built_foundation_read():
     assert "timeout=90.0" in source
     assert "post_event_evidence_session=requested" in source
     assert "evidence_reader=post_event_evidence_reader" in source
+
+
+
+def test_reporting_error_clears_after_healthy_cycle(monkeypatch):
+    import asyncio
+    from app.research_scheduler import ResearchReportScheduler
+
+    class Empty:
+        pass
+
+    scheduler = ResearchReportScheduler(Empty(), Empty(), Empty(), Empty(), Empty())
+    scheduler.last_error = "research reporting ConnectError: startup race"
+
+    async def catch_up():
+        return None
+
+    async def tick():
+        scheduler.stop_event.set()
+
+    scheduler._catch_up_latest_completed = catch_up
+    scheduler._tick = tick
+    monkeypatch.delenv("RHEN_CANONICAL_SCHEDULER_ENABLED", raising=False)
+
+    asyncio.run(scheduler._run())
+
+    assert scheduler.last_error is None
