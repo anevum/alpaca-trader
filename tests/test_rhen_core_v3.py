@@ -832,3 +832,79 @@ def test_command_research_tracking_exposes_rhen_shadow_economics_run(
     assert run["detail"]["execution_authority"] is False
     assert len(run["series"]) == 3
     assert all(len(series["points"]) == 2 for series in run["series"])
+
+
+
+def test_command_research_tracking_exposes_shadow_allocation_run(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    events = []
+    fixtures = [
+        ("13.00", "10", "0.00005", True),
+        ("0", "-2", "0", False),
+    ]
+    for index, (shadow_notional, net_bps, velocity, would_allocate) in enumerate(
+        fixtures
+    ):
+        stamp = now + timedelta(minutes=index)
+        events.append(
+            {
+                "event_key": f"shadow-allocation-{index}",
+                "event_type": "order_intent",
+                "occurred_at": stamp.isoformat(),
+                "run_id": "run-shadow-allocation",
+                "strategy_version_id": "LIVE-TEST",
+                "source": "test",
+                "payload": {
+                    "intent": {
+                        "side": "buy",
+                        "payload": {
+                            "candidate_snapshot": {
+                                "shadow_allocation": {
+                                    "methodology_version": "rhen-shadow-allocation-v1",
+                                    "research_only": True,
+                                    "execution_authority": False,
+                                    "changes_live_decision": False,
+                                    "bounded_by_live_safe_notional": True,
+                                    "live_safe_notional": "20.00",
+                                    "shadow_notional": shadow_notional,
+                                    "expected_net_bps": net_bps,
+                                    "capital_velocity_per_minute": velocity,
+                                    "would_allocate": would_allocate,
+                                    "reason": (
+                                        "shadow_allocation_candidate"
+                                        if would_allocate
+                                        else "expected_net_edge_nonpositive"
+                                    ),
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        )
+    store.ingest_events(events)
+
+    tracking = store.command_research_tracking()
+    run = next(
+        row
+        for row in tracking["observability"]["runs"]
+        if row["run_id"] == "rhen-shadow-allocation"
+    )
+
+    assert run["system"] == "RHEN"
+    assert run["kind"] == "SHADOW_ALLOCATION"
+    assert run["status"] == "OBSERVING"
+    assert run["methodology_version"] == "rhen-shadow-allocation-v1"
+    assert run["metrics"]["selected_entry_count"] == 2.0
+    assert run["metrics"]["would_allocate_count"] == 1.0
+    assert run["metrics"]["shadow_allocation_rate_pct"] == 50.0
+    assert run["metrics"]["mean_shadow_to_live_pct"] == 32.5
+    assert run["metrics"]["mean_expected_net_bps"] == 4.0
+    assert run["detail"]["research_only"] is True
+    assert run["detail"]["execution_authority"] is False
+    assert run["detail"]["bounded_by_live_safe_notional"] is True
+    assert len(run["series"]) == 3
+    assert all(len(series["points"]) == 2 for series in run["series"])
