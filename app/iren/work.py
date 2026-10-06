@@ -557,6 +557,7 @@ def _maintenance_mode(
         row for row in _maintenance_rows(snapshot, "graen_problems")
         if str(row.get("status") or "").upper() in {"RUNNING", "QUEUED", "WAITING", "BLOCKED"}
     ]
+    current_action = choose_next_action(snapshot, control_state)
     research_delta = any(
         item.startswith(("GRAEN", "VELUM", "NOSTRA", "Strategy"))
         or "strategy" in item.lower()
@@ -575,6 +576,8 @@ def _maintenance_mode(
         return "RESEARCH", "research evidence is active or changed"
     if focus:
         return "FOCUSED", "operator supplied a specific focus"
+    if current_action:
+        return "TARGETED", "pending canonical objective or work item"
     if change_count == 0:
         return "VERIFY_ONLY", "no material delta since the previous maintenance pass"
     return "TARGETED", "material state changed without an active incident"
