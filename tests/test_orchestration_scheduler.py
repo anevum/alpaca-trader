@@ -438,7 +438,7 @@ def test_unified_iren_owns_every_enabled_registry_workflow(monkeypatch):
     assert "velum.equity.replay" in owned
     assert "graen.btc.discovery" not in owned
     assert "velum.crypto.replay" not in owned
-    assert "graen.research.adaptive" in owned
+    assert "graen.research.adaptive" not in owned
 
 
 def test_scheduled_daily_research_does_not_require_model_api():
@@ -464,28 +464,26 @@ def test_scheduled_daily_research_does_not_require_model_api():
     )
 
 
-def test_iren_dispatches_adaptive_research_without_legacy_autorun():
-    runtime = object.__new__(SchedulerRuntime)
-    runtime.token = "test"
-    runtime._post = AsyncMock(
-        return_value={"status": "DISPATCHED", "dispatched": True}
-    )
-    item = ScheduledItem(
-        workflow(
-            workflow_id="graen.research.adaptive",
-            implementation_target="graen_adaptive_research",
-        ),
-        datetime(2026, 10, 6, 4, 35, tzinfo=UTC),
-        "2026-10-06T04:35:00+00:00",
-        {},
-    )
+def test_retired_adaptive_research_dispatch_is_not_registered():
+    import inspect
+    import json
+    from pathlib import Path
 
-    result = asyncio.run(runtime._execute(item))
+    registry = json.loads(Path("app/schedule_registry.json").read_text())
+    workflow_ids = {
+        row["workflow_id"]
+        for row in registry["workflows"]
+    }
+    implementation_targets = {
+        row["implementation_target"]
+        for row in registry["workflows"]
+    }
 
-    assert result["status"] == "DISPATCHED"
-    args, kwargs = runtime._post.await_args
-    assert args[0].endswith("/v1/adaptive/tick")
-    assert kwargs["timeout"] == 30
+    assert "graen.research.adaptive" not in workflow_ids
+    assert "graen_adaptive_research" not in implementation_targets
+    assert "graen_adaptive_research" not in inspect.getsource(
+        SchedulerRuntime._execute
+    )
 
 
 def test_preflight_startup_retry_recovers_from_transient_503(monkeypatch):
@@ -525,7 +523,7 @@ def test_preflight_recovery_registry_can_supersede_same_day_failure():
         if row["workflow_id"] == "rhen.preflight"
     )
 
-    assert registry["scheduler_version"] == "anevum-scheduler-v1.0.9"
+    assert registry["scheduler_version"] == "anevum-scheduler-v1.0.10"
     assert workflow["version"] == "1.0.2"
     assert workflow["catchup_policy"] == "catch_up"
     assert workflow["stale_after_minutes"] == 180

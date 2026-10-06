@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.9",
+  "scheduler_version": "anevum-scheduler-v1.0.10",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -223,31 +223,6 @@
       "implementation_target": "scheduler_self_health",
       "version": "1.0.0",
       "protected_action_level": "read_only"
-    },
-    {
-      "workflow_id": "graen.research.adaptive",
-      "subsystem": "GRAEN",
-      "owner": "IREN",
-      "enabled": true,
-      "schedule_type": "interval",
-      "schedule_expression": "every_5_minutes",
-      "interval_minutes": 5,
-      "timezone": "UTC",
-      "market_calendar_dependency": false,
-      "catchup_policy": "latest_only",
-      "stale_after_minutes": 10,
-      "recovery_after_minutes": 5,
-      "retry_policy": {
-        "max_attempts": 1,
-        "transient_only": true
-      },
-      "notification_policy": {
-        "success": false,
-        "failure_route": "rhen-alerts"
-      },
-      "implementation_target": "graen_adaptive_research",
-      "version": "1.0.0",
-      "protected_action_level": "research_code_and_compiled_evaluation_only"
     }
   ],
   "independent_runtimes": [
