@@ -209,6 +209,7 @@ def _engine_settings(**overrides):
         crypto_execution_enabled=True,
         execution_authorized=True,
         crypto_max_concurrent_positions=1,
+        crypto_max_new_entries_per_cycle=1,
         crypto_max_order_notional=Decimal("5"),
         crypto_max_total_position_notional=Decimal("10"),
         max_total_position_notional=Decimal("250"),
