@@ -302,3 +302,25 @@ def test_market_confirmation_requires_multi_bar_persistence():
 
     assert signal.action == "hold"
     assert signal.reason == "not enough market confirmations passed"
+
+
+
+def test_warmup_hold_retains_exact_completed_bar_reference_for_research():
+    s = strategy()
+    signal = s.evaluate(
+        bars=rising_bars(100),
+        confirmation_bars={"QQQ": rising_bars(200), "SMH": rising_bars(300)},
+        symbol="SPY",
+        has_position=False,
+        order_notional=Decimal("20"),
+        now=datetime(2026, 9, 24, 9, 34, 5, tzinfo=NY),
+    )
+
+    assert signal.action == "hold"
+    assert signal.reason == "not enough completed bars for rolling signal"
+    assert signal.reference_price == Decimal("0")
+    assert signal.metadata["evidence_reference_only"] is True
+    assert signal.metadata["warmup_bar_count"] == 4
+    assert signal.metadata["required_bar_count"] == 9
+    assert signal.metadata["bar_time"] == "2026-09-24T09:33:00-04:00"
+    assert signal.metadata["current_close"] == "100.40"
