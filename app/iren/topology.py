@@ -4,16 +4,14 @@ from datetime import datetime, timezone
 from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
-OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "CRYPTO_EDGE"}
+OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR"}
 
 INVENTORY = {
     "RHEN": ("SERVICE", "rhen", "Live execution; protected trading runtime"),
     "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; broker-isolated research"),
     "GRAEN": ("SERVICE", "graen", "Independent mathematical and theoretical research runtime"),
-    "GRAEN_EXECUTOR": ("WORKER", "graen-research-executor", "Independent research executor; no broker-order authority"),
     "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
     "RESEARCH_AGENT": ("WORKER", "rhen-research-agent", "Independent evidence-review worker"),
-    "CRYPTO_EDGE": ("WORKER", "rhen-crypto-edge-discovery", "Independent crypto research/shadow service; execution disabled"),
     "IREN_EXECUTOR": ("SERVICE", "iren-executor", "Bounded IREN execution and GitHub evidence boundary"),
     "NOSTRA": ("SERVICE", "nostra", "Independent FORWARD forecasting research runtime; research-only evidence authority"),
 }
@@ -70,15 +68,11 @@ def bounded_health(name, body):
             raise ValueError("malformed_runtime_timestamp")
     if name == "RHEN":
         persistence = body.get("persistence")
-        crypto = body.get("crypto")
-        if not isinstance(persistence, dict) or not isinstance(crypto, dict):
+        if not isinstance(persistence, dict):
             raise ValueError("malformed_rhen_dependencies")
         result["persistence"] = {k: persistence.get(k) for k in ("enabled", "dropped_count", "last_sent_at")}
         result["persistence"]["last_error"] = bool(persistence.get("last_error"))
         result["strategy_version_id"] = persistence.get("strategy_version_id")
-        result["crypto_execution_enabled"] = crypto.get("execution_enabled")
-        result["crypto_execution_mode"] = crypto.get("execution_mode")
-        result["crypto_broker_writes_allowed"] = crypto.get("broker_writes_allowed")
         result["source_commit"] = provenance.get("git_commit")
     return result
 
