@@ -14,7 +14,7 @@ from app.btc_discovery_contract import (COSTS, GATES, LIVE_ID, STAGES, VERSION, 
 from app.crypto_layer import CryptoMarketDataClient
 from app.rhen_core.store import RhenCoreStore
 from app.velum_core import ContinuousReplayEngine
-from app.velum_btc import metrics, corpus_coverage, normalized_corpus
+from app.velum_btc import (GAP_POLICY_VERSION, MAX_RESEARCH_MISSING_HOURS, corpus_coverage, metrics, normalized_corpus, research_corpus)
 
 NAMESPACE = "btc_discovery"
 UTC = timezone.utc
@@ -350,10 +350,25 @@ class BtcDiscoveryJob:
                     end=end - timedelta(microseconds=1), timeframe="1Hour")
                 corpus = bars.get("BTC/USD") or []
                 self.store.set_kv(NAMESPACE, "corpus:" + cache_key, corpus)
+
             missing = _missing_hours(corpus, start, end)
-            recovery = {"requested_missing_hours": len(missing), "recovered_hours": 0,
-                        "source": "1Min_aggregate", "bounded_hours": MAX_MINUTE_RECOVERY_HOURS}
-            if missing and len(missing) <= MAX_MINUTE_RECOVERY_HOURS:
+            missing_ids = [value.isoformat() for value in missing]
+            previous_recovery = self.store.get_kv(
+                NAMESPACE, "corpus_recovery:" + cache_key, {}
+            )[0] or {}
+            accepted_same_gap = (
+                previous_recovery.get("gap_policy") == GAP_POLICY_VERSION
+                and previous_recovery.get("accepted_gap_hours") == missing_ids
+            )
+            recovery = {
+                "requested_missing_hours": len(missing),
+                "recovered_hours": 0,
+                "source": "1Min_aggregate",
+                "bounded_hours": MAX_MINUTE_RECOVERY_HOURS,
+                "gap_policy": GAP_POLICY_VERSION,
+            }
+
+            if missing and len(missing) <= MAX_MINUTE_RECOVERY_HOURS and not accepted_same_gap:
                 allowed = set(missing)
                 recovered = []
                 for window_start, window_end in _recovery_windows(missing):
@@ -373,9 +388,22 @@ class BtcDiscoveryJob:
                         merged.setdefault(_stamp(row), row)
                     corpus = [merged[key] for key in sorted(merged)]
                     self.store.set_kv(NAMESPACE, "corpus:" + cache_key, corpus)
-                recovery["recovered_hours"] = len(set(missing) - set(_missing_hours(corpus, start, end)))
+                recovery["recovered_hours"] = len(
+                    set(missing) - set(_missing_hours(corpus, start, end))
+                )
+            elif accepted_same_gap:
+                recovery["recovery_skipped"] = "previously_accepted_provider_gap"
+
+            remaining = _missing_hours(corpus, start, end)
+            recovery["unrecovered_hours"] = len(remaining)
+            if len(remaining) <= MAX_RESEARCH_MISSING_HOURS:
+                recovery["accepted_unrecoverable_hours"] = len(remaining)
+                recovery["accepted_gap_hours"] = [value.isoformat() for value in remaining]
             self.store.set_kv(NAMESPACE, "corpus_recovery:" + cache_key, recovery)
-            normalized_corpus(corpus, start, end)
+
+            # Research may continue only through the explicit bounded-gap policy.
+            # No missing price is synthesized and replay resets across the gap.
+            research_corpus(corpus, start, end)
             return corpus
         except (httpx.HTTPError, ValueError) as exc:
             raise CorpusUnavailable(str(exc)) from exc
