@@ -41,6 +41,11 @@ class BtcPaperSelection:
                 if assignment is None:
                     if self.assignment or engine.strategy.strategy_version_id != LIVE_ID:
                         raise ValueError("durable_paper_assignment_disappeared")
+                    ack = await client.post(base + "/paper-observation", headers=headers, json={
+                        "heartbeat": True, "candidate_id": LIVE_ID, "trading_mode": "paper", "run_id": self.settings.trading_run_id})
+                    ack.raise_for_status()
+                    if ack.json().get("ok") is not True or ack.json().get("live_authority") is not False:
+                        raise ValueError("paper_reader_heartbeat_invalid")
                     self.entries_allowed = True  # Preserve the already authorized baseline canary.
                     self.error = None
                     return
