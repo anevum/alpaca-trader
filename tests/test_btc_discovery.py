@@ -543,3 +543,54 @@ def test_exhausted_state_from_data_only_rejections_is_recoverable(tmp_path, monk
     assert _reset_incomplete_development_rows(state)
     assert state['status'] == 'WAITING_FOR_DATA'
     assert all(row['status'] == 'QUEUED' for row in state['candidates'].values())
+
+    assert all(row['rejection_reasons'] == [] for row in state['candidates'].values())
+    assert all(row['non_consumptive_failures'] == [
+        'stage_failed:ValueError:incomplete_hourly_corpus:missing=1'
+    ] for row in state['candidates'].values())
+
+
+def test_waiting_state_migrates_legacy_pre_evidence_rejections_without_consuming_search(tmp_path, monkeypatch):
+    from app.graen.btc_discovery import CorpusUnavailable
+    monkeypatch.setenv('RHEN_CORE_DB_PATH', str(tmp_path/'core.db'))
+    job = BtcDiscoveryJob(Settings())
+    candidates = {}
+    values = list(catalog().items())
+    for index, (key, value) in enumerate(values):
+        if index == len(values) - 1:
+            candidates[key] = {**value, 'stage':'DEVELOPMENT', 'status':'QUEUED',
+                               'history':[], 'results':{}, 'rejection_reasons':[]}
+        else:
+            reason = (
+                'stage_failed:ValueError'
+                if index < 3
+                else 'stage_failed:ValueError:incomplete_hourly_corpus:missing=1'
+            )
+            candidates[key] = {**value, 'stage':'DEVELOPMENT', 'status':'REJECTED',
+                               'history':[], 'results':{}, 'rejection_reasons':[reason]}
+    state = {
+        'version': VERSION,
+        'contract': chrono_contract(datetime(2026, 10, 6, tzinfo=UTC)),
+        'stage': 'DEVELOPMENT',
+        'status': 'WAITING_FOR_DATA',
+        'running': False,
+        'current_candidate_id': values[-1][0],
+        'candidates': candidates,
+    }
+    job.save(state)
+
+    async def unavailable(*args, **kwargs):
+        raise CorpusUnavailable('incomplete_hourly_corpus:missing=1')
+
+    monkeypatch.setattr(job, '_load_corpus', unavailable)
+    result = asyncio.run(job.tick())
+    persisted = read_state(job.store)
+
+    assert result['state'] == 'WAITING_FOR_DATA'
+    assert result['search_completed'] == 0
+    assert all(row['status'] == 'QUEUED' for row in persisted['candidates'].values())
+    assert all(row['history'] == [] and row['results'] == {} for row in persisted['candidates'].values())
+    migrated = [row for row in persisted['candidates'].values() if row.get('non_consumptive_failures')]
+    assert len(migrated) == 7
+    assert all(row['rejection_reasons'] == [] for row in migrated)
+    assert 'current_candidate_id' in persisted  # current retry is recorded after migration
