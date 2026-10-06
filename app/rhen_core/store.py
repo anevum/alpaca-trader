@@ -1547,7 +1547,10 @@ class RhenCoreStore:
     def _iren_work_defaults() -> dict[str, Any]:
         return {
             "settings": {
-                "autopilot_enabled": False,
+                # Match the pre-cutover IREN policy: bounded deterministic
+                # maintenance is on unless an explicit durable/environment
+                # setting disables it.
+                "autopilot_enabled": True,
                 "autopilot_max_jobs_per_day": 3,
             },
             "objectives": [],
