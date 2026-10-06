@@ -463,6 +463,17 @@ def test_public_live_feed_uses_core_activity_without_private_trade_fields(
             },
         ]
     )
+    store.set_kv(
+        "iren",
+        "state",
+        {
+            "state": "ATTENTION_REQUIRED",
+            "observed_at": observed.isoformat(),
+            "incidents": {
+                "configuration.drift": {"status": "OPEN", "severity": "critical"}
+            },
+        },
+    )
 
     feed = store.public_live_feed(now=observed)
     encoded = json.dumps(feed)
@@ -472,6 +483,8 @@ def test_public_live_feed_uses_core_activity_without_private_trade_fields(
     assert feed["source"] == "rhen-core-sqlite"
     assert feed["telemetry"]["scan_events_10m"] == 1
     assert feed["systems"]["RHEN"]["runtime_state"] == "OBSERVING"
+    assert feed["systems"]["IREN"]["runtime_state"] == "READY"
+    assert feed["systems"]["IREN"]["health_state"] == "ATTENTION_REQUIRED"
     assert feed["operational"]["latest_scan"]["market_session"] == "regular"
     assert feed["performance"]["account_return_pct"] == 0.0
     assert "SECRET" not in encoded

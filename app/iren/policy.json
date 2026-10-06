@@ -1,5 +1,5 @@
 {
-  "version": "iren-control-v2.1.0",
+  "version": "iren-control-v2.1.1",
   "tick_seconds": 60,
   "stale_after_seconds": 180,
   "failure_observations": 2,
