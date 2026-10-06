@@ -2415,6 +2415,9 @@ class RhenCoreStore:
             "win_rate_pct": "win_rate_pct",
             "sample_count": "sample_count",
             "candidate_count": "candidate_count",
+            "opportunity_count": "opportunities",
+            "trades_per_day": "trades_per_day",
+            "median_trade_return": "median_trade_return",
             "development_trade_count": "development_trades",
             "validation_trade_count": "validation_trades",
         }
@@ -2760,6 +2763,84 @@ class RhenCoreStore:
                     "progress_basis": "durable_problem_status",
                 },
             })
+
+        # GRAEN stage evaluators persist aggregate gate evidence rather than
+        # synthetic equity curves. Build an evidence-indexed progression across
+        # generations of the same durable problem so Command can show real
+        # research movement without inventing intra-run price paths.
+        graen_by_problem: dict[str, list[dict[str, Any]]] = {}
+        for item in runs:
+            if (
+                item.get("system") == "GRAEN"
+                and item.get("kind") == "RESEARCH"
+                and item.get("problem_id")
+            ):
+                graen_by_problem.setdefault(
+                    str(item["problem_id"]), []
+                ).append(item)
+
+        progression_metrics = (
+            ("expectancy", "Expectancy / trade", "%", 100.0),
+            ("win_rate", "Win rate", "%", 100.0),
+            ("max_drawdown", "Max drawdown", "%", 100.0),
+            ("trades", "Trades", "", 1.0),
+            ("opportunities", "Opportunities", "", 1.0),
+            ("profit_factor", "Profit factor", "", 1.0),
+        )
+        for grouped in graen_by_problem.values():
+            grouped.sort(
+                key=lambda row: str(
+                    row.get("completed_at")
+                    or row.get("updated_at")
+                    or row.get("started_at")
+                    or ""
+                )
+            )
+            for index, item in enumerate(grouped):
+                if item.get("series"):
+                    continue
+                history = grouped[: index + 1]
+                generated_series: list[dict[str, Any]] = []
+                for metric_key, label, unit, scale in progression_metrics:
+                    points: list[dict[str, Any]] = []
+                    for generation in history:
+                        metrics = (
+                            generation.get("metrics")
+                            if isinstance(generation.get("metrics"), dict)
+                            else {}
+                        )
+                        value = self._research_number(metrics.get(metric_key))
+                        if value is None:
+                            continue
+                        points.append({
+                            "at": (
+                                generation.get("completed_at")
+                                or generation.get("updated_at")
+                                or generation.get("started_at")
+                                or generation.get("candidate_id")
+                                or generation.get("run_id")
+                            ),
+                            "value": round(value * scale, 6),
+                        })
+                    if len(points) > 1:
+                        generated_series.append({
+                            "key": "graen_" + metric_key,
+                            "label": label,
+                            "unit": unit,
+                            "points": points[-120:],
+                        })
+                if generated_series:
+                    item["series"] = generated_series
+                    detail = (
+                        item.get("detail")
+                        if isinstance(item.get("detail"), dict)
+                        else {}
+                    )
+                    item["detail"] = {
+                        **detail,
+                        "chart_basis": "graen_generation_gate_evidence",
+                        "inactive_time_drawn": False,
+                    }
 
         replay_projections: list[dict[str, Any]] = []
         events: list[dict[str, Any]] = []
