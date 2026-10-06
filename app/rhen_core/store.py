@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -63,6 +64,12 @@ class RhenCoreStore:
         self._lock = threading.RLock()
         self.warning_bytes = int(os.getenv("RHEN_CORE_STORAGE_WARNING_MB", "500")) * 1024 * 1024
         self.shed_bytes = int(os.getenv("RHEN_CORE_STORAGE_SHED_MB", "750")) * 1024 * 1024
+        self.maintenance_interval_seconds = max(
+            900,
+            int(os.getenv("RHEN_CORE_MAINTENANCE_SECONDS", "21600")),
+        )
+        self._last_maintenance_monotonic = 0.0
+        self._maintenance_error: str | None = None
         self._initialize()
 
     def connect(self) -> sqlite3.Connection:
@@ -73,10 +80,12 @@ class RhenCoreStore:
         conn.execute("pragma foreign_keys=ON")
         conn.execute("pragma busy_timeout=15000")
         conn.execute("pragma wal_autocheckpoint=1000")
+        conn.execute("pragma journal_size_limit=16777216")
         return conn
 
     def _initialize(self) -> None:
         with self._lock, self.connect() as conn:
+            conn.execute("pragma auto_vacuum=INCREMENTAL")
             conn.executescript(
                 """
                 create table if not exists kv_state (
@@ -202,6 +211,7 @@ class RhenCoreStore:
                 create index if not exists nostra_kind_time on nostra_records(kind, observed_at desc);
                 """
             )
+        self._startup_maintenance()
 
     def file_size_bytes(self) -> int:
         total = 0
@@ -213,6 +223,26 @@ class RhenCoreStore:
 
     def storage_state(self) -> dict[str, Any]:
         size = self.file_size_bytes()
+        page_count = freelist_count = page_size = auto_vacuum = 0
+        try:
+            with self.connect() as conn:
+                page_count = int(conn.execute("pragma page_count").fetchone()[0] or 0)
+                freelist_count = int(
+                    conn.execute("pragma freelist_count").fetchone()[0] or 0
+                )
+                page_size = int(conn.execute("pragma page_size").fetchone()[0] or 0)
+                auto_vacuum = int(
+                    conn.execute("pragma auto_vacuum").fetchone()[0] or 0
+                )
+        except sqlite3.DatabaseError:
+            pass
+        allocated_db_bytes = page_count * page_size
+        reclaimable_db_bytes = freelist_count * page_size
+        fragmentation_pct = (
+            round((reclaimable_db_bytes / allocated_db_bytes) * 100.0, 3)
+            if allocated_db_bytes > 0
+            else 0.0
+        )
         return {
             "bytes": size,
             "mb": round(size / 1024 / 1024, 3),
@@ -220,6 +250,11 @@ class RhenCoreStore:
             "analytics_shedding": size >= self.shed_bytes,
             "warning_mb": self.warning_bytes // 1024 // 1024,
             "shed_mb": self.shed_bytes // 1024 // 1024,
+            "allocated_db_bytes": allocated_db_bytes,
+            "reclaimable_db_bytes": reclaimable_db_bytes,
+            "fragmentation_pct": fragmentation_pct,
+            "auto_vacuum_mode": auto_vacuum,
+            "maintenance_error": self._maintenance_error,
         }
 
     @staticmethod
@@ -328,6 +363,7 @@ class RhenCoreStore:
         return summary, sampled
 
     def ingest_events(self, events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        self._prune_if_due()
         inserted = candidates_inserted = shed = 0
         storage = self.storage_state()
         now = _iso()
@@ -411,11 +447,12 @@ class RhenCoreStore:
     def prune(self, now: datetime | None = None) -> dict[str, int]:
         now = now or datetime.now(UTC)
         cuts = {
-            "events": (now - timedelta(days=30)).isoformat(),
+            "events": (now - timedelta(days=14)).isoformat(),
             "cycles": (now - timedelta(days=7)).isoformat(),
-            "positions": (now - timedelta(days=14)).isoformat(),
+            "positions": (now - timedelta(days=7)).isoformat(),
             "candidates": (now - timedelta(days=7)).isoformat(),
-            "nostra": (now - timedelta(days=30)).isoformat(),
+            "nostra": (now - timedelta(days=14)).isoformat(),
+            "scheduler": (now - timedelta(days=30)).isoformat(),
         }
         deleted: dict[str, int] = {}
         with self._lock, self.connect() as conn:
@@ -447,9 +484,114 @@ class RhenCoreStore:
                 (cuts["nostra"],),
             )
             deleted["nostra"] = cur.rowcount
+            cur = conn.execute(
+                """delete from scheduler_runs
+                where status <> 'RUNNING'
+                  and coalesce(completed_at, scheduled_at, updated_at) < ?""",
+                (cuts["scheduler"],),
+            )
+            deleted["scheduler_runs"] = cur.rowcount
+            cur = conn.execute(
+                """delete from research_runs
+                where rowid not in (
+                    select rowid from research_runs
+                    order by created_at desc
+                    limit 500
+                )"""
+            )
+            deleted["research_runs"] = cur.rowcount
+            cur = conn.execute(
+                """delete from research_ledgers
+                where rowid not in (
+                    select rowid from research_ledgers
+                    order by created_at desc
+                    limit 1000
+                )"""
+            )
+            deleted["research_ledgers"] = cur.rowcount
+            cur = conn.execute(
+                """delete from graen_runs
+                where status not in ('RUNNING','QUEUED')
+                  and rowid not in (
+                      select rowid from graen_runs
+                      order by started_at desc
+                      limit 1000
+                  )"""
+            )
+            deleted["graen_runs"] = cur.rowcount
+            cur = conn.execute(
+                """delete from graen_artifacts
+                where rowid not in (
+                    select rowid from graen_artifacts
+                    order by created_at desc
+                    limit 2000
+                )"""
+            )
+            deleted["graen_artifacts"] = cur.rowcount
             conn.commit()
             conn.execute("pragma wal_checkpoint(TRUNCATE)")
+            conn.execute("pragma incremental_vacuum(4096)")
         return deleted
+
+    def _prune_if_due(self) -> None:
+        current = time.monotonic()
+        if (
+            self._last_maintenance_monotonic
+            and current - self._last_maintenance_monotonic
+            < self.maintenance_interval_seconds
+        ):
+            return
+        self._last_maintenance_monotonic = current
+        try:
+            self.prune()
+            self._maintenance_error = None
+        except Exception as exc:
+            self._maintenance_error = f"{type(exc).__name__}: {exc}"
+
+    def compact_storage(self, *, force: bool = False) -> dict[str, Any]:
+        before = self.storage_state()
+        allocated = int(before.get("allocated_db_bytes") or 0)
+        reclaimable = int(before.get("reclaimable_db_bytes") or 0)
+        fragmentation = (
+            reclaimable / allocated
+            if allocated > 0
+            else 0.0
+        )
+        auto_vacuum_mode = int(before.get("auto_vacuum_mode") or 0)
+        should_compact = force or auto_vacuum_mode != 2 or (
+            reclaimable >= 64 * 1024 * 1024
+            and fragmentation >= 0.15
+        )
+        if not should_compact:
+            return {
+                "compacted": False,
+                "reason": "fragmentation_below_threshold",
+                "before": before,
+                "after": before,
+            }
+
+        with self._lock, self.connect() as conn:
+            conn.execute("pragma wal_checkpoint(TRUNCATE)")
+            conn.execute("pragma auto_vacuum=INCREMENTAL")
+            conn.execute("vacuum")
+
+        after = self.storage_state()
+        return {
+            "compacted": True,
+            "reason": "vacuum_completed",
+            "before": before,
+            "after": after,
+        }
+
+    def _startup_maintenance(self) -> None:
+        try:
+            self.prune()
+            self.compact_storage()
+            self._maintenance_error = None
+        except Exception as exc:
+            self._maintenance_error = f"{type(exc).__name__}: {exc}"
+        finally:
+            self._last_maintenance_monotonic = time.monotonic()
 
     def set_kv(self, namespace: str, key: str, value: Any) -> int:
         now = _iso()

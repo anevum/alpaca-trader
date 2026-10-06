@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 from app.rhen_core.store import RhenCoreStore
-from app.rhen_core.supervisor import ProcessSpec, _child_env
+from app.rhen_core.supervisor import PROCESSES, ProcessSpec, _child_env
 from app.rhen_core.router import enabled_modules
 
 
@@ -905,13 +905,23 @@ def test_iren_work_queue_rejects_blank_command(tmp_path, monkeypatch):
 def test_router_excludes_disabled_optional_modules(monkeypatch):
     monkeypatch.delenv("IREN_EXECUTOR_ENABLED", raising=False)
     monkeypatch.delenv("PREOPEN_STATE_ENABLED", raising=False)
+    monkeypatch.delenv("CRYPTO_RESEARCH_ENABLED", raising=False)
     active = enabled_modules()
     assert "iren_executor" not in active
     assert "preopen" not in active
-    assert {"iren", "graen_research", "crypto_research"} <= set(active)
+    assert "crypto_research" not in active
+    assert {"iren", "graen_research"} <= set(active)
 
     monkeypatch.setenv("PREOPEN_STATE_ENABLED", "true")
-    assert "preopen" in enabled_modules()
+    monkeypatch.setenv("CRYPTO_RESEARCH_ENABLED", "true")
+    active = enabled_modules()
+    assert "preopen" in active
+    assert "crypto_research" in active
+
+
+def test_crypto_research_process_is_disabled_by_default():
+    crypto = next(spec for spec in PROCESSES if spec.name == "crypto-research")
+    assert crypto.enabled_env == "CRYPTO_RESEARCH_ENABLED"
 
 
 
@@ -1461,3 +1471,57 @@ def test_research_control_exposes_manual_intelligence_boundary(tmp_path, monkeyp
     assert control["autonomy"]["generate_new_hypothesis_family"] is False
     assert control["autonomy"]["patch_strategy_code"] is False
     assert control["autonomy"]["promote_live_strategy"] is False
+
+
+def test_storage_state_exposes_fragmentation_metrics(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    state = store.storage_state()
+
+    assert state["allocated_db_bytes"] >= 0
+    assert state["reclaimable_db_bytes"] >= 0
+    assert state["fragmentation_pct"] >= 0
+    assert state["auto_vacuum_mode"] in {0, 1, 2}
+    assert state["maintenance_error"] is None
+
+
+def test_prune_bounds_completed_scheduler_history(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 6, 17, 0, tzinfo=UTC)
+    old = (now - timedelta(days=31)).isoformat()
+    recent = (now - timedelta(days=1)).isoformat()
+
+    with store.connect() as conn:
+        conn.execute(
+            """insert into scheduler_runs(
+                job_key,status,payload_json,scheduled_at,started_at,
+                completed_at,updated_at
+            ) values(?,?,?,?,?,?,?)""",
+            ("old-job", "SUCCEEDED", "{}", old, old, old, old),
+        )
+        conn.execute(
+            """insert into scheduler_runs(
+                job_key,status,payload_json,scheduled_at,started_at,
+                completed_at,updated_at
+            ) values(?,?,?,?,?,?,?)""",
+            ("recent-job", "SUCCEEDED", "{}", recent, recent, recent, recent),
+        )
+        conn.execute(
+            """insert into scheduler_runs(
+                job_key,status,payload_json,scheduled_at,started_at,
+                completed_at,updated_at
+            ) values(?,?,?,?,?,?,?)""",
+            ("running-job", "RUNNING", "{}", old, old, None, old),
+        )
+        conn.commit()
+
+    deleted = store.prune(now=now)
+
+    assert deleted["scheduler_runs"] == 1
+    with store.connect() as conn:
+        remaining = {
+            row[0]
+            for row in conn.execute(
+                "select job_key from scheduler_runs order by job_key"
+            ).fetchall()
+        }
+    assert remaining == {"recent-job", "running-job"}

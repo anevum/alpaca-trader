@@ -14,6 +14,7 @@ CORE_URL = "http://127.0.0.1:8102"
 OPTIONAL_MODULE_ENVS = {
     "iren_executor": "IREN_EXECUTOR_ENABLED",
     "preopen": "PREOPEN_STATE_ENABLED",
+    "crypto_research": "CRYPTO_RESEARCH_ENABLED",
 }
 
 MODULES = {
