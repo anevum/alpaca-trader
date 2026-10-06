@@ -4,11 +4,14 @@ from foundation.report_read import (
     _attach_outcomes,
     _btc_canary_run_evidence,
     _candidate_is_crypto,
+    _command_runtime_projection,
+    _command_scan_projection,
     _complete_forward_horizons,
     _decision_candidates,
     _event_key_exists,
     _forward_outcomes,
     _valid_date,
+    read_report,
 )
 
 
@@ -16,6 +19,73 @@ def test_valid_date():
     assert _valid_date("2026-10-01")
     assert not _valid_date("2026-99-01")
     assert not _valid_date(None)
+
+
+def test_command_runtime_and_scan_projection_flatten_canonical_events():
+    runtime_event = {
+        "event_id": "event-runtime",
+        "event_key": "runtime-key",
+        "run_id": "run-1",
+        "strategy_version_id": "strategy-1",
+        "occurred_at": "2026-10-06T02:10:53+00:00",
+        "payload": {
+            "run_id": "run-1",
+            "strategy_version_id": "strategy-1",
+            "runtime": {
+                "system": "RHEN",
+                "system_version": "0.8.2",
+                "runtime_instance_id": "runtime-1",
+                "deployment_id": "deployment-1",
+                "git_commit": "a" * 40,
+            },
+        },
+    }
+    scan_event = {
+        "event_id": "event-scan",
+        "event_key": "scan-key",
+        "run_id": "run-1",
+        "strategy_version_id": "strategy-1",
+        "occurred_at": "2026-10-06T04:16:59+00:00",
+        "payload": {
+            "cycle_key": "cycle-1",
+            "cycle_outcome": "market is closed",
+            "data_status": "ok",
+            "market_session": "closed",
+            "runtime": {
+                "runtime_instance_id": "runtime-1",
+                "deployment_id": "deployment-1",
+                "git_commit": "a" * 40,
+            },
+        },
+    }
+
+    runtime = _command_runtime_projection(runtime_event)
+    scan = _command_scan_projection(scan_event)
+
+    assert runtime["system"] == "RHEN"
+    assert runtime["run_id"] == "run-1"
+    assert runtime["strategy_version_id"] == "strategy-1"
+    assert runtime["deployment_id"] == "deployment-1"
+    assert runtime["runtime_instance_id"] == "runtime-1"
+    assert scan["scan_cycle_id"] == "cycle-1"
+    assert scan["cycle_outcome"] == "market is closed"
+    assert scan["data_status"] == "ok"
+    assert scan["runtime_instance_id"] == "runtime-1"
+
+
+def test_command_evidence_contract_exposes_tracking_counts_and_states():
+    source = __import__("inspect").getsource(read_report)
+    block = source.split('if latest == "command":', 1)[1].split(
+        'return {"ok": False, "error": "invalid_request"}', 1
+    )[0]
+
+    assert '"rhen-command-evidence-v3"' in block
+    assert '"tracking_state"' in block
+    assert '"decision_cycle_state"' in block
+    assert '"runtime_provenance_state"' in block
+    assert '"events_24h"' in block
+    assert '"runtime_errors_24h"' in block
+    assert "count(*) filter" in block
 
 
 def test_crypto_candidate_detection():
