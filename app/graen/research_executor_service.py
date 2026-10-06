@@ -4967,13 +4967,16 @@ class GraenResearchExecutor:
         )
         if result.get("passed") is True and stage != "holdout":
             next_stage = "CRYPTO_COMPILED_" + {"development": "VALIDATION", "validation": "HOLDOUT"}[stage]
+        stage_passed = result.get("passed") is True
         summary = {
-            "state": "CANDIDATE_READY_FOR_VELUM" if result.get("passed") is True and stage == "holdout"
-                else "COMPILED_STAGE_PASSED" if result.get("passed") is True else "COMPILED_CANDIDATE_REJECTED",
-            "decision": "CONTINUE_RESEARCH" if result.get("passed") is True else "NEEDS_NEW_HYPOTHESIS_ENGINE",
-            "next_action": "VELUM_CANDIDATE_REPLAY" if stage == "holdout" and result.get("passed") is True
-                else "RUN_NEXT_FROZEN_STAGE" if result.get("passed") is True else "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+            "state": "CANDIDATE_READY_FOR_VELUM" if stage_passed and stage == "holdout"
+                else "COMPILED_STAGE_PASSED" if stage_passed else "COMPILED_CANDIDATE_REJECTED",
+            "decision": "CONTINUE_RESEARCH",
+            "next_action": "VELUM_CANDIDATE_REPLAY" if stage == "holdout" and stage_passed
+                else "RUN_NEXT_FROZEN_STAGE" if stage_passed else "QUEUE_NEXT_BOUNDED_HYPOTHESIS",
             "candidate_id": spec["hypothesis_id"], "epoch": spec["epoch"], "spec_hash": spec_hash,
+            "adaptive_program_id": metadata.get("adaptive_program_id"),
+            "adaptive_generation": metadata.get("adaptive_generation"),
             "research_only": True, "execution_authority": False, "broker_orders_possible": False,
         }
         return await self._finalize(problem=problem, run=run, status="WAITING", summary=summary,
@@ -9749,8 +9752,10 @@ class GraenResearchExecutor:
                 metadata={
                     "adaptive_program_id": ADAPTIVE_PROGRAM_ID,
                     "adaptive_generation": generation - 1,
-                    "next_action": "TRUSTED_COMPILER_EXTENSION_REQUIRED",
+                    "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                    "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
                     "execution_authority": False,
+                    "live_execution_authorized": False,
                 },
             )
             return (
@@ -9758,7 +9763,10 @@ class GraenResearchExecutor:
                 {
                     "status": "EXHAUSTED",
                     "generation": generation - 1,
-                    "next_action": "TRUSTED_COMPILER_EXTENSION_REQUIRED",
+                    "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                    "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+                    "execution_authority": False,
+                    "live_execution_authorized": False,
                 },
             )
 
