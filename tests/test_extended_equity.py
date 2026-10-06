@@ -77,6 +77,7 @@ def test_extended_order_adapter_never_uses_market_order(monkeypatch):
 
 def settings():
     return SimpleNamespace(
+        extended_equity_strategy_version_id="RHEN-EXT-TEST",
         extended_equity_slow_window=8,
         extended_equity_fast_window=3,
         extended_equity_max_bar_age_seconds=120,
