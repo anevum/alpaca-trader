@@ -50,6 +50,10 @@ from graen.crypto.flow_pressure import (
     METHODOLOGY_VERSION as FLOW_PRESSURE_METHODOLOGY_VERSION,
     evaluate_stage as evaluate_flow_pressure_stage,
 )
+from graen.crypto.cross_sectional_intraday import (
+    METHODOLOGY_VERSION as CROSS_SECTIONAL_METHODOLOGY_VERSION,
+    evaluate_stage as evaluate_cross_sectional_stage,
+)
 from graen.engineering import (
     digest as engineering_digest,
     stamp as engineering_stamp,
@@ -73,10 +77,13 @@ def replay_fetch_contract(
         # scored as replay evidence. The frozen candidate is defined on 4-hour
         # bars, so VELUM must not inherit its generic high-frequency timeframe.
         return ("BTC/USD",), start - timedelta(days=260), end, "4Hour"
-    if candidate_methodology == FLOW_PRESSURE_METHODOLOGY_VERSION:
-        # Adaptive flow-pressure programs are frozen on 5-minute bars across
-        # this fixed research universe. Fetch one extra day for indicator
-        # warmup, but score only the sealed stage windows in the prespec.
+    if candidate_methodology in {
+        FLOW_PRESSURE_METHODOLOGY_VERSION,
+        CROSS_SECTIONAL_METHODOLOGY_VERSION,
+    }:
+        # Compiled adaptive programs share a fixed crypto universe. VELUM
+        # requests canonical five-minute bars independently from GRAEN; each
+        # evaluator scores only the frozen windows in the prespec.
         return (
             ("BTC/USD", "ETH/USD", "SOL/USD"),
             start - timedelta(days=2),
@@ -136,7 +143,10 @@ def replay_candidate(
     end: datetime,
     seed: int = 91000,
 ) -> dict[str, Any]:
-    if candidate_methodology == FLOW_PRESSURE_METHODOLOGY_VERSION:
+    if candidate_methodology in {
+        FLOW_PRESSURE_METHODOLOGY_VERSION,
+        CROSS_SECTIONAL_METHODOLOGY_VERSION,
+    }:
         spec = dict(candidate_spec)
         spec_hash = validate_engineering_spec(spec)
         expected_start = engineering_stamp(
@@ -144,13 +154,18 @@ def replay_candidate(
         )
         expected_end = engineering_stamp(spec["corpus"]["holdout"][1])
         if start != expected_start or end != expected_end:
-            raise ValueError("flow_pressure_velum_replay_window_mismatch")
+            raise ValueError("compiled_velum_replay_window_mismatch")
 
+        evaluate_compiled_stage = (
+            evaluate_cross_sectional_stage
+            if candidate_methodology == CROSS_SECTIONAL_METHODOLOGY_VERSION
+            else evaluate_flow_pressure_stage
+        )
         predecessor = None
         stage_results: dict[str, dict[str, Any]] = {}
         reasons: list[str] = []
         for stage_name in ("development", "validation", "holdout"):
-            result = evaluate_flow_pressure_stage(
+            result = evaluate_compiled_stage(
                 bars_by_symbol,
                 spec=spec,
                 stage=stage_name,
