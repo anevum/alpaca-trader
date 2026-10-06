@@ -496,3 +496,51 @@ def test_iren_dispatches_adaptive_research_without_legacy_autorun():
     args, kwargs = runtime._post.await_args
     assert args[0].endswith("/v1/adaptive/tick")
     assert kwargs["timeout"] == 30
+
+
+def test_preflight_startup_retry_recovers_from_transient_503(monkeypatch):
+    import httpx
+
+    runtime = object.__new__(SchedulerRuntime)
+    request = httpx.Request("POST", "http://rhen/v1/scheduler/preflight")
+    transient = httpx.HTTPStatusError(
+        "unavailable",
+        request=request,
+        response=httpx.Response(503, request=request),
+    )
+    runtime._post = AsyncMock(side_effect=[transient, transient, {"ok": True}])
+    monkeypatch.setattr("app.orchestration_scheduler.asyncio.sleep", AsyncMock())
+
+    result = asyncio.run(
+        runtime._post_with_startup_retry(
+            "http://rhen/v1/scheduler/preflight",
+            {"x-anevum-scheduler-token": "test"},
+            {"session": "2026-10-06"},
+            attempts=4,
+            delay_seconds=0,
+        )
+    )
+
+    assert result == {"ok": True}
+    assert runtime._post.await_count == 3
+
+
+def test_preflight_recovery_registry_can_supersede_same_day_failure():
+    import json
+    from pathlib import Path
+
+    registry = json.loads(Path("app/schedule_registry.json").read_text())
+    workflow = next(
+        row for row in registry["workflows"]
+        if row["workflow_id"] == "rhen.preflight"
+    )
+
+    assert registry["scheduler_version"] == "anevum-scheduler-v1.0.9"
+    assert workflow["version"] == "1.0.2"
+    assert workflow["catchup_policy"] == "catch_up"
+    assert workflow["stale_after_minutes"] == 180
+    assert workflow["retry_policy"] == {
+        "max_attempts": 6,
+        "transient_only": True,
+        "delay_seconds": 30,
+    }

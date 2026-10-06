@@ -90,3 +90,30 @@ def test_command_reports_multi_asset_paper_as_authorized_without_live_promotion(
     assert crypto["broker_writes_allowed"] is True
     assert crypto["entries_enabled"] is True
     assert crypto["manual_approval_required"] is False
+
+
+def test_preflight_accepts_authorized_btc_direct_live_signal(monkeypatch):
+    settings = main.settings.model_copy(deep=True)
+    settings.trading_mode = "live"
+    settings.bot_armed = True
+    settings.crypto_lane_enabled = True
+    settings.crypto_execution_enabled = True
+    settings.crypto_execution_mode = "btc_direct_live_signal"
+    settings.alpaca_api_key = "test-key"
+    settings.alpaca_api_secret = "test-secret"
+    monkeypatch.setattr(main, "settings", settings)
+
+    assert settings.btc_direct_live_signal_authorized is True
+    assert main.crypto_preflight_policy_valid() is True
+
+
+def test_preflight_rejects_enabled_crypto_without_mode_authorization(monkeypatch):
+    settings = main.settings.model_copy(deep=True)
+    settings.crypto_lane_enabled = True
+    settings.crypto_execution_enabled = True
+    settings.crypto_execution_mode = "btc_direct_paper"
+    settings.btc_direct_paper_acknowledge = "NO"
+    monkeypatch.setattr(main, "settings", settings)
+
+    assert settings.btc_direct_paper_authorized is False
+    assert main.crypto_preflight_policy_valid() is False

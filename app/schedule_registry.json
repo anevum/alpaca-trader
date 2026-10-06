@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.8",
+  "scheduler_version": "anevum-scheduler-v1.0.9",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -16,12 +16,13 @@
       "offset_minutes": -45,
       "timezone": "America/New_York",
       "market_calendar_dependency": true,
-      "catchup_policy": "skip_after_window",
-      "stale_after_minutes": 45,
-      "recovery_after_minutes": 10,
+      "catchup_policy": "catch_up",
+      "stale_after_minutes": 180,
+      "recovery_after_minutes": 5,
       "retry_policy": {
-        "max_attempts": 3,
-        "transient_only": true
+        "max_attempts": 6,
+        "transient_only": true,
+        "delay_seconds": 30
       },
       "notification_policy": {
         "success": true,
@@ -29,7 +30,7 @@
         "failure_route": "rhen-alerts"
       },
       "implementation_target": "trader_preflight",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "protected_action_level": "read_only"
     },
     {
