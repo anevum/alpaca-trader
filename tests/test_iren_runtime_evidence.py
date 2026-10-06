@@ -489,6 +489,7 @@ def test_inventory_http_contract_keeps_auth_and_reports_partial_failure(monkeypa
     ("anevum/alpaca-trader", "", "provider_credentials_missing"),
     ("other/repo", "g" * 40, "provider_repository_not_allowed"),
     ("anevum/alpaca-trader", "g" * 40, "provider_forbidden"),
+    ("anevum/rhen", "g" * 40, "provider_forbidden"),
 ])
 def test_inventory_http_200_does_not_mean_evidence_is_verified(monkeypatch, repo, token, reason):
     monkeypatch.setenv("IREN_EXECUTOR_TOKEN", "t" * 40)
