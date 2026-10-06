@@ -426,6 +426,9 @@ def test_canonical_job_advances_in_order_and_persists_approved_paper(tmp_path, m
         async def historical_bars_many(self,*args,**kwargs):
             return {'BTC/USD': []}
     job.data=Data()
+    async def complete_corpus(*args, **kwargs):
+        return []
+    monkeypatch.setattr(job, '_load_corpus', complete_corpus)
     monkeypatch.setattr(ContinuousReplayEngine,'run_btc_direct',lambda *a,**k: evidence())
     def respond(request):
         assert request.url.path=='/v1/graen/btc-direct-replay'
@@ -474,3 +477,64 @@ def test_paper_success_stops_at_review_and_failure_closes_entries(tmp_path):
     assert assignment['live_authority'] is False
     assert assignment['entries_allowed'] is False
     assert resolve_strategy('live',assignment).strategy_version_id==LIVE_ID
+
+
+def test_minute_recovery_requires_complete_observed_hour():
+    from app.graen.btc_discovery import _aggregate_recovery
+    hour = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    partial = [
+        {'t': (hour + timedelta(minutes=i)).isoformat(), 'o': '100', 'h': '101', 'l': '99', 'c': '100.5'}
+        for i in range(59)
+    ]
+    assert _aggregate_recovery(partial, {hour}) == []
+    rows = [
+        {'t': (hour + timedelta(minutes=i)).isoformat(),
+         'o': str(100 + i/100), 'h': str(101 + i/100),
+         'l': str(99 - i/100), 'c': str(100.5 + i/100)}
+        for i in range(60)
+    ]
+    recovered = _aggregate_recovery(rows, {hour})
+    assert recovered == [{
+        't': hour.isoformat(), 'o': '100.0', 'h': '101.59', 'l': '98.41', 'c': '101.09'
+    }]
+
+
+def test_incomplete_development_data_waits_without_consuming_candidate(tmp_path, monkeypatch):
+    from app.graen.btc_discovery import CorpusUnavailable
+    monkeypatch.setenv('RHEN_CORE_DB_PATH', str(tmp_path/'core.db'))
+    job = BtcDiscoveryJob(Settings())
+
+    async def unavailable(*args, **kwargs):
+        raise CorpusUnavailable('incomplete_hourly_corpus:missing=1')
+
+    monkeypatch.setattr(job, '_load_corpus', unavailable)
+    before = list(catalog())
+    result = asyncio.run(job.tick())
+    state = read_state(job.store)
+    assert result['state'] == 'WAITING_FOR_DATA'
+    assert result['search_completed'] == 0
+    assert set(state['candidates']) == set(before)
+    assert all(row['status'] == 'QUEUED' for row in state['candidates'].values())
+    assert all(row['history'] == [] for row in state['candidates'].values())
+    assert state['last_error'].startswith('CorpusUnavailable:')
+
+
+def test_exhausted_state_from_data_only_rejections_is_recoverable(tmp_path, monkeypatch):
+    from app.graen.btc_discovery import _reset_incomplete_development_rows
+    monkeypatch.setenv('RHEN_CORE_DB_PATH', str(tmp_path/'core.db'))
+    job = BtcDiscoveryJob(Settings())
+    state = {
+        'version': VERSION,
+        'contract': chrono_contract(datetime(2026, 10, 1, tzinfo=UTC)),
+        'stage': 'DEVELOPMENT',
+        'status': 'EXHAUSTED',
+        'running': False,
+        'candidates': {
+            key: {**value, 'stage':'DEVELOPMENT', 'status':'REJECTED', 'history':[], 'results':{},
+                  'rejection_reasons':['stage_failed:ValueError:incomplete_hourly_corpus:missing=1']}
+            for key, value in catalog().items()
+        }
+    }
+    assert _reset_incomplete_development_rows(state)
+    assert state['status'] == 'WAITING_FOR_DATA'
+    assert all(row['status'] == 'QUEUED' for row in state['candidates'].values())

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import os
 from typing import Any
 
@@ -13,10 +14,100 @@ from app.btc_discovery_contract import (COSTS, GATES, LIVE_ID, STAGES, VERSION, 
 from app.crypto_layer import CryptoMarketDataClient
 from app.rhen_core.store import RhenCoreStore
 from app.velum_core import ContinuousReplayEngine
-from app.velum_btc import metrics, corpus_coverage
+from app.velum_btc import metrics, corpus_coverage, normalized_corpus
 
 NAMESPACE = "btc_discovery"
 UTC = timezone.utc
+MAX_MINUTE_RECOVERY_HOURS = 168
+
+
+class CorpusUnavailable(RuntimeError):
+    """Market-data corpus is not complete enough to evaluate strategy evidence."""
+
+
+def _stamp(row: dict[str, Any]) -> datetime:
+    value = datetime.fromisoformat(str(row.get("t") or row.get("timestamp") or "").replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        raise ValueError("hourly_corpus_timezone_required")
+    return value.astimezone(UTC)
+
+
+def _missing_hours(rows: list[dict[str, Any]], start: datetime, end: datetime) -> list[datetime]:
+    lower = start - timedelta(days=35)
+    expected = int((end - lower).total_seconds() // 3600)
+    present = {_stamp(row) for row in rows if lower <= _stamp(row) < end}
+    return [lower + timedelta(hours=i) for i in range(expected)
+            if lower + timedelta(hours=i) not in present]
+
+
+def _recovery_windows(missing: list[datetime]) -> list[tuple[datetime, datetime]]:
+    if not missing:
+        return []
+    windows = []
+    begin = previous = missing[0]
+    for value in missing[1:]:
+        if value == previous + timedelta(hours=1) and value - begin < timedelta(hours=24):
+            previous = value
+            continue
+        windows.append((begin, previous + timedelta(hours=1)))
+        begin = previous = value
+    windows.append((begin, previous + timedelta(hours=1)))
+    return windows
+
+
+def _aggregate_recovery(rows: list[dict[str, Any]], allowed: set[datetime]) -> list[dict[str, Any]]:
+    buckets: dict[datetime, dict[str, Any]] = {}
+    minutes: dict[datetime, set[datetime]] = {}
+    for row in sorted(rows, key=_stamp):
+        observed = _stamp(row)
+        hour = observed.replace(minute=0, second=0, microsecond=0)
+        if hour not in allowed:
+            continue
+        values = [Decimal(str(row.get(key))) for key in ("o", "h", "l", "c")]
+        if not all(value.is_finite() and value > 0 for value in values):
+            raise ValueError("invalid_minute_recovery_ohlc")
+        open_, high, low, close = values
+        if high < max(open_, close) or low > min(open_, close):
+            raise ValueError("invalid_minute_recovery_ohlc")
+        minutes.setdefault(hour, set()).add(observed.replace(second=0, microsecond=0))
+        current = buckets.get(hour)
+        if current is None:
+            buckets[hour] = {"t": hour.isoformat(), "o": str(open_), "h": str(high),
+                             "l": str(low), "c": str(close), "_last": observed}
+        else:
+            current["h"] = str(max(Decimal(current["h"]), high))
+            current["l"] = str(min(Decimal(current["l"]), low))
+            if observed >= current["_last"]:
+                current["c"] = str(close)
+                current["_last"] = observed
+    output = []
+    for hour in sorted(buckets):
+        # Recovery is evidence, not gap filling. Require a complete observed
+        # minute sequence before promoting it into a canonical hourly bar.
+        if len(minutes.get(hour, set())) != 60:
+            continue
+        row = dict(buckets[hour])
+        row.pop("_last", None)
+        output.append(row)
+    return output
+
+
+def _reset_incomplete_development_rows(state: dict[str, Any]) -> bool:
+    reset = False
+    for row in (state.get("candidates") or {}).values():
+        reasons = row.get("rejection_reasons") or []
+        if (row.get("stage") == "DEVELOPMENT" and row.get("status") == "REJECTED"
+                and not row.get("history") and len(reasons) == 1
+                and "incomplete_hourly_corpus" in reasons[0]):
+            row["status"] = "QUEUED"
+            row["rejection_reasons"] = []
+            reset = True
+    if reset:
+        state["stage"] = "DEVELOPMENT"
+        state["status"] = "WAITING_FOR_DATA"
+        state.pop("selected_candidate_id", None)
+        state.pop("current_candidate_id", None)
+    return reset
 
 
 def read_state(store: RhenCoreStore) -> dict[str, Any]:
@@ -94,6 +185,8 @@ def projection(store: RhenCoreStore) -> dict[str, Any]:
             "cost_scenarios": COSTS, "gates": GATES, "paper_candidate_id": state.get("paper_candidate_id"),
             "paper_runtime": state.get("paper_runtime"), "paper_progress": state.get("paper_progress"),
             "paper_reader": store.get_kv(NAMESPACE, "paper_reader", None)[0], "data_quality": data_quality,
+            "data_recovery": {stage: store.get_kv(NAMESPACE, "corpus_recovery:" + stage.lower(), None)[0]
+                              for stage in STAGES[:3]},
             "last_error": state.get("last_error"), "rejection_reasons": (current or {}).get("rejection_reasons", []),
             "search_completed": sum(x.get("status") != "QUEUED" for x in candidates), "search_bound": len(catalog())}
 
@@ -227,6 +320,46 @@ class BtcDiscoveryJob:
         state["updated_at"] = datetime.now(UTC).isoformat()
         self.store.set_kv(NAMESPACE, "pipeline", state)
 
+    async def _load_corpus(self, stage: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        cache_key = stage.lower()
+        corpus = self.store.get_kv(NAMESPACE, "corpus:" + cache_key, None)[0]
+        try:
+            if corpus is None:
+                bars = await self.data.historical_bars_many(
+                    ["BTC/USD"], start=start - timedelta(days=35),
+                    end=end - timedelta(microseconds=1), timeframe="1Hour")
+                corpus = bars.get("BTC/USD") or []
+                self.store.set_kv(NAMESPACE, "corpus:" + cache_key, corpus)
+            missing = _missing_hours(corpus, start, end)
+            recovery = {"requested_missing_hours": len(missing), "recovered_hours": 0,
+                        "source": "1Min_aggregate", "bounded_hours": MAX_MINUTE_RECOVERY_HOURS}
+            if missing and len(missing) <= MAX_MINUTE_RECOVERY_HOURS:
+                allowed = set(missing)
+                recovered = []
+                for window_start, window_end in _recovery_windows(missing):
+                    minute = await self.data.historical_bars_many(
+                        ["BTC/USD"], start=window_start, end=window_end, timeframe="1Min")
+                    recovered.extend(_aggregate_recovery(minute.get("BTC/USD") or [], allowed))
+                if recovered:
+                    seen = set()
+                    for row in corpus:
+                        observed = _stamp(row)
+                        if start - timedelta(days=35) <= observed < end:
+                            if observed in seen:
+                                normalized_corpus(corpus, start, end)
+                            seen.add(observed)
+                    merged = {_stamp(row): row for row in corpus}
+                    for row in recovered:
+                        merged.setdefault(_stamp(row), row)
+                    corpus = [merged[key] for key in sorted(merged)]
+                    self.store.set_kv(NAMESPACE, "corpus:" + cache_key, corpus)
+                recovery["recovered_hours"] = len(set(missing) - set(_missing_hours(corpus, start, end)))
+            self.store.set_kv(NAMESPACE, "corpus_recovery:" + cache_key, recovery)
+            normalized_corpus(corpus, start, end)
+            return corpus
+        except (httpx.HTTPError, ValueError) as exc:
+            raise CorpusUnavailable(str(exc)) from exc
+
     async def tick(self):
         if self.lock.locked():
             return {"ok": True, "status": "RUNNING"}
@@ -249,6 +382,8 @@ class BtcDiscoveryJob:
                 paper_progress(self.store, state)
                 self.save(state)
                 return projection(self.store)
+            if state.get("status") == "EXHAUSTED" and _reset_incomplete_development_rows(state):
+                self.save(state)
             if state.get("status") in {"REJECTED", "EXHAUSTED"}:
                 return projection(self.store)
             stage = state["stage"]
@@ -287,12 +422,7 @@ class BtcDiscoveryJob:
                     reasons = [] if result.get("verified") else ["velum_independent_replay_rejected"]
                 else:
                     start, end = (datetime.fromisoformat(x) for x in state["contract"][stage.lower()])
-                    cache_key = stage.lower()
-                    corpus = self.store.get_kv(NAMESPACE, "corpus:" + cache_key, None)[0]
-                    if corpus is None:
-                        bars = await self.data.historical_bars_many(["BTC/USD"], start=start - timedelta(days=35), end=end - timedelta(microseconds=1), timeframe="1Hour")
-                        corpus = bars.get("BTC/USD") or []
-                        self.store.set_kv(NAMESPACE, "corpus:" + cache_key, corpus)
+                    corpus = await self._load_corpus(stage, start, end)
                     strategy = candidate_strategy(row)
                     engine = ContinuousReplayEngine(self.settings, strategy)
                     result = await asyncio.to_thread(engine.run_btc_direct, corpus, start=start, end=end, candidate=row)
@@ -321,9 +451,14 @@ class BtcDiscoveryJob:
             except Exception as exc:
                 state["running"] = False
                 state["last_error"] = type(exc).__name__ + ":" + str(exc)[:200]
-                row["status"] = "REJECTED"
-                row["rejection_reasons"] = ["stage_failed:" + state["last_error"]]
-                if stage != "DEVELOPMENT":
-                    state["status"] = "REJECTED"
+                if stage == "DEVELOPMENT" and isinstance(exc, CorpusUnavailable):
+                    row["status"] = "QUEUED"
+                    row["rejection_reasons"] = []
+                    state["status"] = "WAITING_FOR_DATA"
+                else:
+                    row["status"] = "REJECTED"
+                    row["rejection_reasons"] = ["stage_failed:" + state["last_error"]]
+                    if stage != "DEVELOPMENT":
+                        state["status"] = "REJECTED"
                 self.save(state)
             return projection(self.store)
