@@ -317,19 +317,444 @@ def _prompt_value(value: Any, fallback: str = "—", limit: int = 260) -> str:
     return (text or fallback)[:limit]
 
 
+def _maintenance_rows(snapshot: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    evidence = snapshot.get("maintenance_evidence")
+    if not isinstance(evidence, dict):
+        return []
+    rows = evidence.get(key)
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _maintenance_index(
+    rows: list[dict[str, Any]],
+    *,
+    key_fields: tuple[str, ...],
+    value_fields: tuple[str, ...],
+    limit: int,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows[:limit]:
+        key = next((_text(row.get(field)) for field in key_fields if _text(row.get(field))), "")
+        if not key:
+            continue
+        result[key] = {
+            field: row.get(field)
+            for field in value_fields
+            if row.get(field) is not None
+        }
+    return result
+
+
+def _maintenance_state(
+    snapshot: dict[str, Any],
+    control_state: dict[str, Any],
+) -> dict[str, Any]:
+    topology = control_state.get("topology")
+    topology = topology if isinstance(topology, dict) else {}
+    services = topology.get("services")
+    services = services if isinstance(services, list) else []
+    objectives = [
+        dict(row)
+        for row in list(snapshot.get("objectives") or [])
+        if isinstance(row, dict)
+    ]
+    jobs = [
+        dict(row)
+        for row in list(snapshot.get("jobs") or [])
+        if isinstance(row, dict)
+    ]
+    incidents = _open_incidents(control_state)
+
+    handoff_rows = [
+        row for row in jobs
+        if str(row.get("job_type") or "").upper() == "CODEX_HANDOFF"
+    ]
+
+    return {
+        "control": {
+            "state": control_state.get("state") or "UNKNOWN",
+            "observed_at": control_state.get("observed_at"),
+            "inventory_complete": topology.get("inventory_complete") is True,
+        },
+        "services": _maintenance_index(
+            [dict(row) for row in services if isinstance(row, dict)],
+            key_fields=("service_name", "service_id"),
+            value_fields=("status", "readiness", "revision", "deployment"),
+            limit=16,
+        ),
+        "incidents": {
+            str(row.get("key")): {
+                "severity": row.get("severity"),
+                "reason": row.get("reason"),
+                "opened_at": row.get("opened_at"),
+            }
+            for row in incidents
+            if row.get("key")
+        },
+        "objectives": _maintenance_index(
+            objectives,
+            key_fields=("objective_key",),
+            value_fields=("status", "owner_system", "priority", "updated_at", "completed_at"),
+            limit=60,
+        ),
+        "jobs": _maintenance_index(
+            jobs,
+            key_fields=("job_id",),
+            value_fields=("status", "job_type", "objective_key", "owner_system", "updated_at", "completed_at"),
+            limit=80,
+        ),
+        "graen_problems": _maintenance_index(
+            _maintenance_rows(snapshot, "graen_problems"),
+            key_fields=("problem_id",),
+            value_fields=("status", "research_stage", "candidate_id", "family", "updated_at"),
+            limit=20,
+        ),
+        "graen_runs": _maintenance_index(
+            _maintenance_rows(snapshot, "graen_runs"),
+            key_fields=("run_id",),
+            value_fields=("status", "methodology_version", "decision", "next_action", "strategy_version_id", "completed_at"),
+            limit=20,
+        ),
+        "velum_replays": _maintenance_index(
+            _maintenance_rows(snapshot, "velum_replays"),
+            key_fields=("replay_id",),
+            value_fields=("status", "asset_class", "strategy_version_id", "methodology_version", "result_type", "completed_at"),
+            limit=20,
+        ),
+        "nostra_calibrations": _maintenance_index(
+            _maintenance_rows(snapshot, "nostra_calibrations"),
+            key_fields=("calibration_id",),
+            value_fields=("model_version", "methodology_version", "sample_count", "created_at"),
+            limit=8,
+        ),
+        "nostra_forecasts": _maintenance_index(
+            _maintenance_rows(snapshot, "nostra_forecasts"),
+            key_fields=("forecast_id",),
+            value_fields=("subject", "model_version", "methodology_version", "issued_at", "observed_at"),
+            limit=12,
+        ),
+        "strategy_activity": _maintenance_index(
+            _maintenance_rows(snapshot, "strategy_activity_24h"),
+            key_fields=("strategy_version_id",),
+            value_fields=("last_event_at", "decision_cycles", "fills", "runtime_errors", "run_count"),
+            limit=12,
+        ),
+        "handoffs": _maintenance_index(
+            handoff_rows,
+            key_fields=("job_id",),
+            value_fields=("status", "objective_key", "updated_at", "completed_at"),
+            limit=16,
+        ),
+    }
+
+
+def _previous_maintenance_manifest(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    for row in list(snapshot.get("commands") or []):
+        if not isinstance(row, dict):
+            continue
+        result = row.get("result")
+        if not isinstance(result, dict):
+            continue
+        manifest = result.get("maintenance_manifest")
+        if (
+            result.get("prompt_version") == "iren-maintenance-v2"
+            and isinstance(manifest, dict)
+        ):
+            return dict(manifest)
+    return None
+
+
+def _maintenance_changes(
+    previous: dict[str, Any] | None,
+    current_state: dict[str, Any],
+) -> tuple[int, list[str]]:
+    if not previous:
+        return 0, ["First adaptive maintenance baseline; no previous v2 prompt exists."]
+
+    previous_state = previous.get("state")
+    if not isinstance(previous_state, dict):
+        return 0, ["Previous maintenance prompt has no comparable state manifest."]
+
+    changes: list[str] = []
+    total = 0
+
+    def add(message: str) -> None:
+        nonlocal total
+        total += 1
+        if len(changes) < 16:
+            changes.append(message)
+
+    previous_control = previous_state.get("control")
+    current_control = current_state.get("control")
+    if previous_control != current_control:
+        add(
+            "Control state changed: "
+            + _prompt_value((previous_control or {}).get("state"), "UNKNOWN")
+            + " -> "
+            + _prompt_value((current_control or {}).get("state"), "UNKNOWN")
+        )
+
+    labels = {
+        "services": "service",
+        "incidents": "incident",
+        "objectives": "objective",
+        "jobs": "job",
+        "graen_problems": "GRAEN problem",
+        "graen_runs": "GRAEN run",
+        "velum_replays": "VELUM replay",
+        "nostra_calibrations": "NOSTRA calibration",
+        "nostra_forecasts": "NOSTRA forecast",
+        "strategy_activity": "strategy",
+        "handoffs": "Codex handoff",
+    }
+    for group, label in labels.items():
+        before = previous_state.get(group)
+        after = current_state.get(group)
+        before = before if isinstance(before, dict) else {}
+        after = after if isinstance(after, dict) else {}
+        for key in sorted(set(before) | set(after)):
+            if key not in before:
+                add(f"New {label}: {key}")
+            elif key not in after:
+                add(f"{label.capitalize()} left current window: {key}")
+            elif before.get(key) != after.get(key):
+                before_status = (before.get(key) or {}).get("status")
+                after_status = (after.get(key) or {}).get("status")
+                if before_status != after_status and (before_status or after_status):
+                    add(
+                        f"{label.capitalize()} {key}: "
+                        f"{_prompt_value(before_status, '—')} -> {_prompt_value(after_status, '—')}"
+                    )
+                else:
+                    add(f"{label.capitalize()} changed: {key}")
+
+    if total == 0:
+        changes.append("No material state delta since the previous adaptive maintenance prompt.")
+    elif total > len(changes):
+        changes.append(f"{total - len(changes)} additional changes omitted from this compact delta.")
+    return total, changes
+
+
+def _maintenance_mode(
+    snapshot: dict[str, Any],
+    control_state: dict[str, Any],
+    *,
+    focus: str,
+    change_count: int,
+    changes: list[str],
+) -> tuple[str, str]:
+    incidents = _open_incidents(control_state)
+    state = str(control_state.get("state") or "UNKNOWN").upper()
+    topology = control_state.get("topology")
+    topology = topology if isinstance(topology, dict) else {}
+    jobs = [row for row in list(snapshot.get("jobs") or []) if isinstance(row, dict)]
+    blocked = [
+        row for row in jobs
+        if str(row.get("status") or "").upper() in {"WAITING", "BLOCKED", "NEEDS_APPROVAL"}
+    ]
+    active_research = [
+        row for row in _maintenance_rows(snapshot, "graen_problems")
+        if str(row.get("status") or "").upper() in {"RUNNING", "QUEUED", "WAITING", "BLOCKED"}
+    ]
+    research_delta = any(
+        item.startswith(("GRAEN", "VELUM", "NOSTRA", "Strategy"))
+        or "strategy" in item.lower()
+        for item in changes
+    )
+
+    if any(row.get("severity") == "critical" for row in incidents):
+        return "RECOVERY", "critical control-plane incident"
+    if state == "STALE" or topology.get("inventory_complete") is not True:
+        return "EVIDENCE_REPAIR", "canonical state or deployment inventory is incomplete"
+    if incidents:
+        return "STABILIZE", "open operational incident"
+    if blocked:
+        return "RECONCILE", "blocked/waiting work requires dependency reconciliation"
+    if active_research or research_delta:
+        return "RESEARCH", "research evidence is active or changed"
+    if focus:
+        return "FOCUSED", "operator supplied a specific focus"
+    if change_count == 0:
+        return "VERIFY_ONLY", "no material delta since the previous maintenance pass"
+    return "TARGETED", "material state changed without an active incident"
+
+
+def _maintenance_budget(mode: str) -> dict[str, Any]:
+    if mode in {"RECOVERY", "EVIDENCE_REPAIR", "STABILIZE"}:
+        return {
+            "primary_objectives": 1,
+            "supporting_changes": 2,
+            "parallel_research_threads": 0,
+            "scope": "repair one root cause and only the dependencies required to verify recovery",
+        }
+    if mode == "RESEARCH":
+        return {
+            "primary_objectives": 1,
+            "supporting_changes": 2,
+            "parallel_research_threads": 1,
+            "scope": "advance one evidence chain from hypothesis through the next required gate",
+        }
+    if mode == "VERIFY_ONLY":
+        return {
+            "primary_objectives": 0,
+            "supporting_changes": 0,
+            "parallel_research_threads": 0,
+            "scope": "read-only verification; make no change unless new evidence reveals a real defect",
+        }
+    return {
+        "primary_objectives": 1,
+        "supporting_changes": 2,
+        "parallel_research_threads": 1,
+        "scope": "one coherent change set; avoid unrelated cleanup or redesign",
+    }
+
+
+def build_maintenance_manifest(
+    snapshot: dict[str, Any],
+    control_state: dict[str, Any],
+    *,
+    focus: str = "",
+) -> dict[str, Any]:
+    state = _maintenance_state(snapshot, control_state)
+    previous = _previous_maintenance_manifest(snapshot)
+    change_count, changes = _maintenance_changes(previous, state)
+    mode, driver = _maintenance_mode(
+        snapshot,
+        control_state,
+        focus=focus,
+        change_count=change_count,
+        changes=changes,
+    )
+    budget = _maintenance_budget(mode)
+    digest = hashlib.sha256(
+        json.dumps(state, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    previous_digest = (
+        _text(previous.get("state_digest"))
+        if isinstance(previous, dict)
+        else ""
+    )
+    return {
+        "version": "iren-maintenance-manifest.v2",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "mode": mode,
+        "driver": driver,
+        "focus": focus,
+        "state_digest": digest,
+        "previous_state_digest": previous_digest or None,
+        "changed_since_previous": bool(previous and previous_digest != digest),
+        "change_count": change_count,
+        "changes": changes,
+        "budget": budget,
+        "state": state,
+    }
+
+
+def _maintenance_research_lines(snapshot: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    problems = _maintenance_rows(snapshot, "graen_problems")[:6]
+    runs = _maintenance_rows(snapshot, "graen_runs")[:6]
+    replays = _maintenance_rows(snapshot, "velum_replays")[:5]
+    calibrations = _maintenance_rows(snapshot, "nostra_calibrations")[:3]
+    forecasts = _maintenance_rows(snapshot, "nostra_forecasts")[:4]
+    strategies = _maintenance_rows(snapshot, "strategy_activity_24h")[:6]
+
+    lines.append("GRAEN problems:")
+    if problems:
+        for row in problems:
+            lines.append(
+                "- "
+                + _prompt_value(row.get("problem_id"), "problem")
+                + " | " + _prompt_value(row.get("status"), "UNKNOWN")
+                + " | stage=" + _prompt_value(row.get("research_stage"))
+                + " | candidate=" + _prompt_value(row.get("candidate_id"))
+                + " | " + _prompt_value(row.get("title"), "Untitled")
+            )
+    else:
+        lines.append("- No current GRAEN problem evidence supplied.")
+
+    lines.append("Recent GRAEN runs:")
+    if runs:
+        for row in runs:
+            lines.append(
+                "- "
+                + _prompt_value(row.get("run_id"), "run")
+                + " | " + _prompt_value(row.get("status"), "UNKNOWN")
+                + " | decision=" + _prompt_value(row.get("decision"))
+                + " | next=" + _prompt_value(row.get("next_action"))
+                + " | strategy=" + _prompt_value(row.get("strategy_version_id"))
+            )
+    else:
+        lines.append("- None supplied.")
+
+    lines.append("VELUM replay evidence:")
+    if replays:
+        for row in replays:
+            lines.append(
+                "- "
+                + _prompt_value(row.get("replay_id"), "replay")
+                + " | " + _prompt_value(row.get("status"), "UNKNOWN")
+                + " | strategy=" + _prompt_value(row.get("strategy_version_id"))
+                + " | result=" + _prompt_value(row.get("result_type"))
+            )
+    else:
+        lines.append("- None supplied.")
+
+    lines.append("NOSTRA evidence:")
+    if calibrations:
+        latest = calibrations[0]
+        lines.append(
+            "- latest calibration "
+            + _prompt_value(latest.get("calibration_id"), "—")
+            + " | model=" + _prompt_value(latest.get("model_version"))
+            + " | n=" + _prompt_value(latest.get("sample_count"))
+        )
+    else:
+        lines.append("- No recent calibration supplied.")
+    if forecasts:
+        open_count = sum(1 for row in forecasts if not row.get("observed_at"))
+        lines.append(f"- {len(forecasts)} recent forecasts in snapshot; {open_count} awaiting outcomes.")
+
+    lines.append("RHEN strategy activity / 24h:")
+    if strategies:
+        for row in strategies:
+            lines.append(
+                "- "
+                + _prompt_value(row.get("strategy_version_id"), "strategy")
+                + " | decisions=" + _prompt_value(row.get("decision_cycles"), "0")
+                + " | fills=" + _prompt_value(row.get("fills"), "0")
+                + " | errors=" + _prompt_value(row.get("runtime_errors"), "0")
+                + " | runs=" + _prompt_value(row.get("run_count"), "0")
+                + " | last=" + _prompt_value(row.get("last_event_at"))
+            )
+    else:
+        lines.append("- No strategy activity supplied for the last 24h.")
+    return lines
+
+
 def render_maintenance_prompt(
     snapshot: dict[str, Any],
     control_state: dict[str, Any],
     *,
     focus: str = "",
+    manifest: dict[str, Any] | None = None,
 ) -> str:
+    manifest = manifest or build_maintenance_manifest(
+        snapshot,
+        control_state,
+        focus=focus,
+    )
     objectives = [
         row for row in list(snapshot.get("objectives") or [])
-        if str(row.get("status") or "").upper() in {"ACTIVE", "READY", "BLOCKED"}
+        if isinstance(row, dict)
+        and str(row.get("status") or "").upper() in {"ACTIVE", "READY", "BLOCKED"}
     ][:10]
     jobs = [
         row for row in list(snapshot.get("jobs") or [])
-        if str(row.get("status") or "").upper() in ACTIVE_JOB_STATES
+        if isinstance(row, dict)
+        and str(row.get("status") or "").upper() in ACTIVE_JOB_STATES
     ][:10]
     incidents = _open_incidents(control_state)[:12]
     topology = control_state.get("topology") or {}
@@ -338,22 +763,42 @@ def render_maintenance_prompt(
     services = services if isinstance(services, list) else []
     current = choose_next_action(snapshot, control_state)
     active_handoffs = codex.active_handoffs(snapshot)
+    budget = manifest.get("budget") if isinstance(manifest.get("budget"), dict) else {}
+    changes = list(manifest.get("changes") or [])
 
     lines = [
-        "Continue ANEVUM/RHEN maintenance from the CURRENT actual state. "
-        "Do not restart architecture analysis or redo completed work.",
+        "IREN ADAPTIVE MAINTENANCE PASS v2",
+        "",
+        "Mission:",
+        "Continue ANEVUM/RHEN from CURRENT evidence. Maintain the whole system as one coherent operating stack, "
+        "but change only the smallest evidence-backed scope required in this pass.",
         "",
         "Canonical repositories:",
         f"- Backend/runtime: {codex.configured_repository()}",
         "- Frontend/Command: anevum/anevum-web",
         "",
-        "IREN control snapshot:",
+        "PASS SELECTION",
+        f"- Mode: {_prompt_value(manifest.get('mode'), 'TARGETED')}",
+        f"- Driver: {_prompt_value(manifest.get('driver'), 'current evidence')}",
+        f"- Material changes since previous prompt: {int(manifest.get('change_count') or 0)}",
+        f"- Work budget: {int(budget.get('primary_objectives') or 0)} primary objective; "
+        f"up to {int(budget.get('supporting_changes') or 0)} tightly coupled supporting changes; "
+        f"{int(budget.get('parallel_research_threads') or 0)} parallel research thread(s).",
+        f"- Scope rule: {_prompt_value(budget.get('scope'), 'one coherent change set')}",
+        "",
+        "CHANGES SINCE PREVIOUS MAINTENANCE PROMPT",
+    ]
+    lines.extend(f"- {item}" for item in changes[:16])
+
+    lines.extend([
+        "",
+        "CURRENT CONTROL STATE",
         f"- State: {_prompt_value(control_state.get('state'), 'UNKNOWN')}",
         f"- Observed at: {_prompt_value(control_state.get('observed_at'))}",
         f"- Inventory complete: {'YES' if topology.get('inventory_complete') is True else 'NO/UNKNOWN'}",
         "",
         "Runtime services:",
-    ]
+    ])
     if services:
         for row in services[:12]:
             if not isinstance(row, dict):
@@ -371,7 +816,7 @@ def render_maintenance_prompt(
                 + " | deployment=" + _prompt_value(row.get("deployment"))
             )
     else:
-        lines.append("- No service inventory present. Inspect live Railway state before editing.")
+        lines.append("- No service inventory supplied. Treat this as an evidence gap, not as healthy.")
 
     lines.extend(["", "Open incidents:"])
     if incidents:
@@ -384,7 +829,7 @@ def render_maintenance_prompt(
     else:
         lines.append("- None reported.")
 
-    lines.extend(["", "Active objectives:"])
+    lines.extend(["", "CURRENT OBJECTIVES + JOBS", "Active objectives:"])
     if objectives:
         for row in objectives:
             lines.append(
@@ -395,8 +840,7 @@ def render_maintenance_prompt(
             )
     else:
         lines.append("- None.")
-
-    lines.extend(["", "Active work:"])
+    lines.append("Active/waiting jobs:")
     if jobs:
         for row in jobs:
             lines.append(
@@ -404,12 +848,15 @@ def render_maintenance_prompt(
                 + " | " + _prompt_value(row.get("status"), "UNKNOWN")
                 + " | " + _prompt_value(row.get("job_type"), "WORK")
                 + " | " + _prompt_value(row.get("title"), "Untitled")
-                + " | owner=" + _prompt_value(row.get("owner_system"), "IREN")
+                + " | objective=" + _prompt_value(row.get("objective_key"))
             )
     else:
         lines.append("- None.")
 
-    lines.extend(["", "IREN next action:"])
+    lines.extend(["", "CURRENT RESEARCH + STRATEGY EVIDENCE"])
+    lines.extend(_maintenance_research_lines(snapshot))
+
+    lines.extend(["", "IREN NEXT ACTION"])
     if current:
         lines.append(
             "- " + _prompt_value(current.get("title"), "Untitled")
@@ -419,7 +866,7 @@ def render_maintenance_prompt(
     else:
         lines.append("- No pending canonical action.")
 
-    lines.extend(["", "Tracked Codex handoffs:"])
+    lines.extend(["", "TRACKED CODEX HANDOFFS"])
     if active_handoffs:
         for row in active_handoffs[:4]:
             result = row.get("result") or {}
@@ -430,39 +877,84 @@ def render_maintenance_prompt(
                 + " | objective=" + _prompt_value(row.get("objective_key"))
                 + " | base=" + _prompt_value(package.get("base_sha"), "—", 12)
             )
-        lines.append("- Inspect and continue/verify active handoffs before creating overlapping work.")
+        lines.append("- Continue or verify existing handoffs before creating overlapping software work.")
     else:
         lines.append("- None active.")
 
     lines.extend([
         "",
-        "Operator focus:",
-        "- " + (_prompt_value(focus, "", 1000) if focus else
-               "No additional focus supplied. Perform the highest-value maintenance pass supported by current evidence."),
+        "OPERATOR FOCUS",
+        "- " + (
+            _prompt_value(focus, "", 1000)
+            if focus
+            else "No additional focus supplied. Let the evidence and priority rules choose the pass."
+        ),
         "",
-        "Execution instructions:",
-        "1. Inspect CURRENT main in both repositories, applicable AGENTS.md files, current GitHub CI, "
-        "current Railway deployments, and current Command/IREN state before editing. "
-        "Treat this snapshot as context, not authority.",
-        "2. Reconcile this snapshot against live evidence. Do not act on stale assumptions, old PRs, "
-        "obsolete services, or legacy architecture.",
-        "3. Preserve the current ANEVUM/RHEN architecture and naming. Consolidate rather than duplicate. "
-        "Do not reintroduce retired infrastructure.",
-        "4. Identify the highest-value concrete maintenance/update work consistent with the operator focus "
-        "and current evidence. If a safe code fix is clear, implement it; do not stop at analysis.",
-        "5. Add or update focused tests, run the relevant full CI, and verify the deployed result with "
-        "GitHub plus Railway/Cloudflare evidence.",
-        "6. Preserve RHEN live strategy, risk controls, broker behavior, position sizing, execution permissions, "
-        "credentials, and capital behavior unless the operator explicitly authorizes a change to those protected areas.",
-        "7. Keep paid model/API worker spending disabled. Do not add autonomous spending, credential changes, "
-        "destructive infrastructure actions, or silent live-trading behavior changes.",
-        "8. Do not fabricate health, telemetry, research progress, trades, deployment state, or completion. "
-        "If evidence is missing, surface the missing evidence.",
-        "9. If there is no real maintenance need, say so and do not invent work.",
-        "10. Finish with exact changes made, tests/CI results, deployed state, unresolved blockers, "
-        "and the next concrete action if one exists.",
+        "SYSTEM RESPONSIBILITY MAP — ALWAYS INSPECT, SELECTIVELY CHANGE",
+        "- Integrity: runtime health, deployment state, CI, schedulers, dependencies, configuration drift, credentials boundaries, cost/resource pressure.",
+        "- Evidence: telemetry, provenance, event durability, reconciliation, data completeness, stale/blank Command fields, research observability.",
+        "- Work control: IREN objectives, dependencies, priorities, duplicate/stale jobs, WAITING/BLOCKED work, completion evidence, Codex handoffs.",
+        "- Research: GRAEN hypotheses/problems/runs/artifacts; VELUM replay/simulation evidence; NOSTRA calibration/forecast/regime evidence.",
+        "- Strategy lifecycle: candidate strategy versions, replay validation, paper/forward evidence, promotion/rollback state, RHEN strategy registry/runtime wiring.",
+        "- Execution boundary: broker integration, position/risk protection, order reconciliation, market-session behavior, live-vs-paper authority.",
+        "- Operator surface: Command data accuracy and controls. Change UI only when it improves truth, observability, or required operation.",
+        "- Cleanup: remove proven legacy/duplicate code only when the active path is verified and history/evidence is preserved.",
         "",
-        "This prompt was assembled deterministically from IREN state; no model/API worker was invoked.",
+        "PRIORITY + SCOPE ALGORITHM",
+        "1. Safety/integrity/evidence failures outrank research, strategy optimization, UX, cleanup, and new features.",
+        "2. If canonical state is stale or incomplete, restore trustworthy observation before using downstream results to make decisions.",
+        "3. Reconcile blocked/waiting/duplicate work before spawning new work for the same objective.",
+        "4. Prefer finishing or invalidating the current research/strategy chain over opening a new parallel chain.",
+        "5. Select ONE primary objective for this pass. Add supporting changes only when they are necessary to make that objective correct, testable, or deployable.",
+        "6. Do not perform a broad refactor, strategy redesign, research expansion, and Command redesign in one pass. Split unrelated work into future objectives.",
+        "7. If there is no material delta and no explicit operator focus, verify current state and stop. Do not manufacture churn.",
+        "",
+        "RESEARCH -> STRATEGY CONTROL LOOP",
+        "1. Start from the current measurable problem or hypothesis. Reuse existing GRAEN work when it addresses the same question; do not duplicate experiments.",
+        "2. GRAEN owns hypothesis/candidate development. Update the research question, features, methodology, or candidate only when evidence shows why.",
+        "3. VELUM owns replay/simulation validation. A candidate that lacks replay evidence does not jump to RHEN merely because it looks promising.",
+        "4. Use NOSTRA when regime/forecast/calibration evidence is relevant to the hypothesis; do not force NOSTRA into unrelated changes.",
+        "5. When evidence rejects a candidate, record the rejection, retire/supersede the corresponding work, and move to the next justified hypothesis instead of tuning indefinitely.",
+        "6. When evidence supports a candidate, create/version the smallest strategy change needed and advance it through the EXISTING canonical validation gates.",
+        "7. Strategy changes must be versioned, attributable to the research evidence that motivated them, observable in Command, and reversible.",
+        "8. Never overwrite a working strategy in place. Preserve the prior version and rollback path.",
+        "9. Do not invent promotion thresholds. Use the repository's current methodology/gates. If a required gate is absent or ambiguous, surface that as the next maintenance problem.",
+        "10. Paper/forward/canary evidence must remain distinct from live performance. Do not represent simulated evidence as live.",
+        "11. Promotion to live execution may occur only through the current authorized promotion path and existing safety/risk policy. Do not silently expand broker-write authority, capital allocation, or risk.",
+        "",
+        "JOB + OBJECTIVE ORCHESTRATION",
+        "1. Treat IREN objective/job state as durable coordination, not a cosmetic task list.",
+        "2. Do not create a new job if an equivalent ACTIVE/QUEUED/RUNNING/WAITING job already owns the same work.",
+        "3. When dependencies clear, advance the existing WAITING/BLOCKED work instead of duplicating it.",
+        "4. Mark work COMPLETE only when success criteria have direct evidence. Keep unresolved work active/blocked with the real blocker.",
+        "5. Supersede or obsolete stale paths when newer evidence invalidates them; preserve audit history rather than deleting evidence.",
+        "6. Keep FUTURE ideas out of the current pass unless they become the highest-priority evidence-backed need.",
+        "7. If Codex discovers a new concrete blocker or required follow-up, update/create the smallest canonical objective/job needed so the next generated prompt can continue from it.",
+        "",
+        "EXECUTION INSTRUCTIONS",
+        "1. Inspect CURRENT main in both repositories, applicable AGENTS.md files, current GitHub CI, current Railway deployments/logs, and current Command/IREN/Research state before editing. This prompt is context, not authority.",
+        "2. Reconcile the snapshot and delta above against live evidence. Ignore stale PRs, obsolete branches, retired services, old architecture, and already-completed work.",
+        "3. State the selected primary objective and why it outranks alternatives before making changes.",
+        "4. Work inside the pass budget. If the real fix exceeds the budget, complete the safest coherent slice and create/leave explicit follow-up state instead of sprawling.",
+        "5. For research-driven changes, show the evidence chain: observation -> hypothesis -> GRAEN result -> VELUM/NOSTRA evidence as applicable -> strategy decision.",
+        "6. Implement clear safe fixes instead of stopping at analysis. Update code, tests, configuration, research definitions, job/objective state, or strategy version only when that is the selected objective's required change.",
+        "7. Run focused tests first, then the relevant full CI. Deploy only through existing canonical deployment paths. Verify runtime state and evidence after deployment.",
+        "8. Keep paid model/API worker spending disabled unless the operator explicitly changes that policy.",
+        "9. Do not make destructive infrastructure/credential changes, silently alter live risk/capital, or bypass protected owner approvals.",
+        "10. Do not fabricate system health, research progress, performance, trades, or completion. Missing evidence is itself a blocker.",
+        "",
+        "CLOSEOUT CONTRACT",
+        "Return a compact completion record containing:",
+        "- primary objective selected;",
+        "- evidence/research that justified it;",
+        "- exact changes made;",
+        "- objectives/jobs advanced, blocked, completed, superseded, or created;",
+        "- research/strategy lifecycle movement (if any);",
+        "- tests/CI/deploy verification;",
+        "- remaining blockers and next canonical action;",
+        "- explicit statement when no further change is justified.",
+        "",
+        "This prompt was assembled deterministically from current IREN state, bounded research evidence, and the previous maintenance manifest. No model/API worker was invoked to generate it.",
     ])
     return "\n".join(lines)
 
@@ -703,16 +1195,29 @@ def process_command(command: str, snapshot: dict[str, Any], control_state: dict[
 
     if intent == "MAINTENANCE_PROMPT":
         focus = _maintenance_focus(command)
+        manifest = build_maintenance_manifest(
+            snapshot,
+            control_state,
+            focus=focus,
+        )
         return CommandResult(intent, {
             **summary,
-            "message": "Maintenance Codex prompt prepared from current IREN state.",
+            "message": (
+                "Adaptive maintenance prompt prepared: "
+                + str(manifest.get("mode") or "TARGETED")
+                + "; "
+                + str(manifest.get("change_count") or 0)
+                + " material change(s) since the previous v2 prompt."
+            ),
             "maintenance_prompt": render_maintenance_prompt(
                 snapshot,
                 control_state,
                 focus=focus,
+                manifest=manifest,
             ),
             "maintenance_focus": focus,
-            "prompt_version": "iren-maintenance-v1",
+            "maintenance_manifest": manifest,
+            "prompt_version": "iren-maintenance-v2",
             "action_taken": False,
         })
 
@@ -909,6 +1414,10 @@ class IrenWorkEngine:
             requested_by = _text(command.get("requested_by")) or "operator"
             try:
                 snapshot = await self.snapshot()
+                if normalize_command(text) == "MAINTENANCE_PROMPT":
+                    snapshot["maintenance_evidence"] = await self.gateway(
+                        "iren_maintenance_evidence"
+                    )
                 result = process_command(text, snapshot, self.control_state(), requested_by=requested_by, source=source)
                 job_row = None
                 if result.intent == "CODEX_SUPERSEDE":
