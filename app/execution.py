@@ -453,9 +453,17 @@ class ExecutionEngine:
                 observed_at=datetime.now(NY),
             )
 
+        profit_activation_pct = self.settings.profit_protect_activation_pct
+        if isinstance(self.strategy, RollingMomentumVwapStrategy):
+            profit_activation_pct = max(
+                profit_activation_pct,
+                self.settings.target_pct,
+            )
+        state["profit_activation_threshold_pct"] = str(profit_activation_pct)
+
         if (
             self.settings.profit_protect_enabled
-            and peak >= self.settings.profit_protect_activation_pct
+            and peak >= profit_activation_pct
         ):
             floor = max(
                 self.settings.profit_protect_min_pct,
