@@ -189,11 +189,38 @@ def test_active_objective_is_actionable_when_no_ready_objective_exists():
     assert action["reason"] == "highest_priority_active_objective"
 
 
-def test_continuous_planner_always_returns_fallback():
+def test_continuous_planner_returns_idle_when_no_real_work_exists():
     data = {"objectives": [], "jobs": []}
     action = choose_next_action(data, {"state": "HEALTHY", "incidents": {}})
-    assert action["job_type"] == "CONTROL_RECONCILE"
-    assert action["title"] == "Reconcile system and derive next objective"
+    assert action is None
+
+
+def test_execute_next_is_noop_when_no_real_work_exists():
+    result = process_command(
+        "do that",
+        {"objectives": [], "jobs": []},
+        {"state": "HEALTHY", "incidents": {}},
+        requested_by="devon",
+        source="command",
+    )
+    assert result.job is None
+    assert result.response["execution_mode"] == "idle"
+    assert result.response["action_taken"] is False
+    assert result.response["message"] == "No pending safe action. Nothing executed."
+
+
+def test_next_is_read_only_for_software_objective():
+    result = process_command(
+        "what's next?",
+        snapshot(),
+        {"state": "HEALTHY", "incidents": {}},
+        requested_by="devon",
+        source="command",
+    )
+    assert result.job is None
+    assert result.response["execution_mode"] == "codex/manual software"
+    assert result.response["action_taken"] is False
+    assert result.response["next_action"]["objective_key"] == "COMMAND"
 
 
 def test_status_command_returns_substantive_summary():
@@ -287,7 +314,8 @@ def test_autopilot_does_not_repeat_same_completed_action():
         now=__import__("datetime").datetime(2026, 10, 2, 4, 0, tzinfo=__import__("datetime").timezone.utc),
     )
     assert decision["should_create"] is False
-    assert decision["reason"] == "same_action_already_attempted"
+    assert decision["reason"] == "no_action"
+    assert "Continue active work" in decision["skipped_actions"]
 
 
 def test_autopilot_honors_daily_cap():
@@ -437,6 +465,16 @@ def test_autopilot_daily_cap_uses_new_york_business_day():
         ),
     )
     assert decision["reason"] != "autopilot_daily_cap_reached"
+
+
+def test_command_processor_keeps_read_only_next_separate_from_handoff_creation():
+    import inspect
+    from app.iren.work import IrenWorkEngine
+
+    source = inspect.getsource(IrenWorkEngine._process_commands)
+    assert 'elif result.intent == "CODEX_HANDOFF":' in source
+    assert 'result.intent in {"CODEX_HANDOFF", "NEXT", "EXECUTE_NEXT"}' not in source
+    assert '"No active Codex handoff to verify."' in source
 
 
 def test_runtime_evidence_criteria_requires_complete_inventory():
