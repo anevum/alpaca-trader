@@ -23,7 +23,7 @@ class AuthorizationDenied(RuntimeError):
 
 class GitHubRepository:
     def __init__(self, token=None, client=None):
-        self.token = token if token is not None else os.getenv("GRAEN_RESEARCH_GITHUB_TOKEN", "")
+        self.token = token if token is not None else (os.getenv("GRAEN_RESEARCH_GITHUB_TOKEN", "").strip() or os.getenv("IREN_GITHUB_TOKEN", "").strip())
         self.client = client
 
     @property
