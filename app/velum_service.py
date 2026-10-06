@@ -743,6 +743,45 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="ANEVUM VELUM", lifespan=lifespan)
 
 
+@app.post("/v1/graen/btc-direct-replay")
+async def btc_direct_replay(body: dict[str, Any], x_anevum_scheduler_token: str | None = Header(default=None)):
+    require_scheduler_token(x_anevum_scheduler_token)
+    if os.getenv("RHEN_UNIFIED_ROLE") != "velum":
+        raise HTTPException(status_code=409, detail="unified_velum_required")
+    from .graen.btc_discovery import NAMESPACE, read_state
+    from .rhen_core.store import RhenCoreStore
+    from .btc_discovery_contract import STAGES, candidate_strategy, fingerprint, gate
+    from .crypto_layer import CryptoMarketDataClient
+    store = RhenCoreStore()
+    state = read_state(store)
+    row = (state.get("candidates") or {}).get(body.get("candidate_id"))
+    if not row or row.get("history") != list(STAGES[:3]) or state.get("stage") != "VELUM_REPLAY":
+        raise HTTPException(status_code=409, detail="btc_replay_lifecycle_invalid")
+    engine = ContinuousReplayEngine(velum.settings, candidate_strategy(row))
+    data = CryptoMarketDataClient(velum.settings)
+    receipts = {}
+    reasons = []
+    previous = None
+    for stage in STAGES[:3]:
+        start, end = (datetime.fromisoformat(x) for x in state["contract"][stage.lower()])
+        # Fetch independently; do not trust GRAEN's cached data or prepared signals.
+        fetched = await data.historical_bars_many(["BTC/USD"], start=start - timedelta(days=35), end=end - timedelta(microseconds=1), timeframe="1Hour")
+        result = await _run_blocking(engine.run_btc_direct, fetched.get("BTC/USD") or [], start=start, end=end, candidate=row)
+        original = row["results"][stage]
+        if fingerprint(original) != fingerprint(result):
+            reasons.append(stage + ":independent_replay_mismatch")
+        reasons.extend(stage + ":" + reason for reason in gate(result, previous))
+        previous = result
+        receipts[stage] = {"dataset_fingerprint": result["dataset_fingerprint"], "result_fingerprint": fingerprint(result)}
+    receipt = {"verified": not reasons, "owner": "VELUM", "candidate_id": row["candidate_id"],
+               "candidate_fingerprint": row["fingerprint"], "receipts": receipts, "rejection_reasons": reasons,
+               "live_authority": False}
+    store.set_kv(NAMESPACE, "velum_receipt:" + row["candidate_id"], receipt)
+    store.ingest_events([{"event_key": "btc-velum:" + row["candidate_id"], "event_type": "velum_graen_candidate_replay",
+                         "occurred_at": datetime.now(timezone.utc).isoformat(), "source": "VELUM", "strategy_version_id": row["candidate_id"], "payload": receipt}])
+    return receipt
+
+
 @app.get("/health")
 async def health():
     current = velum.status()

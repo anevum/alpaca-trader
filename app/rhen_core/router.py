@@ -34,6 +34,8 @@ PUBLIC_MODULE_ROUTES = {
 }
 
 CORE_PREFIXES = (
+    "/v1/internal/crypto-paper-assignment",
+    "/v1/btc-discovery/",
     "/v1/events",
     "/v1/trading-report-read",
     "/v1/trading-public-feed",

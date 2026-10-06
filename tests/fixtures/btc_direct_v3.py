@@ -1,46 +1,11 @@
+# Frozen default-v3 regression oracle from backend main 9e502b6.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from dataclasses import asdict, dataclass
 from typing import Any
 
-from .strategy import Signal
-
-
-@dataclass(frozen=True)
-class BtcDirectParameters:
-    fast_trend_bars: int = 24
-    medium_trend_bars: int = 72
-    slow_trend_bars: int = 168
-    long_trend_bars: int = 720
-    breakout_lookback_bars: int = 48
-    momentum_lookback_bars: int = 24
-    min_momentum_pct: str = "0.01"
-    hard_stop_pct: str = "0.025"
-    take_profit_pct: str = "0.03"
-    max_hold_minutes: int = 1440
-
-    def __post_init__(self):
-        windows = (self.fast_trend_bars, self.medium_trend_bars,
-                   self.slow_trend_bars, self.long_trend_bars)
-        if any(type(x) is not int for x in windows) or not 1 <= windows[0] < windows[1] < windows[2] < windows[3] <= 720:
-            raise ValueError("invalid_btc_trend_windows")
-        if type(self.breakout_lookback_bars) is not int or not 24 <= self.breakout_lookback_bars <= 168:
-            raise ValueError("invalid_btc_breakout_window")
-        if type(self.momentum_lookback_bars) is not int or not 12 <= self.momentum_lookback_bars <= 72:
-            raise ValueError("invalid_btc_momentum_window")
-        for name, minimum, maximum in (("min_momentum_pct", "0.005", "0.05"),
-                                       ("hard_stop_pct", "0.01", "0.025"),
-                                       ("take_profit_pct", "0.02", "0.06")):
-            value = Decimal(getattr(self, name))
-            if not value.is_finite() or not Decimal(minimum) <= value <= Decimal(maximum):
-                raise ValueError("invalid_btc_parameter:" + name)
-        if type(self.max_hold_minutes) is not int or not 60 <= self.max_hold_minutes <= 1440:
-            raise ValueError("invalid_btc_hold_window")
-
-    def payload(self) -> dict[str, Any]:
-        return asdict(self)
+from app.strategy import Signal
 
 
 class BtcDirectSwingStrategy:
@@ -79,17 +44,6 @@ class BtcDirectSwingStrategy:
     hard_stop_pct = Decimal("0.025")
     take_profit_pct = Decimal("0.03")
     max_hold_minutes = 24 * 60
-
-    def __init__(self, parameters: BtcDirectParameters | None = None, *, candidate_id: str | None = None):
-        self.parameters = parameters or BtcDirectParameters()
-        if self.parameters != BtcDirectParameters() and not candidate_id:
-            raise ValueError("parameterized_btc_requires_paper_candidate_identity")
-        if candidate_id:
-            if not candidate_id.startswith("GRAEN-BTC-DIRECT-"):
-                raise ValueError("invalid_btc_candidate_identity")
-            self.strategy_version_id = candidate_id
-        for name, value in self.parameters.payload().items():
-            setattr(self, name, Decimal(value) if name.endswith("_pct") else value)
 
     @staticmethod
     def _d(value: Any) -> Decimal:
@@ -171,9 +125,6 @@ class BtcDirectSwingStrategy:
         now: datetime,
     ) -> dict[str, Any]:
         completed = self._completed(bars, now)
-        if self.strategy_version_id != "RHEN-BTC-DIRECT-003":
-            # Candidate replay and forward execution share a fixed input horizon.
-            completed = completed[-(self.required_history_minutes // 60):]
         minimum = max(
             self.long_trend_bars,
             self.breakout_lookback_bars + 1,

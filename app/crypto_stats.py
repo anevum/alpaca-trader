@@ -56,6 +56,9 @@ def crypto_trade_stats(
         return stamp.astimezone(timezone.utc) >= start_utc
 
     def eligible_order(order: dict[str, Any]) -> bool:
+        if strategy_version_id.startswith("GRAEN-BTC-DIRECT-"):
+            from .btc_discovery_contract import candidate_order_matches
+            return candidate_order_matches(order, strategy_version_id)
         if _crypto_bot_order(order):
             return True
         if not include_manual_btc:

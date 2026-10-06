@@ -52,6 +52,8 @@ class CryptoExecutionEngine:
         self.universe = universe
         self.ledger = ledger
         self._direct_btc_history: list[dict[str, Any]] = []
+        from .btc_paper_selection import BtcPaperSelection
+        self.paper_selection = BtcPaperSelection(settings)
 
     def _direct_btc_mode(self) -> bool:
         return self.settings.crypto_execution_mode in {
@@ -88,6 +90,12 @@ class CryptoExecutionEngine:
         )
 
     def _client_order_id(self, symbol: str, action: str) -> str:
+        identity = getattr(self.strategy, "strategy_version_id", "")
+        if identity.startswith("GRAEN-BTC-DIRECT-"):
+            from .btc_discovery_contract import candidate_order_tag
+            if self.settings.trading_mode != "paper":
+                raise ValueError("research_candidate_broker_orders_are_paper_only")
+            return f"anevum-crypto-btc-{action}-{candidate_order_tag(identity)}-{uuid4().hex[:8]}"[:48]
         return (
             f"anevum-crypto-{self._safe_symbol(symbol)}-{action}-"
             f"{self.settings.order_owner_tag}-{uuid4().hex[:10]}"
@@ -692,6 +700,7 @@ class CryptoExecutionEngine:
 
     async def run_once(self) -> dict[str, Any]:
         now = datetime.now(NY)
+        previous_crypto_error = self.state.crypto_last_error
         self.state.crypto_last_error = None
         self.state.crypto_last_execution_context = {}
 
@@ -704,6 +713,16 @@ class CryptoExecutionEngine:
 
         direct_btc = self._direct_btc_mode()
         live_signal = self._live_signal_mode()
+        if (getattr(self.settings, "trading_mode", None) == "live"
+                and str(getattr(self.strategy, "strategy_version_id", "")).startswith("GRAEN-BTC-")):
+            return {"action": "blocked", "reason": "research_btc_candidate_cannot_enter_live_lane"}
+        if live_signal:
+            from .btc_discovery_contract import LIVE_ID
+            from .btc_direct_strategy import BtcDirectParameters
+            if (getattr(self.strategy, "strategy_version_id", LIVE_ID) != LIVE_ID
+                    or getattr(self.strategy, "parameters", BtcDirectParameters()) != BtcDirectParameters()):
+                return {"action": "blocked", "reason": "research_btc_candidate_cannot_enter_live_lane"}
+            self.settings.crypto_strategy_version_id = LIVE_ID
         if (
             self.settings.crypto_execution_mode == "btc_direct_paper"
             and not self.settings.btc_direct_paper_authorized
@@ -726,6 +745,7 @@ class CryptoExecutionEngine:
             self.client.open_orders(),
             self.client.recent_orders(limit=100),
         )
+        await self.paper_selection.sync(self, positions, open_orders, recent_orders, previous_error=previous_crypto_error)
 
         active_symbols = (
             ["BTC/USD"]
@@ -970,7 +990,11 @@ class CryptoExecutionEngine:
             }
             scan[symbol] = payload
             if signal.action == "buy":
-                buy_signals.append(signal)
+                if not self.paper_selection.enabled or self.paper_selection.entries_allowed:
+                    buy_signals.append(signal)
+                else:
+                    payload["action"] = "hold"
+                    payload["reason"] = self.paper_selection.error or "paper_candidate_entries_closed"
 
         self.state.record_crypto_scan(scan, at=now)
         entries_24h = (

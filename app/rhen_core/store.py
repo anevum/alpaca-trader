@@ -15,6 +15,7 @@ UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
 
 CRITICAL_EVENT_TYPES = {
+    "btc_discovery_stage", "velum_graen_candidate_replay",
     "order_intent", "broker_order", "broker_fill", "order_update",
     "position_opened", "position_closed", "reconciliation",
     "runtime_error", "crypto_runtime_error", "strategy_promotion",
@@ -1688,6 +1689,20 @@ class RhenCoreStore:
 
     def strategy_pipeline_research(self) -> dict[str, Any]:
         """Return the durable Command research and strategy lifecycle projection."""
+        from app.graen.btc_discovery import projection
+        btc = projection(self)
+        if btc.get("state") != "NOT_STARTED":
+            current = btc.get("candidate") or {}
+            verification = (current.get("results") or {}).get("VELUM_REPLAY") or {}
+            return {"schema_version": "strategy_pipeline_research.v1", "btc_discovery": btc,
+                    "candidate": {**current, "owner": "GRAEN", "lane": "crypto", "updated_at": btc.get("updated_at"),
+                                  "title": current.get("candidate_id"), "supersedes_strategy_version_id": None} if current else None,
+                    "validation": {"owner": "VELUM", "candidate_id": current.get("candidate_id"),
+                                   "status": "VERIFIED" if verification.get("verified") else "WAITING",
+                                   "observed_at": btc.get("updated_at") if verification else None},
+                    "release_gate": {"owner": "IREN", "status": btc["state"], "target_lane": "paper",
+                                     "reason": "Paper evidence only; live strategy and live broker-write authority remain protected.",
+                                     "automatic_promotion": False, "production_authority_changed": False}}
         with self.connect() as conn:
             problem_rows = conn.execute(
                 """select * from graen_problems
@@ -1919,6 +1934,7 @@ class RhenCoreStore:
 
         return {
             "schema_version": "strategy_pipeline_research.v1",
+            "btc_discovery": btc,
             "candidate": candidate,
             "validation": validation,
             "release_gate": {

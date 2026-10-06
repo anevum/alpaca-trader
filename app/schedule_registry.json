@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.4",
+  "scheduler_version": "anevum-scheduler-v1.0.5",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -201,7 +201,7 @@
       "workflow_id": "velum.crypto.replay",
       "subsystem": "VELUM",
       "owner": "RHEN",
-      "enabled": true,
+      "enabled": false,
       "schedule_type": "hourly",
       "schedule_expression": "hourly+05m; replay completed hour",
       "minute": 5,
@@ -221,7 +221,8 @@
       },
       "implementation_target": "velum_crypto",
       "version": "1.0.1",
-      "protected_action_level": "research_only"
+      "protected_action_level": "research_only",
+      "disabled_reason": "Superseded by canonical bounded GRAEN BTC discovery and independent VELUM verification."
     },
     {
       "workflow_id": "iren.scheduler.health",
@@ -248,6 +249,31 @@
       "implementation_target": "scheduler_self_health",
       "version": "1.0.0",
       "protected_action_level": "read_only"
+    },
+    {
+      "workflow_id": "graen.btc.discovery",
+      "subsystem": "GRAEN",
+      "owner": "IREN",
+      "enabled": true,
+      "schedule_type": "interval",
+      "schedule_expression": "every_5_minutes",
+      "interval_minutes": 5,
+      "timezone": "UTC",
+      "market_calendar_dependency": false,
+      "catchup_policy": "latest_only",
+      "stale_after_minutes": 10,
+      "recovery_after_minutes": 5,
+      "retry_policy": {
+        "max_attempts": 1,
+        "transient_only": true
+      },
+      "notification_policy": {
+        "success": false,
+        "failure_route": "rhen-alerts"
+      },
+      "implementation_target": "graen_btc_discovery",
+      "version": "1.0.0",
+      "protected_action_level": "research_and_paper_assignment_only"
     }
   ],
   "independent_runtimes": [

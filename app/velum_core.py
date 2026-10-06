@@ -49,6 +49,11 @@ class ContinuousReplayEngine(ReplayEngine):
     never imports or calls the broker client or execution engine.
     """
 
+    def run_btc_direct(self, rows, *, start, end, candidate, prepared_signals=None):
+        from .velum_btc import run_direct
+        return run_direct(self, rows, start=start, end=end, candidate=candidate,
+                          prepared_signals=prepared_signals)
+
     def _exit_decision(
         self,
         position: ReplayPosition,

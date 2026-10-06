@@ -380,6 +380,7 @@ async def crypto_command_lane_snapshot() -> dict:
         ),
         "strategy_version_id": settings.crypto_strategy_version_id,
         "strategy_family": settings.crypto_strategy_family,
+        "paper_selection": crypto_engine.paper_selection.snapshot(),
         "stats": stats,
         "last_decision": runtime_state.crypto_last_decision,
         "last_signal": runtime_state.crypto_last_signal,
@@ -2022,6 +2023,7 @@ def _command_strategy_pipeline(research_payload: dict) -> dict:
     release_gate["production_authority_changed"] = False
     return {
         "schema_version": "strategy_pipeline.v1",
+        "btc_discovery": research_payload.get("btc_discovery"),
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "available": bool(research_payload.get("available", True)),
         "active": active,

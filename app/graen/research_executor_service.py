@@ -7,7 +7,7 @@ import os
 from typing import Any, Mapping
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 
 from app.config import Settings, get_settings
 from app.market_data import MarketDataClient
@@ -9805,6 +9805,24 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+_btc_discovery_job = None
+
+
+@app.post("/v1/btc-discovery/tick")
+async def btc_discovery_tick(x_anevum_scheduler_token: str | None = Header(default=None)):
+    import hmac
+    expected = os.getenv("TRADING_INGEST_TOKEN", "").strip()
+    if not expected or not x_anevum_scheduler_token or not hmac.compare_digest(expected, x_anevum_scheduler_token):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if os.getenv("RHEN_UNIFIED_ROLE") != "graen-research":
+        raise HTTPException(status_code=409, detail="canonical_btc_discovery_requires_unified_runtime")
+    global _btc_discovery_job
+    if _btc_discovery_job is None:
+        from .btc_discovery import BtcDiscoveryJob
+        _btc_discovery_job = BtcDiscoveryJob(runtime.settings)
+    return await _btc_discovery_job.tick()
 
 
 @app.get("/live")
