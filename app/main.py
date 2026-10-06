@@ -179,9 +179,8 @@ def scheduler_configuration_snapshot() -> dict:
             "max_portfolio_stop_risk_pct": settings.max_portfolio_stop_risk_pct,
         },
         "asset_authority": {
-            "long_us_equities_etfs": True,
-            "crypto": False,
-            "options": False,
+            "live_asset_scope": "long_us_equities_etfs_only",
+            "options_research_only": True,
             "short_equities": False,
             "leverage_expansion": False,
         },
