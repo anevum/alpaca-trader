@@ -2343,6 +2343,677 @@ class RhenCoreStore:
         }
 
 
+    @staticmethod
+    def _research_number(value: Any) -> float | None:
+        if value in (None, "") or isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number != number or number in (float("inf"), float("-inf")):
+            return None
+        return number
+
+    @classmethod
+    def _research_metrics(cls, value: Any, *, depth: int = 0) -> dict[str, float]:
+        if depth > 4:
+            return {}
+        aliases = {
+            "trade_count": "trades",
+            "trades": "trades",
+            "closed_trades": "trades",
+            "independent_days": "independent_days",
+            "independent_day_blocks": "independent_days",
+            "expectancy_per_trade": "expectancy",
+            "expectancy_per_trade_pct": "expectancy_pct",
+            "net_expectancy": "expectancy",
+            "profit_factor": "profit_factor",
+            "max_drawdown": "max_drawdown",
+            "max_drawdown_pct": "max_drawdown_pct",
+            "net_return": "net_return",
+            "return_pct": "return_pct",
+            "win_rate": "win_rate",
+            "win_rate_pct": "win_rate_pct",
+            "sample_count": "sample_count",
+            "candidate_count": "candidate_count",
+            "development_trade_count": "development_trades",
+            "validation_trade_count": "validation_trades",
+        }
+        output: dict[str, float] = {}
+        if isinstance(value, dict):
+            for key, raw in value.items():
+                alias = aliases.get(str(key))
+                if alias and alias not in output:
+                    number = cls._research_number(raw)
+                    if number is not None:
+                        output[alias] = number
+                if isinstance(raw, (dict, list)):
+                    for nested_key, nested_value in cls._research_metrics(
+                        raw, depth=depth + 1
+                    ).items():
+                        output.setdefault(nested_key, nested_value)
+        elif isinstance(value, list):
+            for raw in value[:32]:
+                for nested_key, nested_value in cls._research_metrics(
+                    raw, depth=depth + 1
+                ).items():
+                    output.setdefault(nested_key, nested_value)
+        return output
+
+    @classmethod
+    def _find_research_list(
+        cls, value: Any, key: str, *, depth: int = 0
+    ) -> list[Any] | None:
+        if depth > 5:
+            return None
+        if isinstance(value, dict):
+            direct = value.get(key)
+            if isinstance(direct, list):
+                return direct
+            for child_key in (
+                "baseline", "result", "development", "validation", "holdout",
+                "primary", "high", "base", "low", "scenarios", "stage_results",
+            ):
+                found = cls._find_research_list(
+                    value.get(child_key), key, depth=depth + 1
+                )
+                if found is not None:
+                    return found
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    found = cls._find_research_list(
+                        child, key, depth=depth + 1
+                    )
+                    if found is not None:
+                        return found
+        elif isinstance(value, list):
+            for child in value[:16]:
+                found = cls._find_research_list(
+                    child, key, depth=depth + 1
+                )
+                if found is not None:
+                    return found
+        return None
+
+    @classmethod
+    def _research_series(cls, value: Any) -> list[dict[str, Any]]:
+        curve = cls._find_research_list(value, "equity_curve")
+        if curve:
+            rows: list[tuple[str, float]] = []
+            for index, point in enumerate(curve):
+                if not isinstance(point, dict):
+                    continue
+                equity = cls._research_number(point.get("equity"))
+                if equity is None:
+                    continue
+                rows.append((str(point.get("at") or index), equity))
+            if len(rows) > 1 and rows[0][1] != 0:
+                step = max(1, len(rows) // 120)
+                sampled = rows[::step]
+                if sampled[-1] != rows[-1]:
+                    sampled.append(rows[-1])
+                base = rows[0][1]
+                return [{
+                    "key": "normalized_return",
+                    "label": "Normalized return",
+                    "unit": "%",
+                    "points": [
+                        {
+                            "at": stamp,
+                            "value": round(((equity / base) - 1.0) * 100.0, 6),
+                        }
+                        for stamp, equity in sampled
+                    ],
+                }]
+
+        trades = cls._find_research_list(value, "trades")
+        if trades:
+            compounded = 1.0
+            points: list[dict[str, Any]] = [{"at": "start", "value": 0.0}]
+            for index, trade in enumerate(trades[:500]):
+                if not isinstance(trade, dict):
+                    continue
+                trade_return = cls._research_number(trade.get("net_return"))
+                if trade_return is None:
+                    trade_return = cls._research_number(trade.get("return_pct"))
+                if trade_return is None:
+                    continue
+                compounded *= 1.0 + trade_return
+                points.append({
+                    "at": str(
+                        trade.get("exit_at")
+                        or trade.get("entry_at")
+                        or index + 1
+                    ),
+                    "value": round((compounded - 1.0) * 100.0, 6),
+                })
+            if len(points) > 1:
+                step = max(1, len(points) // 120)
+                sampled = points[::step]
+                if sampled[-1] != points[-1]:
+                    sampled.append(points[-1])
+                return [{
+                    "key": "trade_return",
+                    "label": "Cumulative net return",
+                    "unit": "%",
+                    "points": sampled,
+                }]
+        return []
+
+    @staticmethod
+    def _research_progress(status: Any, stage: Any) -> int:
+        state = str(status or "UNKNOWN").upper()
+        phase = str(stage or "").upper()
+        if state in {"SUCCEEDED", "COMPLETED", "COMPLETE", "FAILED", "CANCELLED"}:
+            return 100
+        if state == "QUEUED":
+            return 8
+        if state == "BLOCKED":
+            return 70
+        if state == "WAITING":
+            return 85
+        if "COMPLETE" in phase:
+            return 100
+        if "VELUM" in phase or "REPLAY" in phase:
+            return 78
+        if "HOLDOUT" in phase:
+            return 70
+        if "VALIDATION" in phase:
+            return 55
+        if "DEVELOPMENT" in phase:
+            return 38
+        if "IMPLEMENT" in phase or "HYPOTHESIS" in phase:
+            return 20
+        return 25 if state == "RUNNING" else 0
+
+    def command_research_tracking(self) -> dict[str, Any]:
+        """Canonical read-only Command tracking from the consolidated RHEN Core."""
+        with self.connect() as conn:
+            problem_rows = conn.execute(
+                """select * from graen_problems
+                order by
+                  case status
+                    when 'RUNNING' then 0
+                    when 'WAITING' then 1
+                    when 'QUEUED' then 2
+                    when 'BLOCKED' then 3
+                    else 4
+                  end,
+                  updated_at desc
+                limit 40"""
+            ).fetchall()
+            run_rows = conn.execute(
+                """select * from graen_runs
+                order by started_at desc limit 64"""
+            ).fetchall()
+            artifact_rows = conn.execute(
+                """select * from graen_artifacts
+                order by created_at desc limit 96"""
+            ).fetchall()
+            event_rows = conn.execute(
+                """select event_key,event_type,occurred_at,run_id,
+                          strategy_version_id,source,payload_json
+                   from events
+                   where event_type like 'velum_%'
+                      or event_type like 'nostra_%'
+                      or event_type like 'graen_%'
+                      or strategy_version_id like 'CRYPTO-XSECT-PAPER-%'
+                   order by occurred_at desc
+                   limit 180"""
+            ).fetchall()
+
+        graen_runtime, _ = self.get_kv("graen", "runtime", {})
+        problems = []
+        for row in problem_rows:
+            problem = self._problem(row)
+            metadata = dict(problem.get("metadata") or {})
+            problems.append({
+                "problem_id": problem.get("problem_id"),
+                "title": problem.get("title") or problem.get("statement"),
+                "status": problem.get("status"),
+                "domain": problem.get("domain"),
+                "research_stage": metadata.get("research_stage"),
+                "candidate_id": metadata.get("candidate_id") or problem.get("candidate_id"),
+                "hypothesis": metadata.get("hypothesis"),
+                "family": metadata.get("family"),
+                "mechanism": metadata.get("mechanism"),
+                "campaign_id": metadata.get("campaign_id"),
+                "target_lane": metadata.get("target_lane"),
+                "supersedes_strategy_version_id": metadata.get(
+                    "supersedes_strategy_version_id"
+                ),
+                "release_requested": bool(metadata.get("release_requested", False)),
+                "updated_at": problem.get("updated_at"),
+                "started_at": problem.get("started_at"),
+                "completed_at": problem.get("completed_at"),
+            })
+
+        raw_runs = [self._run(row) for row in run_rows]
+        raw_artifacts = [self._artifact(row) for row in artifact_rows]
+        artifacts_by_run: dict[str, list[dict[str, Any]]] = {}
+        for artifact in reversed(raw_artifacts):
+            run_id = str(artifact.get("run_id") or "")
+            if run_id:
+                artifacts_by_run.setdefault(run_id, []).append(artifact)
+
+        problems_by_id = {
+            str(row.get("problem_id")): row for row in problems
+            if row.get("problem_id")
+        }
+        runs: list[dict[str, Any]] = []
+        compact_runs: list[dict[str, Any]] = []
+        represented_problems: set[str] = set()
+        for run in raw_runs:
+            run_id = str(run.get("run_id") or "")
+            problem_id = str(run.get("problem_id") or "")
+            represented_problems.add(problem_id)
+            problem = problems_by_id.get(problem_id, {})
+            result = dict(run.get("result_summary") or {})
+            artifacts = artifacts_by_run.get(run_id, [])
+            richest: Any = result
+            richest_score = (
+                len(self._research_metrics(result))
+                + (5 if self._research_series(result) else 0)
+            )
+            for artifact in reversed(artifacts):
+                content = artifact.get("content")
+                if not isinstance(content, dict):
+                    continue
+                score = (
+                    len(self._research_metrics(content))
+                    + (5 if self._research_series(content) else 0)
+                )
+                if score >= richest_score:
+                    richest = content
+                    richest_score = score
+            stage = (
+                problem.get("research_stage")
+                or result.get("state")
+                or result.get("status")
+            )
+            status = str(run.get("status") or "UNKNOWN").upper()
+            compact_runs.append({
+                "run_id": run_id,
+                "problem_id": problem_id or None,
+                "status": status,
+                "methodology_version": run.get("methodology_version"),
+                "result_state": result.get("state") or result.get("status"),
+                "error": result.get("error"),
+                "started_at": run.get("started_at"),
+                "completed_at": run.get("completed_at"),
+                "created_at": run.get("started_at"),
+            })
+            runs.append({
+                "run_id": run_id,
+                "system": "GRAEN",
+                "kind": "RESEARCH",
+                "title": (
+                    problem.get("title")
+                    or result.get("research_batch_id")
+                    or problem.get("candidate_id")
+                    or "GRAEN research run"
+                ),
+                "status": status,
+                "stage": stage,
+                "progress_pct": self._research_progress(status, stage),
+                "problem_id": problem_id or None,
+                "candidate_id": problem.get("candidate_id") or result.get("candidate_id"),
+                "methodology_version": run.get("methodology_version"),
+                "strategy_version_id": result.get("strategy_version_id"),
+                "started_at": run.get("started_at"),
+                "completed_at": run.get("completed_at"),
+                "updated_at": run.get("completed_at") or run.get("started_at"),
+                "metrics": self._research_metrics(richest),
+                "series": self._research_series(richest),
+                "artifact_count": len(artifacts),
+                "detail": {
+                    "decision": result.get("decision"),
+                    "next_action": result.get("next_action"),
+                    "hypothesis": problem.get("hypothesis"),
+                    "family": problem.get("family"),
+                    "mechanism": problem.get("mechanism"),
+                    "campaign_id": problem.get("campaign_id"),
+                    "progress_basis": "durable_stage_status",
+                },
+            })
+
+        # A durable queued/running problem is still real research activity even
+        # before a run record has been claimed.
+        for problem in problems:
+            problem_id = str(problem.get("problem_id") or "")
+            status = str(problem.get("status") or "UNKNOWN").upper()
+            if not problem_id or problem_id in represented_problems:
+                continue
+            if status not in {"RUNNING", "QUEUED", "WAITING", "BLOCKED"}:
+                continue
+            stage = problem.get("research_stage")
+            runs.append({
+                "run_id": "problem:" + problem_id,
+                "system": "GRAEN",
+                "kind": "RESEARCH_QUEUE",
+                "title": problem.get("title") or "GRAEN research problem",
+                "status": status,
+                "stage": stage,
+                "progress_pct": self._research_progress(status, stage),
+                "problem_id": problem_id,
+                "candidate_id": problem.get("candidate_id"),
+                "methodology_version": None,
+                "strategy_version_id": None,
+                "started_at": problem.get("started_at"),
+                "completed_at": problem.get("completed_at"),
+                "updated_at": problem.get("updated_at"),
+                "metrics": {},
+                "series": [],
+                "artifact_count": 0,
+                "detail": {
+                    "hypothesis": problem.get("hypothesis"),
+                    "family": problem.get("family"),
+                    "mechanism": problem.get("mechanism"),
+                    "campaign_id": problem.get("campaign_id"),
+                    "progress_basis": "durable_problem_status",
+                },
+            })
+
+        replay_projections: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
+        velum_runs: dict[str, dict[str, Any]] = {}
+        nostra_runs: dict[str, dict[str, Any]] = {}
+        paper_groups: dict[str, list[dict[str, Any]]] = {}
+
+        for row in reversed(event_rows):
+            payload = _loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                payload = {}
+            event_type = str(row["event_type"] or "")
+            occurred_at = row["occurred_at"]
+            if event_type.startswith("velum_"):
+                engineering_gate = (
+                    dict(payload.get("engineering_gate") or {})
+                    if isinstance(payload.get("engineering_gate"), dict)
+                    else {}
+                )
+                passed = engineering_gate.get("passed")
+                replay_status = (
+                    "PASSED" if passed is True else
+                    "FAILED" if passed is False else
+                    str(payload.get("status") or "RUNNING").upper()
+                )
+                problem_id = payload.get("problem_id")
+                run_key = str(
+                    payload.get("graen_run_id")
+                    or problem_id
+                    or row["run_id"]
+                    or row["event_key"]
+                )
+                progress = int(
+                    self._research_number(payload.get("progress_pct"))
+                    or (100 if event_type != "velum_replay_progress" else 55)
+                )
+                phase = payload.get("phase") or (
+                    "COMPLETE"
+                    if event_type != "velum_replay_progress"
+                    else "REPLAYING"
+                )
+                item = velum_runs.setdefault(run_key, {
+                    "run_id": run_key,
+                    "system": "VELUM",
+                    "kind": "CANDIDATE_REPLAY",
+                    "title": payload.get("candidate_id") or "VELUM replay",
+                    "status": replay_status,
+                    "stage": phase,
+                    "progress_pct": progress,
+                    "problem_id": problem_id,
+                    "candidate_id": payload.get("candidate_id"),
+                    "methodology_version": payload.get("candidate_methodology"),
+                    "strategy_version_id": row["strategy_version_id"],
+                    "started_at": payload.get("replay_start") or occurred_at,
+                    "completed_at": None,
+                    "updated_at": occurred_at,
+                    "metrics": {},
+                    "series": [],
+                    "detail": {},
+                })
+                item.update({
+                    "status": replay_status,
+                    "stage": phase,
+                    "progress_pct": max(int(item.get("progress_pct") or 0), progress),
+                    "updated_at": occurred_at,
+                })
+                if event_type != "velum_replay_progress":
+                    item["completed_at"] = occurred_at
+                    item["metrics"] = self._research_metrics(payload)
+                    item["series"] = self._research_series(payload)
+                    item["detail"] = {
+                        "engineering_gate": engineering_gate or None,
+                        "evidence_role": payload.get("evidence_role"),
+                        "bar_coverage": payload.get("bar_coverage"),
+                    }
+                    replay_range = (
+                        dict(payload.get("range") or {})
+                        if isinstance(payload.get("range"), dict)
+                        else {}
+                    )
+                    replay_projections.append({
+                        "owner": "VELUM",
+                        "event_type": event_type,
+                        "candidate_id": payload.get("candidate_id"),
+                        "problem_id": problem_id,
+                        "strategy_version_id": (
+                            row["strategy_version_id"]
+                            or payload.get("strategy_version_id")
+                        ),
+                        "status": replay_status,
+                        "started_at": (
+                            payload.get("replay_start")
+                            or replay_range.get("start")
+                        ),
+                        "completed_at": occurred_at,
+                        "observed_at": occurred_at,
+                        "engineering_gate": engineering_gate or None,
+                    })
+                events.append({
+                    "event_id": str(row["event_key"]),
+                    "at": occurred_at,
+                    "system": "VELUM",
+                    "run_id": run_key,
+                    "event_type": event_type,
+                    "stage": phase,
+                    "status": replay_status,
+                    "progress_pct": progress,
+                    "title": payload.get("candidate_id") or "VELUM replay",
+                    "detail": payload.get("message") or payload.get("reason"),
+                })
+                continue
+
+            if event_type.startswith("nostra_"):
+                run_key = str(
+                    payload.get("forecast_id")
+                    or payload.get("calibration_id")
+                    or row["event_key"]
+                )
+                kind = "CALIBRATION" if "calibr" in event_type else "FORECAST"
+                status = str(payload.get("status") or "OBSERVED").upper()
+                item = nostra_runs.setdefault(run_key, {
+                    "run_id": run_key,
+                    "system": "NOSTRA",
+                    "kind": kind,
+                    "title": (
+                        payload.get("subject")
+                        or payload.get("model_version")
+                        or "NOSTRA " + kind.lower()
+                    ),
+                    "status": status,
+                    "stage": event_type.upper(),
+                    "progress_pct": 100 if "outcome" in event_type or "scored" in event_type else 50,
+                    "problem_id": None,
+                    "candidate_id": payload.get("candidate_id"),
+                    "methodology_version": payload.get("methodology_version"),
+                    "strategy_version_id": row["strategy_version_id"],
+                    "started_at": occurred_at,
+                    "completed_at": occurred_at if "outcome" in event_type or "scored" in event_type else None,
+                    "updated_at": occurred_at,
+                    "metrics": self._research_metrics(payload),
+                    "series": self._research_series(payload),
+                    "detail": {
+                        "model_version": payload.get("model_version"),
+                        "source_event": event_type,
+                    },
+                })
+                item["updated_at"] = occurred_at
+                events.append({
+                    "event_id": str(row["event_key"]),
+                    "at": occurred_at,
+                    "system": "NOSTRA",
+                    "run_id": run_key,
+                    "event_type": event_type,
+                    "stage": item["stage"],
+                    "status": status,
+                    "progress_pct": item["progress_pct"],
+                    "title": item["title"],
+                    "detail": None,
+                })
+
+            strategy_version = str(row["strategy_version_id"] or "")
+            if strategy_version.startswith("CRYPTO-XSECT-PAPER-"):
+                paper_groups.setdefault(
+                    str(row["run_id"] or strategy_version), []
+                ).append({
+                    "event_key": row["event_key"],
+                    "event_type": event_type,
+                    "occurred_at": occurred_at,
+                    "strategy_version_id": strategy_version,
+                    "payload": payload,
+                })
+
+        runs.extend(velum_runs.values())
+        runs.extend(nostra_runs.values())
+
+        for run_key, rows in paper_groups.items():
+            latest = rows[-1]
+            points: list[dict[str, Any]] = []
+            fills = 0
+            for row in rows:
+                payload = row["payload"]
+                if row["event_type"] == "position_metrics":
+                    value = self._research_number(payload.get("current_return_pct"))
+                    if value is not None:
+                        points.append({
+                            "at": row["occurred_at"],
+                            "value": round(value * 100.0, 6),
+                        })
+                if row["event_type"] in {"broker_fill", "crypto_fill"}:
+                    fills += 1
+            runs.append({
+                "run_id": run_key,
+                "system": "RHEN",
+                "kind": "PAPER_TEST",
+                "title": latest["strategy_version_id"],
+                "status": "RUNNING",
+                "stage": "PAPER_FORWARD",
+                "progress_pct": 50,
+                "problem_id": None,
+                "candidate_id": None,
+                "methodology_version": None,
+                "strategy_version_id": latest["strategy_version_id"],
+                "started_at": rows[0]["occurred_at"],
+                "completed_at": None,
+                "updated_at": latest["occurred_at"],
+                "metrics": {
+                    "fills": float(fills),
+                    "events": float(len(rows)),
+                },
+                "series": ([{
+                    "key": "paper_return",
+                    "label": "Open-position return",
+                    "unit": "%",
+                    "points": points[-120:],
+                }] if points else []),
+                "detail": {
+                    "paper_only": True,
+                    "live_authority": False,
+                },
+            })
+            for row in rows[-60:]:
+                events.append({
+                    "event_id": str(row["event_key"]),
+                    "at": row["occurred_at"],
+                    "system": "RHEN",
+                    "run_id": run_key,
+                    "event_type": row["event_type"],
+                    "stage": "PAPER_FORWARD",
+                    "status": "OBSERVED",
+                    "title": row["strategy_version_id"],
+                    "detail": (
+                        row["payload"].get("cycle_outcome")
+                        or row["payload"].get("reason")
+                    ),
+                })
+
+        # The run/artifact records themselves are durable events. Include them
+        # so a selected GRAEN run always has a trace even without a replay.
+        for run in runs:
+            if run.get("system") != "GRAEN":
+                continue
+            events.append({
+                "event_id": "graen-run:" + str(run.get("run_id")),
+                "at": run.get("updated_at") or run.get("started_at"),
+                "system": "GRAEN",
+                "run_id": run.get("run_id"),
+                "event_type": "graen_run",
+                "stage": run.get("stage"),
+                "status": run.get("status"),
+                "progress_pct": run.get("progress_pct"),
+                "title": run.get("title"),
+                "detail": (run.get("detail") or {}).get("next_action"),
+            })
+        for artifact in raw_artifacts:
+            run_id = str(artifact.get("run_id") or "")
+            if not run_id:
+                continue
+            events.append({
+                "event_id": "graen-artifact:" + str(artifact.get("artifact_id")),
+                "at": artifact.get("created_at"),
+                "system": "GRAEN",
+                "run_id": run_id,
+                "event_type": "artifact_persisted",
+                "stage": artifact.get("artifact_type"),
+                "status": "PERSISTED",
+                "title": artifact.get("artifact_type"),
+                "detail": artifact.get("methodology_version"),
+            })
+
+        def stamp(value: Any) -> str:
+            return str(value or "")
+
+        runs.sort(
+            key=lambda row: stamp(row.get("updated_at") or row.get("started_at")),
+            reverse=True,
+        )
+        events.sort(key=lambda row: stamp(row.get("at")), reverse=True)
+        replay_projections.sort(
+            key=lambda row: stamp(row.get("observed_at")), reverse=True
+        )
+        return {
+            "graen_problems": problems,
+            "graen_runs": compact_runs,
+            "velum_replays": replay_projections[:40],
+            "graen_runtime": graen_runtime or None,
+            "observability": {
+                "schema_version": "research_observability.v2",
+                "updated_at": _iso(),
+                "poll_seconds": 3,
+                "runs": runs[:64],
+                "events": events[:120],
+                "authority": {
+                    "read_only": True,
+                    "research_only": True,
+                    "live_trading_performance_mixed": False,
+                    "source": "rhen_core_sqlite",
+                },
+            },
+        }
+
     def strategy_pipeline_research(self) -> dict[str, Any]:
         """Return the durable Command research and strategy lifecycle projection."""
         from app.graen.btc_discovery import projection
@@ -2358,6 +3029,7 @@ class RhenCoreStore:
         if btc_owns_primary_pipeline:
             current = btc.get("candidate") or {}
             verification = (current.get("results") or {}).get("VELUM_REPLAY") or {}
+            tracking = self.command_research_tracking()
             return {"schema_version": "strategy_pipeline_research.v1", "btc_discovery": btc,
                     "candidate": {**current, "owner": "GRAEN", "lane": "crypto", "updated_at": btc.get("updated_at"),
                                   "title": current.get("candidate_id"), "supersedes_strategy_version_id": None} if current else None,
@@ -2366,134 +3038,13 @@ class RhenCoreStore:
                                    "observed_at": btc.get("updated_at") if verification else None},
                     "release_gate": {"owner": "IREN", "status": btc["state"], "target_lane": "paper",
                                      "reason": "Paper evidence only; live strategy and live broker-write authority remain protected.",
-                                     "automatic_promotion": False, "production_authority_changed": False}}
-        with self.connect() as conn:
-            problem_rows = conn.execute(
-                """select * from graen_problems
-                order by
-                  case status
-                    when 'RUNNING' then 0
-                    when 'WAITING' then 1
-                    when 'QUEUED' then 2
-                    when 'BLOCKED' then 3
-                    else 4
-                  end,
-                  updated_at desc
-                limit 25"""
-            ).fetchall()
-            run_rows = conn.execute(
-                """select * from graen_runs
-                order by started_at desc limit 50"""
-            ).fetchall()
-            replay_rows = conn.execute(
-                """select event_type,occurred_at,strategy_version_id,payload_json
-                from events
-                where event_type in (
-                  'velum_graen_candidate_replay',
-                  'velum_replay_result'
-                )
-                order by occurred_at desc limit 25"""
-            ).fetchall()
-
-        graen_runtime, _ = self.get_kv("graen", "runtime", {})
-
-        problems: list[dict[str, Any]] = []
-        for row in problem_rows:
-            problem = self._problem(row)
-            metadata = dict(problem.get("metadata") or {})
-            problems.append(
-                {
-                    "problem_id": problem.get("problem_id"),
-                    "title": problem.get("title") or problem.get("statement"),
-                    "status": problem.get("status"),
-                    "domain": problem.get("domain"),
-                    "research_stage": metadata.get("research_stage"),
-                    "candidate_id": (
-                        metadata.get("candidate_id")
-                        or problem.get("candidate_id")
-                    ),
-                    "hypothesis": metadata.get("hypothesis"),
-                    "family": metadata.get("family"),
-                    "mechanism": metadata.get("mechanism"),
-                    "campaign_id": metadata.get("campaign_id"),
-                    "target_lane": metadata.get("target_lane"),
-                    "supersedes_strategy_version_id": metadata.get(
-                        "supersedes_strategy_version_id"
-                    ),
-                    "release_requested": bool(
-                        metadata.get("release_requested", False)
-                    ),
-                    "updated_at": problem.get("updated_at"),
-                    "started_at": problem.get("started_at"),
-                    "completed_at": problem.get("completed_at"),
-                }
-            )
-
-        runs: list[dict[str, Any]] = []
-        for row in run_rows:
-            run = self._run(row)
-            result = dict(run.get("result_summary") or {})
-            runs.append(
-                {
-                    "run_id": run.get("run_id"),
-                    "problem_id": run.get("problem_id"),
-                    "status": run.get("status"),
-                    "methodology_version": run.get("methodology_version"),
-                    "result_state": (
-                        result.get("result_state")
-                        or result.get("state")
-                        or result.get("status")
-                    ),
-                    "error": result.get("error"),
-                    "started_at": run.get("started_at"),
-                    "completed_at": run.get("completed_at"),
-                    "created_at": run.get("started_at"),
-                }
-            )
-
-        replay_projections: list[dict[str, Any]] = []
-        for row in replay_rows:
-            payload = _loads(row["payload_json"], {})
-            if not isinstance(payload, dict):
-                payload = {}
-            engineering_gate = (
-                dict(payload.get("engineering_gate") or {})
-                if isinstance(payload.get("engineering_gate"), dict)
-                else {}
-            )
-            passed = engineering_gate.get("passed")
-            status = (
-                "PASSED"
-                if passed is True
-                else "FAILED"
-                if passed is False
-                else str(payload.get("status") or "COMPLETE").upper()
-            )
-            replay_range = (
-                dict(payload.get("range") or {})
-                if isinstance(payload.get("range"), dict)
-                else {}
-            )
-            replay_projections.append(
-                {
-                    "owner": "VELUM",
-                    "event_type": row["event_type"],
-                    "candidate_id": payload.get("candidate_id"),
-                    "problem_id": payload.get("problem_id"),
-                    "strategy_version_id": (
-                        row["strategy_version_id"]
-                        or payload.get("strategy_version_id")
-                    ),
-                    "status": status,
-                    "started_at": (
-                        payload.get("replay_start")
-                        or replay_range.get("start")
-                    ),
-                    "completed_at": row["occurred_at"],
-                    "observed_at": row["occurred_at"],
-                    "engineering_gate": engineering_gate or None,
-                }
-            )
+                                     "automatic_promotion": False, "production_authority_changed": False},
+                    "research": tracking}
+        tracking = self.command_research_tracking()
+        problems = list(tracking.get("graen_problems") or [])
+        runs = list(tracking.get("graen_runs") or [])
+        replay_projections = list(tracking.get("velum_replays") or [])
+        graen_runtime = tracking.get("graen_runtime")
 
         candidate = None
         active_candidate_states = {"RUNNING", "WAITING", "QUEUED", "BLOCKED"}
@@ -2616,12 +3167,7 @@ class RhenCoreStore:
                 "automatic_promotion": False,
                 "production_authority_changed": False,
             },
-            "research": {
-                "graen_problems": problems,
-                "graen_runs": runs,
-                "velum_replays": replay_projections,
-                "graen_runtime": graen_runtime or None,
-            },
+            "research": tracking,
         }
 
     def canonical_evidence(self) -> dict[str, Any]:
