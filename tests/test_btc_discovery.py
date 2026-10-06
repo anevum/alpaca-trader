@@ -18,7 +18,7 @@ from app.graen.btc_discovery import (NAMESPACE, BtcDiscoveryJob, approved_assign
 from app.rhen_core.store import RhenCoreStore
 from app.rhen_core.supervisor import PROCESSES, _child_env
 from app.velum_core import ContinuousReplayEngine
-from app.velum_btc import normalized_corpus, corpus_coverage
+from app.velum_btc import normalized_corpus, corpus_coverage, recover_hourly_source
 from app.config import Settings
 
 UTC = timezone.utc
@@ -32,7 +32,7 @@ def test_data_gap_diagnostics_preserve_fail_closed_chronology():
     rows.pop(20)
     quality = corpus_coverage(rows, start, end)
     assert quality == {"expected_bars": 841, "received_bars": 840, "missing_hours": 1,
-        "first_missing_at": (lower + timedelta(hours=20)).isoformat(), "last_missing_at": (lower + timedelta(hours=20)).isoformat()}
+        "first_missing_at": (lower + timedelta(hours=20)).isoformat(), "last_missing_at": (lower + timedelta(hours=20)).isoformat(), "reconstructed_hours": 0}
     with pytest.raises(ValueError, match="incomplete_hourly_corpus:missing=1"):
         normalized_corpus(rows, start, end)
 
@@ -45,6 +45,35 @@ def test_baseline_reader_heartbeat_has_no_assignment_authority(tmp_path):
     assert approved_assignment(read_state(store)) is None
     with pytest.raises(ValueError):
         record_paper(store, {"heartbeat": True, "candidate_id": LIVE_ID, "trading_mode": "live"})
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "duplicate", "future", "invalid"])
+def test_hourly_recovery_requires_complete_valid_source_minutes(defect):
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    lower = start - timedelta(days=35)
+    rows = [{"t": (lower + timedelta(hours=i)).isoformat(), "o": "100", "h": "101", "l": "99", "c": "100"} for i in range(841)]
+    hour = lower + timedelta(hours=20)
+    rows.pop(20)
+    original = deepcopy(rows)
+    minutes = [{"t": (hour + timedelta(minutes=i)).isoformat(), "o": "100", "h": "102", "l": "98", "c": "101"} for i in range(60)]
+    if defect == "missing": minutes.pop()
+    if defect == "duplicate": minutes[-1] = minutes[0]
+    if defect == "future": minutes[-1]["t"] = (hour + timedelta(hours=1)).isoformat()
+    if defect == "invalid": minutes[-1]["l"] = "NaN"
+    class Data:
+        async def historical_bars_many(self, symbols, **kwargs):
+            assert symbols == ["BTC/USD"] and kwargs["timeframe"] == "1Min"
+            assert kwargs["start"] == hour and kwargs["end"] < hour + timedelta(hours=1)
+            return {"BTC/USD": minutes}
+    if defect:
+        with pytest.raises(ValueError): asyncio.run(recover_hourly_source(Data(), rows, start, end))
+    else:
+        result = asyncio.run(recover_hourly_source(Data(), rows, start, end))
+        assert result[20] == {"t": hour.isoformat(), "o": "100", "h": "102", "l": "98", "c": "101", "source": "complete_1min_aggregation"}
+        assert corpus_coverage(result, start, end)["missing_hours"] == 0
+        assert corpus_coverage(result, start, end)["reconstructed_hours"] == 1
+    assert rows == original
 
 
 def evidence(expectancy=.01):
@@ -424,7 +453,9 @@ def test_canonical_job_advances_in_order_and_persists_approved_paper(tmp_path, m
     job=BtcDiscoveryJob(Settings())
     class Data:
         async def historical_bars_many(self,*args,**kwargs):
-            return {'BTC/USD': []}
+            start, end = kwargs['start'], kwargs['end']
+            return {'BTC/USD': [{'t': (start + timedelta(hours=i)).isoformat(), 'o': '100', 'h': '101', 'l': '99', 'c': '100'}
+                    for i in range(int((end - start).total_seconds() // 3600) + 1)]}
     job.data=Data()
     monkeypatch.setattr(ContinuousReplayEngine,'run_btc_direct',lambda *a,**k: evidence())
     def respond(request):

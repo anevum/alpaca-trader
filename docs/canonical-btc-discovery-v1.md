@@ -27,6 +27,8 @@ A new assignment activates only when paper crypto positions and BTC open orders 
 
 Candidate order IDs preserve anevum-crypto- and contain a compact candidate fingerprint tag, with maximum length 48. Both broker-derived scorecards and durable forward evidence filter by that exact candidate tag. Old baseline and other-candidate orders never enter a new candidate's statistics. Fill IDs deduplicate observations and partial exits do not inflate episode counts.
 
+Hourly source recovery is bounded to 24 missing hours per chronological window. An absent hour can be reconstructed only from exactly 60 valid, unique, contiguous source minute candles inside that hour; prices are never interpolated or forward filled. GRAEN and VELUM fetch these source minutes independently. Reconstructed timestamps are included in replay assumptions and full result fingerprints. Incomplete source minutes fail closed. Earlier rejected candidates and rejection evidence remain intact.
+
 Forward paper requires 30 closed episodes, 30 independent trading dates, and 30 elapsed days, fresh error-free observations, positive expectancy after conservative HIGH friction, profit factor >=1.2, and drawdown <=15%. Execution failures or drawdown violations close candidate entries. Success stops at ELIGIBLE_FOR_REVIEW and closes new experimental entries; it never becomes LIVE. The historical delay stress remains part of the required assignment proof.
 
 RHEN-BTC-DIRECT-003 remains the live BTC strategy and btc_direct_live_signal remains signal-only. Candidate state cannot change live selection, account mode, sizing, risk configuration, equity strategy, or broker-write authority. The default BTC strategy is tested against a frozen original-v3 regression oracle.

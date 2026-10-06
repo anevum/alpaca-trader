@@ -766,7 +766,9 @@ async def btc_direct_replay(body: dict[str, Any], x_anevum_scheduler_token: str 
         start, end = (datetime.fromisoformat(x) for x in state["contract"][stage.lower()])
         # Fetch independently; do not trust GRAEN's cached data or prepared signals.
         fetched = await data.historical_bars_many(["BTC/USD"], start=start - timedelta(days=35), end=end - timedelta(microseconds=1), timeframe="1Hour")
-        result = await _run_blocking(engine.run_btc_direct, fetched.get("BTC/USD") or [], start=start, end=end, candidate=row)
+        from app.velum_btc import recover_hourly_source
+        corpus = await recover_hourly_source(data, fetched.get("BTC/USD") or [], start, end)
+        result = await _run_blocking(engine.run_btc_direct, corpus, start=start, end=end, candidate=row)
         original = row["results"][stage]
         if fingerprint(original) != fingerprint(result):
             reasons.append(stage + ":independent_replay_mismatch")

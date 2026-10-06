@@ -13,7 +13,7 @@ from app.btc_discovery_contract import (COSTS, GATES, LIVE_ID, STAGES, VERSION, 
 from app.crypto_layer import CryptoMarketDataClient
 from app.rhen_core.store import RhenCoreStore
 from app.velum_core import ContinuousReplayEngine
-from app.velum_btc import metrics, corpus_coverage
+from app.velum_btc import metrics, corpus_coverage, recover_hourly_source
 
 NAMESPACE = "btc_discovery"
 UTC = timezone.utc
@@ -292,7 +292,8 @@ class BtcDiscoveryJob:
                     if corpus is None:
                         bars = await self.data.historical_bars_many(["BTC/USD"], start=start - timedelta(days=35), end=end - timedelta(microseconds=1), timeframe="1Hour")
                         corpus = bars.get("BTC/USD") or []
-                        self.store.set_kv(NAMESPACE, "corpus:" + cache_key, corpus)
+                    corpus = await recover_hourly_source(self.data, corpus, start, end)
+                    self.store.set_kv(NAMESPACE, "corpus:" + cache_key, corpus)
                     strategy = candidate_strategy(row)
                     engine = ContinuousReplayEngine(self.settings, strategy)
                     result = await asyncio.to_thread(engine.run_btc_direct, corpus, start=start, end=end, candidate=row)

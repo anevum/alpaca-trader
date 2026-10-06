@@ -36,7 +36,36 @@ def corpus_coverage(rows: list[dict[str, Any]], start: datetime, end: datetime) 
     missing = [lower + timedelta(hours=i) for i in range(expected) if lower + timedelta(hours=i) not in present]
     return {"expected_bars": expected, "received_bars": len(present), "missing_hours": len(missing),
             "first_missing_at": missing[0].isoformat() if missing else None,
-            "last_missing_at": missing[-1].isoformat() if missing else None}
+            "last_missing_at": missing[-1].isoformat() if missing else None,
+            "reconstructed_hours": sum(row.get("source") == "complete_1min_aggregation" for row in rows)}
+
+
+async def recover_hourly_source(data, rows: list[dict[str, Any]], start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Recover at most 24 absent hours from complete source minute candles only."""
+    lower = start - timedelta(days=35)
+    present = {stamp(row) for row in rows if lower <= stamp(row) < end}
+    missing = [lower + timedelta(hours=i) for i in range(int((end - lower).total_seconds() // 3600))
+               if lower + timedelta(hours=i) not in present]
+    if len(missing) > 24:
+        raise ValueError("hourly_source_recovery_bound_exceeded")
+    recovered = list(rows)
+    for hour in missing:
+        fetched = await data.historical_bars_many(["BTC/USD"], start=hour,
+            end=hour + timedelta(hours=1) - timedelta(microseconds=1), timeframe="1Min")
+        minutes = sorted([row for row in fetched.get("BTC/USD", []) if hour <= stamp(row) < hour + timedelta(hours=1)], key=stamp)
+        expected = [hour + timedelta(minutes=i) for i in range(60)]
+        if [stamp(row) for row in minutes] != expected:
+            raise ValueError("minute_source_incomplete:" + hour.isoformat())
+        for row in minutes:
+            o, h, l, c = (Decimal(str(row[k])) for k in ("o", "h", "l", "c"))
+            if not all(v.is_finite() and v > 0 for v in (o, h, l, c)) or h < max(o, c) or l > min(o, c):
+                raise ValueError("invalid_minute_source_ohlc")
+        recovered.append({"t": hour.isoformat(), "o": str(minutes[0]["o"]),
+            "h": str(max(Decimal(str(row["h"])) for row in minutes)),
+            "l": str(min(Decimal(str(row["l"])) for row in minutes)), "c": str(minutes[-1]["c"]),
+            "source": "complete_1min_aggregation"})
+    normalized_corpus(recovered, start, end)  # Validate full chronology before persisting or evaluating.
+    return sorted(recovered, key=stamp)
 
 
 def normalized_corpus(rows: list[dict[str, Any]], start: datetime, end: datetime) -> list[dict[str, Any]]:
@@ -148,4 +177,5 @@ def run_direct(engine: Any, rows: list[dict[str, Any]], *, start: datetime, end:
     return {"dataset_fingerprint": inputs, "candidate_fingerprint": candidate["fingerprint"],
             "start": start.isoformat(), "end": end.isoformat(), "scenarios": scenarios,
             "assumptions": {"signal": "completed hourly bars only", "execution": "next_open_plus_delay",
-                            "fees": "per_side", "intrabar": "stop_first_gap_adverse", "warmup_scored": False}}
+                            "fees": "per_side", "intrabar": "stop_first_gap_adverse", "warmup_scored": False,
+                            "reconstructed_hours": sorted(stamp(row).isoformat() for row in rows if row.get("source") == "complete_1min_aggregation")}}
