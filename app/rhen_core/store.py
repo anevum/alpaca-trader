@@ -629,17 +629,59 @@ class RhenCoreStore:
         before = self.storage_state()
         allocated = int(before.get("allocated_db_bytes") or 0)
         reclaimable = int(before.get("reclaimable_db_bytes") or 0)
+        page_size = 0
+        if allocated > 0:
+            try:
+                with self.connect() as conn:
+                    page_size = int(
+                        conn.execute("pragma page_size").fetchone()[0] or 0
+                    )
+            except sqlite3.DatabaseError:
+                page_size = 0
         fragmentation = (
             reclaimable / allocated
             if allocated > 0
             else 0.0
         )
         auto_vacuum_mode = int(before.get("auto_vacuum_mode") or 0)
-        should_compact = force or auto_vacuum_mode != 2 or (
+
+        # In incremental auto-vacuum mode, reclaim free pages in place before
+        # considering a full VACUUM. This avoids requiring a second database-
+        # sized temporary file when the persistent volume is already tight.
+        incremental_threshold = 8 * 1024 * 1024
+        if (
+            auto_vacuum_mode == 2
+            and reclaimable > 0
+            and (force or reclaimable >= incremental_threshold)
+        ):
+            free_pages = (
+                max(1, reclaimable // page_size)
+                if page_size > 0
+                else 4096
+            )
+            page_budget = int(
+                free_pages if force else min(free_pages, 8192)
+            )
+            with self._lock, self.connect() as conn:
+                conn.execute("pragma wal_checkpoint(TRUNCATE)")
+                conn.execute(f"pragma incremental_vacuum({page_budget})")
+            after = self.storage_state()
+            return {
+                "compacted": (
+                    int(after.get("bytes") or 0)
+                    < int(before.get("bytes") or 0)
+                ),
+                "reason": "incremental_vacuum_completed",
+                "page_budget": page_budget,
+                "before": before,
+                "after": after,
+            }
+
+        should_full_vacuum = force or auto_vacuum_mode != 2 or (
             reclaimable >= 64 * 1024 * 1024
             and fragmentation >= 0.15
         )
-        if not should_compact:
+        if not should_full_vacuum:
             return {
                 "compacted": False,
                 "reason": "fragmentation_below_threshold",
