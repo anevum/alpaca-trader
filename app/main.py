@@ -19,6 +19,7 @@ from .config import get_settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
+from .extended_equity import ExtendedEquityEngine
 from .crypto_execution import CryptoExecutionEngine
 from .crypto_stats import crypto_trade_stats
 from .crypto_promotion import fetch_crypto_promotion_status
@@ -96,6 +97,13 @@ scanner = ReadOnlyScanner(
     strategy,
     runtime_state,
     universe=universe,
+)
+extended_equity_engine = ExtendedEquityEngine(
+    settings,
+    client,
+    market_data,
+    runtime_state,
+    ledger=event_sink,
 )
 crypto_market_data = CryptoMarketDataClient(settings)
 btc_day_preview = BtcDayPreview(crypto_market_data, settings)
@@ -572,6 +580,9 @@ async def command_snapshot() -> dict:
             "timestamp": clock.get("timestamp"),
             "next_open": clock.get("next_open"),
             "next_close": clock.get("next_close"),
+            "continuous_equity_session": (
+                (extended_equity_engine.last_session or {}).get("session")
+            ),
         },
         "bot": {
             "execution_enabled": settings.execution_enabled,
@@ -588,6 +599,15 @@ async def command_snapshot() -> dict:
             "last_decision": runtime_state.last_decision,
             "last_error": runtime_state.last_error,
             "exit_states": runtime_state.exit_states,
+            "extended_equity_lane_enabled": (
+                settings.extended_equity_lane_enabled
+            ),
+            "extended_equity_execution_enabled": (
+                settings.extended_equity_execution_enabled
+            ),
+            "extended_equity_execution_authorized": (
+                settings.extended_equity_execution_authorized
+            ),
             "crypto_lane_enabled": settings.crypto_lane_enabled,
             "crypto_execution_enabled": settings.crypto_execution_enabled,
             "crypto_universe_size": settings.crypto_universe_size,
@@ -610,6 +630,7 @@ async def command_snapshot() -> dict:
         "account_history": account_history,
         "crypto_stats": crypto_stats,
         "crypto_approval": runtime_state.crypto_pending_approval,
+        "extended_equity": extended_equity_engine.snapshot(),
         "crypto_live": await crypto_command_lane_snapshot(),
         "crypto_paper": crypto_paper,
         "strategy": {
@@ -964,6 +985,63 @@ async def monitor_loop():
             pass
 
 
+async def extended_equity_monitor_loop():
+    """Independent 24/5 U.S. equity lane outside the regular session."""
+    while not _stop.is_set():
+        if (
+            settings.extended_equity_lane_enabled
+            and settings.credentials_configured
+            and not settings.crypto_only_runtime
+        ):
+            try:
+                result = await extended_equity_engine.run_once()
+                print(
+                    "EXTENDED_EQUITY_CYCLE",
+                    {
+                        "session": (
+                            (extended_equity_engine.last_session or {}).get("session")
+                        ),
+                        "execution_enabled": (
+                            settings.extended_equity_execution_enabled
+                        ),
+                        "execution_authorized": (
+                            settings.extended_equity_execution_authorized
+                        ),
+                        "action": result.get("action"),
+                        "symbol": result.get("symbol"),
+                        "reason": result.get("reason"),
+                    },
+                    flush=True,
+                )
+            except Exception as exc:
+                extended_equity_engine.last_error = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+                extended_equity_engine.last_decision = (
+                    "extended-equity lane error"
+                )
+                runtime_state.record_event(
+                    kind="extended_equity",
+                    action="error",
+                    message="extended-equity lane error",
+                    reason=extended_equity_engine.last_error,
+                    payload={"market": "us_equity_extended"},
+                    correlation_id=extended_equity_engine.current_correlation_id,
+                )
+                print(
+                    "EXTENDED_EQUITY_LOOP_ERROR",
+                    {"error": extended_equity_engine.last_error},
+                    flush=True,
+                )
+        try:
+            await asyncio.wait_for(
+                _stop.wait(),
+                timeout=settings.extended_equity_poll_seconds,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+
 async def crypto_monitor_loop():
     """Independent 24/7 crypto market lane; shadow execution until validated."""
     while not _stop.is_set():
@@ -1145,6 +1223,16 @@ async def lifespan(app: FastAPI):
             "crypto_only_runtime": settings.crypto_only_runtime,
             "crypto_execution_mode": settings.crypto_execution_mode,
             "crypto_research_enabled": settings.crypto_research_enabled,
+            "extended_equity_lane_enabled": settings.extended_equity_lane_enabled,
+            "extended_equity_execution_enabled": (
+                settings.extended_equity_execution_enabled
+            ),
+            "extended_equity_execution_authorized": (
+                settings.extended_equity_execution_authorized
+            ),
+            "extended_equity_strategy_version_id": (
+                settings.extended_equity_strategy_version_id
+            ),
             "strategy_name": settings.strategy_name,
             "scan_symbols": list(settings.scan_symbols),
             "confirmation_symbols": list(settings.confirmation_symbols),
@@ -1249,6 +1337,34 @@ async def lifespan(app: FastAPI):
         strategy_version_id=settings.strategy_version_id,
         execution_authorized=settings.execution_authorized,
     )
+    if settings.extended_equity_lane_enabled:
+        runtime_state.record_event(
+            kind="extended_equity",
+            action="startup",
+            message=(
+                "24/5 extended-equity lane online; "
+                + (
+                    "broker writes authorized"
+                    if settings.extended_equity_execution_authorized
+                    else "broker writes gated"
+                )
+            ),
+            reason=(
+                f"strategy={settings.extended_equity_strategy_version_id}; "
+                f"overnight_feed={settings.overnight_data_feed}; "
+                f"extended_feed={settings.extended_equity_data_feed}"
+            ),
+            payload={
+                "market_lane": "extended_equity",
+                "strategy_version_id": (
+                    settings.extended_equity_strategy_version_id
+                ),
+                "execution_enabled": settings.extended_equity_execution_enabled,
+                "execution_authorized": (
+                    settings.extended_equity_execution_authorized
+                ),
+            },
+        )
     if settings.crypto_lane_enabled:
         runtime_state.record_event(
             kind="crypto_runtime",
@@ -1277,6 +1393,7 @@ async def lifespan(app: FastAPI):
         )
 
     equity_task: asyncio.Task | None = None
+    extended_equity_task: asyncio.Task | None = None
     slack_market_task: asyncio.Task | None = None
     research_started = False
 
@@ -1304,6 +1421,10 @@ async def lifespan(app: FastAPI):
         await research_reports.start()
         research_started = True
         equity_task = asyncio.create_task(monitor_loop())
+        if settings.extended_equity_lane_enabled:
+            extended_equity_task = asyncio.create_task(
+                extended_equity_monitor_loop()
+            )
         slack_market_task = asyncio.create_task(slack_market_observer_loop())
 
     crypto_task = asyncio.create_task(crypto_monitor_loop())
@@ -1311,6 +1432,8 @@ async def lifespan(app: FastAPI):
     _stop.set()
     if equity_task is not None:
         await equity_task
+    if extended_equity_task is not None:
+        await extended_equity_task
     await crypto_task
     if slack_market_task is not None:
         await slack_market_task
