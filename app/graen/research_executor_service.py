@@ -473,6 +473,11 @@ class GraenResearchExecutor:
         ).strip()
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
+        self.adaptive_task: asyncio.Task | None = None
+        self.adaptive_last_started_at: datetime | None = None
+        self.adaptive_last_completed_at: datetime | None = None
+        self.adaptive_last_error: str | None = None
+        self.adaptive_last_result: dict[str, Any] | None = None
         self.started_at = datetime.now(UTC)
         self.last_heartbeat_at: datetime | None = None
         self.last_claim_at: datetime | None = None
@@ -510,6 +515,7 @@ class GraenResearchExecutor:
                 and self.settings.credentials_configured
                 and not violations
                 and self.last_error is None
+                and self.adaptive_last_error is None
             ),
             "system": "GRAEN",
             "service": "graen-research-executor",
@@ -555,6 +561,31 @@ class GraenResearchExecutor:
             "last_completion_at": self.last_completion_at.isoformat() if self.last_completion_at else None,
             "last_error": self.last_error,
             "last_result": self.last_result,
+            "adaptive_research": {
+                "scheduled_by": "IREN",
+                "legacy_campaign_autorun": False,
+                "in_progress": bool(
+                    self.adaptive_task is not None
+                    and not self.adaptive_task.done()
+                ),
+                "last_started_at": (
+                    self.adaptive_last_started_at.isoformat()
+                    if self.adaptive_last_started_at else None
+                ),
+                "last_completed_at": (
+                    self.adaptive_last_completed_at.isoformat()
+                    if self.adaptive_last_completed_at else None
+                ),
+                "last_error": self.adaptive_last_error,
+                "last_result": self.adaptive_last_result,
+                "allowed_stages": [
+                    "RESEARCH_IMPLEMENTATION_REQUIRED",
+                    "CRYPTO_COMPILED_DEVELOPMENT",
+                    "CRYPTO_COMPILED_VALIDATION",
+                    "CRYPTO_COMPILED_HOLDOUT",
+                ],
+                "live_promotion_authority": False,
+            },
             "research_window": {
                 "generic_v7": {
                     "development_start": DEVELOPMENT_START.isoformat(),
@@ -609,6 +640,12 @@ class GraenResearchExecutor:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
+        if self.adaptive_task is not None:
+            self.adaptive_task.cancel()
+            await asyncio.gather(
+                self.adaptive_task, return_exceptions=True
+            )
+            self.adaptive_task = None
 
     async def _heartbeat(self) -> None:
         await self.gateway.executor_heartbeat(
@@ -9338,6 +9375,141 @@ class GraenResearchExecutor:
             return diagnostic
         return None
 
+    async def adaptive_once(self) -> dict[str, Any]:
+        """Advance only the canonical generated-research lane.
+
+        This deliberately excludes the archived V7-V15 campaign bootstrap and
+        recovery graph. IREN may call it continuously without resurrecting
+        superseded research programs.
+        """
+        snapshot = await self.gateway.snapshot()
+        promotion_results: list[dict[str, Any]] = []
+
+        for problem_id in list(engineering_problem_ids(snapshot))[:1]:
+            state = await self.research_promotion.tick(problem_id)
+            promotion_results.append(
+                {
+                    "problem_id": problem_id,
+                    "phase": state.get("phase"),
+                    "blocked_reason": state.get("blocked_reason"),
+                    "protected_decision_required": bool(
+                        state.get("protected_decision_required")
+                    ),
+                }
+            )
+            snapshot = await self.gateway.snapshot()
+
+        claimed = await self.gateway.claim_adaptive_research_problem(
+            worker_id=self.worker_id + "-adaptive",
+            runtime_version=RUNTIME_VERSION,
+            methodology_version="graen.compiled-adaptive.v1",
+            domain=PROBLEM_DOMAIN,
+        )
+        problem = claimed.get("problem")
+        run = claimed.get("run")
+        if not isinstance(problem, Mapping) or not isinstance(run, Mapping):
+            await self._heartbeat()
+            return {
+                "status": "IDLE",
+                "claimed": False,
+                "research_promotion": promotion_results,
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            }
+
+        problem_id = str(problem.get("problem_id"))
+        run_id = str(run.get("run_id"))
+        metadata = (
+            problem.get("metadata")
+            if isinstance(problem.get("metadata"), Mapping)
+            else {}
+        )
+        stage = str(metadata.get("research_stage") or "")
+        if stage not in {
+            "CRYPTO_COMPILED_DEVELOPMENT",
+            "CRYPTO_COMPILED_VALIDATION",
+            "CRYPTO_COMPILED_HOLDOUT",
+        }:
+            raise RuntimeError("adaptive_claim_returned_noncompiled_stage")
+
+        self.active_problem_id = problem_id
+        self.last_claim_at = datetime.now(UTC)
+        try:
+            result = await self._execute_compiled_hypothesis(problem, run)
+            return {
+                **result,
+                "research_promotion": promotion_results,
+                "adaptive_stage": stage,
+                "execution_authority": False,
+                "live_execution_authorized": False,
+            }
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"[:1000]
+            try:
+                await self.gateway.block_research_claim(
+                    problem_id=problem_id,
+                    run_id=run_id,
+                    worker_id=self.worker_id + "-adaptive",
+                    error=failure,
+                )
+            finally:
+                self.active_problem_id = None
+            raise
+
+    async def _run_adaptive_dispatch(self) -> None:
+        self.adaptive_last_started_at = datetime.now(UTC)
+        try:
+            result = await self.adaptive_once()
+            self.adaptive_last_result = dict(result)
+            self.adaptive_last_error = None
+            self.adaptive_last_completed_at = datetime.now(UTC)
+            print(
+                "GRAEN_ADAPTIVE_RESEARCH_RESULT",
+                {
+                    "status": result.get("status"),
+                    "claimed": result.get("claimed"),
+                    "adaptive_stage": result.get("adaptive_stage"),
+                    "research_promotion": result.get("research_promotion"),
+                    "execution_authority": False,
+                    "live_execution_authorized": False,
+                },
+                flush=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.adaptive_last_error = (
+                f"{type(exc).__name__}: {exc}"[:1000]
+            )
+            self.adaptive_last_completed_at = datetime.now(UTC)
+            print(
+                "GRAEN_ADAPTIVE_RESEARCH_FAILED",
+                {
+                    "error": self.adaptive_last_error,
+                    "execution_authority": False,
+                    "live_execution_authorized": False,
+                },
+                flush=True,
+            )
+
+    async def dispatch_adaptive(self) -> dict[str, Any]:
+        if self.adaptive_task is not None and not self.adaptive_task.done():
+            return {
+                "status": "ALREADY_RUNNING",
+                "dispatched": False,
+                "execution_authority": False,
+            }
+        self.adaptive_task = asyncio.create_task(
+            self._run_adaptive_dispatch(),
+            name="graen-adaptive-research",
+        )
+        return {
+            "status": "DISPATCHED",
+            "dispatched": True,
+            "execution_authority": False,
+            "live_execution_authorized": False,
+        }
+
     async def process_once(self) -> dict[str, Any]:
         snapshot = await self.gateway.snapshot()
         r2h_velum_transport_recovery = (
@@ -9823,6 +9995,28 @@ async def btc_discovery_tick(x_anevum_scheduler_token: str | None = Header(defau
         from .btc_discovery import BtcDiscoveryJob
         _btc_discovery_job = BtcDiscoveryJob(runtime.settings)
     return await _btc_discovery_job.tick()
+
+
+@app.post("/v1/adaptive/tick")
+async def adaptive_research_tick(
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    import hmac
+    expected = os.getenv("TRADING_INGEST_TOKEN", "").strip()
+    if (
+        not expected
+        or not x_anevum_scheduler_token
+        or not hmac.compare_digest(
+            expected, x_anevum_scheduler_token
+        )
+    ):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if os.getenv("RHEN_UNIFIED_ROLE") != "graen-research":
+        raise HTTPException(
+            status_code=409,
+            detail="adaptive_research_requires_unified_runtime",
+        )
+    return await runtime.dispatch_adaptive()
 
 
 @app.get("/live")
