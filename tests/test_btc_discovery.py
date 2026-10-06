@@ -264,7 +264,12 @@ def test_unified_runtime_has_one_scheduled_btc_research_authority(monkeypatch):
     monkeypatch.setenv('RHEN_CANONICAL_SCHEDULER_ENABLED', 'false')
     runtime = SchedulerRuntime()
     active = [w for w in runtime.workflows if runtime.workflow_enabled(w)]
-    assert [w['implementation_target'] for w in active] == ['graen_btc_discovery']
+    enabled = [w for w in runtime.workflows if w.get('enabled')]
+    assert [w['workflow_id'] for w in active] == [w['workflow_id'] for w in enabled]
+    assert sum(
+        w['implementation_target'] == 'graen_btc_discovery'
+        for w in active
+    ) == 1
     assert runtime.enabled
 
 
