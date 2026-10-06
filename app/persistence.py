@@ -14,6 +14,7 @@ from foundation.outbox import DurableEventOutbox, FoundationShadowSink
 from .config import Settings
 from .cash_flow import day_pnl, risk_reference_equity
 from .shadow_economics import candidate_shadow_economics
+from .shadow_allocation import selected_entry_shadow_allocation
 from .research_agent.ads002 import (
     METHODOLOGY_VERSION as ADS002_METHODOLOGY_VERSION,
     pretrade_composite as ads002_pretrade_composite,
@@ -736,6 +737,34 @@ class TradingEventSink:
                 },
             }
 
+    def _shadow_allocation_safe(
+        self,
+        *,
+        signal: Any,
+        shadow_economics: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Isolate counterfactual allocation from the live execution path."""
+        try:
+            return selected_entry_shadow_allocation(
+                symbol=signal.symbol,
+                live_safe_notional=signal.notional,
+                min_order_notional=self.settings.min_order_notional,
+                expected_holding_minutes=self.settings.max_hold_minutes,
+                shadow_economics=shadow_economics,
+            )
+        except Exception as exc:
+            return {
+                "schema_version": "shadow_capital_allocation.v1",
+                "methodology_version": "rhen-shadow-allocation-v1",
+                "research_only": True,
+                "execution_authority": False,
+                "changes_live_decision": False,
+                "bounded_by_live_safe_notional": True,
+                "would_allocate": None,
+                "reason": "shadow_allocation_unavailable",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
     @staticmethod
     def _candidate_final_decision(
         symbol: str,
@@ -1022,6 +1051,14 @@ class TradingEventSink:
             metadata=metadata,
         )
         shadow_economics = self._shadow_economics_safe(metadata)
+        shadow_allocation = (
+            None
+            if is_extended_equity
+            else self._shadow_allocation_safe(
+                signal=signal,
+                shadow_economics=shadow_economics,
+            )
+        )
         decision_scan = getattr(signal, "_evidence_decision_scan", None)
         ads002_v2_by_symbol = self._ads002_v2_shadow_cycle(
             decision_scan if isinstance(decision_scan, dict) else {}
@@ -1144,6 +1181,7 @@ class TradingEventSink:
                         "shadow_economics": (
                             None if is_extended_equity else shadow_economics
                         ),
+                        "shadow_allocation": shadow_allocation,
                         "ads002_v2": None if is_extended_equity else ads002_v2,
                     },
                 },
