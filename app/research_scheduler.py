@@ -45,6 +45,7 @@ from .research_agent.strategy_family_registry import (
 from .research_agent.strategy_health import compute_strategy_health
 from .research_agent.strategy_router import rank_strategy_families
 from .research_agent.shadow_economics_validation import evaluate_shadow_economics
+from .research_agent.shadow_allocation_validation import evaluate_shadow_allocation
 from .research_reporting import (
     classify_daily,
     enrich_excursions,
@@ -58,7 +59,7 @@ from .weekly_reporting import REPORT_VERSION, build_weekly_report
 
 NY = ZoneInfo("America/New_York")
 REPORT_AFTER = time(16, 5)
-DAILY_REPORT_VERSION = "rhen-daily-v1.5"
+DAILY_REPORT_VERSION = "rhen-daily-v1.6"
 
 
 def is_last_session_of_week(current: date, next_session: date | None) -> bool:
@@ -1034,6 +1035,7 @@ class ResearchReportScheduler:
         candidates = list(canonical.get("candidates") or [])
         outcome_status = post_event.get("forward_outcome_status") or {}
         shadow_economics_validation = evaluate_shadow_economics(candidates)
+        shadow_allocation_validation = evaluate_shadow_allocation(candidates)
         counterfactual_lab, counterfactual_warning = (
             await self._build_counterfactual_lab(
                 session,
@@ -1123,6 +1125,21 @@ class ResearchReportScheduler:
             daily_warnings.append(
                 "Shadow opportunity economics is collecting post-event calibration evidence; no production gate is changed by this evidence."
             )
+        allocation_horizons = (
+            shadow_allocation_validation.get("horizons") or []
+        )
+        allocation_observed = [
+            row for row in allocation_horizons
+            if isinstance(row, dict)
+            and int(row.get("selected_entry_count") or 0) > 0
+        ]
+        if allocation_observed and all(
+            str(row.get("state") or "") in {"COLLECTING", "OBSERVING"}
+            for row in allocation_observed
+        ):
+            daily_warnings.append(
+                "Shadow capital allocation is collecting post-event contribution evidence; no live sizing or capital authority is changed by this evidence."
+            )
         live_offline = post_event.get("live_offline_summary") or []
         if any(int(row.get("unreconstructable") or 0) for row in live_offline):
             daily_warnings.append(
@@ -1146,6 +1163,7 @@ class ResearchReportScheduler:
                 "ads002": ads002,
                 "ads002_v2": ads002_v2,
                 "shadow_economics_validation": shadow_economics_validation,
+                "shadow_allocation_validation": shadow_allocation_validation,
                 "counterfactual_lab": counterfactual_lab,
                 "nostra": nostra,
                 "adaptive_strategy_control": adaptive_control,
@@ -1227,6 +1245,7 @@ class ResearchReportScheduler:
                 "ads002": ads002,
                 "ads002_v2": ads002_v2,
                 "shadow_economics_validation": shadow_economics_validation,
+                "shadow_allocation_validation": shadow_allocation_validation,
                 "counterfactual_lab": counterfactual_lab,
                 "nostra": nostra,
                 "adaptive_strategy_control": adaptive_control,
