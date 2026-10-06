@@ -2254,6 +2254,20 @@ class RhenCoreStore:
             if latest_event else current.isoformat()
         )
         health = "HEALTHY" if live else "STALE"
+
+        iren_state, _iren_revision = self.get_kv("iren", "state", {})
+        iren_state = iren_state if isinstance(iren_state, dict) else {}
+        iren_observed_at = stamp(iren_state.get("observed_at"))
+        iren_fresh = (
+            iren_observed_at is not None
+            and max(0.0, (current - iren_observed_at).total_seconds()) < 180.0
+        )
+        iren_control_state = str(iren_state.get("state") or "").upper()
+        iren_health = (
+            iren_control_state
+            if iren_fresh and iren_control_state
+            else "STALE"
+        )
         systems = {
             "RHEN": {
                 "runtime_state": (
@@ -2275,10 +2289,13 @@ class RhenCoreStore:
                 ),
             },
             "IREN": {
-                "runtime_state": "READY" if live else "STALE",
-                "health_state": health,
+                "runtime_state": "READY" if iren_fresh else "STALE",
+                "health_state": iren_health,
                 "tracking_state": "CANONICAL_CONTROL_STATE",
-                "observed_at": common_observed,
+                "observed_at": (
+                    iren_state.get("observed_at")
+                    or common_observed
+                ),
                 "independent_runtime": False,
                 "activity": "Supervising the unified RHEN runtime.",
             },
