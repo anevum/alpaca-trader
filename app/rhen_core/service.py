@@ -58,6 +58,42 @@ def _require(provided: str | None, *env_names: str) -> None:
 app = FastAPI(title="RHEN Core", version=RUNTIME_VERSION)
 
 
+def _btc_auth(token: str | None):
+    if not _expected("RHEN_CORE_TOKEN", "TRADING_INGEST_TOKEN"):
+        raise HTTPException(status_code=503, detail="btc_discovery_token_missing")
+    _require(token, "RHEN_CORE_TOKEN", "TRADING_INGEST_TOKEN")
+
+
+@app.get("/v1/btc-discovery/status")
+def btc_discovery_status():
+    from app.graen.btc_discovery import projection
+    return projection(store)
+
+
+@app.get("/v1/btc-discovery/assignment")
+@app.get("/v1/internal/crypto-paper-assignment")
+def btc_paper_assignment(x_anevum_scheduler_token: str | None = Header(default=None)):
+    _btc_auth(x_anevum_scheduler_token)
+    from app.graen.btc_discovery import approved_assignment, read_state
+    try:
+        state = read_state(store)
+        active_id = (state.get("paper_runtime") or {}).get("candidate_id")
+        active = approved_assignment({**state, "paper_candidate_id": active_id}) if active_id else None
+        return {"ok": True, "assignment": approved_assignment(state), "active_assignment": active, "live_authority": False}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/btc-discovery/paper-observation")
+def btc_paper_observation(body: dict[str, Any], x_anevum_scheduler_token: str | None = Header(default=None)):
+    _btc_auth(x_anevum_scheduler_token)
+    from app.graen.btc_discovery import record_paper
+    try:
+        return record_paper(store, body)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/")
 def root() -> dict[str, Any]:
     return {

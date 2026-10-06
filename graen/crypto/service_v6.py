@@ -168,6 +168,8 @@ class GraenCryptoV6Runtime:
         }
 
     async def start(self) -> None:
+        if os.getenv("GRAEN_LEGACY_BTC_RUNTIME_DISABLED") == "true":
+            return
         await self._restore_candidate_shadow(
             self.candidate_shadow,
             candidate_id=v14_r2f_candidate_spec().candidate_id,

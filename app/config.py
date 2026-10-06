@@ -709,6 +709,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "btc_direct_live_signal requires TRADING_MODE=live"
                 )
+        if self.trading_mode == "live" and self.crypto_strategy_version_id.startswith("GRAEN-BTC-"):
+            raise ValueError("research_btc_candidates_are_paper_only")
         if self.crypto_lane_enabled and not self.crypto_quote_currencies:
             raise ValueError("CRYPTO_QUOTE_CURRENCIES cannot be empty")
         if self.crypto_lane_enabled and not self.crypto_confirmation_symbols:

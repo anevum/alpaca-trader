@@ -386,10 +386,21 @@ class SchedulerRuntime:
 
     @property
     def enabled(self) -> bool:
+        if os.getenv("RHEN_UNIFIED_ROLE") == "iren":
+            return True  # The bounded BTC job uses the consolidated scheduler.
         raw = os.getenv("RHEN_CANONICAL_SCHEDULER_ENABLED")
         if raw is None:
             return True
         return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def workflow_enabled(self, workflow: dict[str, Any]) -> bool:
+        if not workflow.get("enabled"):
+            return False
+        if os.getenv("RHEN_UNIFIED_ROLE") == "iren" and not _truthy("RHEN_CANONICAL_SCHEDULER_ENABLED"):
+            # Preserve the existing equity/reporting clocks when the old full
+            # orchestration registry is intentionally disabled in RHEN Core.
+            return workflow.get("implementation_target") == "graen_btc_discovery"
+        return True
 
     async def start(self) -> None:
         if not self.enabled:
@@ -506,10 +517,11 @@ class SchedulerRuntime:
             )
         current = (now or datetime.now(UTC)).astimezone(UTC)
         self.last_tick_at = current
-        sessions = await self.calendar(current)
+        active_workflows = [w for w in self.workflows if self.workflow_enabled(w)]
+        sessions = await self.calendar(current) if any(w.get("market_calendar_dependency") for w in active_workflows) else []
 
         for workflow in self.workflows:
-            if not workflow.get("enabled"):
+            if not self.workflow_enabled(workflow):
                 continue
             next_item = self._next_for(workflow, sessions, current)
             if next_item is not None:
@@ -653,6 +665,11 @@ class SchedulerRuntime:
     async def _execute(self, item: ScheduledItem) -> dict[str, Any]:
         target = item.workflow["implementation_target"]
         session = item.details.get("session") or item.trigger_reference
+
+        if target == "graen_btc_discovery":
+            return await self._post(
+                os.getenv("GRAEN_BTC_DISCOVERY_URL", "http://127.0.0.1:8111/v1/btc-discovery/tick"),
+                self.scheduler_headers, {}, timeout=600)
 
         if target == "trader_preflight":
             local = await self._post(

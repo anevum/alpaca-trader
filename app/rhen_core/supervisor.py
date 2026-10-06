@@ -166,6 +166,21 @@ def _child_env(spec: ProcessSpec) -> dict[str, str]:
     env["PORT"] = str(spec.port)
     env["RHEN_UNIFIED_RUNTIME"] = "true"
     env["RHEN_UNIFIED_ROLE"] = spec.name
+    # One BTC research authority; archive handlers remain available for historical
+    # inspection, but cannot bootstrap or schedule obsolete research campaigns.
+    if spec.name in {"graen", "graen-research"}:
+        env["GRAEN_AUTORUN"] = "false"
+        env["GRAEN_RESEARCH_AUTORUN"] = "false"
+        env["GRAEN_RESEARCH_DIRECTOR_AUTORUN"] = "false"
+    if spec.name == "crypto-research":
+        env["GRAEN_LEGACY_BTC_RUNTIME_DISABLED"] = "true"
+    if spec.name in {"execution", "velum"}:
+        env["CRYPTO_RESEARCH_ENABLED"] = "false"
+        env["CRYPTO_EDGE_DISCOVERY_ENABLED"] = "false"
+        env["CRYPTO_EDGE_V2_ENABLED"] = "false"
+        env["CRYPTO_EDGE_V3_ENABLED"] = "false"
+    if spec.name == "velum":
+        env["VELUM_AUTORUN"] = "false"
     return env
 
 
