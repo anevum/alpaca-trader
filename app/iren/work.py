@@ -375,7 +375,6 @@ def _maintenance_state(
     return {
         "control": {
             "state": control_state.get("state") or "UNKNOWN",
-            "observed_at": control_state.get("observed_at"),
             "inventory_complete": topology.get("inventory_complete") is True,
         },
         "services": _maintenance_index(
@@ -402,13 +401,13 @@ def _maintenance_state(
         "jobs": _maintenance_index(
             jobs,
             key_fields=("job_id",),
-            value_fields=("status", "job_type", "objective_key", "owner_system", "updated_at", "completed_at"),
+            value_fields=("status", "job_type", "objective_key", "owner_system", "completed_at"),
             limit=80,
         ),
         "graen_problems": _maintenance_index(
             _maintenance_rows(snapshot, "graen_problems"),
             key_fields=("problem_id",),
-            value_fields=("status", "research_stage", "candidate_id", "family", "updated_at"),
+            value_fields=("status", "research_stage", "candidate_id", "family"),
             limit=20,
         ),
         "graen_runs": _maintenance_index(
@@ -438,13 +437,13 @@ def _maintenance_state(
         "strategy_activity": _maintenance_index(
             _maintenance_rows(snapshot, "strategy_activity_24h"),
             key_fields=("strategy_version_id",),
-            value_fields=("last_event_at", "decision_cycles", "fills", "runtime_errors", "run_count"),
+            value_fields=("fills", "runtime_errors", "run_count"),
             limit=12,
         ),
         "handoffs": _maintenance_index(
             handoff_rows,
             key_fields=("job_id",),
-            value_fields=("status", "objective_key", "updated_at", "completed_at"),
+            value_fields=("status", "objective_key", "completed_at"),
             limit=16,
         ),
     }
@@ -905,6 +904,7 @@ def render_maintenance_prompt(
         "2. If canonical state is stale or incomplete, restore trustworthy observation before using downstream results to make decisions.",
         "3. Reconcile blocked/waiting/duplicate work before spawning new work for the same objective.",
         "4. Prefer finishing or invalidating the current research/strategy chain over opening a new parallel chain.",
+        "4a. If a GRAEN/VELUM/NOSTRA/paper run is already RUNNING and healthy, do not rewrite its methodology or strategy mid-run merely to create activity; wait for the result unless a safety/evidence defect invalidates the run.",
         "5. Select ONE primary objective for this pass. Add supporting changes only when they are necessary to make that objective correct, testable, or deployable.",
         "6. Do not perform a broad refactor, strategy redesign, research expansion, and Command redesign in one pass. Split unrelated work into future objectives.",
         "7. If there is no material delta and no explicit operator focus, verify current state and stop. Do not manufacture churn.",
