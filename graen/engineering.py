@@ -19,10 +19,12 @@ MAX_ATTEMPTS = 3
 MECHANISM_EVALUATORS = {
     "bar_flow_pressure_v1": "graen.crypto.flow_pressure",
     "cross_sectional_intraday_v1": "graen.crypto.cross_sectional_intraday",
+    "cross_sectional_acceleration_v1": "graen.crypto.cross_sectional_acceleration",
 }
 MECHANISM_METHODOLOGIES = {
     "bar_flow_pressure_v1": "graen-crypto-flow-pressure-v1",
     "cross_sectional_intraday_v1": "graen-crypto-cross-sectional-intraday-v1",
+    "cross_sectional_acceleration_v1": "graen-crypto-cross-sectional-acceleration-v1",
 }
 
 
@@ -96,11 +98,26 @@ def validate_spec(spec):
         integer_parameters = {
             "lookback_bars", "hold_minutes", "cooldown_minutes"
         }
-    else:
+    elif mechanism == "cross_sectional_intraday_v1":
         ranges = {
             "momentum_5m_min": (0.0, 0.02),
             "momentum_15m_min": (0.0, 0.04),
             "momentum_60m_floor": (-0.05, 0.05),
+            "max_vwap_extension_pct": (0.001, 0.05),
+            "min_expected_move_pct": (0.001, 0.05),
+            "hold_minutes": (5, 120),
+            "cooldown_minutes": (5, 240),
+            "rank_top_n": (1, 2),
+        }
+        integer_parameters = {
+            "hold_minutes", "cooldown_minutes", "rank_top_n"
+        }
+    else:
+        ranges = {
+            "relative_15m_min": (0.0, 0.02),
+            "acceleration_5m_min": (0.0, 0.02),
+            "volume_ratio_min": (1.0, 5.0),
+            "range_ratio_min": (0.8, 4.0),
             "max_vwap_extension_pct": (0.001, 0.05),
             "min_expected_move_pct": (0.001, 0.05),
             "hold_minutes": (5, 120),
