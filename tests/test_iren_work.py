@@ -67,7 +67,92 @@ def test_command_normalization():
     assert normalize_command("Current IREN status") == "STATUS"
     assert normalize_command("IREN status") == "STATUS"
     assert normalize_command("current status") == "STATUS"
+    assert normalize_command("maintenance prompt") == "MAINTENANCE_PROMPT"
+    assert normalize_command("maintenance prompt: fix Command telemetry") == "MAINTENANCE_PROMPT"
+    assert normalize_command("generate codex maintenance prompt: verify Railway") == "MAINTENANCE_PROMPT"
     assert normalize_command("build the next thing") == "DIRECTIVE"
+
+
+def test_maintenance_prompt_is_deterministic_read_only_and_grounded_in_iren_state():
+    data = snapshot()
+    control = {
+        "state": "DEGRADED",
+        "observed_at": "2026-10-06T06:00:00+00:00",
+        "topology": {
+            "inventory_complete": True,
+            "services": [
+                {
+                    "service_id": "RHEN",
+                    "service_name": "RHEN runtime",
+                    "status": "HEALTHY",
+                    "readiness": True,
+                    "revision": "a" * 40,
+                    "deployment": "deploy-rhen",
+                }
+            ],
+        },
+        "incidents": {
+            "evidence.loss": {
+                "status": "OPEN",
+                "severity": "warning",
+                "reason": "runtime_event_loss_increasing",
+            }
+        },
+    }
+
+    result = process_command(
+        "maintenance prompt: focus on Command telemetry and keep trading behavior unchanged",
+        data,
+        control,
+        requested_by="devon",
+        source="command",
+    )
+
+    assert result.intent == "MAINTENANCE_PROMPT"
+    assert result.job is None
+    assert result.response["action_taken"] is False
+    assert result.response["prompt_version"] == "iren-maintenance-v1"
+    assert result.response["maintenance_focus"] == (
+        "focus on Command telemetry and keep trading behavior unchanged"
+    )
+    prompt = result.response["maintenance_prompt"]
+    assert "anevum/alpaca-trader" in prompt
+    assert "anevum/anevum-web" in prompt
+    assert "State: DEGRADED" in prompt
+    assert "RHEN runtime | status=HEALTHY | ready=YES" in prompt
+    assert "evidence.loss | severity=warning | reason=runtime_event_loss_increasing" in prompt
+    assert "COMMAND | READY | Command | owner=IREN" in prompt
+    assert "focus on Command telemetry and keep trading behavior unchanged" in prompt
+    assert "Keep paid model/API worker spending disabled." in prompt
+    assert "no model/API worker was invoked" in prompt
+    assert "do not invent work" in prompt
+
+
+def test_maintenance_prompt_treats_malformed_topology_as_missing_evidence():
+    result = process_command(
+        "maintenance prompt",
+        {"objectives": [], "jobs": []},
+        {"state": "HEALTHY", "incidents": {}, "topology": ["not", "a", "mapping"]},
+        requested_by="devon",
+        source="command",
+    )
+
+    assert "No service inventory present. Inspect live Railway state before editing." in result.response["maintenance_prompt"]
+
+
+def test_maintenance_prompt_reports_missing_service_inventory_instead_of_inventing_it():
+    result = process_command(
+        "maintenance prompt",
+        {"objectives": [], "jobs": []},
+        {"state": "HEALTHY", "incidents": {}},
+        requested_by="devon",
+        source="command",
+    )
+
+    prompt = result.response["maintenance_prompt"]
+    assert "No service inventory present. Inspect live Railway state before editing." in prompt
+    assert "No pending canonical action." in prompt
+    assert "No additional focus supplied." in prompt
 
 
 def test_next_action_uses_ready_dependency_satisfied_objective():
