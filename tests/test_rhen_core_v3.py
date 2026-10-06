@@ -838,6 +838,77 @@ def test_router_excludes_disabled_optional_modules(monkeypatch):
 
 
 
+def test_strategy_pipeline_terminal_btc_does_not_mask_active_graen(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "app.graen.btc_discovery.projection",
+        lambda _store: {
+            "schema_version": "btc_discovery.v1",
+            "state": "EXHAUSTED",
+            "candidate": {"candidate_id": "GRAEN-BTC-DIRECT-OLD"},
+            "paper_candidate_id": None,
+            "paper_runtime": None,
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    created = store.graen_action(
+        "create_problem",
+        {
+            "title": "Adaptive crypto candidate",
+            "domain": "CRYPTO_STRATEGY",
+            "priority": 95,
+        },
+    )
+    problem_id = created["problem"]["problem_id"]
+    store.graen_action(
+        "queue_research_stage",
+        {
+            "problem_id": problem_id,
+            "stage": "DEVELOPMENT",
+            "metadata": {
+                "candidate_id": "CRYPTO-FLOW-ADAPTIVE-001",
+                "target_lane": "crypto",
+            },
+        },
+    )
+
+    pipeline = store.strategy_pipeline_research()
+
+    assert pipeline["btc_discovery"]["state"] == "EXHAUSTED"
+    assert pipeline["candidate"]["problem_id"] == problem_id
+    assert pipeline["candidate"]["candidate_id"] == "CRYPTO-FLOW-ADAPTIVE-001"
+    assert pipeline["release_gate"]["status"] == "HOLD"
+
+
+def test_strategy_pipeline_active_btc_still_owns_primary_projection(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "app.graen.btc_discovery.projection",
+        lambda _store: {
+            "schema_version": "btc_discovery.v1",
+            "state": "SEARCHING",
+            "candidate": {
+                "candidate_id": "GRAEN-BTC-DIRECT-ACTIVE",
+                "results": {},
+            },
+            "paper_candidate_id": None,
+            "paper_runtime": None,
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    pipeline = store.strategy_pipeline_research()
+
+    assert pipeline["candidate"]["candidate_id"] == "GRAEN-BTC-DIRECT-ACTIVE"
+    assert pipeline["candidate"]["owner"] == "GRAEN"
+    assert pipeline["validation"]["status"] == "WAITING"
+    assert pipeline["release_gate"]["status"] == "SEARCHING"
+
+
 def test_strategy_pipeline_research_links_candidate_validation_and_release_gate(
     tmp_path, monkeypatch
 ):
