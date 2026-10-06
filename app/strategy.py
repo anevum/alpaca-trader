@@ -659,7 +659,7 @@ class RollingMomentumVwapStrategy(OpeningRangeVwapStrategy):
         recent_closes = closes[-4:]
         multi_bar_up_steps = sum(
             1 for left, right in zip(recent_closes, recent_closes[1:])
-            if right >= left
+            if right > left
         )
         multi_bar_persistent = multi_bar_up_steps >= 2
         momentum_ok = momentum_pct >= self.min_momentum_pct
