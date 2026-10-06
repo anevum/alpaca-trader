@@ -3750,6 +3750,59 @@ class RhenCoreStore:
             },
         }
 
+    def candidate_evidence_readiness(self) -> dict[str, Any]:
+        """Summarize recent decision-time evidence required by forward analytics."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """select payload_json,occurred_at
+                   from events
+                   where event_type='decision_cycle'
+                     and payload_json like '%forward_measurement_ready_count%'
+                   order by occurred_at desc
+                   limit 20"""
+            ).fetchall()
+
+        total = ready = missing_price = missing_bar_time = reference_only = 0
+        latest_at = None
+        cycles = 0
+        for row in rows:
+            payload = _loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                continue
+            candidate_count = int(payload.get("candidate_count") or 0)
+            ready_count = int(
+                payload.get("forward_measurement_ready_count") or 0
+            )
+            total += candidate_count
+            ready += ready_count
+            missing_price += int(
+                payload.get("forward_missing_reference_price_count") or 0
+            )
+            missing_bar_time += int(
+                payload.get("forward_missing_bar_time_count") or 0
+            )
+            reference_only += int(
+                payload.get("evidence_reference_only_count") or 0
+            )
+            latest_at = latest_at or row["occurred_at"]
+            cycles += 1
+
+        rate = round(ready / total * 100.0, 4) if total > 0 else None
+        return {
+            "schema_version": "candidate_evidence_readiness.v1",
+            "research_only": True,
+            "execution_authority": False,
+            "changes_live_decision": False,
+            "sampled_cycles": cycles,
+            "candidate_count": total,
+            "measurement_ready_count": ready,
+            "measurement_ready_rate_pct": rate,
+            "missing_reference_price_count": missing_price,
+            "missing_bar_time_count": missing_bar_time,
+            "evidence_reference_only_count": reference_only,
+            "latest_observed_at": latest_at,
+        }
+
     def strategy_pipeline_research(self) -> dict[str, Any]:
         """Return the durable Command research and strategy lifecycle projection."""
         tracking = self.command_research_tracking()
@@ -3853,6 +3906,7 @@ class RhenCoreStore:
         return {
             "schema_version": "strategy_pipeline_research.v1",
             "candidate": candidate,
+            "evidence_readiness": self.candidate_evidence_readiness(),
             "validation": validation,
             "release_gate": {
                 "owner": "IREN",
