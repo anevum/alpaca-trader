@@ -93,6 +93,7 @@ class ExtendedEquityEngine:
         self.last_error: str | None = None
         self.last_order: dict[str, Any] | None = None
         self.last_exit_results: list[dict[str, Any]] = []
+        self.current_correlation_id: str | None = None
 
     @property
     def execution_authorized(self) -> bool:
@@ -150,6 +151,7 @@ class ExtendedEquityEngine:
                 "market": "us_equity_extended",
                 **(payload or {}),
             },
+            correlation_id=self.current_correlation_id,
         )
 
     def _client_order_id(self, symbol: str, action: str) -> str:
@@ -816,7 +818,7 @@ class ExtendedEquityEngine:
                 qty=str(position.get("qty") or "0"),
                 client_order_id=client_order_id,
                 exit_reason=reason,
-                correlation_id=self.state.current_correlation_id,
+                correlation_id=self.current_correlation_id,
                 intended_at=now,
                 exit_metadata=exit_metadata,
             )
@@ -874,7 +876,7 @@ class ExtendedEquityEngine:
                 intent_id=(ledger_refs or {}).get("intent_id"),
                 exit_id=(ledger_refs or {}).get("exit_id"),
                 exit_reason=reason,
-                correlation_id=self.state.current_correlation_id,
+                correlation_id=self.current_correlation_id,
             )
         self.last_order = order
         self._event(
@@ -989,7 +991,7 @@ class ExtendedEquityEngine:
                 signal=signal,
                 qty=str(qty),
                 client_order_id=client_order_id,
-                correlation_id=self.state.current_correlation_id,
+                correlation_id=self.current_correlation_id,
                 intended_at=now,
             )
             if ledger_refs is None:
@@ -1039,7 +1041,7 @@ class ExtendedEquityEngine:
                 order,
                 intent_id=(ledger_refs or {}).get("intent_id"),
                 position_id=(ledger_refs or {}).get("position_id"),
-                correlation_id=self.state.current_correlation_id,
+                correlation_id=self.current_correlation_id,
             )
         self.last_order = order
         self._event(
@@ -1060,6 +1062,7 @@ class ExtendedEquityEngine:
 
     async def run_once(self) -> dict[str, Any]:
         now = datetime.now(NY)
+        self.current_correlation_id = uuid4().hex
         self.last_cycle_at = now
         self.last_error = None
 
