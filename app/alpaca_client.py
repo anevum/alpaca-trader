@@ -216,11 +216,18 @@ class AlpacaClient:
         *,
         status: str = "active",
         asset_class: str = "us_equity",
+        attributes: str | None = None,
     ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "status": status,
+            "asset_class": asset_class,
+        }
+        if attributes:
+            params["attributes"] = attributes
         result = await self._request(
             "GET",
             "/v2/assets",
-            params={"status": status, "asset_class": asset_class},
+            params=params,
         )
         return result if isinstance(result, list) else []
 
@@ -419,6 +426,67 @@ class AlpacaClient:
                 "stop_loss": {"stop_price": stop_price},
                 "client_order_id": client_order_id,
             },
+        )
+
+    async def submit_extended_limit_buy(
+        self,
+        symbol: str,
+        qty: str,
+        limit_price: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        """Submit an Alpaca 24/5-compatible equity entry.
+
+        Extended-hours equity orders are intentionally DAY limit orders with
+        extended_hours=true. Market orders are never used by this path.
+        """
+        return await self._request(
+            "POST",
+            "/v2/orders",
+            json={
+                "symbol": symbol.upper(),
+                "qty": qty,
+                "side": "buy",
+                "type": "limit",
+                "time_in_force": "day",
+                "limit_price": limit_price,
+                "extended_hours": True,
+                "client_order_id": client_order_id,
+            },
+        )
+
+    async def submit_extended_limit_sell(
+        self,
+        symbol: str,
+        qty: str,
+        limit_price: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        """Submit an Alpaca 24/5-compatible risk-reducing equity exit."""
+        return await self._request(
+            "POST",
+            "/v2/orders",
+            json={
+                "symbol": symbol.upper(),
+                "qty": qty,
+                "side": "sell",
+                "type": "limit",
+                "time_in_force": "day",
+                "limit_price": limit_price,
+                "extended_hours": True,
+                "client_order_id": client_order_id,
+            },
+        )
+
+    async def replace_limit_order(
+        self,
+        order_id: str,
+        limit_price: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "PATCH",
+            f"/v2/orders/{order_id}",
+            json={"limit_price": limit_price},
         )
 
     async def submit_market_sell(

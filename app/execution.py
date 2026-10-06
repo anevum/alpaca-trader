@@ -135,7 +135,10 @@ class ExecutionEngine:
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
                 continue
-            if not str(order.get("client_order_id", "")).startswith(prefix):
+            client_order_id = str(order.get("client_order_id", ""))
+            if not client_order_id.startswith(prefix):
+                continue
+            if "-ext-" in client_order_id:
                 continue
             submitted = order.get("submitted_at")
             if not submitted:
@@ -159,7 +162,10 @@ class ExecutionEngine:
         for order in orders:
             if str(order.get("side", "")).lower() != "buy":
                 continue
-            if not str(order.get("client_order_id", "")).startswith(prefix):
+            client_order_id = str(order.get("client_order_id", ""))
+            if not client_order_id.startswith(prefix):
+                continue
+            if "-ext-" in client_order_id:
                 continue
             raw_stamp = order.get("filled_at") or order.get("submitted_at")
             if not raw_stamp:
@@ -270,6 +276,16 @@ class ExecutionEngine:
                 item for item in buy_fills.get(symbol, [])
                 if item[0] <= stamp
             ]
+
+            # A RHEN hard-stop fill is loss evidence by construction even when
+            # the compact recent-order fixture/API row does not carry both
+            # entry and exit fill prices. Preserve price-based attribution when
+            # complete fills are available.
+            if "-stop-" in client_order_id and (
+                exit_price <= 0 or not prior_buys
+            ):
+                exits.append((stamp, client_order_id, True))
+                continue
             if exit_price <= 0 or not prior_buys:
                 continue
 

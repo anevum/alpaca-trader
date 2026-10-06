@@ -1048,10 +1048,18 @@ class TradingEventSink:
         position_id = str(uuid4())
         metadata = dict(signal.metadata or {})
         market = str(metadata.get("market") or "").lower()
-        time_in_force = "gtc" if market == "crypto" else "day"
+        is_crypto = market == "crypto"
+        is_extended_equity = market == "us_equity_extended"
+        time_in_force = str(
+            metadata.get("time_in_force")
+            or ("gtc" if is_crypto else "day")
+        )
+        order_type = str(metadata.get("execution_order_type") or "market")
         strategy_version_id = (
             self.settings.crypto_strategy_version_id
-            if market == "crypto"
+            if is_crypto
+            else self.settings.extended_equity_strategy_version_id
+            if is_extended_equity
             else self.settings.strategy_version_id
         )
         cycle_key = (
@@ -1109,7 +1117,7 @@ class TradingEventSink:
                 "signal_id": signal_id,
                 "symbol": signal.symbol.upper(),
                 "side": "buy",
-                "order_type": "market",
+                "order_type": order_type,
                 "time_in_force": time_in_force,
                 "requested_qty": qty,
                 "requested_notional": str(signal.notional),
@@ -1156,32 +1164,43 @@ class TradingEventSink:
                         },
                         "methodology_version": "live-decision-v1",
                         "strategy_version_id": strategy_version_id,
-                        "market_lane": market or "us_equity",
+                        "market_lane": (
+                            metadata.get("market_lane")
+                            or market
+                            or "us_equity"
+                        ),
                         "strategy_family": (
                             getattr(self.settings, "crypto_strategy_family", "rolling_momentum_vwap")
-                            if market == "crypto"
+                            if is_crypto
+                            else "extended_rolling_momentum"
+                            if is_extended_equity
                             else getattr(self.settings, "strategy_name", None)
                         ),
                         "model_version": (
                             getattr(self.settings, "crypto_model_version", None)
-                            if market == "crypto" else strategy_version_id
+                            if is_crypto else strategy_version_id
                         ),
                         "calibration_version": (
                             getattr(self.settings, "crypto_calibration_version", None)
-                            if market == "crypto" else None
+                            if is_crypto else None
                         ),
                         "regime_version": (
                             getattr(self.settings, "crypto_regime_version", None)
-                            if market == "crypto" else None
+                            if is_crypto else None
                         ),
                         "execution_adapter_version": (
                             getattr(self.settings, "crypto_execution_adapter_version", None)
-                            if market == "crypto" else "alpaca-equity-execution-v1"
+                            if is_crypto
+                            else "alpaca-equity-24x5-limit-v1"
+                            if is_extended_equity
+                            else "alpaca-equity-execution-v1"
                         ),
                         "data_source": "alpaca",
                         "data_feed": (
                             f"crypto-{self.settings.crypto_location}"
-                            if market == "crypto"
+                            if is_crypto
+                            else metadata.get("data_feed")
+                            if is_extended_equity
                             else getattr(self.settings, "data_feed", None)
                         ),
                         "bar_interval": getattr(self.settings, "bar_timeframe", None),
@@ -1197,9 +1216,17 @@ class TradingEventSink:
                         "research_attribution": {
                             "live_strategy_version": strategy_version_id,
                         },
-                        "ads002": None if market == "crypto" else ads002_shadow,
-                        "ads002_v2": None if market == "crypto" else ads002_v2,
-                        "ads_crypto": metadata.get("ads_crypto") if market == "crypto" else None,
+                        "ads002": (
+                            None
+                            if is_crypto or is_extended_equity
+                            else ads002_shadow
+                        ),
+                        "ads002_v2": (
+                            None
+                            if is_crypto or is_extended_equity
+                            else ads002_v2
+                        ),
+                        "ads_crypto": metadata.get("ads_crypto") if is_crypto else None,
                     },
                 },
             },
@@ -1234,8 +1261,13 @@ class TradingEventSink:
     ) -> dict[str, str]:
         intent_id = str(uuid4())
         exit_id = str(uuid4())
-        market = str((exit_metadata or {}).get("market") or "").lower()
-        time_in_force = "gtc" if market == "crypto" else "day"
+        metadata = dict(exit_metadata or {})
+        market = str(metadata.get("market") or "").lower()
+        time_in_force = str(
+            metadata.get("time_in_force")
+            or ("gtc" if market == "crypto" else "day")
+        )
+        order_type = str(metadata.get("execution_order_type") or "market")
         payload = {
             "intent": {
                 "intent_id": intent_id,
@@ -1243,7 +1275,7 @@ class TradingEventSink:
                 "signal_id": None,
                 "symbol": symbol.upper(),
                 "side": "sell",
-                "order_type": "market",
+                "order_type": order_type,
                 "time_in_force": time_in_force,
                 "requested_qty": qty,
                 "requested_notional": None,
@@ -1254,7 +1286,7 @@ class TradingEventSink:
                     "client_order_id": client_order_id,
                     "exit_id": exit_id,
                     "exit_reason": exit_reason,
-                    "exit_metadata": exit_metadata or {},
+                    "exit_metadata": metadata,
                 },
             }
         }
