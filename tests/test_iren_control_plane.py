@@ -233,15 +233,17 @@ def test_disabled_scheduler_does_not_raise_stale_or_legacy_workflow_incidents():
     assert events == []
 
 
-def test_policy_version_change_rebaselines_protected_configuration():
+def test_policy_version_change_does_not_rebaseline_protected_configuration():
     old_policy = dict(POLICY)
     old_policy["version"] = "iren-control-v2.0.0"
     state, _ = reduce_state({}, observation(), old_policy)
     changed = observation(60)
     changed["configuration"]["fingerprint"] = "rebuilt-rhen-v3"
     state, events = reduce_state(state, changed, POLICY)
-    assert state["configuration_baseline"]["fingerprint"] == "rebuilt-rhen-v3"
-    assert not any(e["key"] == "configuration.drift" for e in events)
+    assert state["configuration_baseline"]["fingerprint"] == "synthetic-baseline"
+    assert state["configuration_drift"]["comparison_completeness"] == "legacy_partial"
+    assert state["configuration_review"]["status"] == "CONFIGURATION_REVIEW_REQUIRED"
+    assert any(e["key"] == "configuration.drift" for e in events)
 
 
 def test_scheduler_staleness_and_expired_lease():
