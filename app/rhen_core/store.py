@@ -3573,6 +3573,7 @@ class RhenCoreStore:
                     "observed_at": row["observed_at"],
                     "run_id": row["run_id"],
                     "strategy_version_id": row["strategy_version_id"],
+                    "market_lane": row["market_lane"] or "us_equity",
                     "features": features,
                     "scan_cycle": {
                         "scan_cycle_id": row["cycle_key"],
