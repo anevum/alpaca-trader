@@ -6,7 +6,14 @@ import json
 import httpx
 import pytest
 
-from app.iren.codex_handoff import package_for, verification, protected, render_prompt
+from app.iren.codex_handoff import (
+    package_for,
+    verification,
+    protected,
+    render_prompt,
+    configured_repository,
+    repository_allowed,
+)
 from app.iren.codex_github import inspect_github
 from app.iren.work import normalize_command, process_command, IrenWorkEngine, criteria_satisfied
 from app.iren.executor_service import runtime, JobEnvelope, app
@@ -47,6 +54,81 @@ def observations():
     return {"IREN": {"capability": True}, "IREN_EXECUTOR": {"spending_authority": False,
             "software_worker": {"daily_budget_usd": 0, "job_budget_usd": 0}}}
 
+
+
+
+
+def test_repository_cutover_accepts_legacy_and_rhen_names(monkeypatch):
+    assert repository_allowed("anevum/alpaca-trader")
+    assert repository_allowed("anevum/rhen")
+    assert not repository_allowed("other/repo")
+
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "anevum/rhen")
+    assert configured_repository() == "anevum/rhen"
+    p = package()
+    assert p["repository"] == "anevum/rhen"
+    assert p["repositories"] == ["anevum/rhen"]
+    assert "Repository: anevum/rhen" in p["prompt"]
+
+
+def test_repository_cutover_github_association_uses_configured_name(monkeypatch):
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "anevum/rhen")
+
+    async def get(path):
+        if path == "branches/main":
+            return {"commit": {"sha": SHA}}
+        if path.startswith("pulls?"):
+            return [{"number": 42}]
+        if path == "pulls/42":
+            return {
+                "number": 42,
+                "base": {
+                    "ref": "main",
+                    "repo": {"full_name": "anevum/rhen"},
+                },
+                "head": {
+                    "ref": "codex/handoff/" + ID,
+                    "sha": SHA,
+                    "repo": {"full_name": "anevum/rhen"},
+                },
+                "body": (
+                    "IREN-Handoff: " + ID + "\n"
+                    "IREN-Objective: iren.test"
+                ),
+                "changed_files": 1,
+                "merged": False,
+                "merge_commit_sha": None,
+            }
+        if path == "pulls/42/files?per_page=100":
+            return [{"filename": "app/iren/example.py"}]
+        if path.startswith("commits/") and path.endswith("/check-runs?per_page=100"):
+            return {
+                "total_count": 5,
+                "check_runs": [
+                    {
+                        "id": index,
+                        "name": name,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "app": {"slug": "github-actions"},
+                    }
+                    for index, name in enumerate(
+                        ["test", "velum-graen", "graen-forward-shadow", "inventory", "codex-postgres"],
+                        1,
+                    )
+                ],
+            }
+        raise AssertionError(path)
+
+    result = asyncio.run(
+        inspect_github(
+            get,
+            handoff_id=ID,
+            objective_key="iren.test",
+            repository="anevum/rhen",
+        )
+    )
+    assert result["association_valid"] is True
 
 def test_package_is_reproducible_self_contained_and_preserves_criteria():
     p = package()
