@@ -358,7 +358,7 @@ def _research_series(value: Any) -> list[dict[str, Any]]:
         if rows:
             base = rows[0][1]
             if base:
-                step = max(1, len(rows) // 240)
+                step = max(1, len(rows) // 120)
                 sampled = rows[::step]
                 if sampled[-1] != rows[-1]:
                     sampled.append(rows[-1])
@@ -398,7 +398,7 @@ def _research_series(value: Any) -> list[dict[str, Any]]:
                 "value": round((equity - 1.0) * 100.0, 6),
             })
         if len(points) > 1:
-            step = max(1, len(points) // 240)
+            step = max(1, len(points) // 120)
             sampled = points[::step]
             if sampled[-1] != points[-1]:
                 sampled.append(points[-1])
@@ -474,7 +474,7 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
                 content,created_at
             from graen.artifacts
             order by created_at desc
-            limit 160
+            limit 100
             """
         )
         graen_artifacts = [
@@ -876,20 +876,40 @@ def _research_activity(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         "graen_problems": serialized(graen_problems),
         "graen_runs": serialized([
             {
-                **row,
+                "run_id": row.get("run_id"),
+                "problem_id": row.get("problem_id"),
+                "status": row.get("status"),
+                "methodology_version": row.get("methodology_version"),
                 "result_state": dict(row.get("result_summary") or {}).get("state"),
                 "error": dict(row.get("result_summary") or {}).get("error"),
+                "started_at": row.get("started_at"),
+                "completed_at": row.get("completed_at"),
+                "created_at": row.get("created_at"),
             }
             for row in graen_runs
         ]),
-        "velum_replays": serialized(velum_replays),
+        "velum_replays": serialized([
+            {
+                "replay_id": row.get("replay_id"),
+                "asset_class": row.get("asset_class"),
+                "methodology_version": row.get("methodology_version"),
+                "strategy_version_id": row.get("strategy_version_id"),
+                "range_start": row.get("range_start"),
+                "range_end": row.get("range_end"),
+                "status": row.get("status"),
+                "started_at": row.get("started_at"),
+                "completed_at": row.get("completed_at"),
+                "result_type": row.get("result_type"),
+            }
+            for row in velum_replays
+        ]),
         "graen_runtime": _serialize_research(graen_runtime),
         "observability": {
             "schema_version": "research_observability.v1",
             "updated_at": now.isoformat(),
             "poll_seconds": 3,
-            "runs": serialized(runs[:140]),
-            "events": serialized(events[:220]),
+            "runs": serialized(runs[:80]),
+            "events": serialized(events[:160]),
             "authority": {
                 "read_only": True,
                 "research_only": True,
