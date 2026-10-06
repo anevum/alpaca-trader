@@ -40,7 +40,7 @@ def _adaptive_problem(store: RhenCoreStore, now: datetime):
             "problem_id": problem_id,
             "run_id": None,
             "artifact_type": "RESEARCH_CORPUS_EXPOSURE_LEDGER",
-            "methodology_version": "graen.adaptive-flow.v1",
+            "methodology_version": "graen.adaptive-acceleration.v3",
             "content": conservative_exposure_ledger(now),
         },
     )
@@ -64,8 +64,8 @@ def test_adaptive_spec_uses_future_sealed_confirmatory_windows():
         now=now,
     )
 
-    assert spec["mechanism"] == "cross_sectional_intraday_v1"
-    assert spec["hypothesis_id"].startswith("CRYPTO-CROSS-ADAPTIVE-")
+    assert spec["mechanism"] == "cross_sectional_acceleration_v1"
+    assert spec["hypothesis_id"].startswith("CRYPTO-ACCEL-ADAPTIVE-")
     assert spec["execution_authority"] is False
 
     validation_start = datetime.fromisoformat(
@@ -326,7 +326,7 @@ def test_adaptive_velum_stage_claims_after_holdout_gate_without_new_time_window(
 
 
 
-def test_v2_ignores_exhausted_v1_and_creates_new_program():
+def test_v3_ignores_exhausted_v2_and_creates_new_program():
     async def run():
         now = datetime(2026, 10, 6, 8, 0, tzinfo=UTC)
         old = {
@@ -392,7 +392,7 @@ def test_v2_ignores_exhausted_v1_and_creates_new_program():
         assert problem["metadata"]["adaptive_program_id"] == PROGRAM_ID
         assert generated["status"] == "FROZEN"
         assert generated["hypothesis_id"].startswith(
-            "CRYPTO-CROSS-ADAPTIVE-"
+            "CRYPTO-ACCEL-ADAPTIVE-"
         )
 
     asyncio.run(run())
