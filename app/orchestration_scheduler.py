@@ -671,17 +671,6 @@ class SchedulerRuntime:
                 os.getenv("GRAEN_BTC_DISCOVERY_URL", "http://127.0.0.1:8111/v1/btc-discovery/tick"),
                 self.scheduler_headers, {}, timeout=600)
 
-        if target == "graen_adaptive_research":
-            return await self._post(
-                os.getenv(
-                    "GRAEN_ADAPTIVE_RESEARCH_URL",
-                    "http://127.0.0.1:8111/v1/adaptive/tick",
-                ),
-                self.scheduler_headers,
-                {},
-                timeout=30,
-            )
-
         if target == "trader_preflight":
             local = await self._post_with_startup_retry(
                 self.trader_url + "/preflight",
