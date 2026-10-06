@@ -112,7 +112,7 @@ def test_protected_objective_requires_approval():
     assert result.job["requires_human"] is True
 
 
-def test_freeform_directive_becomes_iren_triage_job():
+def test_freeform_directive_fails_closed_without_model_worker():
     result = process_command(
         "Investigate the evidence gap",
         snapshot(),
@@ -121,8 +121,9 @@ def test_freeform_directive_becomes_iren_triage_job():
         source="slack",
     )
     assert result.intent == "DIRECTIVE"
-    assert result.job["owner_system"] == "IREN"
-    assert result.job["status"] == "QUEUED"
+    assert result.job is None
+    assert "not executed" in result.response["message"]
+    assert "prepare for Codex" in result.response["supported_actions"]
 
 
 def test_current_iren_status_is_read_only_and_creates_no_job():
