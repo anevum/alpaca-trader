@@ -158,7 +158,13 @@ class IrenController:
             "services": services, "provider_inventory": provider_inventory,
             "configuration": config, "runs": recent,
             "scheduler": {"configured": rt.configured, "enabled": rt.enabled,
-                "version": rt.scheduler_version, "started_at": rt.started_at.isoformat(),
+                "version": rt.scheduler_version,
+                "workflow_ids": sorted(
+                    str(row.get("workflow_id"))
+                    for row in rt.workflows
+                    if rt.workflow_enabled(row) and row.get("workflow_id")
+                ),
+                "started_at": rt.started_at.isoformat(),
                 "last_success_at": rt.last_success_at.isoformat() if rt.last_success_at else None,
                 "last_error": bool(rt.last_error), "running_job": rt.running_job,
                 "next_expected_runs": dict(rt.next_runs)}}
