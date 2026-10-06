@@ -35,6 +35,21 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
                 "vwap_edge_pct": index / 1000,
                 "huge_duplicate_blob": "x" * 5000,
             },
+            "shadow_economics": {
+                "methodology_version": "rhen-shadow-economics-v1",
+                "research_only": True,
+                "execution_authority": False,
+                "estimate": {
+                    "expected_gross_bps": str(10 + index),
+                    "expected_net_bps": str(5 + index),
+                    "gross_to_cost_ratio": "2.0",
+                    "confidence": "0.8",
+                },
+                "shadow_admission": {
+                    "would_admit": index < 2,
+                    "reason": "economic_gate_passed" if index < 2 else "expected_net_edge_below_hurdle",
+                },
+            },
         }
         for index in range(10)
     ]
@@ -71,9 +86,22 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
 
     payload = json.loads(event[0])
     assert "candidates" not in payload
+    assert payload["shadow_economics_candidate_count"] == 10
+    assert payload["shadow_economics_admit_count"] == 2
+    assert payload["shadow_economics_admit_rate_pct"] == 20.0
+    assert payload["shadow_economics_mean_net_bps"] == 9.5
+    assert payload["shadow_economics_best_net_bps"] == 14.0
+    assert payload["shadow_economics_methodology_version"] == "rhen-shadow-economics-v1"
     assert len(rows) == 4
     assert any(row["candidate_key"] == "c-0" and row["qualified"] == 1 for row in rows)
     assert all("huge_duplicate_blob" not in row["feature_json"] for row in rows)
+    selected = next(row for row in rows if row["candidate_key"] == "c-0")
+    selected_features = json.loads(selected["feature_json"])
+    shadow = selected_features["shadow_economics"]
+    assert shadow["research_only"] is True
+    assert shadow["execution_authority"] is False
+    assert shadow["expected_net_bps"] == "5"
+    assert shadow["would_admit"] is True
 
 
 def test_supervisor_strips_broker_credentials_from_pure_core(
@@ -711,3 +739,59 @@ def test_supervisor_readiness_wait_uses_local_listener(monkeypatch):
     )
 
     assert calls == [(("127.0.0.1", 8123), 0.25)]
+
+
+
+def test_command_research_tracking_exposes_rhen_shadow_economics_run(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    events = []
+    for index, (mean_net, best_net, admit_rate) in enumerate(
+        [(3.0, 8.0, 25.0), (4.5, 11.0, 40.0)]
+    ):
+        stamp = now + timedelta(minutes=index)
+        events.append(
+            {
+                "event_key": f"shadow-cycle-{index}",
+                "event_type": "decision_cycle",
+                "occurred_at": stamp.isoformat(),
+                "run_id": "run-shadow",
+                "strategy_version_id": "LIVE-TEST",
+                "source": "test",
+                "payload": {
+                    "cycle_key": f"shadow-cycle-{index}",
+                    "market_lane": "us_equity",
+                    "candidate_count": 4,
+                    "qualified_count": 1,
+                    "rejected_count": 3,
+                    "shadow_economics_candidate_count": 4,
+                    "shadow_economics_admit_count": int(admit_rate / 25),
+                    "shadow_economics_admit_rate_pct": admit_rate,
+                    "shadow_economics_mean_net_bps": mean_net,
+                    "shadow_economics_best_net_bps": best_net,
+                    "shadow_economics_methodology_version": "rhen-shadow-economics-v1",
+                    "candidates": [],
+                },
+            }
+        )
+    store.ingest_events(events)
+
+    tracking = store.command_research_tracking()
+    run = next(
+        row
+        for row in tracking["observability"]["runs"]
+        if row["run_id"] == "rhen-shadow-economics"
+    )
+
+    assert run["system"] == "RHEN"
+    assert run["kind"] == "SHADOW_ECONOMICS"
+    assert run["status"] == "OBSERVING"
+    assert run["methodology_version"] == "rhen-shadow-economics-v1"
+    assert run["metrics"]["mean_expected_net_bps"] == 4.5
+    assert run["metrics"]["best_expected_net_bps"] == 11.0
+    assert run["metrics"]["shadow_admission_rate_pct"] == 40.0
+    assert run["detail"]["execution_authority"] is False
+    assert len(run["series"]) == 3
+    assert all(len(series["points"]) == 2 for series in run["series"])
