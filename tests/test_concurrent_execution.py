@@ -245,13 +245,13 @@ class BuyStrategy:
         )
 
 
-def bot_buy(symbol):
+def bot_buy(symbol, seconds_ago=599):
     return {
         "symbol": symbol,
         "side": "buy",
         "client_order_id": f"anevum-{symbol.lower()}-buy-existing",
-        "submitted_at": iso_now(-600),
-        "filled_at": iso_now(-599),
+        "submitted_at": iso_now(-seconds_ago - 1),
+        "filled_at": iso_now(-seconds_ago),
     }
 
 

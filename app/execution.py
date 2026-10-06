@@ -531,10 +531,6 @@ class ExecutionEngine:
                 f"(entry {entry_price})",
             )
         if current_price >= target_price:
-            if isinstance(self.strategy, RollingMomentumVwapStrategy):
-                state["target_reached"] = True
-                state["target_reached_price"] = str(current_price)
-                return None
             return (
                 "target",
                 f"bot-managed take profit triggered at {current_price} "
@@ -582,6 +578,10 @@ class ExecutionEngine:
                 )
 
         if current_price >= target_price:
+            if isinstance(self.strategy, RollingMomentumVwapStrategy):
+                state["target_reached"] = True
+                state["target_reached_price"] = str(current_price)
+                return None
             return (
                 "target",
                 f"bot-managed take profit triggered at {current_price} "
