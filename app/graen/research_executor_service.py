@@ -9665,11 +9665,13 @@ class GraenResearchExecutor:
         if problem is None:
             created = await self.gateway.create_problem(
                 {
-                    "title": "GRAEN Adaptive Cross-Sectional Research V2",
+                    "title": "GRAEN Adaptive Cross-Sectional Acceleration Research V3",
                     "statement": (
-                        "Generate a finite research-only cross-sectional crypto "
-                        "program after the bounded flow-pressure V1 search was "
-                        "exhausted. Development may use inspected history; "
+                        "Generate a finite research-only cross-sectional acceleration "
+                        "program after the bounded cross-sectional V2 search was "
+                        "exhausted. Test peer-relative acceleration confirmed by "
+                        "volume participation and range expansion. Development "
+                        "may use inspected history; "
                         "validation and holdout remain sealed after hypothesis "
                         "freeze, and VELUM remains mandatory before review."
                     ),
@@ -9766,7 +9768,7 @@ class GraenResearchExecutor:
             problem_id=str(problem["problem_id"]),
             run_id=None,
             artifact_type="RESEARCH_CORPUS_EXPOSURE_LEDGER",
-            methodology_version="graen.adaptive-cross-sectional.v2",
+            methodology_version="graen.adaptive-acceleration.v3",
             content=ledger_payload,
         )
         artifact = exposure.get("artifact")
@@ -9856,7 +9858,7 @@ class GraenResearchExecutor:
             problem_id=str(problem["problem_id"]),
             run_id=None,
             artifact_type="RESEARCH_RUNTIME_COMPILED_BUNDLE",
-            methodology_version="graen.runtime-compiler.v2",
+            methodology_version="graen.runtime-compiler.v3",
             content={
                 "spec_hash": spec_hash,
                 "bundle_hash": bundle_hash,
@@ -9982,7 +9984,7 @@ class GraenResearchExecutor:
         claimed = await self.gateway.claim_adaptive_research_problem(
             worker_id=self.worker_id + "-adaptive",
             runtime_version=RUNTIME_VERSION,
-            methodology_version="graen.compiled-adaptive.v2",
+            methodology_version="graen.compiled-adaptive.v3",
             domain=PROBLEM_DOMAIN,
         )
         problem = claimed.get("problem")
@@ -9990,8 +9992,19 @@ class GraenResearchExecutor:
         if not isinstance(problem, Mapping) or not isinstance(run, Mapping):
             await self._heartbeat()
             return {
-                "status": "IDLE",
+                "status": (
+                    "AWAITING_STAGE_MATURITY"
+                    if adaptive_stage in {
+                        "CRYPTO_COMPILED_VALIDATION",
+                        "CRYPTO_COMPILED_HOLDOUT",
+                    }
+                    else "IDLE"
+                ),
                 "claimed": False,
+                "adaptive_program_id": ADAPTIVE_PROGRAM_ID,
+                "adaptive_generation": adaptive_metadata.get("adaptive_generation"),
+                "adaptive_stage": adaptive_stage or None,
+                "next_action": adaptive_metadata.get("next_action"),
                 "research_promotion": promotion_results,
                 "generated_hypothesis": generated,
                 "execution_authority": False,
