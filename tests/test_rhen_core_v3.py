@@ -118,6 +118,8 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
     assert shadow["would_admit"] is True
 
     readiness = store.candidate_evidence_readiness()
+    assert readiness["schema_version"] == "candidate_evidence_readiness.v2"
+    assert readiness["state"] == "READY"
     assert readiness["research_only"] is True
     assert readiness["execution_authority"] is False
     assert readiness["sampled_cycles"] == 1
@@ -1200,3 +1202,76 @@ def test_candidate_report_attaches_normalized_shadow_allocation(
     assert allocation["would_allocate"] is True
     assert "live_safe_notional" not in allocation
     assert "shadow_notional" not in allocation
+
+
+
+def test_candidate_evidence_readiness_waits_for_post_fix_cohort(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+
+    readiness = store.candidate_evidence_readiness()
+
+    assert readiness["schema_version"] == "candidate_evidence_readiness.v2"
+    assert readiness["state"] == "AWAITING_MEASURABLE_COHORT"
+    assert readiness["sampled_cycles"] == 0
+    assert readiness["candidate_count"] == 0
+    assert readiness["measurement_ready_rate_pct"] is None
+    assert readiness["measurement_contract"] == (
+        "exact_decision_price_plus_completed_bar_time"
+    )
+    assert "first post-fix live decision cycle" in readiness["next_action"]
+
+
+def test_candidate_evidence_readiness_marks_partial_cohort(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "partial-readiness-cycle",
+                "event_type": "decision_cycle",
+                "occurred_at": now.isoformat(),
+                "run_id": "run-readiness",
+                "strategy_version_id": "LIVE-TEST",
+                "source": "test",
+                "payload": {
+                    "cycle_key": "partial-readiness-cycle",
+                    "market_lane": "us_equity",
+                    "candidate_count": 2,
+                    "qualified_count": 0,
+                    "rejected_count": 2,
+                    "candidates": [
+                        {
+                            "candidate_id": "ready",
+                            "symbol": "SPY",
+                            "observed_at": now.isoformat(),
+                            "qualified": False,
+                            "final_decision": "rejected",
+                            "decision_reference_price": "100",
+                            "features": {"bar_time": now.isoformat()},
+                        },
+                        {
+                            "candidate_id": "missing-time",
+                            "symbol": "QQQ",
+                            "observed_at": now.isoformat(),
+                            "qualified": False,
+                            "final_decision": "rejected",
+                            "decision_reference_price": "100",
+                            "features": {},
+                        },
+                    ],
+                },
+            }
+        ]
+    )
+
+    readiness = store.candidate_evidence_readiness()
+
+    assert readiness["state"] == "PARTIAL"
+    assert readiness["candidate_count"] == 2
+    assert readiness["measurement_ready_count"] == 1
+    assert readiness["measurement_ready_rate_pct"] == 50.0
+    assert readiness["missing_bar_time_count"] == 1
