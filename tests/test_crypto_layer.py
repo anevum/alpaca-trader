@@ -151,7 +151,7 @@ def test_cross_sectional_paper_strategy_emits_rankable_cost_candidate():
     )
     start = datetime(2026, 10, 6, 0, 0, tzinfo=NY)
     closes = [
-        str(Decimal("100") + Decimal(index) * Decimal("0.04"))
+        str(Decimal("100") + Decimal(index) * Decimal("0.05"))
         for index in range(70)
     ]
     bars = _bars(start, closes)
