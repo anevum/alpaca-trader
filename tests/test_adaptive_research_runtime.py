@@ -444,3 +444,37 @@ def test_v3_requests_model_handoff_only_after_bounded_program_exhaustion():
 
     asyncio.run(run())
 
+
+
+def test_exhausted_v3_dispatch_becomes_stable_review_boundary():
+    async def run():
+        problem = {
+            "problem_id": str(uuid4()),
+            "status": "WAITING",
+            "metadata": {
+                "adaptive_program_id": PROGRAM_ID,
+                "adaptive_generation": MAX_GENERATIONS,
+                "research_stage": "ADAPTIVE_PROGRAM_EXHAUSTED",
+                "decision": "NEEDS_NEW_HYPOTHESIS_ENGINE",
+                "next_action": "MODEL_HYPOTHESIS_GENERATION_REQUIRED",
+            },
+        }
+
+        class Gateway:
+            async def snapshot(self):
+                return {"problems": [problem], "runs": []}
+
+        runtime = object.__new__(GraenResearchExecutor)
+        runtime.gateway = Gateway()
+        runtime.adaptive_task = None
+
+        result = await runtime.dispatch_adaptive()
+
+        assert result["status"] == "RESEARCH_REVIEW_REQUIRED"
+        assert result["dispatched"] is False
+        assert result["review_kind"] == "NEW_HYPOTHESIS_FAMILY"
+        assert result["work_credit_recommended"] is True
+        assert result["next_action"] == "MODEL_HYPOTHESIS_GENERATION_REQUIRED"
+        assert runtime.adaptive_task is None
+
+    asyncio.run(run())
