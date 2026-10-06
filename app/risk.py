@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from .config import Settings
+from .crypto_symbols import is_crypto_row, normalized_crypto_row
 from .cash_flow import risk_reference_equity
 from .sizing import (
     effective_gross_limit,
@@ -202,9 +203,9 @@ def validate_crypto_buy(
         return RiskDecision(False, f"{symbol} is not in active crypto universe")
 
     crypto_positions = [
-        position
+        normalized_crypto_row(position)
         for position in positions
-        if "/" in str(position.get("symbol", ""))
+        if is_crypto_row(position)
         and d(position.get("qty")) > 0
     ]
     if any(
