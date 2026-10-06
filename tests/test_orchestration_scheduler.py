@@ -351,7 +351,7 @@ def test_recovery_workflows_use_new_job_keys_and_bounded_retry_delays():
     close = workflows["rhen.session_close"]
     daily = workflows["rhen.research.daily"]
     assert close["version"] == "1.0.8"
-    assert daily["version"] == "1.0.4"
+    assert daily["version"] == "1.0.5"
     assert close["retry_policy"]["delay_seconds"] == 120
     assert daily["retry_policy"]["delay_seconds"] == 180
 
