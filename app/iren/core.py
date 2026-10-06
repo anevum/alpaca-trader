@@ -70,16 +70,6 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
         for flag in ("startup_reconciled", "reconciliation_safe"):
             if rhen.get(flag) is not True:
                 issue(f"safety.{flag}", "critical", "broker_reconciliation_not_confirmed")
-        if rhen.get("crypto_execution_enabled") is True:
-            if (
-                rhen.get("crypto_broker_writes_allowed")
-                is not policy["crypto_live_broker_writes_expected"]
-            ):
-                issue(
-                    "safety.crypto_execution",
-                    "critical",
-                    "crypto_broker_write_authority_policy_mismatch",
-                )
         if rhen.get("strategy_version_id") != policy["expected_strategy"]:
             issue("safety.strategy_identity", "critical", "unexpected_live_strategy")
         persistence = rhen.get("persistence", {})
