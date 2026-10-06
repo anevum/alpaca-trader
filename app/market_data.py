@@ -331,9 +331,52 @@ class MarketDataClient:
         return output
 
 
+    async def latest_bars_many(
+        self,
+        symbols: list[str],
+        *,
+        feed: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch the freshest one-minute bar for each symbol.
+
+        The continuous-equity lane uses this endpoint as a rolling in-memory
+        tape. In the overnight session the `overnight` feed supplies the
+        real-time indicative bar without relying on delayed historical trades.
+        """
+        if not self.settings.credentials_configured:
+            raise RuntimeError("Alpaca credentials are not configured")
+
+        batches = self._batches(symbols)
+        if not batches:
+            return {}
+
+        selected_feed = feed or self.settings.data_feed
+        output: dict[str, dict[str, Any]] = {
+            symbol: {} for batch in batches for symbol in batch
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for batch in batches:
+                response = await client.get(
+                    f"{self.settings.data_base_url}/v2/stocks/bars/latest",
+                    headers=self.headers,
+                    params={
+                        "symbols": ",".join(batch),
+                        "feed": selected_feed,
+                    },
+                )
+                response.raise_for_status()
+                bars = response.json().get("bars") or {}
+                for symbol in batch:
+                    value = bars.get(symbol)
+                    if isinstance(value, dict):
+                        output[symbol] = value
+        return output
+
     async def latest_quotes_many(
         self,
         symbols: list[str],
+        *,
+        feed: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         if not self.settings.credentials_configured:
             raise RuntimeError("Alpaca credentials are not configured")
@@ -352,7 +395,7 @@ class MarketDataClient:
                     headers=self.headers,
                     params={
                         "symbols": ",".join(batch),
-                        "feed": self.settings.data_feed,
+                        "feed": feed or self.settings.data_feed,
                     },
                 )
                 response.raise_for_status()
