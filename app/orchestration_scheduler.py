@@ -705,7 +705,10 @@ class SchedulerRuntime:
             )
 
         if target == "research_agent_daily":
-            return await self._research_review("daily", str(session), invoke_model=True)
+            # Scheduled research must remain functional without a paid model API.
+            # Semantic/model review stays available for explicit operator-driven
+            # work, but the daily operating workflow is deterministic by default.
+            return await self._research_review("daily", str(session), invoke_model=False)
 
         if target == "weekly_operating_review":
             operating = await self._post(
@@ -717,7 +720,7 @@ class SchedulerRuntime:
             research = await self._research_review(
                 "weekly",
                 str(session),
-                invoke_model=True,
+                invoke_model=False,
             )
             return {
                 "operating_review": operating,
