@@ -1216,9 +1216,17 @@ class TradingEventSink:
                         "research_attribution": {
                             "live_strategy_version": strategy_version_id,
                         },
-                        "ads002": None if market == "crypto" else ads002_shadow,
-                        "ads002_v2": None if market == "crypto" else ads002_v2,
-                        "ads_crypto": metadata.get("ads_crypto") if market == "crypto" else None,
+                        "ads002": (
+                            None
+                            if is_crypto or is_extended_equity
+                            else ads002_shadow
+                        ),
+                        "ads002_v2": (
+                            None
+                            if is_crypto or is_extended_equity
+                            else ads002_v2
+                        ),
+                        "ads_crypto": metadata.get("ads_crypto") if is_crypto else None,
                     },
                 },
             },
