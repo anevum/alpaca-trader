@@ -642,6 +642,19 @@ def test_router_sends_foundation_compatibility_paths_to_core():
     assert "/v1/trading-reconcile" in CORE_PREFIXES
 
 
+def test_router_exposes_sanitized_public_research_projections():
+    from app.rhen_core.router import PUBLIC_MODULE_ROUTES
+
+    assert PUBLIC_MODULE_ROUTES == {
+        "/v1/research/readiness/public": (
+            "http://127.0.0.1:8114/v1/readiness/public"
+        ),
+        "/v1/research/theory/public": (
+            "http://127.0.0.1:8114/v1/theory/public"
+        ),
+    }
+
+
 
 def test_weekly_range_read_returns_canonical_input_shape(
     tmp_path, monkeypatch
