@@ -95,8 +95,7 @@ def test_do_that_routes_software_work_to_manual_codex():
     assert result.intent == "EXECUTE_NEXT"
     assert result.job is None
     assert result.response["execution_mode"] == "codex/manual software"
-    assert "prepare for Codex" in result.response["message"]
-    assert "no paid model job was queued" in result.response["message"]
+    assert result.response["message"] == "Software work requires a manual Codex handoff. Nothing was queued."
 
 
 def test_protected_objective_requires_approval():
@@ -123,7 +122,7 @@ def test_freeform_directive_fails_closed_without_model_worker():
     )
     assert result.intent == "DIRECTIVE"
     assert result.job is None
-    assert "not executed" in result.response["message"]
+    assert result.response["message"] == "Unsupported control."
     assert "prepare for Codex" in result.response["supported_actions"]
 
 
@@ -315,7 +314,7 @@ def test_autopilot_does_not_repeat_same_completed_action():
     )
     assert decision["should_create"] is False
     assert decision["reason"] == "no_action"
-    assert "Continue active work" in decision["skipped_actions"]
+    assert "Reconcile stable build" in decision["skipped_actions"]
 
 
 def test_autopilot_honors_daily_cap():
