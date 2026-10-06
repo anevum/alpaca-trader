@@ -399,31 +399,20 @@ def test_scheduler_invalid_tick_interval_falls_back_to_default(monkeypatch):
     assert runtime.tick_seconds == 30
 
 
-def test_velum_crypto_replay_recovery_uses_new_job_key():
+def test_schedule_registry_contains_no_crypto_workflows():
     import json
     from pathlib import Path
 
     registry = json.loads(Path("app/schedule_registry.json").read_text())
-    workflow = next(
-        row for row in registry["workflows"]
-        if row["workflow_id"] == "velum.crypto.replay"
-    )
-    assert workflow["version"] == "1.0.1"
+    workflow_ids = {
+        row["workflow_id"]
+        for row in registry["workflows"]
+    }
 
-    scheduled = datetime(2026, 10, 5, 19, 5, tzinfo=UTC)
-    previous = ScheduledItem(
-        {**workflow, "version": "1.0.0"},
-        scheduled,
-        "2026-10-05T19:00:00+00:00",
-        {"window_end": "2026-10-05T19:00:00+00:00"},
-    )
-    recovery = ScheduledItem(
-        workflow,
-        scheduled,
-        "2026-10-05T19:00:00+00:00",
-        {"window_end": "2026-10-05T19:00:00+00:00"},
-    )
-    assert previous.job_key != recovery.job_key
+    assert "velum.crypto.replay" not in workflow_ids
+    assert "graen.btc.discovery" not in workflow_ids
+    assert not any("crypto" in workflow_id.lower() for workflow_id in workflow_ids)
+    assert not any("btc" in workflow_id.lower() for workflow_id in workflow_ids)
 
 
 def test_unified_iren_owns_every_enabled_registry_workflow(monkeypatch):
@@ -447,7 +436,8 @@ def test_unified_iren_owns_every_enabled_registry_workflow(monkeypatch):
     assert "rhen.research.daily" in owned
     assert "rhen.session_close" in owned
     assert "velum.equity.replay" in owned
-    assert "graen.btc.discovery" in owned
+    assert "graen.btc.discovery" not in owned
+    assert "velum.crypto.replay" not in owned
     assert "graen.research.adaptive" in owned
 
 
