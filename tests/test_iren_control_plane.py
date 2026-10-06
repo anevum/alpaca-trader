@@ -170,6 +170,44 @@ def test_yesterday_preflight_before_todays_due_time_is_historical():
     assert state["state"] == "HEALTHY"
 
 
+def test_retired_workflow_failure_recovers_after_registry_removal():
+    failed_at = observation()["observed_at"]
+
+    first = observation()
+    first["scheduler"]["workflow_ids"] = ["graen.research.adaptive"]
+    first["runs"] = [{
+        "workflow_id": "graen.research.adaptive",
+        "workflow_version": "1.0.0",
+        "scheduled_at": failed_at,
+        "status": "FAILED",
+    }]
+    state, _ = reduce_state({}, first, POLICY)
+
+    second = observation(60)
+    second["scheduler"]["workflow_ids"] = ["graen.research.adaptive"]
+    second["runs"] = first["runs"]
+    state, events = reduce_state(state, second, POLICY)
+    assert state["incidents"]["workflow.graen.research.adaptive"]["status"] == "OPEN"
+    assert any(
+        event["key"] == "workflow.graen.research.adaptive"
+        and event["transition"] == "OPEN"
+        for event in events
+    )
+
+    for seconds in (120, 180, 240):
+        retired = observation(seconds)
+        retired["scheduler"]["workflow_ids"] = []
+        retired["runs"] = first["runs"]
+        state, events = reduce_state(state, retired, POLICY)
+
+    assert state["incidents"]["workflow.graen.research.adaptive"]["status"] == "CLOSED"
+    assert any(
+        event["key"] == "workflow.graen.research.adaptive"
+        and event["transition"] == "RECOVERED"
+        for event in events
+    )
+
+
 def test_scheduler_startup_grace_does_not_fabricate_success():
     obs = observation()
     obs["scheduler"]["started_at"] = obs["observed_at"]
