@@ -214,6 +214,49 @@ def _event_dict(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
+def _command_runtime_projection(event: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Flatten one canonical runtime_start event for Command consumers."""
+    if not isinstance(event, dict):
+        return None
+    payload = event.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    runtime = payload.get("runtime") or {}
+    result = dict(runtime) if isinstance(runtime, dict) else {}
+    result["system"] = result.get("system") or "RHEN"
+    result["run_id"] = payload.get("run_id") or event.get("run_id")
+    result["strategy_version_id"] = (
+        payload.get("strategy_version_id") or event.get("strategy_version_id")
+    )
+    result["observed_at"] = event.get("occurred_at")
+    result["event_id"] = event.get("event_id")
+    return result
+
+
+def _command_scan_projection(event: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Flatten one canonical decision_cycle event for Command consumers."""
+    if not isinstance(event, dict):
+        return None
+    payload = event.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    runtime = payload.get("runtime") or {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    return {
+        "scan_cycle_id": payload.get("cycle_key") or event.get("event_key"),
+        "cycle_outcome": payload.get("cycle_outcome"),
+        "data_status": payload.get("data_status"),
+        "market_session": payload.get("market_session"),
+        "observed_at": event.get("occurred_at"),
+        "run_id": event.get("run_id"),
+        "strategy_version_id": event.get("strategy_version_id"),
+        "runtime_instance_id": runtime.get("runtime_instance_id"),
+        "deployment_id": runtime.get("deployment_id"),
+        "git_commit": runtime.get("git_commit"),
+    }
+
+
 def _fetch_events(
     cur: psycopg.Cursor[Any],
     *,
@@ -1428,26 +1471,49 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                     session_key="week_end",
                 )
                 recent = _fetch_events(cur, limit=2000, ascending=False)
-                latest_runtime = next(
-                    (
-                        event
-                        for event in recent
-                        if event["event_type"] == "runtime_start"
-                    ),
-                    None,
+                runtime_events = _fetch_events(
+                    cur,
+                    event_types=["runtime_start"],
+                    limit=1,
+                    ascending=False,
                 )
-                latest_scan = next(
-                    (
-                        event
-                        for event in recent
-                        if event["event_type"] == "decision_cycle"
-                    ),
-                    None,
+                scan_events = _fetch_events(
+                    cur,
+                    event_types=["decision_cycle"],
+                    limit=1,
+                    ascending=False,
                 )
+                latest_runtime_event = runtime_events[0] if runtime_events else None
+                latest_scan_event = scan_events[0] if scan_events else None
+                runtime = _command_runtime_projection(latest_runtime_event)
+                latest_scan = _command_scan_projection(latest_scan_event)
+
+                now = datetime.now(timezone.utc)
+                cutoff = now - timedelta(hours=24)
+                cur.execute(
+                    """
+                    select
+                        count(*) as events_24h,
+                        count(*) filter (where event_type = 'runtime_error') as runtime_errors_24h
+                    from rhen.events
+                    where occurred_at >= %s
+                    """,
+                    (cutoff,),
+                )
+                health_row = cur.fetchone() or (0, 0)
+                latest_event_at = recent[0]["occurred_at"] if recent else None
+
+                def tracking_state(value: Any) -> str:
+                    observed = _as_dt(value)
+                    if observed is None:
+                        return "NO_DATA"
+                    age_seconds = max((now - observed).total_seconds(), 0)
+                    return "ACTIVE" if age_seconds <= 180 else "STALE"
+
                 return {
                     "ok": True,
-                    "evidence_version": "rhen-command-evidence-v2",
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_version": "rhen-command-evidence-v3",
+                    "generated_at": now.isoformat(),
                     "latest_daily": daily["payload"] if daily else None,
                     "latest_weekly": weekly["payload"] if weekly else None,
                     "research_questions": [],
@@ -1458,12 +1524,21 @@ def read_report(database_url: str, params: dict[str, str]) -> dict[str, Any]:
                         "source": "rhen.events",
                     },
                     "provenance": {
-                        "runtime": latest_runtime,
+                        "runtime": runtime,
                         "latest_scan_cycle": latest_scan,
                     },
                     "telemetry_health": {
+                        "tracking_state": tracking_state(latest_event_at),
+                        "decision_cycle_state": tracking_state(
+                            (latest_scan_event or {}).get("occurred_at")
+                        ),
+                        "runtime_provenance_state": (
+                            "RECORDED" if runtime is not None else "MISSING"
+                        ),
                         "events_observed": len(recent),
-                        "latest_event_at": recent[0]["occurred_at"] if recent else None,
+                        "events_24h": int(health_row[0] or 0),
+                        "runtime_errors_24h": int(health_row[1] or 0),
+                        "latest_event_at": latest_event_at,
                         "canonical_store": "railway_postgresql",
                     },
                 }
