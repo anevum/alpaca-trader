@@ -283,6 +283,23 @@ class RhenCoreStore:
                 for k in ("spread_pct", "bar_age_seconds", "quote_age_seconds")
                 if quality.get(k) is not None
             }
+        shadow = candidate.get("shadow_economics")
+        if isinstance(shadow, dict):
+            estimate = shadow.get("estimate")
+            estimate = estimate if isinstance(estimate, dict) else {}
+            admission = shadow.get("shadow_admission")
+            admission = admission if isinstance(admission, dict) else {}
+            compact_features["shadow_economics"] = {
+                "methodology_version": shadow.get("methodology_version"),
+                "research_only": shadow.get("research_only") is True,
+                "execution_authority": shadow.get("execution_authority") is True,
+                "expected_gross_bps": estimate.get("expected_gross_bps"),
+                "expected_net_bps": estimate.get("expected_net_bps"),
+                "gross_to_cost_ratio": estimate.get("gross_to_cost_ratio"),
+                "confidence": estimate.get("confidence"),
+                "would_admit": admission.get("would_admit"),
+                "reason": admission.get("reason"),
+            }
         return {
             "candidate_key": candidate.get("candidate_id") or candidate.get("candidate_key"),
             "symbol": str(candidate.get("symbol") or "").upper(),
@@ -335,6 +352,10 @@ class RhenCoreStore:
         opportunity_scores: list[float] = []
         net_edges: list[float] = []
         expected_moves: list[float] = []
+        shadow_net_edges: list[float] = []
+        shadow_admit_count = 0
+        shadow_candidate_count = 0
+        shadow_methodology_version: str | None = None
         for candidate in candidates:
             features = candidate.get("features")
             features = features if isinstance(features, dict) else {}
@@ -351,12 +372,49 @@ class RhenCoreStore:
             expected = numeric(features.get("expected_gross_move_pct"))
             if expected is not None:
                 expected_moves.append(expected)
+
+            shadow = candidate.get("shadow_economics")
+            if isinstance(shadow, dict):
+                shadow_candidate_count += 1
+                shadow_methodology_version = (
+                    str(shadow.get("methodology_version") or "")
+                    or shadow_methodology_version
+                )
+                estimate = shadow.get("estimate")
+                estimate = estimate if isinstance(estimate, dict) else {}
+                net_bps = numeric(estimate.get("expected_net_bps"))
+                if net_bps is not None:
+                    shadow_net_edges.append(net_bps)
+                admission = shadow.get("shadow_admission")
+                admission = admission if isinstance(admission, dict) else {}
+                if admission.get("would_admit") is True:
+                    shadow_admit_count += 1
         if opportunity_scores:
             summary["top_opportunity_score"] = max(opportunity_scores)
         if net_edges:
             summary["best_estimated_net_edge_pct"] = max(net_edges)
         if expected_moves:
             summary["best_expected_gross_move_pct"] = max(expected_moves)
+        if shadow_candidate_count:
+            summary["shadow_economics_candidate_count"] = shadow_candidate_count
+            summary["shadow_economics_admit_count"] = shadow_admit_count
+            summary["shadow_economics_admit_rate_pct"] = round(
+                shadow_admit_count / shadow_candidate_count * 100.0,
+                4,
+            )
+            if shadow_net_edges:
+                summary["shadow_economics_mean_net_bps"] = round(
+                    sum(shadow_net_edges) / len(shadow_net_edges),
+                    6,
+                )
+                summary["shadow_economics_best_net_bps"] = round(
+                    max(shadow_net_edges),
+                    6,
+                )
+            if shadow_methodology_version:
+                summary["shadow_economics_methodology_version"] = (
+                    shadow_methodology_version
+                )
 
         runtime = payload.get("runtime") or {}
         summary["runtime"] = {
@@ -2810,6 +2868,7 @@ class RhenCoreStore:
                    where event_type like 'velum_%'
                       or event_type like 'nostra_%'
                       or event_type like 'graen_%'
+                      or event_type = 'decision_cycle'
                    order by occurred_at desc
                    limit 360"""
             ).fetchall()
@@ -3051,6 +3110,13 @@ class RhenCoreStore:
         events: list[dict[str, Any]] = []
         velum_runs: dict[str, dict[str, Any]] = {}
         nostra_runs: dict[str, dict[str, Any]] = {}
+        shadow_net_points: list[dict[str, Any]] = []
+        shadow_best_points: list[dict[str, Any]] = []
+        shadow_admit_points: list[dict[str, Any]] = []
+        shadow_latest_metrics: dict[str, float] = {}
+        shadow_methodology: str | None = None
+        shadow_started_at: str | None = None
+        shadow_updated_at: str | None = None
 
         for row in reversed(event_rows):
             payload = _loads(row["payload_json"], {})
@@ -3058,6 +3124,70 @@ class RhenCoreStore:
                 payload = {}
             event_type = str(row["event_type"] or "")
             occurred_at = row["occurred_at"]
+
+            if event_type == "decision_cycle":
+                candidate_count = self._research_number(
+                    payload.get("shadow_economics_candidate_count")
+                )
+                if candidate_count is not None and candidate_count > 0:
+                    shadow_started_at = shadow_started_at or occurred_at
+                    shadow_updated_at = occurred_at
+                    shadow_methodology = (
+                        str(
+                            payload.get(
+                                "shadow_economics_methodology_version"
+                            )
+                            or ""
+                        )
+                        or shadow_methodology
+                    )
+                    mean_net = self._research_number(
+                        payload.get("shadow_economics_mean_net_bps")
+                    )
+                    best_net = self._research_number(
+                        payload.get("shadow_economics_best_net_bps")
+                    )
+                    admit_rate = self._research_number(
+                        payload.get("shadow_economics_admit_rate_pct")
+                    )
+                    if mean_net is not None:
+                        shadow_net_points.append({
+                            "at": occurred_at,
+                            "value": mean_net,
+                        })
+                        shadow_latest_metrics["mean_expected_net_bps"] = mean_net
+                    if best_net is not None:
+                        shadow_best_points.append({
+                            "at": occurred_at,
+                            "value": best_net,
+                        })
+                        shadow_latest_metrics["best_expected_net_bps"] = best_net
+                    if admit_rate is not None:
+                        shadow_admit_points.append({
+                            "at": occurred_at,
+                            "value": admit_rate,
+                        })
+                        shadow_latest_metrics["shadow_admission_rate_pct"] = admit_rate
+                    shadow_latest_metrics["candidate_count"] = candidate_count
+                    events.append({
+                        "event_id": str(row["event_key"]),
+                        "at": occurred_at,
+                        "system": "RHEN",
+                        "run_id": "rhen-shadow-economics",
+                        "event_type": "shadow_economics_cycle",
+                        "stage": "EVIDENCE_COLLECTION",
+                        "status": "OBSERVED",
+                        "progress_pct": 50,
+                        "title": "Opportunity economics shadow",
+                        "detail": (
+                            f"{int(candidate_count)} candidates · "
+                            f"{admit_rate:.1f}% shadow-admit"
+                            if admit_rate is not None
+                            else f"{int(candidate_count)} candidates"
+                        ),
+                    })
+                continue
+
             if event_type.startswith("velum_"):
                 engineering_gate = (
                     dict(payload.get("engineering_gate") or {})
@@ -3207,6 +3337,55 @@ class RhenCoreStore:
 
         runs.extend(velum_runs.values())
         runs.extend(nostra_runs.values())
+        if shadow_updated_at is not None:
+            series = []
+            if len(shadow_net_points) > 1:
+                series.append({
+                    "key": "shadow_mean_net_bps",
+                    "label": "Mean expected net edge",
+                    "unit": " bps",
+                    "points": shadow_net_points[-120:],
+                })
+            if len(shadow_best_points) > 1:
+                series.append({
+                    "key": "shadow_best_net_bps",
+                    "label": "Best expected net edge",
+                    "unit": " bps",
+                    "points": shadow_best_points[-120:],
+                })
+            if len(shadow_admit_points) > 1:
+                series.append({
+                    "key": "shadow_admission_rate",
+                    "label": "Shadow admission rate",
+                    "unit": "%",
+                    "points": shadow_admit_points[-120:],
+                })
+            runs.append({
+                "run_id": "rhen-shadow-economics",
+                "system": "RHEN",
+                "kind": "SHADOW_ECONOMICS",
+                "title": "Opportunity economics shadow",
+                "status": "OBSERVING",
+                "stage": "EVIDENCE_COLLECTION",
+                "progress_pct": 50,
+                "problem_id": None,
+                "candidate_id": None,
+                "methodology_version": shadow_methodology,
+                "strategy_version_id": None,
+                "started_at": shadow_started_at,
+                "completed_at": None,
+                "updated_at": shadow_updated_at,
+                "metrics": shadow_latest_metrics,
+                "series": series,
+                "artifact_count": 0,
+                "detail": {
+                    "research_only": True,
+                    "execution_authority": False,
+                    "changes_live_decision": False,
+                    "chart_basis": "decision_cycle_shadow_economics",
+                    "inactive_time_drawn": False,
+                },
+            })
 
         # The run/artifact records themselves are durable events. Include them
         # so a selected GRAEN run always has a trace even without a replay.
