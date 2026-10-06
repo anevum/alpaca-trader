@@ -151,7 +151,7 @@ def _maintenance_research_control(
         1
         for row in runs
         if str(row.get("problem_id") or "") == problem_id
-        and "REJECTED" in str(row.get("decision") or "").upper()
+        and "REJECTED" in str(row.get("result_state") or "").upper()
     )
 
     mode = "IDLE"
@@ -226,6 +226,7 @@ def maintenance_evidence(conn: psycopg.Connection[Any]) -> dict[str, Any]:
         cur.execute(
             """
             select run_id,problem_id,status,methodology_version,
+                   result_summary->>'state' as result_state,
                    result_summary->>'decision' as decision,
                    result_summary->>'next_action' as next_action,
                    result_summary->>'strategy_version_id' as strategy_version_id,
