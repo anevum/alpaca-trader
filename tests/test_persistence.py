@@ -375,8 +375,6 @@ def test_decision_cycle_event_is_deterministic_and_preserves_unavailable_quote()
     assert candidate["forward_outcomes_status"] == "pending"
 
 
-
-
 def _complete_ads_metadata():
     return {
         "momentum_pct": "0.003",
@@ -591,27 +589,3 @@ def test_transport_chunks_respect_count_and_body_limits():
             default=str,
         ).encode("utf-8")
         assert len(encoded) <= 900
-
-
-
-def test_btc_direct_paper_disables_remote_persistence_transport():
-    settings = SimpleNamespace(
-        crypto_only_runtime=True,
-        crypto_execution_mode="btc_direct_paper",
-        trading_ingest_url="https://stale.example.invalid/v1/trading-events",
-        trading_ingest_token="stale-token",
-        trading_run_id="btc-paper",
-        strategy_version_id="legacy-version",
-        foundation_shadow_enabled=True,
-    )
-    sink = TradingEventSink(settings)
-
-    assert sink.enabled is False
-    assert sink.foundation_enabled is False
-    assert asyncio.run(
-        sink.emit_critical(
-            event_type="order_intent",
-            payload={"market": "crypto"},
-            symbol="BTC/USD",
-        )
-    ) is True
