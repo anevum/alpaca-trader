@@ -84,7 +84,7 @@ def test_existing_active_job_prevents_duplicate_next_action():
     assert action["objective_key"] == "GRAEN"
 
 
-def test_do_that_creates_durable_job_spec():
+def test_do_that_routes_software_work_to_manual_codex():
     result = process_command(
         "do that",
         snapshot(),
@@ -93,9 +93,10 @@ def test_do_that_creates_durable_job_spec():
         source="command",
     )
     assert result.intent == "EXECUTE_NEXT"
-    assert result.job["objective_key"] == "COMMAND"
-    assert result.job["status"] == "QUEUED"
-    assert result.job["requested_via"] == "command"
+    assert result.job is None
+    assert result.response["execution_mode"] == "codex/manual software"
+    assert "prepare for Codex" in result.response["message"]
+    assert "no paid model job was queued" in result.response["message"]
 
 
 def test_protected_objective_requires_approval():
