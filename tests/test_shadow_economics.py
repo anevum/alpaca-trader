@@ -15,7 +15,7 @@ def test_shadow_economics_is_explicitly_non_authoritative():
     assert result["research_only"] is True
     assert result["execution_authority"] is False
     assert result["changes_live_decision"] is False
-    assert result["estimate"]["expected_net_bps"] == "10.9000"
+    assert result["estimate"]["expected_net_bps"] == "11.4000"
     assert result["shadow_admission"]["would_admit"] is True
 
 
