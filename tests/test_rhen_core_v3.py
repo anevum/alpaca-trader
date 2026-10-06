@@ -34,6 +34,9 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
                 "momentum_pct": index / 100,
                 "vwap_edge_pct": index / 1000,
                 "bar_time": now.isoformat(),
+                "evidence_reference_only": True,
+                "warmup_bar_count": 4,
+                "required_bar_count": 9,
                 "huge_duplicate_blob": "x" * 5000,
             },
             "shadow_economics": {
@@ -99,6 +102,9 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
     selected = next(row for row in rows if row["candidate_key"] == "c-0")
     selected_features = json.loads(selected["feature_json"])
     assert selected_features["bar_time"] == now.isoformat()
+    assert selected_features["evidence_reference_only"] is True
+    assert selected_features["warmup_bar_count"] == 4
+    assert selected_features["required_bar_count"] == 9
     shadow = selected_features["shadow_economics"]
     assert shadow["research_only"] is True
     assert shadow["execution_authority"] is False
