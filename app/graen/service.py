@@ -135,6 +135,27 @@ class GraenGateway:
             },
         )
 
+    async def claim_adaptive_research_problem(
+        self,
+        *,
+        worker_id: str,
+        runtime_version: str,
+        methodology_version: str,
+        domain: str,
+    ) -> Mapping[str, Any]:
+        return await self._request(
+            "POST",
+            {
+                "action": "claim_adaptive_research_problem",
+                "worker_id": worker_id,
+                "runtime_version": runtime_version,
+                "methodology_version": methodology_version,
+                "domain": domain,
+                "source_commit": _source_commit(),
+                "deployment_id": _deployment_id(),
+            },
+        )
+
     async def executor_heartbeat(
         self,
         *,
