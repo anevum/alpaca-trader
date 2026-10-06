@@ -5,7 +5,11 @@ import re
 import httpx
 from urllib.parse import parse_qs, quote, urlparse
 
-from .codex_handoff import REQUIRED_CHECKS, REPOSITORY
+from .codex_handoff import (
+    REQUIRED_CHECKS,
+    configured_repository,
+    repository_allowed,
+)
 from datetime import datetime, timezone
 
 
@@ -101,8 +105,13 @@ def _provider_failure(exc):
     return detail
 
 
-async def inspect_runtime_inventory(get, *, unavailable_reason=None):
+async def inspect_runtime_inventory(
+    get, *, unavailable_reason=None, repository: str | None = None
+):
     observed_at = datetime.now(timezone.utc).isoformat()
+    repository = repository or configured_repository()
+    if not repository_allowed(repository):
+        unavailable_reason = unavailable_reason or "provider_repository_not_allowed"
     services = {}
     # Reuse only successful responses within this observation, never stale evidence.
     responses = {}
@@ -115,7 +124,7 @@ async def inspect_runtime_inventory(get, *, unavailable_reason=None):
             "service_name": spec["service_name"],
             "status_context": spec["context"],
             "evidence_source": "github_railway_deployment_status",
-            "provider_request": f"GET /repos/{REPOSITORY}/{path}",
+            "provider_request": f"GET /repos/{repository}/{path}",
         }
         services[name] = evidence
         if unavailable_reason:
@@ -156,7 +165,13 @@ async def inspect_runtime_inventory(get, *, unavailable_reason=None):
     }
 
 
-async def inspect_github(get, *, handoff_id=None, objective_key=None, pr_number=None):
+async def inspect_github(
+    get, *, handoff_id=None, objective_key=None, pr_number=None,
+    repository: str | None = None,
+):
+    repository = repository or configured_repository()
+    if not repository_allowed(repository):
+        raise ValueError("repository_not_allowed")
     branch = await get("branches/main")
     main_sha = branch["commit"]["sha"]
     result = {"observed_at": datetime.now(timezone.utc).isoformat(), "main_sha": main_sha, "association_valid": False, "merged": False,
@@ -179,8 +194,8 @@ async def inspect_github(get, *, handoff_id=None, objective_key=None, pr_number=
     objective_marker = f"IREN-Objective: {objective_key}"
     exact_markers = [line.strip() for line in body.splitlines()]
     valid = (pr.get("base", {}).get("ref") == "main" and
-             pr.get("base", {}).get("repo", {}).get("full_name") == REPOSITORY and
-             pr.get("head", {}).get("repo", {}).get("full_name") == REPOSITORY and
+             pr.get("base", {}).get("repo", {}).get("full_name") == repository and
+             pr.get("head", {}).get("repo", {}).get("full_name") == repository and
              pr.get("head", {}).get("ref") == expected_branch and
              exact_markers.count(marker) == 1 and exact_markers.count(objective_marker) == 1 and
              len([line for line in exact_markers if line.startswith("IREN-Handoff:")]) == 1)

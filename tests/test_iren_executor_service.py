@@ -119,3 +119,20 @@ def test_projected_model_call_cost_is_preventive(monkeypatch):
     projected = runtime.projected_call_cost("x" * 10_000)
 
     assert round(projected, 6) == 0.15
+
+
+
+def test_repository_cutover_allows_rhen_and_rejects_unrelated_repo(monkeypatch):
+    runtime = ExecutorRuntime()
+    monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-" + "x" * 32)
+    monkeypatch.setenv("IREN_GITHUB_TOKEN", "g" * 40)
+    monkeypatch.setenv("IREN_MODEL_DAILY_BUDGET_USD", "2")
+    monkeypatch.setenv("IREN_MODEL_JOB_BUDGET_USD", "1")
+
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "anevum/rhen")
+    assert runtime.software_backend_configured is True
+
+    monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "other/repo")
+    assert runtime.software_backend_configured is False
+

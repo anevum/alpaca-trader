@@ -5,11 +5,27 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import re
-from typing import Any
+from typing import Any, Mapping
 
 SCHEMA = "codex_handoff.v1"
-REPOSITORY = "anevum/alpaca-trader"
+LEGACY_REPOSITORY = "anevum/alpaca-trader"
+RENAMED_REPOSITORY = "anevum/rhen"
+ALLOWED_REPOSITORIES = frozenset({LEGACY_REPOSITORY, RENAMED_REPOSITORY})
+# Backward-compatible default while the GitHub repository still has its legacy name.
+REPOSITORY = LEGACY_REPOSITORY
+
+
+def configured_repository(env: Mapping[str, str] | None = None) -> str:
+    values = os.environ if env is None else env
+    value = str(values.get("IREN_GITHUB_REPOSITORY") or LEGACY_REPOSITORY).strip()
+    return value or LEGACY_REPOSITORY
+
+
+def repository_allowed(value: Any) -> bool:
+    return str(value or "").strip() in ALLOWED_REPOSITORIES
+
 TERMINAL = {"VERIFIED", "FAILED", "SUPERSEDED"}
 LIFECYCLE = {"PREPARED", "IN_PROGRESS", "PR_OPEN", "MERGED", "VERIFYING", "VERIFIED", "FAILED", "SUPERSEDED"}
 ALLOWED_PREFIXES = ("app/iren/", "foundation/iren_", "tests/test_iren_", "docs/iren/")
@@ -78,12 +94,15 @@ def package_for(objective: dict, *, handoff_id: str, command_id: str | None,
     rows = (control.get("topology") or {}).get("services") or []
     baseline = {r["service_id"]: {k: r.get(k) for k in ("deployment", "revision", "readiness", "service_name")}
                 for r in rows if r.get("independent_runtime") and r.get("service_id")}
+    repository = configured_repository()
+    if not repository_allowed(repository):
+        raise ValueError("configured_repository_not_allowed")
     result = {
         "schema_version": SCHEMA, "handoff_id": handoff_id, "source_job_id": handoff_id,
         "source_command_id": command_id, "objective_key": objective["objective_key"],
         "title": objective["title"], "description": objective.get("description") or "",
         "why_next": "Selected by the canonical IREN planner from dependency-satisfied executable objectives.",
-        "repository": REPOSITORY, "repositories": [REPOSITORY], "base_branch": "main",
+        "repository": repository, "repositories": [repository], "base_branch": "main",
         "base_sha": main_sha, "created_at": now.isoformat(),
         "objective_identity": digest({k: objective.get(k) for k in
             ("objective_key", "description", "success_criteria", "dependencies", "protected_action", "metadata")}),
