@@ -12,6 +12,7 @@ from app.equity_sessions import (
     EquitySessionContext,
     EquitySessionResolver,
 )
+from app.execution import ExecutionEngine
 from app.extended_equity import ExtendedEquityEngine
 
 
@@ -262,3 +263,19 @@ def test_friday_flatten_window_blocks_weekend_carry():
         )
         == "Friday weekend flatten window"
     )
+
+
+def test_regular_engine_does_not_claim_extended_equity_orders():
+    now = datetime.now(NY)
+    order = {
+        "symbol": "SPY",
+        "side": "buy",
+        "status": "filled",
+        "filled_qty": "0.1",
+        "client_order_id": "anevum-spy-buy-ext-fixture-ownership",
+        "submitted_at": now.isoformat(),
+        "filled_at": now.isoformat(),
+    }
+
+    assert ExecutionEngine._bot_bought_symbol_today([order], "SPY") is False
+    assert ExecutionEngine._latest_bot_buy_today([order], "SPY") is None
