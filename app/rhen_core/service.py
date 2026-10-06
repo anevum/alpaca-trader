@@ -518,8 +518,11 @@ def maintenance_prune(
     ),
 ) -> dict[str, Any]:
     _require(x_rhen_core_token, "RHEN_CORE_TOKEN")
+    deleted = store.prune()
+    compaction = store.compact_storage()
     return {
         "ok": True,
-        "deleted": store.prune(),
+        "deleted": deleted,
+        "compaction": compaction,
         "storage": store.storage_state(),
     }
