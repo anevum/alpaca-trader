@@ -30,6 +30,7 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
             "qualified": index == 0,
             "final_decision": "selected" if index == 0 else "rejected",
             "reason": "ok" if index == 0 else "weak",
+            "decision_reference_price": str(100 + index),
             "features": {
                 "momentum_pct": index / 100,
                 "vwap_edge_pct": index / 1000,
@@ -90,6 +91,11 @@ def test_decision_cycle_is_compacted_and_candidate_rows_are_bounded(
 
     payload = json.loads(event[0])
     assert "candidates" not in payload
+    assert payload["forward_measurement_ready_count"] == 10
+    assert payload["forward_measurement_ready_rate_pct"] == 100.0
+    assert payload["forward_missing_reference_price_count"] == 0
+    assert payload["forward_missing_bar_time_count"] == 0
+    assert payload["evidence_reference_only_count"] == 10
     assert payload["shadow_economics_candidate_count"] == 10
     assert payload["shadow_economics_admit_count"] == 2
     assert payload["shadow_economics_admit_rate_pct"] == 20.0
