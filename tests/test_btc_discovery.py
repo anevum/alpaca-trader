@@ -18,7 +18,7 @@ from app.graen.btc_discovery import (NAMESPACE, BtcDiscoveryJob, approved_assign
 from app.rhen_core.store import RhenCoreStore
 from app.rhen_core.supervisor import PROCESSES, _child_env
 from app.velum_core import ContinuousReplayEngine
-from app.velum_btc import normalized_corpus, corpus_coverage
+from app.velum_btc import (GAP_POLICY_VERSION, WARMUP_HOURS, corpus_coverage, normalized_corpus, research_corpus)
 from app.config import Settings
 
 UTC = timezone.utc
@@ -35,6 +35,56 @@ def test_data_gap_diagnostics_preserve_fail_closed_chronology():
         "first_missing_at": (lower + timedelta(hours=20)).isoformat(), "last_missing_at": (lower + timedelta(hours=20)).isoformat()}
     with pytest.raises(ValueError, match="incomplete_hourly_corpus:missing=1"):
         normalized_corpus(rows, start, end)
+
+
+def test_research_corpus_accepts_only_one_interior_provider_gap():
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(hours=5)
+    rows = corpus(start, hours=5)
+    gap = start + timedelta(hours=2)
+    rows = [row for row in rows if datetime.fromisoformat(row['t']) != gap]
+    selected, gaps = research_corpus(rows, start, end)
+    assert gaps == [gap]
+    assert len(selected) == 844
+
+    second_gap = start + timedelta(hours=3)
+    two_gaps = [row for row in rows if datetime.fromisoformat(row['t']) != second_gap]
+    with pytest.raises(ValueError, match='incomplete_hourly_corpus:missing=2'):
+        research_corpus(two_gaps, start, end)
+
+    missing_boundary = [row for row in corpus(start, hours=5)
+                        if datetime.fromisoformat(row['t']) != start - timedelta(days=35)]
+    with pytest.raises(ValueError, match='incomplete_hourly_corpus'):
+        research_corpus(missing_boundary, start, end)
+
+
+def test_gap_aware_replay_resets_warmup_and_drops_gap_crossing_exposure():
+    start = datetime(2026, 3, 1, tzinfo=UTC)
+    end = start + timedelta(hours=850)
+    rows = corpus(start, hours=850)
+    gap = start + timedelta(hours=2)
+    rows = [row for row in rows if datetime.fromisoformat(row['t']) != gap]
+    candidate = next(iter(catalog().values()))
+    engine = ContinuousReplayEngine(Settings(), candidate_strategy(candidate))
+    resumed = start + timedelta(hours=3 + WARMUP_HOURS)
+    result = engine.run_btc_direct(
+        rows,
+        start=start,
+        end=end,
+        candidate=candidate,
+        prepared_signals={
+            start.isoformat(): True,
+            (start + timedelta(hours=10)).isoformat(): True,
+            resumed.isoformat(): True,
+        },
+    )
+    assert result['assumptions']['provider_gap_policy'] == GAP_POLICY_VERSION
+    assert result['assumptions']['provider_gap_hours'] == [gap.isoformat()]
+    assert result['assumptions']['post_gap_warmup_hours'] == WARMUP_HOURS
+    for scenario in result['scenarios'].values():
+        assert scenario['metrics']['trade_count'] == 1
+        assert scenario['gap_discarded_positions'] + scenario['gap_discarded_pending_entries'] == 1
+        assert all(datetime.fromisoformat(trade['entry_at']) >= resumed for trade in scenario['trades'])
 
 
 def test_baseline_reader_heartbeat_has_no_assignment_authority(tmp_path):
@@ -482,6 +532,41 @@ def test_paper_success_stops_at_review_and_failure_closes_entries(tmp_path):
     assert assignment['live_authority'] is False
     assert assignment['entries_allowed'] is False
     assert resolve_strategy('live',assignment).strategy_version_id==LIVE_ID
+
+
+def test_load_corpus_accepts_one_provider_gap_and_does_not_refetch_it(tmp_path, monkeypatch):
+    monkeypatch.setenv('RHEN_CORE_DB_PATH', str(tmp_path/'core.db'))
+    job = BtcDiscoveryJob(Settings())
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    lower = start - timedelta(days=35)
+    rows = [
+        {'t': (lower + timedelta(hours=i)).isoformat(), 'o':'100', 'h':'101', 'l':'99', 'c':'100'}
+        for i in range(841)
+    ]
+    gap = lower + timedelta(hours=20)
+    rows = [row for row in rows if datetime.fromisoformat(row['t']) != gap]
+    calls = []
+
+    class Data:
+        async def historical_bars_many(self, symbols, **kwargs):
+            calls.append(kwargs['timeframe'])
+            if kwargs['timeframe'] == '1Hour':
+                return {'BTC/USD': deepcopy(rows)}
+            assert kwargs['timeframe'] == '1Min'
+            return {'BTC/USD': []}
+
+    job.data = Data()
+    first = asyncio.run(job._load_corpus('DEVELOPMENT', start, end))
+    second = asyncio.run(job._load_corpus('DEVELOPMENT', start, end))
+    assert first == second
+    assert calls.count('1Hour') == 1
+    assert calls.count('1Min') == 1
+    recovery = job.store.get_kv(NAMESPACE, 'corpus_recovery:development', {})[0]
+    assert recovery['accepted_unrecoverable_hours'] == 1
+    assert recovery['accepted_gap_hours'] == [gap.isoformat()]
+    assert recovery['gap_policy'] == GAP_POLICY_VERSION
+    assert recovery['recovery_skipped'] == 'previously_accepted_provider_gap'
 
 
 def test_minute_recovery_requires_complete_observed_hour():
