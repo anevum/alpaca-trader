@@ -116,6 +116,8 @@ class RhenCoreStore:
                 );
                 create index if not exists events_type_time on events(event_type, occurred_at desc);
                 create index if not exists events_run_time on events(run_id, occurred_at desc);
+                create index if not exists events_time on events(occurred_at desc);
+                create index if not exists events_run_type_time on events(run_id, event_type, occurred_at desc);
 
                 create table if not exists candidates (
                     candidate_key text primary key,
@@ -2294,7 +2296,13 @@ class RhenCoreStore:
                 parsed = parsed.replace(tzinfo=UTC)
             return parsed.astimezone(UTC)
 
-        recent = self._event_rows(limit=5000, newest_first=True)
+        # Public polling must stay bounded to the freshness window. Historical
+        # lookups needed for identity are fetched separately below.
+        recent = self._event_rows(
+            since=cutoff_2h.isoformat(),
+            limit=5000,
+            newest_first=True,
+        )
         dated = [
             (event, stamp(event.get("occurred_at")))
             for event in recent
@@ -2312,7 +2320,10 @@ class RhenCoreStore:
             if observed is not None and observed >= cutoff_10m
         ]
 
-        latest_event = recent[0] if recent else None
+        latest_event = recent[0] if recent else next(
+            iter(self._event_rows(limit=1, newest_first=True)),
+            None,
+        )
         latest_event_at = stamp(
             latest_event.get("occurred_at") if latest_event else None
         )
@@ -2423,6 +2434,17 @@ class RhenCoreStore:
             ),
             None,
         )
+        if latest_scan is None:
+            latest_scan = next(
+                iter(
+                    self._event_rows(
+                        event_types=scan_types,
+                        limit=1,
+                        newest_first=True,
+                    )
+                ),
+                None,
+            )
         latest_scan_payload = (
             dict(latest_scan.get("payload") or {})
             if latest_scan else {}
@@ -2467,6 +2489,17 @@ class RhenCoreStore:
             ),
             None,
         )
+        if runtime_event is None:
+            runtime_event = next(
+                iter(
+                    self._event_rows(
+                        event_types={"runtime_start"},
+                        limit=1,
+                        newest_first=True,
+                    )
+                ),
+                None,
+            )
         runtime_payload = dict(
             (runtime_event or {}).get("payload") or {}
         )
@@ -2499,8 +2532,9 @@ class RhenCoreStore:
             account_rows = conn.execute(
                 """select occurred_at,payload_json from events
                 where event_type='account_snapshot'
-                order by occurred_at asc limit 5000"""
+                order by occurred_at desc limit 5000"""
             ).fetchall()
+            account_rows = list(reversed(account_rows))
             problem_row = conn.execute(
                 """select status,body_json,metadata_json,updated_at
                 from graen_problems
@@ -4336,25 +4370,32 @@ class RhenCoreStore:
         self,
         *,
         event_types: set[str] | None = None,
+        run_id: str | None = None,
+        since: str | None = None,
         limit: int = 5000,
         newest_first: bool = True,
     ) -> list[dict[str, Any]]:
         order = "desc" if newest_first else "asc"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if event_types:
+            marks = ",".join("?" for _ in event_types)
+            clauses.append(f"event_type in ({marks})")
+            params.extend(sorted(event_types))
+        if run_id is not None:
+            clauses.append("run_id=?")
+            params.append(str(run_id))
+        if since is not None:
+            clauses.append("occurred_at>=?")
+            params.append(_iso(since))
+        where = " where " + " and ".join(clauses) if clauses else ""
+        bounded_limit = max(1, min(50000, int(limit)))
         with self.connect() as conn:
-            if event_types:
-                marks = ",".join("?" for _ in event_types)
-                rows = conn.execute(
-                    f"""select * from events
-                    where event_type in ({marks})
-                    order by occurred_at {order} limit ?""",
-                    (*sorted(event_types), max(1, min(50000, int(limit)))),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"""select * from events
-                    order by occurred_at {order} limit ?""",
-                    (max(1, min(50000, int(limit))),),
-                ).fetchall()
+            rows = conn.execute(
+                f"""select * from events{where}
+                order by occurred_at {order} limit ?""",
+                (*params, bounded_limit),
+            ).fetchall()
         return [
             {
                 "event_key": row["event_key"],
@@ -5179,19 +5220,19 @@ class RhenCoreStore:
         if observed_at.tzinfo is None:
             raise ValueError("invalid_reconciliation")
 
-        events = [
-            event
-            for event in self._event_rows(
-                event_types={
-                    "order_intent",
-                    "broker_order",
-                    "intent_reconciliation",
-                },
-                limit=50000,
-                newest_first=False,
-            )
-            if str(event.get("run_id") or "") == run_id
-        ]
+        # Reconciliation is on the live broker-write path. Restrict the SQL read
+        # to the active run before payload deserialization instead of loading up
+        # to 50k events across every historical run and filtering in Python.
+        events = self._event_rows(
+            event_types={
+                "order_intent",
+                "broker_order",
+                "intent_reconciliation",
+            },
+            run_id=run_id,
+            limit=50000,
+            newest_first=False,
+        )
         known_order_ids: set[str] = set()
         resolved_intents: set[str] = set()
         filled_buy_symbols: set[str] = set()
