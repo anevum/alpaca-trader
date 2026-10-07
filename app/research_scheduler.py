@@ -1098,6 +1098,11 @@ class ResearchReportScheduler:
                 "candidate-score performance"
             )
         daily_warnings = list(evidence["data_quality_warnings"])
+        persistence = runtime.get("persistence") or {}
+        if persistence.get("storage_analytics_shedding") or int(persistence.get("shed_count") or 0):
+            daily_warnings.append(
+                "Canonical storage shed analytics during this runtime; computed outcomes are not proof of durable coverage. Resolve retention pressure before interpreting the cohort as complete."
+            )
         if canonical.get("warning"):
             daily_warnings.append(str(canonical["warning"]))
         if counterfactual_warning:

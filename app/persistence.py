@@ -42,6 +42,8 @@ class TradingEventSink:
         self.last_error: str | None = None
         self.last_reconcile_at: datetime | None = None
         self.sent_count = 0
+        self.shed_count = 0
+        self.storage_analytics_shedding = False
         self.dropped_count = 0
         self.foundation_sink: FoundationShadowSink | None = None
         self.foundation_task: asyncio.Task | None = None
@@ -209,6 +211,8 @@ class TradingEventSink:
             "enabled": self.enabled,
             "queued": self.queue.qsize(),
             "sent_count": self.sent_count,
+            "shed_count": self.shed_count,
+            "storage_analytics_shedding": self.storage_analytics_shedding,
             "dropped_count": self.dropped_count,
             "last_sent_at": self.last_sent_at.isoformat() if self.last_sent_at else None,
             "last_reconcile_at": (
@@ -1761,8 +1765,16 @@ class TradingEventSink:
                     json={"events": chunk},
                 )
                 response.raise_for_status()
-                if require_all:
+                try:
                     receipt = response.json()
+                except ValueError:
+                    receipt = {}
+                if isinstance(receipt, dict):
+                    self.shed_count += max(0, int(receipt.get("shed") or 0))
+                    storage = receipt.get("storage") or {}
+                    if isinstance(storage, dict) and "analytics_shedding" in storage:
+                        self.storage_analytics_shedding = storage["analytics_shedding"] is True
+                if require_all:
                     if (not isinstance(receipt, dict)
                             or receipt.get("ok") is not True
                             or receipt.get("inserted") != len(chunk)

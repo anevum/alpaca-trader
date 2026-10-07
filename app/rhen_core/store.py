@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import zlib
 import hashlib
 import json
 import os
@@ -29,13 +31,35 @@ def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True, default=str)
 
 
+MAX_PACKED_SCAN_BYTES = 2 * 1024 * 1024
+
+
 def _loads(value: str | None, default: Any) -> Any:
     if not value:
         return default
     try:
-        return json.loads(value)
+        result = json.loads(value)
+        if isinstance(result, dict) and result.get("_rhen_payload_codec") == "zlib-json-v1":
+            size = int(result["raw_bytes"])
+            if not 0 <= size <= MAX_PACKED_SCAN_BYTES:
+                return default
+            decoder = zlib.decompressobj()
+            raw = decoder.decompress(base64.b64decode(result["data"], validate=True), MAX_PACKED_SCAN_BYTES + 1)
+            if not decoder.eof or decoder.unused_data or len(raw) != size:
+                return default
+            return json.loads(raw)
+        return result
     except Exception:
         return default
+
+
+def _pack_scan_json(raw: str) -> str:
+    data = raw.encode("utf-8")
+    if not 1024 <= len(data) <= MAX_PACKED_SCAN_BYTES:
+        return raw
+    packed = _json({"_rhen_payload_codec": "zlib-json-v1", "raw_bytes": len(data),
+                    "data": base64.b64encode(zlib.compress(data, level=1)).decode("ascii")})
+    return packed if len(packed) < len(raw) else raw
 
 
 def _iso(value: Any = None) -> str:
@@ -518,7 +542,9 @@ class RhenCoreStore:
                         key, event_type, _iso(event.get("occurred_at")),
                         event.get("run_id"), event.get("strategy_version_id"),
                         event.get("symbol"), event.get("correlation_id"),
-                        event.get("source"), _json(payload), int(critical), now,
+                        event.get("source"),
+                        _pack_scan_json(_json(payload)) if event_type == "scan" else _json(payload),
+                        int(critical), now,
                     ),
                 )
                 inserted += 1
@@ -774,9 +800,34 @@ class RhenCoreStore:
             "after": after,
         }
 
+    def compact_scan_payloads(self, limit: int = 40000) -> dict[str, int]:
+        """Lossless, bounded migration of raw scan diagnostics only."""
+        changed = saved = 0
+        with self._lock, self.connect() as conn:
+            rows = conn.execute(
+                "select event_key,payload_json from events where event_type='scan' "
+                "and length(payload_json)>=1024 and payload_json not like '{\"_rhen_payload_codec\":%' "
+                "order by occurred_at desc limit ?", (max(1, min(limit, 40000)),)
+            ).fetchall()
+            for row in rows:
+                raw = row["payload_json"]
+                try:
+                    json.loads(raw)
+                except ValueError:
+                    continue
+                packed = _pack_scan_json(raw)
+                if packed != raw and _loads(packed, None) == json.loads(raw):
+                    conn.execute("update events set payload_json=? where event_key=?", (packed, row["event_key"]))
+                    changed += 1
+                    saved += len(raw.encode()) - len(packed.encode())
+            conn.commit()
+        return {"changed": changed, "payload_bytes_saved": saved}
+
     def _startup_maintenance(self) -> None:
         try:
             self.prune()
+            if self.storage_state()["warning"]:
+                print(json.dumps({"event": "core_scan_payload_compacted", **self.compact_scan_payloads()}, sort_keys=True), flush=True)
             self.compact_storage()
             self._maintenance_error = None
             # Read-only allocation evidence; no payloads or trading records logged.
