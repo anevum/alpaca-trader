@@ -21,6 +21,20 @@ from app.market_fabric.staging import create_app, ReadOnlyBroker
 NOW = datetime(2026,10,6,15,30,tzinfo=timezone.utc)
 
 
+def test_capacity_full_seen_retention_keeps_latest_decision_and_restart_dedup():
+    db = sqlite3.connect(":memory:")
+    ledger = DecisionEvidence(db)
+    db.executemany("INSERT INTO shadow_seen VALUES (?,?)",
+        [(f"old-{i:05d}", (NOW-timedelta(minutes=1)).isoformat()) for i in range(40000)])
+    body = {"observed_at":NOW.isoformat(), "entry_authority":False, "classification":"CANDIDATE",
+        "session_day":"2026-10-06", "session":"REGULAR", "symbol":"SPY", "reasons":[]}
+    assert ledger.record("latest",body)
+    assert db.execute("SELECT count(*) FROM shadow_seen").fetchone()[0] == 40000
+    assert db.execute("SELECT id FROM shadow_seen WHERE id='old-00000'").fetchone() is None
+    assert not DecisionEvidence(db).record("latest",body)
+    assert ledger.summary("2026-10-06","REGULAR")["symbols"]["SPY"]["candidates"] == 1
+
+
 def test_overnight_restart_restores_only_matching_observed_bars(tmp_path):
     now = datetime.now(timezone.utc)
     settings = Settings(RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"overnight.db"))

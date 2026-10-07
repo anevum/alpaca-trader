@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from app.adaptive_policy import fingerprint
 from app.market_fabric.contracts import utc
+from app.market_fabric.bounded_retention import trim_oldest
 from .series_buffers import validate_point
 
 
@@ -12,6 +13,7 @@ class VisualArchive:
         self.db, self.capacity = db, capacity
         db.execute("CREATE TABLE IF NOT EXISTS shadow_visual (id TEXT PRIMARY KEY, series TEXT NOT NULL, source_at TEXT NOT NULL, available_at TEXT NOT NULL, body TEXT NOT NULL)")
         db.execute("CREATE INDEX IF NOT EXISTS shadow_visual_range ON shadow_visual(series,source_at,available_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS shadow_visual_retention ON shadow_visual(available_at,id)")
         db.execute("CREATE TABLE IF NOT EXISTS shadow_visual_meta (id INTEGER PRIMARY KEY CHECK(id=1), pruned INTEGER NOT NULL)")
         db.execute("INSERT OR IGNORE INTO shadow_visual_meta VALUES (1,0)")
 
@@ -30,7 +32,7 @@ class VisualArchive:
         with self.db:
             added = self.db.execute("INSERT OR IGNORE INTO shadow_visual VALUES (?,?,?,?,?)",
                 (identity, series, source.isoformat(), available.isoformat(), encoded)).rowcount
-            removed = self.db.execute("DELETE FROM shadow_visual WHERE id NOT IN (SELECT id FROM shadow_visual ORDER BY available_at DESC,id DESC LIMIT ?)", (self.capacity,)).rowcount
+            removed = trim_oldest(self.db, "shadow_visual", "available_at", self.capacity)
             self.db.execute("UPDATE shadow_visual_meta SET pruned=pruned+? WHERE id=1", (removed,))
         return bool(added)
 

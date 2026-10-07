@@ -146,3 +146,24 @@ history is bounded source evidence, not VELUM validation. Independent forward,
 holdout, trusted promotion adapters, complete research outcomes, >=95% coverage,
 live browser latency, kill-switch/rollback drills and canonical ledger integration
 remain unpassed. The champion and original rollback commit remain preserved.
+
+
+Follow-up shadow observation: hosted CI/run 37655113671 and runtime audit/run
+37655113668 passed. Observer-only pinned deployment `10e4de23-d25e-4880-8637-f638da558dbb`
+on `d308fee` succeeded. Same-image restart recovered the prior asset source timestamp
+`2026-10-07T16:50:43.017132Z` before the new GET audit completed, then re-attested all
+24 assets; restored 2,831 bars; recovered policy state as RESTORED_SHADOW_ONLY;
+and reconnected the broker/account observers. The initial new methodology correctly
+rejected prior policy lineage. Coverage remains ~69%, below 95%; zero order intents.
+
+Live max callback 645 ms / publisher lag 614 ms prompted a separate retention
+optimization. Indexed oldest-first excess deletion preserves hard capacity and
+atomic candidate accounting. The same local capacity-filled SQLite fixture's median
+insert decreased from 56.77 ms to 0.075 ms (max 57.91 ms to 0.518 ms). The fixture
+is synthetic engineering data; these timings do not attest production latency.
+A new capacity/restart dedup test is included. Guarded suite now 1,069 passed,
+10 skipped. Follow-up hosted CI and pinned runtime telemetry must still be observed.
+
+Current known-good production commit additionally preserved at
+`rollback/rhen-v4.3.2-edd089b-20261007-1655`; original `0270563` rollback ref is unchanged.
+No production service restart, source, config, trading path or release change occurred.

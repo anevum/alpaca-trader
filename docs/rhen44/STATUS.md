@@ -37,9 +37,23 @@ It also selects point-in-time bar revisions before applying history limits and
 retains simultaneous fills with distinct event identities. Replay methodology is
 versioned `source-availability-replay-v2`. No live broker-write route is added.
 
-Local validation: 1,068 backend checks pass with 10 environment-specific skips;
-53 unchanged Command unit checks pass. Hosted CI and the new pinned shadow
-runtime must be recorded separately after completion. No package promotion gate
+Local validation: 1,069 backend checks pass with 10 environment-specific skips;
+53 unchanged Command unit checks pass. The first slice passed hosted CI and runtime audit and deployed only to the
+observer as `d308fee`, deployment `10e4de23-d25e-4880-8637-f638da558dbb`.
+A same-image observer restart retained the asset timestamp before refresh,
+restored 2,831 bars and `RESTORED_SHADOW_ONLY` policy state, and recovered
+healthy broker/account observation. The independent runtime remained 4.3.2
+with the same runtime instance, source and trading fingerprint.
+
+Callback delays up to 645 ms and publisher lag up to 614 ms were observed; no
+latency gate passed. A follow-up eliminates full-table retention scans/sorts
+from decision/archive writes, adds retention indexes, and deletes only excess
+oldest rows inside the existing atomic transactions. Hard retention bounds and
+restart deduplication are preserved. A local in-memory capacity-filled fixture
+(2,000 decisions, 1,000 candidates, 40,000 seen identities; 20 new inserts)
+improved median decision insertion from 56.77 ms to 0.075 ms. This is a local
+engineering comparison, not a live latency measurement. Follow-up runtime
+and hosted results remain separate until observed. No package promotion gate
 is inferred from these engineering tests.
 
 The explicitly authorized public observer domain is
@@ -90,17 +104,17 @@ identity is not mislabeled as the trading configuration fingerprint.
 
 | Slice / package capability | Current status | Remaining integration or evidence |
 |---|---|---|
-| 0: freeze 4.3 | Partially verified, preserved | Exact trading fingerprints, account/order/position reads, migration head |
+| 0: freeze 4.3 | Trading fingerprint and both original/current rollback refs verified, champion unchanged | Exact variable-value export, complete broker baseline artifact and migration head |
 | 1: stream/feed primitives | Implemented, tested, gated | Actual entitlement attestation |
 | 2: event-driven market observation | Implemented; isolated runtime deployed; overnight subscription diagnosis/fix merged | Verify actual accepted channels and source coverage, reconnect and shadow equivalence |
 | 3: broker trade_updates | Durable shadow inbox/projection implemented | Canonical order/fill ledger reconciliation integration; never silently replace 4.3 reconciliation |
 | 4: warm start | Checkpoints/history bootstrap implemented; local restart test passes | Runtime restart with real positions/orders and gap/backfill evidence |
-| 5: scanner/rejection | Durable bounded decisions/candidates, rejection rollups, deadline invalidation and source-valid symbol-hour accounting implemented; distinct-candidate/lineage/restart tests pass | Full risk/cost/asset mapping, canonical research export/completeness and runtime exposure attestation |
+| 5: scanner/rejection | Durable bounded decisions/candidates, rejection rollups, deadline invalidation and source-valid symbol-hour accounting implemented; distinct-candidate/lineage/restart tests pass | Full risk/cost mapping (asset capability evidence now deployed), canonical research export/completeness and runtime exposure attestation |
 | 6: Command WebSocket | Protected route, unified router bridge, worker proxy and single client socket deployed to authenticated shadow | Authenticated end-to-end browser acceptance; live latency measurement |
 | 7: core visuals | Candles/scanner/source volume/rolling VWAP/broker position and order levels/actual fill markers/window controls implemented, gated | Real-data screenshot QA; full server time-range history and strategy threshold overlays |
 | 8: advanced visuals | Forecast contract/band/expiry, replay PIT and event-triggered read-only broker equity/cash series implemented | NOSTRA forecast producer wiring, normalized/drawdown/session performance, VELUM artifact/control wiring |
 | 9: regular stream promotion | Intentionally not performed | Same-input strategy parity + real stream-vs-poll shadow equivalence; risk/engine data-source release |
-| 10: four sessions | Existing calendar resolver reused; Basic gaps explicit | Live per-session observation, overnight asset eligibility refresh and halt provenance |
+| 10: four sessions | Existing calendar resolver reused; Basic gaps explicit | Live per-session observation; bounded asset refresh/halt provenance implemented, overnight runtime evidence pending |
 | 11: policy primitives | Library fingerprinting, immutable disabled/shadow snapshots, hysteresis/dwell/vetoes implemented | Profile-release approval registry/ASC-008 trusted activation integration; ACTIVE explicitly rejected |
 | 12: NOSTRA wrapper | Reuses ASC-002 classifier with completed contiguous-bar cross section; PIT/missing/stale/fingerprint and durable decision lineage tested | Canonical research feature/schema parity and export; all-symbol missing/stale remains UNKNOWN |
 | 13: Capital Governor | Counterfactual adapter reuses existing sizing and exposure caps on observed broker snapshots; evidence veto keeps notional zero | Approved evidence/health factors and governed shadow validation |
