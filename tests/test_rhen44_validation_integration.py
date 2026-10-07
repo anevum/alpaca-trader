@@ -360,7 +360,7 @@ def test_forecast_reference_uses_only_observed_pre_feature_candle():
     from types import SimpleNamespace
     from app.market_fabric.runtime import ShadowFabric
     record={"symbol":"SPY","snapshot_id":"nss-1","as_of_timestamp":NOW.isoformat()}
-    point={"symbol":"SPY","timestamp":(NOW-timedelta(seconds=30)).isoformat(),"c":100.0,
+    point={"symbol":"SPY","timestamp":(NOW-timedelta(seconds=60)).isoformat(),"close":100.0,
         "provenance":"OBSERVED","source":"ALPACA/iex","quality_state":"LIVE"}
     archive=SimpleNamespace(history=lambda *a,**k:{"points":[point]})
     subject=SimpleNamespace(store=SimpleNamespace(symbols=("SPY",)),archive=archive)
@@ -369,6 +369,36 @@ def test_forecast_reference_uses_only_observed_pre_feature_candle():
     assert ref["value"]==100.0
     assert ref["timestamp"]==point["timestamp"]
     assert ref["provenance"]=="OBSERVED"
+
+
+def test_forecast_reference_uses_normalized_archive_and_cutoff_available_revision():
+    from types import SimpleNamespace
+    from app.market_fabric.runtime import ShadowFabric
+    archive=VisualArchive(sqlite3.connect(":memory:"))
+    record={"symbol":"SPY","snapshot_id":"nss-1","as_of_timestamp":NOW.isoformat()}
+    point={"symbol":"SPY","timestamp":(NOW-timedelta(minutes=1)).isoformat(),
+        "open":99.0,"high":101.0,"low":98.0,"close":100.0,"volume":10.0,
+        "provenance":"OBSERVED","source":"ALPACA/iex","quality_state":"LIVE"}
+    archive.append("candles:SPY",point,NOW)
+    archive.append("candles:SPY",{**point,"close":101.0},NOW+timedelta(seconds=1))
+    # An observed but not completed minute cannot supply the feature price.
+    archive.append("candles:SPY",{**point,"timestamp":NOW.isoformat(),"close":102.0},NOW)
+    subject=SimpleNamespace(store=SimpleNamespace(symbols=("SPY",)),archive=archive)
+    ref=ShadowFabric.forecast_reference(subject,record,NOW+timedelta(seconds=2))
+    assert ref["value"] == 100.0
+    assert ref["timestamp"] == point["timestamp"]
+
+
+def test_forecast_reference_rejects_only_later_available_candles():
+    from types import SimpleNamespace
+    from app.market_fabric.runtime import ShadowFabric
+    archive=VisualArchive(sqlite3.connect(":memory:"))
+    point={"symbol":"SPY","timestamp":(NOW-timedelta(minutes=1)).isoformat(),
+        "close":100.0,"provenance":"OBSERVED","source":"ALPACA/iex","quality_state":"LIVE"}
+    archive.append("candles:SPY",point,NOW+timedelta(seconds=1))
+    subject=SimpleNamespace(store=SimpleNamespace(symbols=("SPY",)),archive=archive)
+    record={"symbol":"SPY","snapshot_id":"nss-1","as_of_timestamp":NOW.isoformat()}
+    assert ShadowFabric.forecast_reference(subject,record,NOW+timedelta(seconds=2)) is None
 
 
 def test_canonical_ledger_reader_is_get_only_and_validates_authority():

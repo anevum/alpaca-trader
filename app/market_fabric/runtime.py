@@ -590,7 +590,9 @@ class ShadowFabric:
                 "candles:"+symbol,
                 feature-timedelta(seconds=120),
                 feature,
-                clock=utc(now),
+                # Reference revisions must already exist at the forecast's
+                # feature cutoff. A later correction cannot rebase its path.
+                clock=min(feature, utc(now)),
                 limit=5,
             )
             candidates = []
@@ -598,11 +600,11 @@ class ShadowFabric:
                 try:
                     stamp = utc(point.get("timestamp"))
                     if (
-                        stamp <= feature
+                        stamp + timedelta(minutes=1) <= feature
                         and point.get("provenance") == "OBSERVED"
                         and point.get("quality_state") == "LIVE"
                         and point.get("source")
-                        and point.get("c") is not None
+                        and point.get("close") is not None
                     ):
                         candidates.append((stamp, point))
                 except (ValueError, TypeError):
@@ -614,7 +616,7 @@ class ShadowFabric:
                 "symbol":symbol,
                 "snapshot_id":snapshot_id,
                 "timestamp":point["timestamp"],
-                "value":point["c"],
+                "value":point["close"],
                 "provenance":"OBSERVED",
                 "source":point["source"],
                 "quality_state":"LIVE",
