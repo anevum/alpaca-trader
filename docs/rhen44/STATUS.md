@@ -3,6 +3,27 @@
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 
+Current follow-up (2026-10-07, 13:14 ET): GitHub mutations recovered. Full
+continuation draft #430 is open and CI/run 37656326159 plus runtime audit/run
+37656326175 passed on `898738a`; #429 closed as superseded. Earlier connector
+failure statements below remain historical. Production is still held at the
+observed 4.3.2 source/config/runtime identity; no crossover is justified.
+
+The next isolated slice adds an authenticated, read-only Command bootstrap
+snapshot without sequence mutation/subscription. Command performs this once on
+mount, keeps observations frozen until a valid WebSocket snapshot, rejects late
+bootstrap overwrite and exposes bootstrap/close status. No REST polling replaces
+the live stream. Private transport telemetry counts accepted sockets/bootstrap
+reads and authentication rejections without identity, token or cookie values.
+
+Recorded broker execution markers now recover from the bounded archive across
+observer restart with original source/availability, distinct fill IDs, historical
+quality and no new broker/ledger actions. Replay keeps original source and adds
+separate replay provenance. Malformed/out-of-scope/future execution evidence is
+not promoted into recovered visuals. Local backend 1,070 checks / 10 skips,
+Command 54 checks, TypeScript and complete production build pass. Deployment
+and protected real-data browser observations must be recorded after they occur.
+
 Latest operational continuation (2026-10-07, 16:58 UTC): observed champion main
 is `edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac`, deployed as
 `b7676403-c01a-4d9b-adf4-983ad43ca8fc`; behavior remains RHEN 4.3.2,

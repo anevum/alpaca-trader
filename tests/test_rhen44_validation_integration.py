@@ -18,6 +18,24 @@ from unittest.mock import AsyncMock
 NOW = datetime(2026,10,7,14,0,tzinfo=timezone.utc)
 
 
+def test_execution_archive_recovery_preserves_distinct_fills_and_source_without_future_leak():
+    from app.command_visuals.replay_projection import replay_frame
+    archive = VisualArchive(sqlite3.connect(":memory:"))
+    marker = {"timestamp":NOW.isoformat(),"event_id":"f1","event_type":"FILL","order_ref":"o1",
+        "symbol":"SPY","price":100,"quantity":1,"provenance":"OBSERVED",
+        "source":"ALPACA/trade_updates","quality_state":"LIVE"}
+    archive.append("executions:SPY",marker,NOW)
+    archive.append("executions:SPY",{**marker,"event_id":"f2"},NOW)
+    archive.append("executions:SPY",{**marker,"event_id":"late"},NOW+timedelta(seconds=1))
+    archive.append("candles:SPY",{**marker,"event_id":"not-an-execution"},NOW)
+    recovery=archive.executions(NOW,("SPY",))
+    assert {p["event_id"] for p in recovery["points"]} == {"f1","f2"}
+    assert all(p["quality_state"] == "HISTORICAL" for p in recovery["points"])
+    assert not recovery["entry_authority"] and not archive.executions(NOW,("QQQ",))["points"]
+    replay = replay_frame(recovery["points"],NOW)
+    assert replay[0]["source"] == "ALPACA/trade_updates" and replay[0]["replay_source"] == "VELUM_REPLAY"
+
+
 def controller():
     library = PolicyLibrary.load()
     return AdaptivePolicyController(library,baseline={"stop_pct":".004"},hard_limits={"stop_pct":".005"},configuration_fingerprint="cfg")

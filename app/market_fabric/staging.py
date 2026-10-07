@@ -104,6 +104,7 @@ def create_app(settings=None):
     settings = settings or Settings()
     assert_observer_only(settings)
     fabric = None
+    command_observation = {"bootstrap_reads":0,"websocket_accepts":0,"authentication_rejections":0,"last_rejection_status":None}
 
     @asynccontextmanager
     async def lifespan(app):
@@ -150,6 +151,7 @@ def create_app(settings=None):
                         scanner_coverage={k:v for k,v in fabric.coverage.summary(fabric.store,datetime.now(timezone.utc)).items() if k != "symbols"},
                         scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
                     body["asset_eligibility"] = fabric.asset_summary(datetime.now(timezone.utc))
+                    body["command_transport"] = dict(command_observation)
                     print("RHEN44_SHADOW_TELEMETRY "+json.dumps(body,allow_nan=False),flush=True)
                     await asyncio.sleep(30)
             telemetry_task = asyncio.create_task(telemetry())
@@ -169,6 +171,8 @@ def create_app(settings=None):
             return await authenticate_command_admin(authorization,team_domain=settings.command_access_team_domain,
                 audience=settings.command_access_aud,allowed_emails=settings.command_access_emails_raw)
         except CommandAuthError as exc:
+            command_observation["authentication_rejections"] += 1
+            command_observation["last_rejection_status"] = exc.status_code
             raise HTTPException(exc.status_code,exc.detail) from exc
 
     @app.get("/health")
@@ -198,6 +202,7 @@ def create_app(settings=None):
             return
         expiry=float(jwt.decode(websocket.headers["authorization"][7:],options={"verify_signature":False})["exp"])
         await websocket.accept()
+        command_observation["websocket_accepts"] += 1
         queue=fabric.visual.publisher.subscribe()
         try:
             while True:
@@ -216,6 +221,14 @@ def create_app(settings=None):
             pass
         finally:
             fabric.visual.publisher.unsubscribe(queue)
+
+    @app.get("/v1/command/shadow/bootstrap")
+    async def bootstrap(authorization: str | None = Header(default=None)):
+        await authorize(authorization)
+        if not settings.command_live_stream_enabled or fabric is None:
+            raise HTTPException(503,"shadow observer unavailable")
+        command_observation["bootstrap_reads"] += 1
+        return fabric.visual.publisher.bootstrap()
 
     @app.get("/v1/command/shadow/history")
     async def history(series: str, start: str, end: str, clock: str | None = None,

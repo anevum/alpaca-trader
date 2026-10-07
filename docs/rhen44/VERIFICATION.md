@@ -182,3 +182,19 @@ returned repeated GraphQL/internal errors, although commit/tree/branch creation
 and reads worked. Both code commits are branch-preserved; #429 is still draft
 on d308fee. Main is untouched. The JSON continuation records this external blocker
 without conflating earlier green hosted checks with the latest head.
+
+
+### 13:14 ET bootstrap and observed execution recovery continuation
+
+GitHub mutation blocker resolved: #430 open; hosted CI 37656326159 and audit
+37656326175 passed on full continuation 898738a. #429 superseded and closed.
+New guarded backend checks: 1,070 passed / 10 skipped. Command: 54 passed;
+TypeScript and complete Vite/Worker build pass. Replay source test changed to
+assert preserved original source plus separate replay_source metadata rather
+than conflating observed Alpaca evidence with VELUM transport. Recovery tests
+cover simultaneous distinct fills, unavailable/future records and universe scope.
+The authenticated bootstrap route rejects anonymous reads; publisher bootstrap
+is read-only and cannot mutate delivery sequence or subscribe a client. Client
+bootstrap stays stale and cannot overwrite an existing stream generation.
+
+No unit/build result passes live stream or production crossover requirements.

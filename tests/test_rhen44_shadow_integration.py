@@ -186,6 +186,7 @@ def test_isolated_process_rejects_armed_configuration_and_has_no_order_routes(mo
         assert client.get("/health").json()["broker_orders_possible"] is False
         assert client.post("/v2/orders",json={"symbol":"SPY"}).status_code==404
         assert client.get("/v1/command/shadow/status").status_code==401
+        assert client.get("/v1/command/shadow/bootstrap").status_code==401
     for field in ("execution_enabled","bot_armed","live_trading","extended_equity_execution_enabled"):
         with pytest.raises(ValueError): create_app(settings.model_copy(update={field:True}))
     monkeypatch.setenv("CRYPTO_EXECUTION_ENABLED", "true")

@@ -30,6 +30,14 @@ class LivePublisher:
         self.clients.add(queue)
         return queue
 
+    def bootstrap(self):
+        # A bounded read does not subscribe, advance delivery sequence or attest
+        # a live transport. The browser must keep this snapshot frozen until WS.
+        return {"schema_version":"command-live.v1", "message_type":"snapshot",
+                "server_time":datetime.now(timezone.utc).isoformat(),
+                "stream_generation":self.generation, "sequence":self.sequence,
+                "payload":self.snapshot()}
+
     def unsubscribe(self, queue):
         self.clients.discard(queue)
 

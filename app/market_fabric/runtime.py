@@ -61,6 +61,11 @@ class ShadowFabric:
         self.evidence = DecisionEvidence(self.checkpoint.db)
         self.assets = AssetEligibility(self.checkpoint.db, self.store.symbols)
         self.archive = VisualArchive(self.checkpoint.db)
+        recovered_executions = self.archive.executions(datetime.now(timezone.utc), self.store.symbols)
+        self.visual.executions.points.extend(recovered_executions["points"])
+        self.visual.system.update(execution_recovery={"restored_events":len(recovered_executions["points"]),
+            "rejected_records":recovered_executions["rejected_records"],"coverage_state":"BOUNDED_OBSERVATIONS_ONLY",
+            "source":"RHEN/observed_execution_archive","provenance":"OPERATIONAL","entry_authority":False})
         self.performance = AccountPerformance(self.checkpoint.db)
         self.library = PolicyLibrary.load()
         baseline = {k: str(getattr(settings, k)) for k in ("stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes", "max_spread_pct", "min_quality_score")}

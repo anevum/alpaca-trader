@@ -3,7 +3,7 @@ import json
 from datetime import timedelta
 
 from app.adaptive_policy import fingerprint
-from app.market_fabric.contracts import utc
+from app.market_fabric.contracts import utc, number
 from app.market_fabric.bounded_retention import trim_oldest
 from .series_buffers import validate_point
 
@@ -57,3 +57,32 @@ class VisualArchive:
             "coverage_state":"BOUNDED_OBSERVATIONS_ONLY", "entry_authority":False,
             "artifact_fingerprint":fingerprint({"series":series,"clock":clock.isoformat(),"points":points}),
             "methodology_version":"source-availability-replay-v2", "provenance":"DERIVED", "source":"RHEN/shadow_visual"}
+
+    def executions(self, clock, symbols, *, limit=2400):
+        # Recover recorded broker evidence, never infer fills from positions or
+        # replay delivered events into the broker/order ledger.
+        at = utc(clock).isoformat()
+        rows = self.db.execute("SELECT series,body FROM shadow_visual WHERE series LIKE 'executions:%' "
+            "AND source_at<=? AND available_at<=? ORDER BY source_at DESC,available_at DESC,id DESC LIMIT ?",
+            (at,at,limit)).fetchall()
+        points, seen, rejected = [], set(), 0
+        for series, encoded in rows:
+            try:
+                point = json.loads(encoded)
+                validate_point(point)
+                if (point.get("provenance") != "OBSERVED" or point.get("source") != "ALPACA/trade_updates"
+                    or not point.get("event_id") or not point.get("order_ref")
+                    or point.get("event_type") not in {"ACCEPTED","FILL","PARTIAL_FILL","CANCEL","REJECT"}
+                    or point.get("symbol") not in symbols or series != "executions:"+point["symbol"]):
+                    raise ValueError("execution source identity mismatch")
+                if point.get("price") is not None:
+                    number(point["price"],positive=True)
+                if point.get("quantity") is not None:
+                    number(point["quantity"])
+                if point["event_id"] not in seen:
+                    seen.add(point["event_id"])
+                    points.append({**point,"quality_state":"HISTORICAL"})
+            except (ValueError, KeyError, TypeError, AttributeError):
+                rejected += 1
+        return {"points":list(reversed(points)),"rejected_records":rejected,
+            "coverage_state":"BOUNDED_OBSERVATIONS_ONLY","entry_authority":False}
