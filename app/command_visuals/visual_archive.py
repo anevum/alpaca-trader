@@ -3,7 +3,8 @@ import json
 from datetime import timedelta
 
 from app.adaptive_policy import fingerprint
-from app.market_fabric.contracts import utc
+from app.market_fabric.contracts import utc, number
+from app.market_fabric.bounded_retention import trim_oldest
 from .series_buffers import validate_point
 
 
@@ -12,6 +13,7 @@ class VisualArchive:
         self.db, self.capacity = db, capacity
         db.execute("CREATE TABLE IF NOT EXISTS shadow_visual (id TEXT PRIMARY KEY, series TEXT NOT NULL, source_at TEXT NOT NULL, available_at TEXT NOT NULL, body TEXT NOT NULL)")
         db.execute("CREATE INDEX IF NOT EXISTS shadow_visual_range ON shadow_visual(series,source_at,available_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS shadow_visual_retention ON shadow_visual(available_at,id)")
         db.execute("CREATE TABLE IF NOT EXISTS shadow_visual_meta (id INTEGER PRIMARY KEY CHECK(id=1), pruned INTEGER NOT NULL)")
         db.execute("INSERT OR IGNORE INTO shadow_visual_meta VALUES (1,0)")
 
@@ -30,7 +32,7 @@ class VisualArchive:
         with self.db:
             added = self.db.execute("INSERT OR IGNORE INTO shadow_visual VALUES (?,?,?,?,?)",
                 (identity, series, source.isoformat(), available.isoformat(), encoded)).rowcount
-            removed = self.db.execute("DELETE FROM shadow_visual WHERE id NOT IN (SELECT id FROM shadow_visual ORDER BY available_at DESC,id DESC LIMIT ?)", (self.capacity,)).rowcount
+            removed = trim_oldest(self.db, "shadow_visual", "available_at", self.capacity)
             self.db.execute("UPDATE shadow_visual_meta SET pruned=pruned+? WHERE id=1", (removed,))
         return bool(added)
 
@@ -38,16 +40,52 @@ class VisualArchive:
         start, end, clock = utc(start), utc(end), utc(clock)
         if start >= end or end-start > timedelta(days=1) or end > clock or type(limit) is not int or not 1 <= limit <= 5000:
             raise ValueError("invalid bounded visual range")
-        rows = self.db.execute("SELECT source_at,available_at,body FROM shadow_visual WHERE series=? AND source_at>=? AND source_at<=? AND available_at<=? ORDER BY source_at,available_at,id LIMIT ?",
+        # Select the latest revision available at the replay clock BEFORE limiting
+        # distinct source points. Limiting raw revisions can return an obsolete
+        # candle and let repeated corrections consume the entire response budget.
+        rows = self.db.execute("""SELECT source_at,available_at,body FROM (
+            SELECT source_at,available_at,body,
+                ROW_NUMBER() OVER (PARTITION BY COALESCE(json_extract(body,'$.event_id'),source_at)
+                    ORDER BY available_at DESC,rowid DESC) AS revision
+            FROM shadow_visual WHERE series=? AND source_at>=? AND source_at<=? AND available_at<=?
+        ) WHERE revision=1 ORDER BY source_at LIMIT ?""",
             (series,start.isoformat(),end.isoformat(),clock.isoformat(),limit+1)).fetchall()
-        # A later correction is visible only after its actual availability time.
-        latest = {}
-        for stamp, _, body in rows[:limit]:
-            latest[stamp] = json.loads(body)
         pruned = self.db.execute("SELECT pruned FROM shadow_visual_meta WHERE id=1").fetchone()[0]
-        points = list(latest.values())
+        points = [json.loads(body) for _, _, body in rows[:limit]]
         return {"series_id":series, "points":points, "range_start":start.isoformat(), "range_end":end.isoformat(),
             "replay_clock":clock.isoformat(), "truncated":len(rows)>limit, "pruned_records":pruned,
             "coverage_state":"BOUNDED_OBSERVATIONS_ONLY", "entry_authority":False,
             "artifact_fingerprint":fingerprint({"series":series,"clock":clock.isoformat(),"points":points}),
-            "methodology_version":"source-availability-replay-v1", "provenance":"DERIVED", "source":"RHEN/shadow_visual"}
+            "methodology_version":"source-availability-replay-v2", "provenance":"DERIVED", "source":"RHEN/shadow_visual"}
+
+    def executions(self, clock, symbols=None, *, limit=2400):
+        # Recover recorded broker evidence, never infer fills from positions or
+        # replay delivered events into the broker/order ledger. Passing symbols
+        # scopes a visual view; None preserves the account-wide broker stream for
+        # canonical ledger parity.
+        at = utc(clock).isoformat()
+        rows = self.db.execute("SELECT series,body FROM shadow_visual WHERE series LIKE 'executions:%' "
+            "AND source_at<=? AND available_at<=? ORDER BY source_at DESC,available_at DESC,id DESC LIMIT ?",
+            (at,at,limit)).fetchall()
+        points, seen, rejected = [], set(), 0
+        for series, encoded in rows:
+            try:
+                point = json.loads(encoded)
+                validate_point(point)
+                if (point.get("provenance") != "OBSERVED" or point.get("source") != "ALPACA/trade_updates"
+                    or not point.get("event_id") or not point.get("order_ref")
+                    or point.get("event_type") not in {"ACCEPTED","FILL","PARTIAL_FILL","CANCEL","REJECT"}
+                    or (symbols is not None and point.get("symbol") not in symbols)
+                    or series != "executions:"+point["symbol"]):
+                    raise ValueError("execution source identity mismatch")
+                if point.get("price") is not None:
+                    number(point["price"],positive=True)
+                if point.get("quantity") is not None:
+                    number(point["quantity"])
+                if point["event_id"] not in seen:
+                    seen.add(point["event_id"])
+                    points.append({**point,"quality_state":"HISTORICAL"})
+            except (ValueError, KeyError, TypeError, AttributeError):
+                rejected += 1
+        return {"points":list(reversed(points)),"rejected_records":rejected,
+            "coverage_state":"BOUNDED_OBSERVATIONS_ONLY","entry_authority":False}

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import asyncio
 import json
+import math
 import os
 
 import httpx
@@ -17,6 +18,17 @@ from app.rhen44_release import release_status
 from app.sizing import calculate_entry_notional, effective_gross_limit, effective_position_limit, long_exposure
 from app.strategy import RollingMomentumVwapStrategy, OpeningRangeVwapStrategy
 from .runtime import ShadowFabric
+
+
+def telemetry_safe(value):
+    """Keep observer telemetry serializable without inventing numeric evidence."""
+    if isinstance(value, dict):
+        return {str(key): telemetry_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [telemetry_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def assert_observer_only(settings):
@@ -48,6 +60,26 @@ class ReadOnlyBroker:
                 "hard_gross_envelope":effective_gross_limit(s,account),"existing_gross_exposure":long_exposure(positions),
                 "hard_caps":{"max_order_notional":s.max_order_notional,"max_position_notional":effective_position_limit(s,account)}}}
 
+    async def assets(self, symbols=None):
+        # Exactly the bounded current hotset; no writes or broad asset dump.
+        requested = tuple(dict.fromkeys(symbols or self.settings.extended_equity_symbols))
+        if not 1 <= len(requested) <= self.settings.rhen_market_stream_capacity:
+            raise ValueError("asset read exceeds bounded stream capacity")
+        async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
+            async def read_asset(symbol):
+                response = await client.get(self.settings.base_url+"/v2/assets/"+symbol,
+                    headers={"APCA-API-KEY-ID":self.settings.alpaca_api_key,
+                             "APCA-API-SECRET-KEY":self.settings.alpaca_api_secret})
+                if response.status_code == 404:
+                    return None
+                response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, dict) or body.get("symbol") != symbol:
+                    raise ValueError("asset identity mismatch")
+                return body
+            rows = await asyncio.gather(*(read_asset(s) for s in requested))
+        return [row for row in rows if row is not None]
+
 
 def champion_signal(settings):
     s = settings
@@ -69,24 +101,242 @@ class ReadOnlyChampion:
         # Existing private Railway service; no new public proxy/domain is created.
         async with httpx.AsyncClient(timeout=10,transport=self.transport) as http:
             response = await http.get("http://alpaca-trader.railway.internal:8080/health")
-            response.raise_for_status()
+            if response.status_code not in (200, 503):
+                response.raise_for_status()
             body = response.json()
+        if not isinstance(body, dict) or not isinstance(body.get("execution"), dict):
+            raise ValueError("Champion health envelope unavailable")
         execution = body.get("execution",{}).get("body",{})
+        if not isinstance(execution, dict) or execution.get("ok") is not True:
+            raise ValueError("Champion execution observation unavailable")
         identity = execution.get("protected_configuration_identity",{})
+        persistence = execution.get("persistence",{})
+        nostra_probe = (body.get("modules") or {}).get("nostra") or {}
+        nostra_body = nostra_probe.get("body") if isinstance(nostra_probe,dict) else {}
+        if not isinstance(nostra_body,dict):
+            nostra_body = {}
+        nostra_result = nostra_body.get("last_result")
+        if not isinstance(nostra_result,dict):
+            nostra_result = {}
+        gateway_counts = nostra_result.get("gateway_counts")
+        if not isinstance(gateway_counts,dict):
+            gateway_counts = {}
+        nostra_runtime = {
+            "ok":nostra_probe.get("ok") is True if isinstance(nostra_probe,dict) else False,
+            "status_code":nostra_probe.get("status_code") if isinstance(nostra_probe,dict) else None,
+            "running":nostra_body.get("running") is True,
+            "autorun":nostra_body.get("autorun") is True,
+            "foundation_configured":nostra_body.get("foundation_configured") is True,
+            "gateway_configured":nostra_body.get("gateway_configured") is True,
+            "last_cycle_at":nostra_body.get("last_cycle_at"),
+            "last_forecast_at":nostra_body.get("last_forecast_at"),
+            "last_error":str(nostra_body.get("last_error") or "")[:160] or None,
+            "last_result":{
+                "status":nostra_result.get("status"),
+                "forecast_candidates":nostra_result.get("forecast_candidates"),
+                "forecasts_persisted":nostra_result.get("forecasts_persisted"),
+                "baseline_forecasts_persisted":nostra_result.get("baseline_forecasts_persisted"),
+                "drift_forecasts_persisted":nostra_result.get("drift_forecasts_persisted"),
+                "observed_at":nostra_result.get("observed_at"),
+                "gateway_counts":{
+                    key:gateway_counts.get(key) for key in (
+                        "candidate_rows_scanned","forecast_candidates",
+                        "pending_score_outcomes","evaluation_models",
+                        "drift_independent_cycles"
+                    ) if gateway_counts.get(key) is not None
+                },
+            },
+            "research_only":True,
+            "execution_authority":False,
+        }
         return {"observed_at":datetime.now(timezone.utc).isoformat(),
             "source":"RHEN/private_champion_health","provenance":"OPERATIONAL",
-            "runtime_ok":body.get("ok") is True and execution.get("ok") is True,
+            "runtime_ok":response.status_code == 200 and body.get("ok") is True and execution.get("ok") is True,
+            "aggregate_http_status":response.status_code,
+            "module_failures":[name for name in body.get("module_failures",())
+                               if name in ("graen", "nostra", "velum", "iren", "research_agent")],
             "reconciliation_safe":execution.get("reconciliation_safe") is True,
-            "strategy_version":execution.get("persistence",{}).get("strategy_version_id"),
+            "startup_reconciled":execution.get("startup_reconciled") is True,
+            "reconciliation_detail":{
+                key:(execution.get("last_reconciliation") or {}).get(key)
+                for key in ("safe_to_enter","reason","error")
+                if (execution.get("last_reconciliation") or {}).get(key) is not None
+            },
+            "runtime_error":str(execution.get("last_error") or "")[:240] or None,
+            "strategy_version":persistence.get("strategy_version_id"),
+            "run_id":persistence.get("run_id"),
             "protected_configuration_fingerprint":identity.get("fingerprint"),
             "source_commit":execution.get("runtime_provenance",{}).get("git_commit"),
+            "nostra_runtime":nostra_runtime,
             "broker_write_authority":False}
+
+
+class ReadOnlyCanonicalUniverse:
+    """Token-authenticated GET-only projection of RHEN's canonical discovery ranking."""
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/scheduler/universe"
+    VERSION = "rhen-canonical-universe-read-v1"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self):
+        if not self.token:
+            raise ValueError("canonical universe read unavailable")
+        async with httpx.AsyncClient(timeout=10, transport=self.transport) as http:
+            response = await http.get(self.ENDPOINT,headers={"x-anevum-scheduler-token":self.token})
+            response.raise_for_status()
+            body = response.json()
+        symbols = body.get("active_symbols") if isinstance(body,dict) else None
+        if (not isinstance(body,dict) or body.get("ok") is not True
+            or body.get("universe_version") != self.VERSION
+            or body.get("execution_authority") is not False
+            or body.get("broker_orders_possible") is not False
+            or not isinstance(symbols,list) or len(symbols) > 500
+            or body.get("active_count") != len(symbols)
+            or len(symbols) != len(set(symbols))
+            or any(not isinstance(s,str) or not s for s in symbols)):
+            raise ValueError("canonical universe identity mismatch")
+        return body
+
+
+class ReadOnlyCanonicalResearchEvidence:
+    """Join canonical research evidence to the sealed operator approval projection.
+
+    Authorization decisions from the generic research document are deliberately
+    excluded. Only HMAC-verified current decisions returned by the execution
+    service's scheduler-protected ASC registry are eligible for ASC-008 review.
+    Both reads are GET-only and carry no broker/execution authority.
+    """
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/research-agent-gateway"
+    APPROVAL_ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/scheduler/asc/profile-release/approvals"
+    APPROVAL_VERSION = "asc008-profile-approval-registry-v1"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self):
+        if not self.token:
+            raise ValueError("canonical research evidence read unavailable")
+        async with httpx.AsyncClient(timeout=12, transport=self.transport) as http:
+            research_response = await http.get(
+                self.ENDPOINT,
+                headers={"x-anevum-ingest-token":self.token,"accept":"application/json"})
+            research_response.raise_for_status()
+            approval_response = await http.get(
+                self.APPROVAL_ENDPOINT,
+                headers={"x-anevum-scheduler-token":self.token,"accept":"application/json"})
+            approval_response.raise_for_status()
+            body = research_response.json()
+            approvals = approval_response.json()
+
+        evidence = body.get("evidence") if isinstance(body,dict) else None
+        if (not isinstance(body,dict) or body.get("ok") is not True
+            or body.get("execution_authority") is not False
+            or body.get("broker_orders_possible") is not False
+            or not isinstance(evidence,dict)):
+            raise ValueError("canonical research evidence identity mismatch")
+        decisions = approvals.get("research_decisions") if isinstance(approvals,dict) else None
+        invalid_count = approvals.get("invalid_record_count") if isinstance(approvals,dict) else None
+        if (not isinstance(approvals,dict) or approvals.get("ok") is not True
+            or approvals.get("schema_version") != self.APPROVAL_VERSION
+            or approvals.get("execution_authority") is not False
+            or approvals.get("broker_orders_possible") is not False
+            or approvals.get("active_mode_authorized") is not False
+            or approvals.get("automatic_application_authorized") is not False
+            or not isinstance(decisions,list)
+            or type(approvals.get("record_count")) is not int
+            or approvals.get("record_count") != len(decisions)
+            or type(invalid_count) is not int or invalid_count != 0):
+            raise ValueError("sealed ASC approval registry identity mismatch")
+
+        # Never allow a generic research decision to impersonate operator
+        # authorization. The sealed registry is the sole authorization source.
+        merged = dict(evidence)
+        merged["research_decisions"] = [dict(row) for row in decisions if isinstance(row,dict)]
+        if len(merged["research_decisions"]) != len(decisions):
+            raise ValueError("sealed ASC approval decision shape mismatch")
+        merged["asc_approval_registry"] = {
+            "schema_version":approvals["schema_version"],
+            "record_count":approvals["record_count"],
+            "invalid_record_count":invalid_count,
+            "source":"RHEN/sealed_profile_release_approval_registry",
+            "provenance":"OPERATIONAL",
+            "execution_authority":False,
+            "broker_write_authority":False,
+            "active_mode_authorized":False,
+        }
+        return merged
+
+
+class ReadOnlyCanonicalForecasts:
+    """Token-authenticated GET-only projection of canonical NOSTRA forecasts."""
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/scheduler/nostra-forecasts"
+    VERSION = "nostra-canonical-forecast-read-v1"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self):
+        if not self.token:
+            raise ValueError("canonical forecast read unavailable")
+        async with httpx.AsyncClient(timeout=10, transport=self.transport) as http:
+            response = await http.get(
+                self.ENDPOINT,
+                headers={"x-anevum-scheduler-token": self.token},
+            )
+            response.raise_for_status()
+            body = response.json()
+        forecasts = body.get("forecasts") if isinstance(body, dict) else None
+        if (
+            not isinstance(body, dict)
+            or body.get("ok") is not True
+            or body.get("schema_version") != self.VERSION
+            or body.get("research_only") is not True
+            or body.get("execution_authority") is not False
+            or body.get("broker_write_authority") is not False
+            or not isinstance(forecasts, list)
+            or len(forecasts) > 200
+        ):
+            raise ValueError("canonical forecast identity mismatch")
+        return body
+
+
+class ReadOnlyCanonicalLedger:
+    """Token-authenticated GET-only projection of the canonical RHEN order/fill ledger."""
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/trading-report-read"
+    VERSION = "rhen-canonical-ledger-read-v1"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self, run_id, *, limit=1000):
+        run_id = str(run_id or "").strip()
+        if not self.token or not run_id or type(limit) is not int or not 1 <= limit <= 5000:
+            raise ValueError("canonical ledger read unavailable")
+        async with httpx.AsyncClient(timeout=10, transport=self.transport) as http:
+            response = await http.get(self.ENDPOINT,
+                headers={"x-anevum-ingest-token":self.token},
+                params={"latest":"ledger","run_id":run_id,"limit":limit})
+            response.raise_for_status()
+            body = response.json()
+        if (not isinstance(body,dict) or body.get("ok") is not True
+            or body.get("ledger_version") != self.VERSION or body.get("run_id") != run_id
+            or body.get("execution_authority") is not False
+            or body.get("broker_orders_possible") is not False
+            or not isinstance(body.get("events"),list)):
+            raise ValueError("canonical ledger identity mismatch")
+        return body
 
 
 def create_app(settings=None):
     settings = settings or Settings()
     assert_observer_only(settings)
     fabric = None
+    command_observation = {"bootstrap_reads":0,"websocket_accepts":0,"authentication_rejections":0,"last_rejection_status":None}
 
     @asynccontextmanager
     async def lifespan(app):
@@ -99,40 +349,69 @@ def create_app(settings=None):
                     **({"vw":b["vwap"]} if b.get("vwap") is not None else {})} for b in store.rows.get(s,{}).get("bars",())]
             return strategy.evaluate(bars(symbol),{s:bars(s) for s in settings.confirmation_symbols},symbol,False,settings.order_notional,now=now)
         if settings.rhen_market_stream_enabled:
-            fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=ReadOnlyBroker(settings).snapshot,
-                                  champion_reader=ReadOnlyChampion().snapshot)
+            broker = ReadOnlyBroker(settings)
+            async def current_assets():
+                if fabric is None:
+                    return []
+                return await broker.assets(fabric.store.symbols)
+            fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=broker.snapshot,
+                                  champion_reader=ReadOnlyChampion().snapshot,
+                                  discovery_reader=ReadOnlyCanonicalUniverse(settings).snapshot,
+                                  asc_reader=ReadOnlyCanonicalResearchEvidence(settings).snapshot,
+                                  forecast_reader=ReadOnlyCanonicalForecasts(settings).snapshot,
+                                  asset_reader=current_assets,ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
             fabric.start()
             async def telemetry():
+                failures = 0
                 while True:
-                    # Private Railway operational logs; no credentials, token,
-                    # account dollars, positions, symbols, orders or fill payloads.
-                    body = await health()
-                    body.update(provenance="OPERATIONAL",observed_at=datetime.now(timezone.utc).isoformat(),
-                        broker_stream_state=fabric.broker.state if fabric.broker else "DISABLED",
-                        account_quality=fabric.visual.system.get("account_observation",{}).get("quality_state","UNAVAILABLE"),
-                        reconstruction_source=fabric.visual.system.get("reconstruction_source"),
-                        restored_bar_count=fabric.visual.system.get("restored_bar_count"),
-                        bootstrap_error=fabric.visual.system.get("bootstrap_error"),
-                        policy_recovery=fabric.policy_recovery,
-                        champion_health_lineage="VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc)) else "UNAVAILABLE",
-                        protected_configuration_fingerprint=(fabric.champion_observation or {}).get("protected_configuration_fingerprint"),
-                        account_performance_quality=fabric.visual.system.get("account_performance",{}).get("quality_state","UNAVAILABLE"),
-                        archived_observation_count=fabric.checkpoint.db.execute("SELECT count(*) FROM shadow_visual").fetchone()[0],
-                        bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
-                        quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
-                        subscribed_channels=sorted(fabric.manager.subscribed_channels),
-                        unavailable_channels=sorted(fabric.manager.unavailable_channels),
-                        scanner_prerequisites={"required_bars":fabric.store.warm_bars,
-                            "symbols_with_required_bars":sum(len(row.get("bars",())) >= fabric.store.warm_bars for row in fabric.store.rows.values()),
-                            "evaluable_symbols":sum(fabric.store.snapshot(s,datetime.now(timezone.utc))["evaluable"] for s in fabric.store.symbols)},
-                        market_processing={"processed_events":fabric.manager.processed_events,
-                            "cooperative_yields":fabric.manager.cooperative_yields,
-                            "max_callback_ms":fabric.manager.max_callback_ms,
-                            "max_publisher_tick_lag_ms":fabric.visual.publisher.max_tick_lag_ms,
-                            "command_clients":len(fabric.visual.publisher.clients)},
-                        scanner_coverage={k:v for k,v in fabric.coverage.summary(fabric.store,datetime.now(timezone.utc)).items() if k != "symbols"},
-                        scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
-                    print("RHEN44_SHADOW_TELEMETRY "+json.dumps(body,allow_nan=False),flush=True)
+                    try:
+                        # Private Railway operational logs; no credentials, token,
+                        # account dollars, positions, symbols, orders or fill payloads.
+                        account = fabric.visual.system.get("account_observation") or {}
+                        performance = fabric.visual.system.get("account_performance") or {}
+                        body = await health()
+                        body.update(provenance="OPERATIONAL",observed_at=datetime.now(timezone.utc).isoformat(),
+                            broker_stream_state=fabric.broker.state if fabric.broker else "DISABLED",
+                            account_quality=account.get("quality_state","UNAVAILABLE"),
+                            reconstruction_source=fabric.visual.system.get("reconstruction_source"),
+                            restored_bar_count=fabric.visual.system.get("restored_bar_count"),
+                            bootstrap_error=fabric.visual.system.get("bootstrap_error"),
+                            policy_recovery=fabric.policy_recovery,
+                            champion_health_lineage=("VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc))
+                                else "DEGRADED_READ" if fabric.champion_observation else "UNAVAILABLE"),
+                            protected_configuration_fingerprint=(fabric.champion_observation or {}).get("protected_configuration_fingerprint"),
+                            nostra_runtime=(fabric.champion_observation or {}).get("nostra_runtime"),
+                            account_performance_quality=performance.get("quality_state","UNAVAILABLE"),
+                            archived_observation_count=fabric.checkpoint.db.execute("SELECT count(*) FROM shadow_visual").fetchone()[0],
+                            bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
+                            quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
+                            subscribed_channels=sorted(fabric.manager.subscribed_channels),
+                            unavailable_channels=sorted(fabric.manager.unavailable_channels),
+                            scanner_prerequisites={"required_bars":fabric.store.warm_bars,
+                                "symbols_with_required_bars":sum(len(row.get("bars",())) >= fabric.store.warm_bars for row in fabric.store.rows.values()),
+                                "evaluable_symbols":sum(fabric.store.snapshot(s,datetime.now(timezone.utc))["evaluable"] for s in fabric.store.symbols)},
+                            market_processing={"processed_events":fabric.manager.processed_events,
+                                "cooperative_yields":fabric.manager.cooperative_yields,
+                                "max_callback_ms":fabric.manager.max_callback_ms,
+                                "max_publisher_tick_lag_ms":fabric.visual.publisher.max_tick_lag_ms,
+                                "command_clients":len(fabric.visual.publisher.clients)},
+                            scanner_coverage={k:v for k,v in fabric.coverage.summary(fabric.store,datetime.now(timezone.utc)).items() if k != "symbols"},
+                            scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
+                        body["asset_eligibility"] = fabric.asset_summary(datetime.now(timezone.utc))
+                        body["command_transport"] = dict(command_observation)
+                        body["canonical_ledger_parity"] = fabric.visual.system.get("canonical_ledger_parity") or {
+                            "quality_state":"UNAVAILABLE","parity_complete":False,
+                            "entry_authority":False,"broker_write_authority":False}
+                        body["execution_recovery"] = fabric.visual.system.get("execution_recovery") or {
+                            "restored_events":0,"coverage_state":"UNAVAILABLE","entry_authority":False}
+                        print("RHEN44_SHADOW_TELEMETRY "+json.dumps(telemetry_safe(body),allow_nan=False),flush=True)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        failures += 1
+                        print("RHEN44_SHADOW_TELEMETRY_ERROR "+json.dumps({
+                            "error":type(exc).__name__,"failure_count":failures,
+                            "execution_authority":False,"broker_orders_possible":False}),flush=True)
                     await asyncio.sleep(30)
             telemetry_task = asyncio.create_task(telemetry())
         try:
@@ -151,6 +430,8 @@ def create_app(settings=None):
             return await authenticate_command_admin(authorization,team_domain=settings.command_access_team_domain,
                 audience=settings.command_access_aud,allowed_emails=settings.command_access_emails_raw)
         except CommandAuthError as exc:
+            command_observation["authentication_rejections"] += 1
+            command_observation["last_rejection_status"] = exc.status_code
             raise HTTPException(exc.status_code,exc.detail) from exc
 
     @app.get("/health")
@@ -180,6 +461,7 @@ def create_app(settings=None):
             return
         expiry=float(jwt.decode(websocket.headers["authorization"][7:],options={"verify_signature":False})["exp"])
         await websocket.accept()
+        command_observation["websocket_accepts"] += 1
         queue=fabric.visual.publisher.subscribe()
         try:
             while True:
@@ -198,6 +480,14 @@ def create_app(settings=None):
             pass
         finally:
             fabric.visual.publisher.unsubscribe(queue)
+
+    @app.get("/v1/command/shadow/bootstrap")
+    async def bootstrap(authorization: str | None = Header(default=None)):
+        await authorize(authorization)
+        if not settings.command_live_stream_enabled or fabric is None:
+            raise HTTPException(503,"shadow observer unavailable")
+        command_observation["bootstrap_reads"] += 1
+        return fabric.visual.publisher.bootstrap()
 
     @app.get("/v1/command/shadow/history")
     async def history(series: str, start: str, end: str, clock: str | None = None,

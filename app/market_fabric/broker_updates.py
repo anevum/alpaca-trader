@@ -67,9 +67,9 @@ def execution_marker(event_id, data):
 
 
 class BrokerUpdateStream:
-    def __init__(self, *, api_key, api_secret, paper, inbox, callback, connect_factory=connect):
+    def __init__(self, *, api_key, api_secret, paper, inbox, callback, on_reconnect=None, connect_factory=connect):
         self.api_key, self.api_secret, self.paper = api_key, api_secret, paper
-        self.inbox, self.callback, self.connect_factory = inbox, callback, connect_factory
+        self.inbox, self.callback, self.on_reconnect, self.connect_factory = inbox, callback, on_reconnect, connect_factory
         self.state = "DISCONNECTED"
         self.last_error = None
 
@@ -89,6 +89,11 @@ class BrokerUpdateStream:
                 if not authenticated or set(data.get("streams", [])) != {"trade_updates"}:
                     raise ValueError("broker subscription mismatch")
                 self.state = "HEALTHY"
+                # The websocket cannot replay events that happened while it was
+                # disconnected. Trigger the read-only canonical reconciliation
+                # immediately after every successful subscription/reconnect.
+                if self.on_reconnect is not None:
+                    await self.on_reconnect()
             elif stream == "trade_updates":
                 if self.state != "HEALTHY":
                     raise ValueError("broker update before authorization")

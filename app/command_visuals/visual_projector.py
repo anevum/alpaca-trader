@@ -20,6 +20,17 @@ class VisualProjector:
                 "series": {k: list(v.points) for k,v in self.series.items()},
                 "execution_events": list(self.executions.points), "forecasts":dict(self.forecasts), "system": dict(self.system)}
 
+    def rotate_symbols(self, now):
+        active = set(self.store.symbols)
+        self.scanner = {symbol:self.store.snapshot(symbol, now) for symbol in self.store.symbols}
+        self.forecasts = {symbol:row for symbol,row in self.forecasts.items() if symbol in active}
+        for key in tuple(self.series):
+            if ":" in key and key.split(":",1)[1] not in active and key.split(":",1)[0] in {"mid","candles","rolling_vwap"}:
+                self.series.pop(key, None)
+        # Rotation is rare and structural. Send a full ordered snapshot rather
+        # than inventing a delete-delta schema for scanner rows.
+        self.publisher.send("snapshot", self.snapshot())
+
     def canonical_forecast(self, record, reference, now):
         from .forecast_projection import project_nostra_forecast
         forecast = project_nostra_forecast(record,reference,now)

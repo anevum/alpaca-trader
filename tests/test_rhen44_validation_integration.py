@@ -18,6 +18,27 @@ from unittest.mock import AsyncMock
 NOW = datetime(2026,10,7,14,0,tzinfo=timezone.utc)
 
 
+def test_execution_archive_recovery_preserves_distinct_fills_and_source_without_future_leak():
+    from app.command_visuals.replay_projection import replay_frame
+    archive = VisualArchive(sqlite3.connect(":memory:"))
+    marker = {"timestamp":NOW.isoformat(),"event_id":"f1","event_type":"FILL","order_ref":"o1",
+        "symbol":"SPY","price":100,"quantity":1,"provenance":"OBSERVED",
+        "source":"ALPACA/trade_updates","quality_state":"LIVE"}
+    archive.append("executions:SPY",marker,NOW)
+    archive.append("executions:SPY",{**marker,"event_id":"f2"},NOW)
+    archive.append("executions:SPY",{**marker,"event_id":"late"},NOW+timedelta(seconds=1))
+    archive.append("candles:SPY",{**marker,"event_id":"not-an-execution"},NOW)
+    archive.append("executions:QQQ",{**marker,"event_id":"q1","order_ref":"o2","symbol":"QQQ"},NOW)
+    recovery=archive.executions(NOW,("SPY",))
+    assert {p["event_id"] for p in recovery["points"]} == {"f1","f2"}
+    assert all(p["quality_state"] == "HISTORICAL" for p in recovery["points"])
+    assert recovery["rejected_records"] == 1
+    assert {p["event_id"] for p in archive.executions(NOW,None)["points"]} == {"f1","f2","q1"}
+    assert not recovery["entry_authority"]
+    replay = replay_frame(recovery["points"],NOW)
+    assert replay[0]["source"] == "ALPACA/trade_updates" and replay[0]["replay_source"] == "VELUM_REPLAY"
+
+
 def controller():
     library = PolicyLibrary.load()
     return AdaptivePolicyController(library,baseline={"stop_pct":".004"},hard_limits={"stop_pct":".005"},configuration_fingerprint="cfg")
@@ -70,6 +91,25 @@ def test_visual_replay_hides_late_corrections_and_reports_retention_loss():
     assert archive.history("SPY",NOW-timedelta(minutes=1),NOW,clock=NOW+timedelta(minutes=1))["pruned_records"] == 1
     with pytest.raises(ValueError): archive.append("SPY",source_point(),NOW-timedelta(seconds=1))
     with pytest.raises(ValueError): archive.history("SPY",NOW-timedelta(days=2),NOW,clock=NOW)
+
+
+def test_replay_limit_applies_to_source_points_after_latest_available_revision():
+    archive = VisualArchive(sqlite3.connect(":memory:"))
+    for i in range(5):
+        archive.append("SPY",source_point(100+i),NOW+timedelta(seconds=i))
+    archive.append("SPY",{**source_point(200),"timestamp":(NOW+timedelta(minutes=1)).isoformat()},NOW+timedelta(minutes=1))
+    latest=archive.history("SPY",NOW-timedelta(minutes=1),NOW+timedelta(minutes=1),clock=NOW+timedelta(minutes=1),limit=1)
+    assert latest["truncated"] and latest["points"][0]["value"] == 104
+    before=archive.history("SPY",NOW-timedelta(minutes=1),NOW,clock=NOW+timedelta(seconds=2),limit=1)
+    assert before["points"][0]["value"] == 102 and not before["truncated"]
+
+
+def test_replay_preserves_distinct_fills_at_the_same_source_timestamp():
+    archive = VisualArchive(sqlite3.connect(":memory:"))
+    for identity in ("fill1","fill2"):
+        archive.append("executions:SPY",{**source_point(),"event_id":identity},NOW)
+    replay=archive.history("executions:SPY",NOW-timedelta(minutes=1),NOW,clock=NOW)
+    assert {p["event_id"] for p in replay["points"]} == {"fill1","fill2"}
 
 
 def test_account_diagnostics_preserve_observed_peak_across_restart(tmp_path):
@@ -177,11 +217,28 @@ def test_champion_reader_uses_only_existing_private_health_get():
     requests = []
     def handle(request):
         requests.append(request)
-        return httpx.Response(200,json={"ok":True,"execution":{"body":{"ok":True,"reconciliation_safe":True,
+        return httpx.Response(200,json={"ok":True,
+            "modules":{"nostra":{"ok":True,"status_code":200,"body":{
+                "running":True,"autorun":True,"foundation_configured":True,"gateway_configured":True,
+                "last_cycle_at":NOW.isoformat(),"last_forecast_at":None,"last_error":None,
+                "last_result":{"status":"HEALTHY","forecast_candidates":0,"forecasts_persisted":0,
+                    "baseline_forecasts_persisted":0,"drift_forecasts_persisted":0,
+                    "gateway_counts":{"candidate_rows_scanned":0,"forecast_candidates":0},
+                    "observed_at":NOW.isoformat()}}}},
+            "execution":{"body":{"ok":True,"reconciliation_safe":True,
+            "startup_reconciled":True,"last_reconciliation":{"safe_to_enter":True,"reason":"fixture-safe"},
             "protected_configuration_identity":{"fingerprint":"sha256:fixture"},
             "persistence":{"strategy_version_id":"4.3"},"runtime_provenance":{"git_commit":"fixture"}}}})
     result = asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(handle)).snapshot())
     assert result["runtime_ok"] and result["reconciliation_safe"] and not result["broker_write_authority"]
+    assert result["startup_reconciled"] is True
+    assert result["reconciliation_detail"] == {"safe_to_enter":True,"reason":"fixture-safe"}
+    assert result["nostra_runtime"]["ok"] is True
+    assert result["nostra_runtime"]["running"] is True
+    assert result["nostra_runtime"]["autorun"] is True
+    assert result["nostra_runtime"]["last_result"]["forecast_candidates"] == 0
+    assert result["nostra_runtime"]["last_result"]["gateway_counts"]["candidate_rows_scanned"] == 0
+    assert result["nostra_runtime"]["execution_authority"] is False
     assert len(requests) == 1 and requests[0].method == "GET"
     assert str(requests[0].url) == "http://alpaca-trader.railway.internal:8080/health"
     assert "authorization" not in requests[0].headers and "apca-api-key-id" not in requests[0].headers
@@ -221,3 +278,224 @@ def test_champion_lineage_rejects_stale_invalid_and_mismatched_reads():
         subject.champion_observation[field] = bad
         assert not ShadowFabric.champion_ready(subject,NOW)
         subject.champion_observation[field] = old
+
+
+def test_champion_reader_preserves_degraded_observation_without_safety_pass():
+    import httpx
+    from app.market_fabric.staging import ReadOnlyChampion
+    def handle(request):
+        assert request.method == "GET"
+        return httpx.Response(503, json={"ok":False,"module_failures":["graen","nostra"],
+            "execution":{"body":{"ok":True,"reconciliation_safe":False,
+                "protected_configuration_identity":{"fingerprint":"sha256:fixture"},
+                "persistence":{"strategy_version_id":"4.3"},
+                "runtime_provenance":{"git_commit":"fixture"}}}})
+    result = asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(handle)).snapshot())
+    assert result["source_commit"] == "fixture"
+    assert result["protected_configuration_fingerprint"] == "sha256:fixture"
+    assert result["aggregate_http_status"] == 503 and result["module_failures"] == ["graen","nostra"]
+    assert not result["runtime_ok"] and not result["reconciliation_safe"]
+    assert not result["broker_write_authority"]
+
+
+@pytest.mark.parametrize("body", [{"ok":False}, {"execution":{"body":{"ok":False}}}, []])
+def test_champion_reader_rejects_unavailable_execution_on_503(body):
+    import httpx
+    from app.market_fabric.staging import ReadOnlyChampion
+    with pytest.raises(ValueError):
+        asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(
+            lambda request: httpx.Response(503,json=body))).snapshot())
+
+
+def test_canonical_universe_reader_is_get_only_and_validates_authority():
+    import httpx
+    from app.config import Settings
+    from app.market_fabric.staging import ReadOnlyCanonicalUniverse
+    calls=[]
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200,json={"ok":True,"universe_version":"rhen-canonical-universe-read-v1",
+            "enabled":True,"source":"hierarchical_screener","active_count":3,
+            "candidate_count":100,"eligible_count":5000,"updated_at":NOW.isoformat(),"error":None,
+            "active_symbols":["SPY","QQQ","NVDA"],"execution_authority":False,
+            "broker_orders_possible":False})
+    settings=Settings(_env_file=None,TRADING_INGEST_TOKEN="fixture-token")
+    result=asyncio.run(ReadOnlyCanonicalUniverse(settings,transport=httpx.MockTransport(handle)).snapshot())
+    assert result["active_symbols"]==["SPY","QQQ","NVDA"]
+    assert len(calls)==1 and calls[0].method=="GET"
+    assert calls[0].url.path=="/v1/scheduler/universe"
+    assert calls[0].headers["x-anevum-scheduler-token"]=="fixture-token"
+
+    bad=ReadOnlyCanonicalUniverse(settings,transport=httpx.MockTransport(
+        lambda request:httpx.Response(200,json={**result,"execution_authority":True})))
+    with pytest.raises(ValueError):
+        asyncio.run(bad.snapshot())
+
+
+def test_canonical_forecast_reader_is_get_only_and_validates_authority():
+    import httpx
+    from app.config import Settings
+    from app.market_fabric.staging import ReadOnlyCanonicalForecasts
+    calls=[]
+    body={"ok":True,"schema_version":"nostra-canonical-forecast-read-v1",
+        "observed_at":NOW.isoformat(),"forecasts":[],"returned_count":0,
+        "rejected_count":0,"truncated":False,"research_only":True,
+        "execution_authority":False,"broker_write_authority":False}
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200,json=body)
+    settings=Settings(_env_file=None,TRADING_INGEST_TOKEN="fixture-token")
+    result=asyncio.run(ReadOnlyCanonicalForecasts(settings,transport=httpx.MockTransport(handle)).snapshot())
+    assert result["forecasts"]==[]
+    assert len(calls)==1 and calls[0].method=="GET"
+    assert calls[0].url.path=="/v1/scheduler/nostra-forecasts"
+    assert calls[0].headers["x-anevum-scheduler-token"]=="fixture-token"
+    bad=ReadOnlyCanonicalForecasts(settings,transport=httpx.MockTransport(
+        lambda request:httpx.Response(200,json={**body,"execution_authority":True})))
+    with pytest.raises(ValueError):
+        asyncio.run(bad.snapshot())
+
+
+def test_forecast_reference_uses_only_observed_pre_feature_candle():
+    from types import SimpleNamespace
+    from app.market_fabric.runtime import ShadowFabric
+    record={"symbol":"SPY","snapshot_id":"nss-1","as_of_timestamp":NOW.isoformat()}
+    point={"symbol":"SPY","timestamp":(NOW-timedelta(seconds=60)).isoformat(),"close":100.0,
+        "provenance":"OBSERVED","source":"ALPACA/iex","quality_state":"LIVE"}
+    archive=SimpleNamespace(history=lambda *a,**k:{"points":[point]})
+    subject=SimpleNamespace(store=SimpleNamespace(symbols=("SPY",)),archive=archive)
+    ref=ShadowFabric.forecast_reference(subject,record,NOW+timedelta(seconds=1))
+    assert ref["snapshot_id"]=="nss-1"
+    assert ref["value"]==100.0
+    assert ref["timestamp"]==point["timestamp"]
+    assert ref["provenance"]=="OBSERVED"
+
+
+def test_forecast_reference_uses_normalized_archive_and_cutoff_available_revision():
+    from types import SimpleNamespace
+    from app.market_fabric.runtime import ShadowFabric
+    archive=VisualArchive(sqlite3.connect(":memory:"))
+    record={"symbol":"SPY","snapshot_id":"nss-1","as_of_timestamp":NOW.isoformat()}
+    point={"symbol":"SPY","timestamp":(NOW-timedelta(minutes=1)).isoformat(),
+        "open":99.0,"high":101.0,"low":98.0,"close":100.0,"volume":10.0,
+        "provenance":"OBSERVED","source":"ALPACA/iex","quality_state":"LIVE"}
+    archive.append("candles:SPY",point,NOW)
+    archive.append("candles:SPY",{**point,"close":101.0},NOW+timedelta(seconds=1))
+    # An observed but not completed minute cannot supply the feature price.
+    archive.append("candles:SPY",{**point,"timestamp":NOW.isoformat(),"close":102.0},NOW)
+    subject=SimpleNamespace(store=SimpleNamespace(symbols=("SPY",)),archive=archive)
+    ref=ShadowFabric.forecast_reference(subject,record,NOW+timedelta(seconds=2))
+    assert ref["value"] == 100.0
+    assert ref["timestamp"] == point["timestamp"]
+
+
+def test_forecast_reference_rejects_only_later_available_candles():
+    from types import SimpleNamespace
+    from app.market_fabric.runtime import ShadowFabric
+    archive=VisualArchive(sqlite3.connect(":memory:"))
+    point={"symbol":"SPY","timestamp":(NOW-timedelta(minutes=1)).isoformat(),
+        "close":100.0,"provenance":"OBSERVED","source":"ALPACA/iex","quality_state":"LIVE"}
+    archive.append("candles:SPY",point,NOW+timedelta(seconds=1))
+    subject=SimpleNamespace(store=SimpleNamespace(symbols=("SPY",)),archive=archive)
+    record={"symbol":"SPY","snapshot_id":"nss-1","as_of_timestamp":NOW.isoformat()}
+    assert ShadowFabric.forecast_reference(subject,record,NOW+timedelta(seconds=2)) is None
+
+
+def test_canonical_ledger_reader_is_get_only_and_validates_authority():
+    import httpx
+    from app.config import Settings
+    from app.market_fabric.staging import ReadOnlyCanonicalLedger
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200,json={"ok":True,"ledger_version":"rhen-canonical-ledger-read-v1",
+            "run_id":"run-live","event_count":0,"truncated":False,"events":[],
+            "execution_authority":False,"broker_orders_possible":False})
+    settings = Settings(_env_file=None, TRADING_INGEST_TOKEN="fixture-token")
+    result = asyncio.run(ReadOnlyCanonicalLedger(settings,transport=httpx.MockTransport(handle)).snapshot("run-live"))
+    assert result["run_id"] == "run-live"
+    assert len(calls) == 1 and calls[0].method == "GET"
+    assert calls[0].url.path == "/v1/trading-report-read"
+    assert calls[0].url.params["latest"] == "ledger"
+    assert calls[0].url.params["run_id"] == "run-live"
+    assert calls[0].headers["x-anevum-ingest-token"] == "fixture-token"
+
+    bad = ReadOnlyCanonicalLedger(settings,transport=httpx.MockTransport(
+        lambda request:httpx.Response(200,json={**result,"execution_authority":True})))
+    with pytest.raises(ValueError):
+        asyncio.run(bad.snapshot("run-live"))
+
+
+def test_canonical_ledger_parity_is_overlap_bounded_and_fail_closed():
+    from app.market_fabric.runtime import ShadowFabric
+    earlier = (NOW-timedelta(minutes=10)).isoformat()
+    retained = NOW.isoformat()
+    canonical = {"ok":True,"truncated":False,"events":[
+        {"event_key":"old","event_type":"broker_order","occurred_at":earlier,
+            "order":{"id":"old-order"}},
+        {"event_key":"new","event_type":"broker_order","occurred_at":retained,
+            "order":{"id":"order-1"}},
+        {"event_key":"fill","event_type":"broker_fill","occurred_at":retained,
+            "fill":{"id":"fill-1","order_id":"order-1"}},
+    ]}
+    observed = [{"event_id":"obs-1","timestamp":retained,"event_type":"FILL",
+        "order_ref":"order-1","symbol":"SPY"}]
+    parity = ShadowFabric.canonical_ledger_parity(canonical,observed)
+    assert parity["quality_state"] == "LIVE"
+    assert parity["parity_complete"] is True
+    assert parity["canonical_order_count"] == 1
+    assert parity["missing_observed_orders"] == 0
+    assert parity["entry_authority"] is False
+    assert parity["broker_write_authority"] is False
+
+    extra = ShadowFabric.canonical_ledger_parity(canonical,observed+[
+        {**observed[0],"event_id":"obs-extra","order_ref":"unknown"}])
+    assert extra["quality_state"] == "LIVE"
+    assert extra["parity_complete"] is True
+    assert extra["stream_parity_complete"] is True
+    assert extra["reconciliation_complete"] is True
+    assert extra["reason"] == "PARITY_WITH_UNATTRIBUTED_ACCOUNT_EVENTS"
+    assert extra["missing_observed_orders"] == 0
+    assert extra["unattributed_observed_orders"] == 1
+
+    diverged = ShadowFabric.canonical_ledger_parity(canonical,[{**observed[0],"order_ref":"unknown"}])
+    assert diverged["quality_state"] == "DEGRADED"
+    assert diverged["parity_complete"] is False
+    assert diverged["stream_parity_complete"] is False
+    assert diverged["reconciliation_complete"] is True
+    assert diverged["recovered_gap_orders"] == 1
+    assert diverged["recovered_gap_fills"] == 1
+    assert diverged["missing_observed_orders"] == 1
+    assert diverged["unattributed_observed_orders"] == 1
+    assert diverged["missing_order_first_at"] == retained
+    assert diverged["missing_order_last_at"] == retained
+
+    truncated = ShadowFabric.canonical_ledger_parity({**canonical,"truncated":True},observed)
+    assert truncated["quality_state"] == "UNAVAILABLE"
+    assert truncated["parity_complete"] is False
+
+
+def test_reconcile_account_publishes_unavailable_ledger_without_authority(tmp_path):
+    from app.config import Settings
+    from app.market_fabric.runtime import ShadowFabric
+    from types import SimpleNamespace
+    async def account_reader():
+        return {"account":{"id":"fixture","equity":"100","cash":"100","last_equity":"100"},
+            "positions":[],"open_orders":[]}
+    async def champion_reader():
+        return {"run_id":"run-live","observed_at":NOW.isoformat(),"runtime_ok":True,
+            "reconciliation_safe":True,"strategy_version":"LIVE-2026-09-25-003",
+            "protected_configuration_fingerprint":"sha256:"+"a"*64}
+    async def ledger_reader(run_id):
+        assert run_id == "run-live"
+        raise RuntimeError("fixture-unavailable")
+    settings=Settings(_env_file=None,RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"ledger.db"))
+    fabric=ShadowFabric(settings,SimpleNamespace(),account_reader=account_reader,
+        champion_reader=champion_reader,ledger_reader=ledger_reader)
+    asyncio.run(fabric.reconcile_account())
+    parity=fabric.visual.system["canonical_ledger_parity"]
+    assert parity["quality_state"]=="UNAVAILABLE"
+    assert parity["parity_complete"] is False
+    assert parity["entry_authority"] is False
+    assert parity["broker_write_authority"] is False
+    fabric.checkpoint.close()

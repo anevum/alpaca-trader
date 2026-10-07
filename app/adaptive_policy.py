@@ -122,7 +122,7 @@ class AdaptivePolicyController:
                       allow_new_entries=p["allow_new_entries"], allow_margin=False)
         return result
 
-    def observe(self, context: PolicyContext, *, enabled=False, mode="shadow"):
+    def observe(self, context: PolicyContext, *, enabled=False, mode="shadow", approved_profiles=None):
         if mode not in {"disabled", "shadow"}:
             raise ValueError("ACTIVE requires a later protected profile release; unavailable pre-crossover")
         reasons = []
@@ -147,6 +147,13 @@ class AdaptivePolicyController:
                             "LATE_SESSION_EXPANSION": "TREND_EXTEND", "TREND_DECAY": "NORMAL", "ROTATION": "NORMAL",
                             "MIDDAY_COMPRESSION": "DEFENSIVE", "HIGH_VOLATILITY": "DEFENSIVE", "CHOP": "DEFENSIVE",
                             "BROAD_DECLINE": "NO_TRADE"}.get(context.regime, "BASELINE_LOCKED")
+            if approved_profiles is not None:
+                approved = frozenset(str(p) for p in approved_profiles if str(p) in ORDER)
+                # NO_TRADE is an unconditional safety reduction. Any other
+                # counterfactual profile requires exact trusted release lineage.
+                if selected not in {"BASELINE_LOCKED","NO_TRADE"} and selected not in approved:
+                    selected = "BASELINE_LOCKED"
+                    reasons.append("PROFILE_NOT_APPROVED")
             fresh_observation = self.last_observation is None or context.feature_as_of > self.last_observation
             current_rank = ORDER.index(self.profile) if self.profile in ORDER else ORDER.index("NORMAL")
             rank = ORDER.index(selected) if selected in ORDER else ORDER.index("NORMAL")

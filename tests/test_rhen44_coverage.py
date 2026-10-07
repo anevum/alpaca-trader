@@ -160,6 +160,31 @@ def test_deadline_task_expires_quiet_state_without_a_polling_loop(tmp_path):
     asyncio.run(run())
 
 
+def test_deadline_task_recovers_expiry_before_observer_start(tmp_path):
+    async def run():
+        fabric = ShadowFabric(Settings(_env_file=None, EXTENDED_EQUITY_SYMBOLS="SPY",
+            RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"late-timer.db")), SimpleNamespace())
+        source_at = datetime.now(timezone.utc)-timedelta(milliseconds=100)
+        fabric.store = store_ready(source_at)
+        fabric.store.QUOTE_FRESHNESS_MS = 25
+        fabric.refresh_observation(source_at)
+        assert fabric.visual.scanner["SPY"]["evaluable"]
+        task = asyncio.create_task(fabric.freshness_observer())
+        try:
+            await asyncio.sleep(.01)
+            row = fabric.visual.scanner["SPY"]
+            assert row["rejection_code"] == "STALE_QUOTE"
+            assert "STALE_BAR" not in row["rejection_codes"]
+            assert not row["evaluable"]
+            assert fabric.coverage.summary(fabric.store, datetime.now(timezone.utc))["evaluable_symbol_hours"]*3600 <= .0251
+            assert not fabric.visual.series
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            fabric.checkpoint.close()
+    asyncio.run(run())
+
+
 def test_buffered_market_burst_yields_to_other_tasks_without_losing_events():
     class BufferedSocket:
         def __init__(self):

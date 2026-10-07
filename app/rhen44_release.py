@@ -14,7 +14,6 @@ def release_status(settings, observer=None):
     configured_stream_symbols = len(settings.extended_equity_symbols)
     rotation_required = discovery_size > stream_capacity
     blockers = [
-        "canonical_integration_incomplete",
         "exact_configuration_and_broker_baseline_unattested",
         "live_entitlement_and_stream_coverage_unattested",
         "replay_and_shadow_validation_incomplete",
@@ -22,7 +21,10 @@ def release_status(settings, observer=None):
         "command_live_visual_acceptance_incomplete",
         "research_and_holdout_gates_incomplete",
     ]
-    if rotation_required:
+    hotset = getattr(observer, "hotset_status", {}) if running else {}
+    rotation_integrated = bool(hotset.get("integrated"))
+    rotation_active = bool(hotset.get("active"))
+    if rotation_required and not rotation_integrated:
         blockers.append("discovery_stream_hotset_rotation_incomplete")
     return {
         "provenance": "OPERATIONAL",
@@ -40,7 +42,11 @@ def release_status(settings, observer=None):
             "stream_capacity": stream_capacity,
             "configured_stream_symbols": configured_stream_symbols,
             "hotset_rotation_required": rotation_required,
-            "hotset_rotation_integrated": False,
+            "hotset_rotation_integrated": rotation_integrated,
+            "hotset_rotation_active": rotation_active,
+            "hotset_quality_state": hotset.get("quality_state","UNAVAILABLE"),
+            "hotset_rotation_count": hotset.get("rotation_count",0),
+            "current_stream_symbols": len(getattr(getattr(observer, "store", None), "symbols", settings.extended_equity_symbols)) if running else configured_stream_symbols,
         },
         "broker_write_authority": False,
         "adaptive_active_available": False,

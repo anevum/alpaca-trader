@@ -6,6 +6,7 @@ deferred until signed equivalence and runtime gates are established.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -32,37 +33,79 @@ from .signal_reasons import rejection_reasons
 from .policy_state import PolicyStateStore
 from .contracts import utc
 from .coverage_evidence import CoverageEvidence
+from .asset_eligibility import AssetEligibility
+from .hotset import HotsetSelector
+from .profile_release_registry import TrustedProfileReleaseRegistry
 from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, discovery_reader=None, asc_reader=None, forecast_reader=None, asset_reader=None, ledger_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
+        self.checkpoint = StreamCheckpoint(settings.rhen_market_stream_checkpoint_path)
+        # 32 MiB ceiling for isolated bars, summaries and bounded shadow evidence.
+        self.checkpoint.db.execute("PRAGMA max_page_count=8192")
+        self.hotset = HotsetSelector(self.checkpoint.db,
+            capacity=settings.rhen_market_stream_capacity,
+            pinned=(*settings.universe_always_include, *settings.confirmation_symbols),
+            min_dwell_seconds=settings.universe_refresh_seconds,
+            max_changes=min(4, settings.rhen_market_stream_capacity))
+        if self.hotset.restored_symbols:
+            self.store.rotate_symbols(self.hotset.restored_symbols)
+        self.hotset_status = {"integrated":True,"active":False,"quality_state":"RESTORED" if self.hotset.restored_symbols else "AWAITING_DISCOVERY",
+            "methodology_version":HotsetSelector.METHODOLOGY_VERSION,"capacity":settings.rhen_market_stream_capacity,
+            "rotation_count":self.hotset.rotations,"entry_authority":False,"broker_write_authority":False}
+        self.supervise_wakeup = asyncio.Event()
         self.visual = VisualProjector(self.store, flush_ms=settings.command_live_flush_ms)
         self.rejections = RejectionEngine()
         self.evaluator = evaluator
         self.account_reader = account_reader
+        self.asset_reader = asset_reader
+        self.asset_refresh = asyncio.Event()
         self.champion_reader = champion_reader
+        self.discovery_reader = discovery_reader
+        self.asc_reader = asc_reader
+        self.forecast_reader = forecast_reader
+        self.ledger_reader = ledger_reader
         self.champion_observation = None
+        self.discovery_observation = None
+        self.discovery_error = None
+        self.forecast_observation = None
+        self.forecast_error = None
+        self.asc_approval = {
+            "quality_state":"UNAVAILABLE","reason":"CANONICAL_PROFILE_RELEASE_UNREAD",
+            "approved_profiles":[],"evidence_healthy":False,
+            "entry_authority":False,"broker_write_authority":False,
+            "active_mode_authorized":False,
+        }
+        self.asc_error = None
         self.account_refresh = asyncio.Event()
         self.signal_cache = {}
         self.resolver = EquitySessionResolver(market_data)
         self.market_data = market_data
         self.context = None
         self.route = None
-        self.checkpoint = StreamCheckpoint(settings.rhen_market_stream_checkpoint_path)
-        # 32 MiB ceiling for isolated bars, summaries and bounded shadow evidence.
-        self.checkpoint.db.execute("PRAGMA max_page_count=8192")
         self.evidence = DecisionEvidence(self.checkpoint.db)
+        self.assets = AssetEligibility(self.checkpoint.db, self.store.symbols)
         self.archive = VisualArchive(self.checkpoint.db)
+        recovered_executions = self.archive.executions(datetime.now(timezone.utc), self.store.symbols)
+        self.visual.executions.points.extend(recovered_executions["points"])
+        self.visual.system.update(execution_recovery={"restored_events":len(recovered_executions["points"]),
+            "rejected_records":recovered_executions["rejected_records"],"coverage_state":"BOUNDED_OBSERVATIONS_ONLY",
+            "source":"RHEN/observed_execution_archive","provenance":"OPERATIONAL","entry_authority":False})
         self.performance = AccountPerformance(self.checkpoint.db)
         self.library = PolicyLibrary.load()
+        self.asc_registry = TrustedProfileReleaseRegistry(library_fingerprint=self.library.fingerprint)
         baseline = {k: str(getattr(settings, k)) for k in ("stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes", "max_spread_pct", "min_quality_score")}
         # This identifies shadow inputs, not the protected production configuration.
         self.shadow_configuration = fingerprint({"baseline": baseline, "strategy": settings.strategy_version_id,
-            "symbols": settings.extended_equity_symbols, "fast_window": settings.fast_window, "slow_window": settings.slow_window})
+            "universe_model":"BROAD_DISCOVERY_NARROW_STREAM",
+            "stream_capacity":settings.rhen_market_stream_capacity,
+            "hotset_methodology":HotsetSelector.METHODOLOGY_VERSION,
+            "fast_window": settings.fast_window, "slow_window": settings.slow_window,
+            "asset_eligibility_methodology":AssetEligibility.METHODOLOGY_VERSION if asset_reader is not None else "UNATTESTED"})
         self.coverage = CoverageEvidence(self.checkpoint.db, strategy_version=settings.strategy_version_id,
                                          configuration=self.shadow_configuration)
         self.freshness_wakeup = asyncio.Event()
@@ -82,6 +125,8 @@ class ShadowFabric:
         self.last_error = None
         self.broker = None
         self.inbox = None
+        self.broker_reconnects = 0
+        self.last_broker_reconnect = None
 
     async def on_stream_status(self, status):
         self.refresh_observation(utc(status["source_at"]))
@@ -96,14 +141,22 @@ class ShadowFabric:
         eligibility_changed = False
         for symbol in targets:
             row = self.store.snapshot(symbol, now)
+            if self.asset_reader is not None:
+                row["asset_eligibility"] = self.assets.snapshot(symbol, (self.store.context or (None,"CLOSED"))[1].split("/")[-1], now)
             previous = self.visual.scanner.get(symbol, {})
             fields = ("feed", "session", "evaluable", "rejection_codes", "quality_state", "observed_bar_count")
-            if any(previous.get(k) != row.get(k) for k in fields):
+            asset_changed = any(previous.get("asset_eligibility",{}).get(k) != row.get("asset_eligibility",{}).get(k)
+                                for k in ("eligible", "fetched_at", "facts", "rejection_codes"))
+            if asset_changed or any(previous.get(k) != row.get(k) for k in fields):
                 eligibility_changed = eligibility_changed or previous.get("evaluable") != row.get("evaluable")
                 patch = {**previous, **row}
                 if not row["evaluable"]:
                     patch.update(classification="NOT_EVALUABLE", candidate_state="BLOCKED",
                         signal_reason="Market prerequisites unavailable; previous signal is historical")
+                elif self.asset_reader is not None and not row["asset_eligibility"]["eligible"]:
+                    patch.update(classification="EVALUABLE_REJECTED", candidate_state="BLOCKED",
+                        rejection_code=row["asset_eligibility"]["rejection_codes"][0],
+                        signal_reason="Fresh asset eligibility evidence is required")
                 self.visual.scanner[symbol] = patch
                 self.visual.publisher.stage("scanner:"+symbol, "scanner_patch", patch)
         if eligibility_changed:
@@ -114,10 +167,36 @@ class ShadowFabric:
         # One deadline timer invalidates quiet symbols. No market polling or
         # fabricated quote/bar event; the publisher supplies ordered state deltas.
         while True:
-            self.freshness_wakeup.clear()
             now = datetime.now(timezone.utc)
+            # Scheduling can resume after a source deadline has already passed.
+            # Invalidate only unpublished expiries before choosing future timers;
+            # otherwise a fresh bar can mask an expired quote until its own timer.
+            overdue = []
+            for symbol in self.store.symbols:
+                reasons = self.visual.scanner.get(symbol, {}).get("rejection_codes", ())
+                timestamps = self.store.rows.get(symbol, {}).get("timestamps", {})
+                if any(source <= now and source + timedelta(milliseconds=limit) < now
+                       and reason not in reasons
+                       for kind, limit, reason in (
+                           ("quote", self.store.QUOTE_FRESHNESS_MS, "STALE_QUOTE"),
+                           ("bar", self.store.BAR_FRESHNESS_MS, "STALE_BAR"))
+                       if (source := timestamps.get(kind)) is not None):
+                    overdue.append(symbol)
+            asset_overdue = (self.asset_reader is not None and self.assets.fetched_at is not None
+                and self.assets.fetched_at + timedelta(seconds=self.assets.MAX_AGE_SECONDS) < now
+                and any(row.get("asset_eligibility", {}).get("quality_state") == "LIVE"
+                        for row in self.visual.scanner.values()))
+            if overdue or asset_overdue:
+                self.refresh_observation(now, symbols=None if asset_overdue else overdue)
+                self.visual.system_patch({"scanner_coverage": self.coverage.summary(self.store, now)})
+                if asset_overdue:
+                    self.visual.system_patch({"asset_eligibility": self.asset_summary(now)})
+            # No await occurs between expiry processing and clearing the wakeup.
+            self.freshness_wakeup.clear()
             deadlines = [at for symbol in self.store.symbols
                          if (at := self.store.freshness_deadline(symbol, now)) is not None]
+            if self.asset_reader is not None and (asset_deadline := self.assets.deadline(now)) is not None:
+                deadlines.append(asset_deadline)
             if not deadlines:
                 await self.freshness_wakeup.wait()
                 continue
@@ -128,6 +207,8 @@ class ShadowFabric:
                 now = datetime.now(timezone.utc)
                 self.refresh_observation(now)
                 self.visual.system_patch({"scanner_coverage": self.coverage.summary(self.store, now)})
+                if self.asset_reader is not None:
+                    self.visual.system_patch({"asset_eligibility":self.asset_summary(now)})
 
     async def bootstrap(self, feed, session_id):
         now = datetime.now(timezone.utc)
@@ -182,7 +263,11 @@ class ShadowFabric:
         signal = None
         decision_id = None
         if row["evaluable"]:
-            if row["spread_bps"] is not None and row["spread_bps"] > float(self.settings.max_spread_pct)*10000:
+            asset = self.assets.snapshot(event.symbol, event.session, now) if self.asset_reader is not None else None
+            if asset is not None and not asset["eligible"]:
+                classification = "EVALUABLE_REJECTED"
+                reasons = tuple(asset["rejection_codes"])
+            elif row["spread_bps"] is not None and row["spread_bps"] > float(self.settings.max_spread_pct)*10000:
                 classification = "EVALUABLE_REJECTED"
                 reasons = ("SPREAD_TOO_WIDE",)
             elif self.evaluator and event.session == "REGULAR":
@@ -221,9 +306,12 @@ class ShadowFabric:
             self.regime, self.features = regime_observation(self.store, now, fast_window=self.settings.fast_window, slow_window=self.settings.slow_window)
             context = PolicyContext(now, utc(self.regime["feature_as_of"]), event.session, self.regime["primary_regime"],
                 self.regime["confidence"], self.regime["unknown_probability"], self.regime["market_familiarity"],
-                # Missing canonical health/approval lineage is a veto, not an assumed pass.
-                False, self.champion_ready(now), self.champion_ready(now), False, self.shadow_configuration, self.library.fingerprint)
-            self.policy_snapshot = self.policy.observe(context, enabled=True, mode="shadow")
+                self.asc_approval.get("evidence_healthy") is True,
+                self.champion_ready(now), self.champion_ready(now), False,
+                self.shadow_configuration, self.library.fingerprint)
+            self.policy_snapshot = self.policy.observe(
+                context, enabled=True, mode="shadow",
+                approved_profiles=self.asc_approval.get("approved_profiles",()))
             self.policy_state.save(self.policy, event.session_id, now)
             self.regime_key = feature_key
             for symbol, feature in self.features.items():
@@ -238,6 +326,9 @@ class ShadowFabric:
                 "effective": dict(self.policy_snapshot.execution_values), "counterfactual": dict(self.policy_snapshot.counterfactual_values),
                 "reason_codes": list(self.policy_snapshot.reasons), "entry_authority": False,
                 "canonical_health_lineage": "VERIFIED_READ" if self.champion_ready(now) else "UNAVAILABLE",
+                "asc_profile_release_state":self.asc_approval.get("quality_state","UNAVAILABLE"),
+                "approved_profiles":list(self.asc_approval.get("approved_profiles",())),
+                "active_mode_authorized":False,
                 "recovery_state": self.policy_recovery, "profile_since": self.policy.since.isoformat() if self.policy.since else None,
                 "pending_profile": self.policy.pending, "confirmation_count": self.policy.confirmed}})
         evaluation = Evaluation(decision_id, now, event.session, event.feed,
@@ -248,8 +339,14 @@ class ShadowFabric:
             "reasons": list(reasons), "signal_reason": signal.reason if signal else None, "signal_metadata": signal.metadata if signal else {},
             "strategy_version": self.settings.strategy_version_id, "policy_snapshot": self.policy_snapshot.snapshot_fingerprint,
             "policy_library_fingerprint": self.library.fingerprint, "shadow_configuration_fingerprint": self.shadow_configuration,
-            "regime": self.regime, "entry_authority": False, "risk_validation_state": "UNAVAILABLE",
+            "regime": self.regime, "entry_authority": False,
+            # Profile approval is not portfolio/risk validation. These decisions
+            # still stop at the signal-only boundary until that path is integrated.
+            "risk_validation_state": "NOT_EVALUATED_SIGNAL_ONLY",
+            "approved_profiles":list(self.asc_approval.get("approved_profiles",())),
             "candidate_kind": "SIGNAL_ONLY_COUNTERFACTUAL", "provenance": "DERIVED", "source": "RHEN/market_fabric"}
+        if self.asset_reader is not None:
+            evidence["asset_eligibility"] = self.assets.snapshot(event.symbol, event.session, now)
         if decision_id not in self.rejections.ids and self.evidence.record(decision_id, evidence, coverage=self.coverage):
             self.rejections.record(evaluation)
         self.visual.market(event, now)
@@ -259,8 +356,23 @@ class ShadowFabric:
                  "rejection_code": reasons[0] if reasons else None, "classification": classification,
                  "signal_reason": signal.reason if signal else "Strategy integration not validated for this session"}
         patch.update(decision_id=decision_id, signal_features=signal.metadata if signal else {}, entry_authority=False)
+        if self.asset_reader is not None:
+            patch["asset_eligibility"] = evidence["asset_eligibility"]
+            if not patch["asset_eligibility"]["eligible"]:
+                patch["candidate_state"] = "BLOCKED"
         self.visual.scanner[event.symbol] = patch
         self.visual.publisher.stage("scanner:"+event.symbol, "scanner_patch", patch)
+
+    async def broker_reconnect(self):
+        now = datetime.now(timezone.utc)
+        self.broker_reconnects += 1
+        self.last_broker_reconnect = now
+        self.visual.system_patch({"broker_reconciliation":{
+            "last_reconnect_at":now.isoformat(),"reconnect_count":self.broker_reconnects,
+            "canonical_reconciliation_requested":True,"entry_authority":False,
+            "broker_write_authority":False,"source":"ALPACA/trade_updates",
+            "provenance":"OPERATIONAL"}})
+        self.account_refresh.set()
 
     async def broker_event(self, event_id, data):
         # Durable inbox acknowledges source evidence before ephemeral visualization.
@@ -271,6 +383,81 @@ class ShadowFabric:
         self.visual.critical(marker)
         self.account_refresh.set()
         return True
+
+    @staticmethod
+    def canonical_ledger_parity(canonical, observed):
+        """Compare only the source-time overlap retained by the shadow archive."""
+        base = {"entry_authority":False,"broker_write_authority":False,
+            "source":"RHEN/canonical_ledger_read","provenance":"DERIVED",
+            "methodology_version":"canonical-observation-parity-v1","parity_complete":False,
+            "stream_parity_complete":False,"reconciliation_complete":False}
+        if (not isinstance(canonical,dict) or canonical.get("ok") is not True
+            or canonical.get("truncated") is True or not isinstance(canonical.get("events"),list)):
+            return {**base,"quality_state":"UNAVAILABLE","reason":"CANONICAL_LEDGER_UNAVAILABLE_OR_TRUNCATED"}
+        points = [p for p in observed if isinstance(p,dict) and p.get("order_ref") and p.get("timestamp")]
+        if not points:
+            return {**base,"quality_state":"NO_OVERLAP","reason":"NO_RETAINED_BROKER_OBSERVATIONS",
+                "canonical_events":len(canonical["events"]),"observed_events":0}
+        try:
+            start = min(utc(p["timestamp"]) for p in points)
+        except (ValueError,TypeError):
+            return {**base,"quality_state":"UNAVAILABLE","reason":"INVALID_OBSERVED_EXECUTION_TIME"}
+        events = []
+        for event in canonical["events"]:
+            try:
+                if utc(event.get("occurred_at")) >= start:
+                    events.append(event)
+            except (ValueError,TypeError):
+                continue
+        canonical_orders = {str((e.get("order") or {}).get("id") or "")
+            for e in events if e.get("event_type") == "broker_order"}
+        canonical_orders.discard("")
+        canonical_fills = {str((e.get("fill") or {}).get("order_id") or "")
+            for e in events if e.get("event_type") == "broker_fill"}
+        canonical_fills.discard("")
+        observed_orders = {str(p["order_ref"]) for p in points}
+        observed_fills = {str(p["order_ref"]) for p in points
+            if p.get("event_type") in {"FILL","PARTIAL_FILL"}}
+        missing_orders = canonical_orders-observed_orders
+        unattributed_orders = observed_orders-canonical_orders
+        missing_fills = canonical_fills-observed_fills
+        unattributed_fills = observed_fills-canonical_fills
+
+        def missing_range(event_type, missing_ids):
+            stamps = []
+            for event in events:
+                if event.get("event_type") != event_type:
+                    continue
+                payload = event.get("order") or {} if event_type == "broker_order" else event.get("fill") or {}
+                identity = payload.get("id") if event_type == "broker_order" else payload.get("order_id")
+                if str(identity or "") not in missing_ids:
+                    continue
+                try:
+                    stamps.append(utc(event.get("occurred_at")))
+                except (ValueError, TypeError):
+                    continue
+            return (min(stamps).isoformat(), max(stamps).isoformat()) if stamps else (None, None)
+
+        missing_order_first, missing_order_last = missing_range("broker_order", missing_orders)
+        missing_fill_first, missing_fill_last = missing_range("broker_fill", missing_fills)
+        complete = not (missing_orders or missing_fills)
+        reason = ("PARITY_WITH_UNATTRIBUTED_ACCOUNT_EVENTS" if complete and (unattributed_orders or unattributed_fills)
+                  else "PARITY" if complete else "DIVERGENCE")
+        return {**base,"quality_state":"LIVE" if complete else "DEGRADED",
+            "reason":reason,"parity_complete":complete,"stream_parity_complete":complete,
+            "reconciliation_complete":True,
+            "recovered_gap_orders":len(missing_orders),"recovered_gap_fills":len(missing_fills),
+            "overlap_started_at":start.isoformat(),"canonical_events":len(events),"observed_events":len(points),
+            "canonical_order_count":len(canonical_orders),"observed_order_count":len(observed_orders),
+            "canonical_fill_order_count":len(canonical_fills),"observed_fill_order_count":len(observed_fills),
+            "missing_observed_orders":len(missing_orders),
+            "unattributed_observed_orders":len(unattributed_orders),
+            "unknown_observed_orders":len(unattributed_orders),
+            "missing_observed_fills":len(missing_fills),
+            "unattributed_observed_fills":len(unattributed_fills),
+            "unknown_observed_fills":len(unattributed_fills),
+            "missing_order_first_at":missing_order_first,"missing_order_last_at":missing_order_last,
+            "missing_fill_first_at":missing_fill_first,"missing_fill_last_at":missing_fill_last}
 
     async def reconcile_account(self):
         if self.account_reader is None:
@@ -283,6 +470,97 @@ class ShadowFabric:
             except Exception:
                 self.champion_observation = None
             self.visual.system_patch({"champion_observation":self.champion_observation or {"quality_state":"UNAVAILABLE"}})
+        if self.discovery_reader:
+            try:
+                self.discovery_observation = await self.discovery_reader()
+                self.discovery_error = None
+            except Exception as exc:
+                self.discovery_observation = None
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                self.discovery_error = type(exc).__name__ + (f":HTTP_{status}" if status else "")
+            # Champion/discovery observations are stamped after their network
+            # reads. Evaluate freshness against a clock captured after those reads;
+            # using the pre-read account timestamp can create a false negative age.
+            self.update_hotset(datetime.now(timezone.utc))
+        if self.asc_reader:
+            try:
+                canonical_research = await self.asc_reader()
+                self.asc_approval = self.asc_registry.review(
+                    canonical_research,
+                    now=datetime.now(timezone.utc),
+                    expected_configuration_fingerprint=str(
+                        (self.champion_observation or {}).get("protected_configuration_fingerprint") or ""),
+                    source_strategy_version=self.settings.strategy_version_id,
+                )
+                self.asc_error = None
+            except Exception as exc:
+                self.asc_error = type(exc).__name__
+                self.asc_approval = {
+                    "quality_state":"UNAVAILABLE","reason":"CANONICAL_PROFILE_RELEASE_READ_FAILED",
+                    "approved_profiles":[],"evidence_healthy":False,
+                    "entry_authority":False,"broker_write_authority":False,
+                    "active_mode_authorized":False,
+                }
+            self.visual.system_patch({"asc_profile_release":dict(self.asc_approval)})
+            print("RHEN44_ASC_PROFILE_RELEASE "+json.dumps({
+                "quality_state":self.asc_approval.get("quality_state"),
+                "reason":self.asc_approval.get("reason"),
+                "proposal_count":self.asc_approval.get("proposal_count",0),
+                "approved_profiles":self.asc_approval.get("approved_profiles",[]),
+                "canonical_read_error":self.asc_error,
+                "evidence_healthy":self.asc_approval.get("evidence_healthy") is True,
+                "active_mode_authorized":False,"entry_authority":False,
+                "broker_write_authority":False,
+            },allow_nan=False),flush=True)
+        if self.forecast_reader:
+            try:
+                self.forecast_observation = await self.forecast_reader()
+                self.forecast_error = None
+            except Exception as exc:
+                self.forecast_observation = None
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                self.forecast_error = type(exc).__name__ + (f":HTTP_{status}" if status else "")
+            self.update_forecasts(datetime.now(timezone.utc))
+        if self.ledger_reader:
+            run_id = (self.champion_observation or {}).get("run_id")
+            try:
+                canonical = await self.ledger_reader(run_id)
+                observed = self.archive.executions(now,None)["points"]
+                parity = self.canonical_ledger_parity(canonical,observed)
+            except Exception as exc:
+                parity = {"quality_state":"UNAVAILABLE","reason":type(exc).__name__,
+                    "entry_authority":False,"broker_write_authority":False,
+                    "parity_complete":False,"stream_parity_complete":False,"reconciliation_complete":False,
+                    "source":"RHEN/canonical_ledger_read","provenance":"DERIVED",
+                    "methodology_version":"canonical-observation-parity-v1"}
+            self.visual.system_patch({"canonical_ledger_parity":parity})
+            print("RHEN44_LEDGER_PARITY "+json.dumps({
+                "observed_at":now.isoformat(),
+                "quality_state":parity.get("quality_state"),
+                "reason":parity.get("reason"),
+                "parity_complete":parity.get("parity_complete") is True,
+                "stream_parity_complete":parity.get("stream_parity_complete") is True,
+                "reconciliation_complete":parity.get("reconciliation_complete") is True,
+                "recovered_gap_orders":parity.get("recovered_gap_orders"),
+                "recovered_gap_fills":parity.get("recovered_gap_fills"),
+                "canonical_events":parity.get("canonical_events"),
+                "observed_events":parity.get("observed_events"),
+                "canonical_order_count":parity.get("canonical_order_count"),
+                "observed_order_count":parity.get("observed_order_count"),
+                "canonical_fill_order_count":parity.get("canonical_fill_order_count"),
+                "observed_fill_order_count":parity.get("observed_fill_order_count"),
+                "missing_observed_orders":parity.get("missing_observed_orders"),
+                "unattributed_observed_orders":parity.get("unattributed_observed_orders"),
+                "missing_observed_fills":parity.get("missing_observed_fills"),
+                "unattributed_observed_fills":parity.get("unattributed_observed_fills"),
+                "missing_order_first_at":parity.get("missing_order_first_at"),
+                "missing_order_last_at":parity.get("missing_order_last_at"),
+                "missing_fill_first_at":parity.get("missing_fill_first_at"),
+                "missing_fill_last_at":parity.get("missing_fill_last_at"),
+                "entry_authority":False,
+                "broker_write_authority":False,
+                "methodology_version":parity.get("methodology_version"),
+            },allow_nan=False),flush=True)
         projection = account_projection(snapshot, now)
         for key, point in projection["points"].items():
             self.visual.point("account:"+key, point)
@@ -302,6 +580,201 @@ class ShadowFabric:
                 "entry_authority": False, "mode": "SHADOW", "quality_state": "UNVALIDATED",
                 "evidence_reason": "CANONICAL_POLICY_VALIDATION_UNAVAILABLE", "observed_at": now.isoformat(),
                 "provenance": "DERIVED", "source": "RHEN/canonical_sizing_read", "methodology_version": "capital-governor-v1"}})
+
+    def forecast_reference(self, record, now):
+        try:
+            feature = utc(record.get("as_of_timestamp"))
+            symbol = str(record.get("symbol") or "").strip().upper()
+            snapshot_id = str(record.get("snapshot_id") or "").strip()
+            if not symbol or not snapshot_id or symbol not in self.store.symbols:
+                return None
+            history = self.archive.history(
+                "candles:"+symbol,
+                feature-timedelta(seconds=120),
+                feature,
+                # Reference revisions must already exist at the forecast's
+                # feature cutoff. A later correction cannot rebase its path.
+                clock=min(feature, utc(now)),
+                limit=5,
+            )
+            candidates = []
+            for point in history.get("points") or []:
+                try:
+                    stamp = utc(point.get("timestamp"))
+                    if (
+                        stamp + timedelta(minutes=1) <= feature
+                        and point.get("provenance") == "OBSERVED"
+                        and point.get("quality_state") == "LIVE"
+                        and point.get("source")
+                        and point.get("close") is not None
+                    ):
+                        candidates.append((stamp, point))
+                except (ValueError, TypeError):
+                    continue
+            if not candidates:
+                return None
+            _, point = max(candidates, key=lambda row: row[0])
+            return {
+                "symbol":symbol,
+                "snapshot_id":snapshot_id,
+                "timestamp":point["timestamp"],
+                "value":point["close"],
+                "provenance":"OBSERVED",
+                "source":point["source"],
+                "quality_state":"LIVE",
+            }
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    def update_forecasts(self, now):
+        body = self.forecast_observation
+        base = {
+            "integrated":True,
+            "research_only":True,
+            "execution_authority":False,
+            "broker_write_authority":False,
+            "source":"NOSTRA/canonical_forecast_read",
+            "methodology_version":"nostra-command-projection-v1",
+        }
+        if (
+            not isinstance(body,dict)
+            or body.get("ok") is not True
+            or body.get("schema_version") != "nostra-canonical-forecast-read-v1"
+            or body.get("research_only") is not True
+            or body.get("execution_authority") is not False
+            or body.get("broker_write_authority") is not False
+            or not isinstance(body.get("forecasts"),list)
+        ):
+            result={**base,
+                "quality_state":"UNAVAILABLE",
+                "reason":"CANONICAL_FORECAST_READ_UNAVAILABLE",
+                "read_error":self.forecast_error,
+                "canonical_count":0,
+                "projected_count":0,
+                "missing_reference_count":0,
+                "rejected_count":0,
+            }
+            self.visual.system_patch({"nostra_forecasts":result})
+            print("RHEN44_NOSTRA_FORECASTS "+json.dumps(result,allow_nan=False),flush=True)
+            return result
+
+        removed=False
+        for symbol, old in list(self.visual.forecasts.items()):
+            try:
+                if utc(old.get("expires_at")) <= utc(now) or symbol not in self.store.symbols:
+                    self.visual.forecasts.pop(symbol,None)
+                    removed=True
+            except (ValueError,TypeError):
+                self.visual.forecasts.pop(symbol,None)
+                removed=True
+
+        by_symbol={}
+        for record in body["forecasts"][:200]:
+            if not isinstance(record,dict):
+                continue
+            symbol=str(record.get("symbol") or "").strip().upper()
+            if symbol not in self.store.symbols:
+                continue
+            try:
+                generated=utc(record.get("generated_at"))
+            except (ValueError,TypeError):
+                continue
+            rank=(generated,1 if record.get("model_id")=="shrunken_drift" else 0,
+                  str(record.get("forecast_id") or ""))
+            prior=by_symbol.get(symbol)
+            if prior is None or rank > prior[0]:
+                by_symbol[symbol]=(rank,record)
+
+        projected=0
+        missing_reference=0
+        rejected=0
+        model_ids=set()
+        for _,record in by_symbol.values():
+            reference=self.forecast_reference(record,now)
+            if reference is None:
+                missing_reference+=1
+                continue
+            try:
+                if self.visual.canonical_forecast(record,reference,now):
+                    projected+=1
+                    model_ids.add(str(record.get("model_id") or ""))
+            except (ValueError,TypeError,KeyError):
+                rejected+=1
+        if removed:
+            self.visual.publisher.send("snapshot",self.visual.snapshot())
+        result={**base,
+            "quality_state":"LIVE",
+            "reason":"PROJECTED" if projected else "NO_PROJECTABLE_ACTIVE_FORECASTS",
+            "canonical_count":len(body["forecasts"]),
+            "selected_symbol_count":len(by_symbol),
+            "projected_count":projected,
+            "missing_reference_count":missing_reference,
+            "rejected_count":rejected,
+            "model_ids":sorted(model_ids),
+            "observed_at":utc(now).isoformat(),
+        }
+        self.visual.system_patch({"nostra_forecasts":result})
+        print("RHEN44_NOSTRA_FORECASTS "+json.dumps(result,allow_nan=False),flush=True)
+        return result
+
+    def update_hotset(self, now):
+        universe = self.discovery_observation or {}
+        ranked = universe.get("active_symbols") if isinstance(universe, dict) else None
+        champion_ready = self.champion_ready(now)
+        if not champion_ready or not isinstance(ranked, list):
+            reason = "CHAMPION_NOT_READY" if not champion_ready else "CANONICAL_DISCOVERY_UNAVAILABLE"
+            self.hotset_status = {**self.hotset_status,"active":False,"quality_state":"UNAVAILABLE",
+                "reason":reason,"discovery_error":self.discovery_error,
+                "entry_authority":False,"broker_write_authority":False}
+            self.visual.system_patch({"hotset":dict(self.hotset_status)})
+            print("RHEN44_HOTSET "+json.dumps({
+                "quality_state":self.hotset_status.get("quality_state"),
+                "reason":self.hotset_status.get("reason"),
+                "discovery_error":self.discovery_error,
+                "champion_ready":champion_ready,
+                "champion_gate":{
+                    "runtime_ok":(self.champion_observation or {}).get("runtime_ok") is True,
+                    "reconciliation_safe":(self.champion_observation or {}).get("reconciliation_safe") is True,
+                    "startup_reconciled":(self.champion_observation or {}).get("startup_reconciled") is True,
+                    "strategy_match":(self.champion_observation or {}).get("strategy_version") == self.settings.strategy_version_id,
+                    "identity_present":bool((self.champion_observation or {}).get("protected_configuration_fingerprint")),
+                    "reconciliation_detail":(self.champion_observation or {}).get("reconciliation_detail"),
+                    "runtime_error":(self.champion_observation or {}).get("runtime_error"),
+                },
+                "active":False,"integrated":True,
+                "discovery_count":len(ranked) if isinstance(ranked,list) else 0,
+                "current_count":len(self.store.symbols),
+                "rotation_count":self.hotset.rotations,
+                "entry_authority":False,"broker_write_authority":False
+            },allow_nan=False),flush=True)
+            return False
+        proposed, status = self.hotset.propose(ranked, self.store.symbols, now)
+        status = {**status,"discovery_source":universe.get("source"),
+                  "discovery_updated_at":universe.get("updated_at"),
+                  "current_count":len(proposed)}
+        if status.get("changed"):
+            prior = tuple(self.store.symbols)
+            self.coverage.advance(self.store, now, symbols=prior)
+            added, removed = self.store.rotate_symbols(proposed)
+            self.assets.rotate_symbols(self.store.symbols)
+            self.signal_cache = {symbol:value for symbol,value in self.signal_cache.items() if symbol in self.store.symbols}
+            self.regime_key = None
+            self.visual.rotate_symbols(now)
+            self.asset_refresh.set()
+            self.freshness_wakeup.set()
+            self.supervise_wakeup.set()
+            status.update(added_count=len(added),removed_count=len(removed),quality_state="ROTATING")
+        self.hotset_status = status
+        self.visual.system_patch({"hotset":dict(status)})
+        print("RHEN44_HOTSET "+json.dumps({
+            "quality_state":status.get("quality_state"),"reason":status.get("reason"),
+            "active":status.get("active") is True,"integrated":status.get("integrated") is True,
+            "discovery_count":status.get("discovery_count"),"current_count":len(self.store.symbols),
+            "added_count":status.get("added_count"),"removed_count":status.get("removed_count"),
+            "rotation_count":status.get("rotation_count"),
+            "entry_authority":False,"broker_write_authority":False
+        },allow_nan=False),flush=True)
+        return bool(status.get("changed"))
 
     def champion_ready(self, now):
         row = self.champion_observation or {}
@@ -330,23 +803,56 @@ class ShadowFabric:
             except asyncio.TimeoutError:
                 pass
 
+    def asset_summary(self, now):
+        session = (self.store.context or (None, "CLOSED"))[1].split("/")[-1]
+        rows = [self.assets.snapshot(s, session, now) for s in self.store.symbols]
+        return {"intended_symbols":len(rows),"eligible_symbols":sum(r["eligible"] for r in rows),
+            "attested_symbols":sum(r["quality_state"] == "LIVE" for r in rows),
+            "fetched_at":self.assets.fetched_at.isoformat() if self.assets.fetched_at else None,
+            "session":session,"entry_authority":False,"provenance":"OPERATIONAL","source":"RHEN/asset_eligibility"}
+
+    async def asset_observer(self):
+        # REST is an eligibility audit, never the primary price/scanner path.
+        while True:
+            self.asset_refresh.clear()
+            try:
+                rows = await self.asset_reader()
+                self.assets.replace(rows, datetime.now(timezone.utc))
+                self.freshness_wakeup.set()
+                self.refresh_observation(datetime.now(timezone.utc))
+                self.visual.system_patch({"asset_eligibility":self.asset_summary(datetime.now(timezone.utc)),"asset_error":None})
+            except Exception as exc:
+                self.visual.system_patch({"asset_error":type(exc).__name__,"asset_eligibility":self.asset_summary(datetime.now(timezone.utc))})
+            # Refresh at 19:55 ET for the pre-session sync, as well as every
+            # ten minutes and immediately when the session changes.
+            now = datetime.now(timezone.utc)
+            local = now.astimezone(ZoneInfo("America/New_York"))
+            preflight = local.replace(hour=19,minute=55,second=0,microsecond=0)
+            timeout = min(600,max(.01,(preflight-local).total_seconds())) if local < preflight else 600
+            try:
+                await asyncio.wait_for(self.asset_refresh.wait(),timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+
     async def supervise(self):
         last_key = None
         try:
             while True:
+                self.supervise_wakeup.clear()
                 now = datetime.now(timezone.utc)
                 try:
                     context = await self.resolver.classify(now)
                     route = route_feed(context, now)  # Basic only until live entitlement is attested.
-                    key = (route.expected_feed, route.session_id)
+                    key = (route.expected_feed, route.session_id, tuple(self.store.symbols))
                     if key != last_key:
+                        self.asset_refresh.set()
                         if self.stream_task:
                             self.stream_task.cancel()
                             await asyncio.gather(self.stream_task, return_exceptions=True)
                         self.context, self.route = context, route
                         self.store.connection = "DISCONNECTED"
                         if route.expected_feed:
-                            self.stream_task = asyncio.create_task(self.manager.run(*key))
+                            self.stream_task = asyncio.create_task(self.manager.run(route.expected_feed, route.session_id))
                         else:
                             self.stream_task = None
                         last_key = key
@@ -383,8 +889,12 @@ class ShadowFabric:
                     self.refresh_observation(now)
                     last_key = None
                     self.visual.system_patch({"quality_state": "DEGRADED", "last_error": self.last_error, "entry_authority": False})
-                # Calendar/capability/checkpoint audit, not primary price observation.
-                await asyncio.sleep(30)
+                # Calendar/capability/checkpoint audit, plus immediate structural
+                # wakeup when the canonical discovery hotset rotates.
+                try:
+                    await asyncio.wait_for(self.supervise_wakeup.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass
         finally:
             if self.stream_task:
                 self.stream_task.cancel()
@@ -395,10 +905,13 @@ class ShadowFabric:
                       asyncio.create_task(self.freshness_observer())]
         if self.account_reader is not None:
             self.tasks.append(asyncio.create_task(self.account_observer()))
+        if self.asset_reader is not None:
+            self.tasks.append(asyncio.create_task(self.asset_observer()))
         if self.settings.rhen_broker_stream_shadow_enabled:
             self.inbox = BrokerInbox(self.settings.rhen_market_stream_checkpoint_path+".broker")
             self.broker = BrokerUpdateStream(api_key=self.settings.alpaca_api_key, api_secret=self.settings.alpaca_api_secret,
-                                             paper=self.settings.trading_mode != "live", inbox=self.inbox, callback=self.broker_event)
+                                             paper=self.settings.trading_mode != "live", inbox=self.inbox, callback=self.broker_event,
+                                             on_reconnect=self.broker_reconnect)
             self.tasks.append(asyncio.create_task(self.broker.run()))
 
     async def stop(self):

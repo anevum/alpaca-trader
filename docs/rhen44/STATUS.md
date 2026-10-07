@@ -1,23 +1,303 @@
 # RHEN 4.4 pre-crossover implementation status
 
+## Current checkpoint — 2026-10-07 18:39 ET
+
+This checkpoint supersedes the runtime and next-slice statements below.
+The website is deployed at `f96f0082217fb16e2f1ea11d19eb80fa1cf93ea3`
+(web PRs 198–199). Hosted PR verification passed browser, layout, privacy,
+release-registry, tests and build checks. Authenticated production Command
+now shows real shadow discovery, ledger, approval and forecast projections.
+Railway telemetry at `2026-10-07T22:39:02.966976+00:00` confirms one bootstrap
+read, one accepted WebSocket, zero authentication rejections and one client.
+Using manual redirect handling restored the upstream connection; a credential
+is never forwarded by an automatic cross-origin redirect.
+
+Shadow commit `57ad13cd1d73e07c52b369c2a141fa3100d41b0a`, deployment
+`e87aeccb-cbbc-4e92-9dff-fad35e9a7f2b`, is SUCCESS. PR 439 corrected NOSTRA
+reference projection to use normalized `close`, only completed candles, and
+archive availability at the forecast feature time. Later corrections cannot
+rebase an earlier forecast. All 137 RHEN 4.4 tests passed for that deployed slice.
+The current evidence-label correction passes 138 tests; profile approval is
+explicitly separate from unevaluated signal-only portfolio/risk evidence.
+
+Production remains RHEN 4.3.2 behavior at
+`7412d31a54d7fdd307ee7c8dfaed18708b45d4ff`, deployment
+`64446f4d-711b-4825-b382-c10ce9314617` SUCCESS. Protected configuration remains
+`sha256:5c0d873224669c156ebc0d4d5f4024ad2afc7bdc945dfff61db556c3a7c1e7bd`.
+No 4.4 trading crossover or adaptive ACTIVE authority was granted.
+
+Current shadow market-feed unavailability is expected after the Basic IEX
+08:00–17:00 ET window. Command displays AFTER_HOURS / FEED_UNAVAILABLE;
+no unavailable source is presented as live market observations. The broker
+stream and champion reads remain healthy. Canonical recovery is complete;
+raw stream parity still retains one known missing order and fill. No approved
+profile or projected forecast currently exists.
+
+Engineering is **not complete**. Remaining implementation includes full
+risk/cost candidate mapping and canonical research exports, VELUM integration
+and artifacts, complete normalized/drawdown/session visuals, strategy threshold
+overlays and authenticated acceptance with live market observations. The 95%
+coverage, same-input parity, forward outcomes, independent untouched holdout,
+profile-release and live recovery/rollback gates remain unpassed. Website
+publication and unit tests do not substitute for those gates.
+
+Next work: integrate canonical read-only risk/cost candidate evidence and its
+research exports, then VELUM/visual acceptance. Collect eligible-market
+coverage and independent forward/holdout sessions before any 4.4 crossover.
+
+
+## Current checkpoint — 2026-10-07 16:57 ET
+
+Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
+
+Trusted ASC-008 profile-release authorization plumbing is now implemented and
+fail-closed. Main production support commit
+`13796f7eb1d7461f880d9dc9f6015d9bcfececb5`, Railway deployment
+`6ec2911b-4a79-4d3e-8b4f-936b60af3914`, is terminal SUCCESS. It adds an
+append-only HMAC-sealed operator authorization registry on the execution process.
+Only existing Command-admin authentication can authorize or revoke an exact
+release fingerprint; pure Core/GRAEN/Research/NOSTRA/IREN/router children do not
+inherit the sealing secret. The registry itself cannot validate a release, change
+configuration/risk, activate policy mode, deploy, or call a broker.
+
+Shadow commit `976a49f2ea468ab9a8e27e7eca5e2b164a1b140f`, deployment
+`a28d92b6-f563-4371-ac65-3bc079e0a32c`, is terminal SUCCESS. Hosted CI
+`37685766806` and Foundation runtime audit `37685766734` passed. The shadow
+joins canonical research evidence with only the sealed scheduler projection of
+current operator decisions; generic research decisions are explicitly excluded
+from authorization input. Any tampered registry record, authority bit, count
+mismatch, malformed decision, revoked decision or incomplete ASC-008 evidence
+fails closed.
+
+No profile was authorized in this work. Live state is therefore correctly
+`NO_CANONICAL_PROFILE_RELEASE`, proposal count 0, approved profiles empty,
+canonical read error null, and evidence healthy false. ACTIVE mode, entry
+authority and broker-write authority remain false. Hotset remained LIVE at
+100 discovery / 24 streamed symbols, and canonical ledger reconciliation retained
+only the previously proven historical websocket gap with no new gap.
+
+This closes trusted ASC approval **plumbing** as an implementation blocker. It
+does not pass the research/holdout/profile-release evidence gate and does not
+authorize an adaptive ACTIVE canary.
+
+Next implementation slice: canonical NOSTRA forecast producer/reference wiring
+for real Command forecast projection, preserving NOSTRA as research-only and
+non-authoritative.
+
+
+## Current checkpoint — 2026-10-07 16:40 ET
+
+Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
+
+The discovery-to-stream hotset slice is now implemented and live only in the isolated
+RHEN 4.4 observer. Main production commit
+`49577a52513b4ff4d24de76e1f0fc7154492c7c9`, Railway deployment
+`14d9d59c-9813-401c-a66c-1321ff90f652`, is terminal SUCCESS and preserves RHEN
+4.3.2 trading behavior while exposing the bounded token-protected canonical universe
+read. The read refreshes the existing DynamicUniverse using GET-only broker/market
+data so a restart outside regular hours does not leave discovery empty.
+
+Shadow commit `b0efd6fde8d3299244f677e7c69d511a1fa6faae`, deployment
+`ef4a3815-626f-4c6d-82c1-56f3d68fb287`, is terminal SUCCESS. Hosted CI
+`37681271822` and Foundation runtime audit `37681272025` passed. The observer
+consumes a canonical 100-symbol ranked discovery set, keeps exactly 24 streamed
+symbols, pins core/confirmation symbols, changes at most four symbols per rotation
+and enforces a five-minute dwell. Three live rotations were observed. Rotation
+invalidates stale asset attestation and reconnects/bootstraps fail-closed instead of
+performing unsafe mid-frame subscription surgery.
+
+A same-image restart restored hotset generation 3 from durable state, then returned
+to LIVE with 24/24 subscriptions, 24/24 asset attestation, HEALTHY broker stream,
+57 reconstructed bars, VERIFIED_READ champion lineage and
+RESTORED_SHADOW_ONLY policy state. The canonical ledger remained reconciled and
+the only raw websocket miss remained the previously proven
+`2026-10-07T14:00:36Z` ConnectionClosedError gap. No new missing order or fill was
+introduced by the hotset/restart exercise. Execution and broker-write authority
+remained false throughout.
+
+This closes discovery-to-stream hotset rotation as an implementation blocker. It
+does **not** pass the 95% source-coverage, same-input equivalence, Command visual,
+trusted ASC approval, canonical forecast producer, VELUM replay, forward/holdout
+or crossover gates.
+
+Next implementation slice: trusted ASC profile-release/approval adapters. Approval
+evidence may authorize only shadow policy selection; ACTIVE execution authority
+remains structurally unavailable.
+
+
+## Current checkpoint — 2026-10-07 15:58 ET
+
+Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
+
+The isolated RHEN 4.4 observer is running commit
+`88fcb342ce1661b8f5ac2e7f137105d0b2084682` as Railway deployment
+`8535829d-e84f-4de0-a2d0-b8586037f94e` with terminal SUCCESS. Hosted CI
+`37678163978` and Foundation runtime audit `37678163953` both passed. Main
+production remains RHEN 4.3.2 behavior; the only main change in this slice is
+the bounded GET-only canonical-ledger projection at
+`f1316eb4706028d7c499be491f7dd9654a62fa10`, deployment
+`fdd49a81-46a3-45ef-9126-7f19bd716770` SUCCESS.
+
+The observer now reads the canonical run-scoped order/fill ledger without write
+authority and compares it with the account-wide Alpaca `trade_updates` archive.
+A real historical stream gap was identified: one canonical order at
+`2026-10-07T14:00:36.257963Z` and one fill at
+`2026-10-07T14:00:36.260396Z` were absent from raw websocket observations.
+Historical runtime telemetry proves the broker stream was disconnected with
+`ConnectionClosedError` during that exact minute. This is not hidden or
+reclassified as raw parity.
+
+Reconnect handling now requests canonical reconciliation immediately after every
+successful broker `trade_updates` subscription/reconnect. The final same-image
+restart recovered a HEALTHY broker stream, 24 symbols, 2,880 bars,
+`RESTORED_SHADOW_ONLY` policy state and `VERIFIED_READ` champion lineage.
+Canonical reconciliation completed after reconnect and no new restart-time order
+or fill gap appeared. Raw stream parity therefore remains DEGRADED by the one
+known historical miss, while canonical reconciliation is complete. Throughout
+the exercise `execution_authority=false`, `broker_orders_possible=false` and
+`broker_write_authority=false`.
+
+Both Railway services are currently online with no warnings, critical issues or
+recent deployment failures. This closes the canonical ledger/reconnect recovery
+implementation slice. It does **not** pass crossover, forward/holdout, 95% source
+coverage, Command visual acceptance, hotset rotation, NOSTRA producer, trusted
+adaptive approval or VELUM promotion gates.
+
+Next implementation slice: discovery-to-stream hotset rotation for the
+`BROAD_DISCOVERY_NARROW_STREAM` model, keeping at most 24 streamed symbols and
+remaining shadow-only/fail-closed.
+
+
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 
-Latest operational continuation (2026-10-07): champion main is `a9385e3`,
-still 4.3.2; Command #193 merged as `e4772ac` and deployed Worker
-`fcd9a022-5a9c-4dd3-9d02-3f01fac4f710` with hosted verify/deploy/audit and
-public desktop/mobile QA passing. The explicitly authorized public observer
-domain is `https://rhen44-shadow-production.up.railway.app`. Status/history
-reject anonymous requests (401), malformed bearer fails (401), anonymous
-WebSocket handshakes fail (403), and broker routes remain absent (404).
-Command's authenticated stream/history connection is deployed. Authenticated
-browser visual/replay/reconnect/latency acceptance remains unpassed: the cloud
-browser sign-in reports a Cloudflare verification error, and the user cannot
-complete that handoff on mobile. Connected GitHub/Railway access is being used
-for implementation and runtime validation; it does not provide a Command session.
+Current verified continuation (2026-10-07, 13:24 ET): isolated backend commit
+`b23f9d09c81e360ff9898f168534f4b538f65acc` passed hosted CI 37658279361 and
+runtime audit 37658279678. Railway shadow deployment
+`83b95140-d2c6-42ab-8c6d-221e08132aff` succeeded. It recovered 2,840 bars,
+restored shadow-only policy, subscribed 24 symbols and reconnected broker
+updates. Anonymous bootstrap was HTTP 401, counted in private transport
+telemetry; shadow health was HTTP 200. Broker-write authority remains false.
 
-The observations below retain their original chronology. Earlier statements
-about a missing domain or disabled Command UI are superseded by this continuation.
+Hosted CI caught a missed source-expiry scheduling race on the preceding
+35ea9cb revision. Fixed by publishing already elapsed quote/bar/asset expiry
+before selecting future deadlines, without market polling or invented events.
+Deterministic delayed-start regression and original deadline test pass.
+Current local staging suite: 1,071 passed / 10 skipped; dedicated 4.4: 107 passed.
+No source freshness threshold was relaxed.
+
+Command bootstrap commit `932e9d4` is in PR #197. Its local 54 tests, TypeScript
+and complete production build pass. Hosted verification is still running browser
+capture; it has not been merged or deployed at this observation. Live authenticated
+Command still has frozen/unavailable 4.4 data. UI acceptance remains unpassed.
+
+At 17:22-17:23 UTC, champion health reads returned HTTP 503 and production
+logs showed upstream ReadTimeout plus LEDGER_RECONCILE_ERROR. Railway still
+reported original 4.3.2 commit/deployment SUCCESS. Current reconciliation safety
+cannot be inferred from the earlier healthy snapshot. No champion code/config
+change or restart was performed. The shadow also reports champion health lineage
+UNAVAILABLE; this is an additional crossover blocker.
+
+Observed shadow source coverage is approximately 69%, below the required 95%.
+Signal counters are not complete risk-validated research candidates. No independent
+forward/holdout gate has passed. Hotset rotation, canonical ledger integration,
+trusted approvals, forecast producer and full runtime acceptance remain incomplete.
+Options writes, short equities, expanded leverage, crypto and blanket 24/5 4.4
+execution remain disabled. This continuation is not a complete 4.4 release.
+
+Current follow-up (2026-10-07, 13:14 ET): GitHub mutations recovered. Full
+continuation draft #430 is open and CI/run 37656326159 plus runtime audit/run
+37656326175 passed on `898738a`; #429 closed as superseded. Earlier connector
+failure statements below remain historical. Production is still held at the
+observed 4.3.2 source/config/runtime identity; no crossover is justified.
+
+The next isolated slice adds an authenticated, read-only Command bootstrap
+snapshot without sequence mutation/subscription. Command performs this once on
+mount, keeps observations frozen until a valid WebSocket snapshot, rejects late
+bootstrap overwrite and exposes bootstrap/close status. No REST polling replaces
+the live stream. Private transport telemetry counts accepted sockets/bootstrap
+reads and authentication rejections without identity, token or cookie values.
+
+Recorded broker execution markers now recover from the bounded archive across
+observer restart with original source/availability, distinct fill IDs, historical
+quality and no new broker/ledger actions. Replay keeps original source and adds
+separate replay provenance. Malformed/out-of-scope/future execution evidence is
+not promoted into recovered visuals. Local backend 1,070 checks / 10 skips,
+Command 54 checks, TypeScript and complete production build pass. Deployment
+and protected real-data browser observations must be recorded after they occur.
+
+Latest operational continuation (2026-10-07, 16:58 UTC): observed champion main
+is `edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac`, deployed as
+`b7676403-c01a-4d9b-adf4-983ad43ca8fc`; behavior remains RHEN 4.3.2,
+strategy `LIVE-2026-09-25-003`. Protected trading configuration fingerprint:
+`sha256:5c0d873224669c156ebc0d4d5f4024ad2afc7bdc945dfff61db556c3a7c1e7bd`.
+The continuation uses an isolated branch and does not merge runtime changes to
+main, because main automatically deploys the only production trading service.
+
+Command main is `9a2c789` (#196). The authenticated production page was inspected:
+4.3 account/order/runtime panels render; the 4.4 observer reports disconnected
+or stale transport, with no scanner or authoritative candle snapshot. The browser
+client blocked direct navigation to the shadow-history API (`ERR_BLOCKED_BY_CLIENT`),
+and no corresponding shadow upstream HTTP request was observed. This does not
+identify a production socket root cause or prove an outage. Authenticated visual,
+replay, reconnect and end-to-end latency acceptance remain UNPASSED. The older
+sign-in blocker below is superseded: this session reached authenticated Command.
+
+The separate observer was SUCCESS on `edd089b` deployment
+`08cc56bd-6dfb-4db9-9a37-543207f81365`, with 24 IEX quote/bar/updatedBar
+subscriptions, a healthy broker observation stream, warm reconstruction and private
+champion reconciliation. About 61% evaluable symbol-time was observed, below the
+package's 95% coverage threshold; signal-only candidates are not complete,
+risk-validated decisions. Core production storage is analytics-shedding above
+750 MB, and forward research has no complete outcome comparisons. These remain
+promotion blockers, not facts repaired by local tests.
+
+The current isolated slice adds bounded GET-only Alpaca asset capability evidence,
+durable source timestamps, explicit regular/overnight vetoes, quiet-time expiry,
+and distinct observed facts versus derived eligibility. It changes shadow lineage
+so old counterfactual evidence is not pooled with the new eligibility methodology.
+It also selects point-in-time bar revisions before applying history limits and
+retains simultaneous fills with distinct event identities. Replay methodology is
+versioned `source-availability-replay-v2`. No live broker-write route is added.
+
+Local validation: 1,069 backend checks pass with 10 environment-specific skips;
+53 unchanged Command unit checks pass. The first slice passed hosted CI and runtime audit and deployed only to the
+observer as `d308fee`, deployment `10e4de23-d25e-4880-8637-f638da558dbb`.
+A same-image observer restart retained the asset timestamp before refresh,
+restored 2,831 bars and `RESTORED_SHADOW_ONLY` policy state, and recovered
+healthy broker/account observation. The independent runtime remained 4.3.2
+with the same runtime instance, source and trading fingerprint.
+
+Callback delays up to 645 ms and publisher lag up to 614 ms were observed; no
+latency gate passed. A follow-up eliminates full-table retention scans/sorts
+from decision/archive writes, adds retention indexes, and deletes only excess
+oldest rows inside the existing atomic transactions. Hard retention bounds and
+restart deduplication are preserved. A local in-memory capacity-filled fixture
+(2,000 decisions, 1,000 candidates, 40,000 seen identities; 20 new inserts)
+improved median decision insertion from 56.77 ms to 0.075 ms. This is a local
+engineering comparison, not a live latency measurement. Follow-up commit
+`3ce688c3f3182ea8e4f09e2690b028cca2052cd6` deployed SUCCESS only to shadow as
+`b6fbfee1-240f-4f2b-8326-59880eb0ed9c`. At 16:58 UTC, 32,174 events had been
+processed with observed max callback 63 ms / publisher lag 68 ms; broker/account
+were healthy/live, 24 assets attested, policy restored and 2,831 bars reconstructed.
+Coverage remained ~69.5%, market WARMING and Command clients zero. This short
+window is not a browser or end-to-end latency gate.
+
+GitHub branch-ref updates and new PR creation repeatedly returned connector
+internal/GraphQL errors. Both commits are preserved on
+`work/rhen44-eligibility-replay-perf-20261007`. Draft #429 still contains the first
+slice only; its CI/audit passed. Latest code's hosted checks are UNRUN because no
+successor PR could be created. No latest-head hosted success is claimed. The
+observer remains exactly commit-pinned; source branch pushes cannot redeploy it.
+`continuation-2026-10-07.json` records sanitized observations and the six status
+groups, including incomplete canonical integrations and disabled future authority. No package promotion gate
+is inferred from these engineering tests.
+
+The explicitly authorized public observer domain is
+`https://rhen44-shadow-production.up.railway.app`; authenticated status/history
+and stream routes retain Cloudflare Access verification. Anonymous market history
+and broker writes remain unavailable. Older missing-domain statements below are
+historical and superseded. The observations below retain their original chronology.
 
 Initial production baseline: RHEN 4.3.2, source `0270563a613c57a959d1c6b93b97a01509a418df`,
 Railway deployment `4ec33727-f98b-4ffe-97f8-1ce30a2e95e2` SUCCESS.
@@ -38,7 +318,9 @@ Release metadata remains 4.3.2 until a validated behavioral crossover.
 `baseline-observation.json` records actual read-only health evidence. It is an
 observed rollback candidate, **not** a complete configuration freeze: Railway
 OAuth withholds variable values and protected Command/account endpoints require
-authorization not available in this execution environment. IREN's configuration
+a complete baseline export not available in this execution environment. This
+session did inspect authenticated Command; it did not export broker identity/order
+artifacts or secret configuration values. IREN's configuration
 identity is not mislabeled as the trading configuration fingerprint.
 
 ## Actual-state discrepancies
@@ -61,17 +343,17 @@ identity is not mislabeled as the trading configuration fingerprint.
 
 | Slice / package capability | Current status | Remaining integration or evidence |
 |---|---|---|
-| 0: freeze 4.3 | Partially verified, preserved | Exact trading fingerprints, account/order/position reads, migration head |
+| 0: freeze 4.3 | Trading fingerprint and both original/current rollback refs verified, champion unchanged | Exact variable-value export, complete broker baseline artifact and migration head |
 | 1: stream/feed primitives | Implemented, tested, gated | Actual entitlement attestation |
 | 2: event-driven market observation | Implemented; isolated runtime deployed; overnight subscription diagnosis/fix merged | Verify actual accepted channels and source coverage, reconnect and shadow equivalence |
 | 3: broker trade_updates | Durable shadow inbox/projection implemented | Canonical order/fill ledger reconciliation integration; never silently replace 4.3 reconciliation |
 | 4: warm start | Checkpoints/history bootstrap implemented; local restart test passes | Runtime restart with real positions/orders and gap/backfill evidence |
-| 5: scanner/rejection | Durable bounded decisions/candidates, rejection rollups, deadline invalidation and source-valid symbol-hour accounting implemented; distinct-candidate/lineage/restart tests pass | Full risk/cost/asset mapping, canonical research export/completeness and runtime exposure attestation |
+| 5: scanner/rejection | Durable bounded decisions/candidates, rejection rollups, deadline invalidation and source-valid symbol-hour accounting implemented; distinct-candidate/lineage/restart tests pass | Full risk/cost mapping (asset capability evidence now deployed), canonical research export/completeness and runtime exposure attestation |
 | 6: Command WebSocket | Protected route, unified router bridge, worker proxy and single client socket deployed to authenticated shadow | Authenticated end-to-end browser acceptance; live latency measurement |
 | 7: core visuals | Candles/scanner/source volume/rolling VWAP/broker position and order levels/actual fill markers/window controls implemented, gated | Real-data screenshot QA; full server time-range history and strategy threshold overlays |
 | 8: advanced visuals | Forecast contract/band/expiry, replay PIT and event-triggered read-only broker equity/cash series implemented | NOSTRA forecast producer wiring, normalized/drawdown/session performance, VELUM artifact/control wiring |
 | 9: regular stream promotion | Intentionally not performed | Same-input strategy parity + real stream-vs-poll shadow equivalence; risk/engine data-source release |
-| 10: four sessions | Existing calendar resolver reused; Basic gaps explicit | Live per-session observation, overnight asset eligibility refresh and halt provenance |
+| 10: four sessions | Existing calendar resolver reused; Basic gaps explicit | Live per-session observation; bounded asset refresh/halt provenance implemented, overnight runtime evidence pending |
 | 11: policy primitives | Library fingerprinting, immutable disabled/shadow snapshots, hysteresis/dwell/vetoes implemented | Profile-release approval registry/ASC-008 trusted activation integration; ACTIVE explicitly rejected |
 | 12: NOSTRA wrapper | Reuses ASC-002 classifier with completed contiguous-bar cross section; PIT/missing/stale/fingerprint and durable decision lineage tested | Canonical research feature/schema parity and export; all-symbol missing/stale remains UNKNOWN |
 | 13: Capital Governor | Counterfactual adapter reuses existing sizing and exposure caps on observed broker snapshots; evidence veto keeps notional zero | Approved evidence/health factors and governed shadow validation |
@@ -313,3 +595,62 @@ unknown key IDs, and converts network/JSON failures into controlled Command 503
 errors. This addresses the observed single production `httpx.ReadTimeout`
 without weakening token signature, issuer, audience, expiry or email checks.
 
+
+Actual restart observation at 17:24:31 UTC: same isolated deployment recovered
+2,842 bars, policy RESTORED_SHADOW_ONLY, broker HEALTHY and 24 subscriptions.
+Broker-write authority false; transport counters reset after container restart.
+No full promotion gate is inferred from this recovery exercise.
+
+### 13:30 ET degraded champion reconciliation
+
+The aggregate production health HTTP 503 contains an execution body. That body
+confirms the exact preserved source, runtime instance and configuration identity,
+armed 4.3 execution and **reconciliation_safe=false**. Aggregate module failures
+are graen/nostra and core error ReadTimeout. This supersedes the earlier
+UNATTESTED reconciliation reading; current production entry safety is blocked.
+
+The isolated health adapter now retains a valid execution observation inside an
+aggregate 503, labels the read DEGRADED_READ and preserves source identity while
+keeping runtime_ok/reconciliation_safe false. It rejects an absent/failed execution
+body. This does not change production health, reconciliation or authority.
+Local guarded checks: 1,075 passed / 10 skipped; dedicated 4.4: 111 passed.
+Deployment of this follow-up is separate from the b23f9d0 restart evidence above.
+
+### 13:34 ET deployment and hosted Command capture fix
+
+Backend 980c325 passed hosted CI 37659677774 and audit 37659677647, and
+shadow deployment 613a9fc0-4c78-4657-9b05-eea45d1f516b is SUCCESS.
+The earlier b23f9d0 isolated restart validation remains separately identified.
+No champion deployment, configuration or process restart was performed.
+
+Command hosted run 37657553629 was cancelled at job timeout: the duplicate
+Chrome CLI process hung before the first release screenshot. Tests, build,
+privacy/route probes and bounded browser runtime/visual checks had passed.
+Companion b67ee12 now captures identical release screenshots and rendered
+marker checks through the existing bounded hydrated CDP visual runner, retaining
+14 desktop/mobile images and seven rendered DOM artifacts. New hosted run
+37659961655 is in progress. PR #197 remains unmerged, production UI unchanged.
+The capture fix does not bypass the upstream healthy-runtime or visual gates.
+
+### 13:35 ET final observed checkpoint
+
+Shadow 980c325 / deployment 613a9fc0 was observed at 17:33:54 UTC with
+HEALTHY broker, 24 subscriptions, 2,843 recovered bars, RESTORED_SHADOW_ONLY
+policy, DEGRADED_READ champion lineage and broker-write authority false.
+Observed prerequisite coverage 0.711571380577331 remains below 0.95.
+
+Command retry 37659961655 FAILED: tests/build passed, then the live public-feed
+probe returned HTTP 502 at /api/public/trading/live. Browser capture changes
+were not reached in this retry, so their hosted acceptance remains unverified.
+The prior browser CLI hang was addressed in source; no check was removed or
+relaxed. PR #197 remains unmerged and production Command is unchanged.
+This is an observed upstream resource/runtime blocker, not proof of a client
+bootstrap defect. No new market fixtures or authority were enabled.
+
+Backend code and documentation remain isolated in draft #430. Production
+4.3.2 still has the same source, configuration fingerprint and runtime instance.
+Its current reconciliation flag is false; no crossover was attempted. This is a
+responsible partial 4.4 implementation checkpoint, not definition-of-done or
+promotion completion. Canonical ledger bridge, discovery hotset rotation, trusted
+adaptive approvals, forecast producers, VELUM replay and independent forward/
+holdout/visual runtime acceptance remain explicit unfinished work.

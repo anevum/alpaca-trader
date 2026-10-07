@@ -40,6 +40,12 @@ def test_publisher_snapshot_then_batch_and_critical_immediate():
     pub = LivePublisher(lambda:{"system":{},"visual_schema":"command-visual.v1"})
     queue = pub.subscribe()
     assert queue.get_nowait()["message_type"] == "snapshot"
+    sequence = pub.sequence
+    bootstrap = pub.bootstrap()
+    assert bootstrap["sequence"] == sequence == pub.sequence
+    assert bootstrap["stream_generation"] == pub.generation
+    assert bootstrap["payload"]["visual_schema"] == "command-visual.v1"
+    assert len(pub.clients) == 1 and queue.empty()
     pub.stage("SPY","scanner_patch",{"symbol":"SPY","mid":100})
     pub.stage("SPY","scanner_patch",{"symbol":"SPY","mid":101})
     assert queue.empty()
@@ -88,7 +94,8 @@ def test_replay_availability_clock_blocks_late_corrections_and_future():
               {**point(NOW-timedelta(minutes=2)),"available_at":(NOW+timedelta(seconds=1)).isoformat()},
               {**point(NOW+timedelta(seconds=1)),"available_at":NOW.isoformat()}, point()]
     frame = replay_frame(points,NOW)
-    assert len(frame) == 1 and frame[0]["source"] == "VELUM_REPLAY" and not frame[0]["entry_authority"]
+    assert len(frame) == 1 and frame[0]["source"] == points[0]["source"] and not frame[0]["entry_authority"]
+    assert frame[0]["replay_source"] == "VELUM_REPLAY"
 
 
 def controller():

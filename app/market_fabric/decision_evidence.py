@@ -1,6 +1,7 @@
 """Bounded durable shadow decisions, never canonical orders or promotion evidence."""
 import json
 from collections import Counter
+from .bounded_retention import trim_oldest
 
 
 class DecisionEvidence:
@@ -11,6 +12,8 @@ class DecisionEvidence:
         db.execute("CREATE TABLE IF NOT EXISTS shadow_candidate (id TEXT PRIMARY KEY, at TEXT NOT NULL, body TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS shadow_session (day TEXT, session TEXT, symbol TEXT, body TEXT NOT NULL, PRIMARY KEY(day,session,symbol))")
         db.execute("CREATE TABLE IF NOT EXISTS shadow_seen (id TEXT PRIMARY KEY, at TEXT NOT NULL)")
+        for table in ("shadow_decision", "shadow_candidate", "shadow_seen"):
+            db.execute(f"CREATE INDEX IF NOT EXISTS {table}_retention ON {table}(at,id)")
 
     def record(self, identity, body, *, coverage=None):
         # A decision has one terminal classification; repeated quote updates are not
@@ -44,9 +47,9 @@ class DecisionEvidence:
             totals["last_observed_at"] = at
             self.db.execute("INSERT INTO shadow_session VALUES (?,?,?,?) ON CONFLICT(day,session,symbol) DO UPDATE SET body=excluded.body", (day, session, symbol, json.dumps(totals)))
             for table, retain in (("shadow_decision", self.retain), ("shadow_candidate", self.retain_candidates)):
-                self.db.execute(f"DELETE FROM {table} WHERE id NOT IN (SELECT id FROM {table} ORDER BY at DESC,id DESC LIMIT ?)", (retain,))
+                trim_oldest(self.db, table, "at", retain)
             self.db.execute("DELETE FROM shadow_session WHERE day NOT IN (SELECT DISTINCT day FROM shadow_session ORDER BY day DESC LIMIT 14)")
-            self.db.execute("DELETE FROM shadow_seen WHERE id NOT IN (SELECT id FROM shadow_seen ORDER BY at DESC,id DESC LIMIT 40000)")
+            trim_oldest(self.db, "shadow_seen", "at", 40000)
         return True
 
     def summary(self, day, session):

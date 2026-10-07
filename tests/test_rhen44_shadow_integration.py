@@ -21,6 +21,20 @@ from app.market_fabric.staging import create_app, ReadOnlyBroker
 NOW = datetime(2026,10,6,15,30,tzinfo=timezone.utc)
 
 
+def test_capacity_full_seen_retention_keeps_latest_decision_and_restart_dedup():
+    db = sqlite3.connect(":memory:")
+    ledger = DecisionEvidence(db)
+    db.executemany("INSERT INTO shadow_seen VALUES (?,?)",
+        [(f"old-{i:05d}", (NOW-timedelta(minutes=1)).isoformat()) for i in range(40000)])
+    body = {"observed_at":NOW.isoformat(), "entry_authority":False, "classification":"CANDIDATE",
+        "session_day":"2026-10-06", "session":"REGULAR", "symbol":"SPY", "reasons":[]}
+    assert ledger.record("latest",body)
+    assert db.execute("SELECT count(*) FROM shadow_seen").fetchone()[0] == 40000
+    assert db.execute("SELECT id FROM shadow_seen WHERE id='old-00000'").fetchone() is None
+    assert not DecisionEvidence(db).record("latest",body)
+    assert ledger.summary("2026-10-06","REGULAR")["symbols"]["SPY"]["candidates"] == 1
+
+
 def test_overnight_restart_restores_only_matching_observed_bars(tmp_path):
     now = datetime.now(timezone.utc)
     settings = Settings(RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"overnight.db"))
@@ -66,7 +80,8 @@ def quote(symbol="SPY", *, seconds=0, generation="g1",sequence=20,spread=.01):
         feed="iex",session="REGULAR",session_id="2026-10-06/REGULAR",received_at=at)
 
 
-def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path):
+@pytest.mark.parametrize("profile_evidence_healthy", [False, True])
+def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path, profile_evidence_healthy):
     settings = Settings(_env_file=None,EXTENDED_EQUITY_SYMBOLS="SPY,QQQ",CONFIRMATION_SYMBOLS="QQQ",RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"state.db"))
     calls=[]
     def evaluate(*args):
@@ -75,6 +90,7 @@ def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path):
     async def run():
         for cycle in range(2):
             fabric=ShadowFabric(settings,SimpleNamespace(),evaluator=evaluate)
+            fabric.asc_approval["evidence_healthy"] = profile_evidence_healthy
             ready(fabric.store,generation="g"+str(cycle))
             for i in range(100):
                 event=quote(seconds=i*.001,generation="g"+str(cycle),sequence=30+i)
@@ -86,6 +102,10 @@ def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path):
             assert not fabric.policy_snapshot.entry_authority
             assert fabric.policy_snapshot.proposed_profile == "NO_TRADE"
             assert fabric.visual.scanner["SPY"]["classification"] == "CANDIDATE"
+            import json
+            candidate = json.loads(fabric.evidence.db.execute("SELECT body FROM shadow_candidate").fetchone()[0])
+            assert candidate["risk_validation_state"] == "NOT_EVALUATED_SIGNAL_ONLY"
+            assert candidate["entry_authority"] is False
             fabric.checkpoint.close()
     asyncio.run(run())
     assert len(calls)==2
@@ -143,6 +163,50 @@ def test_account_projection_uses_only_broker_values_and_order_identities():
     with pytest.raises(ValueError): account_projection(snapshot,NOW)
 
 
+def test_broker_reconnect_requests_canonical_reconciliation(tmp_path):
+    import json
+    from app.market_fabric.broker_updates import BrokerInbox, BrokerUpdateStream
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self.messages = iter([
+                json.dumps({"stream":"authorization","data":{"status":"authorized"}}),
+                json.dumps({"stream":"listening","data":{"streams":["trade_updates"]}}),
+            ])
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.messages)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    async def run():
+        reconciliations = []
+        async def sink(event_id, data):
+            return True
+        async def reconcile():
+            reconciliations.append("CANONICAL_READ")
+
+        inbox = BrokerInbox(str(tmp_path/"broker.db"))
+        stream = BrokerUpdateStream(api_key="k",api_secret="s",paper=False,
+            inbox=inbox,callback=sink,on_reconnect=reconcile)
+        ws = FakeWebSocket()
+        await stream.consume(ws)
+        assert stream.state == "HEALTHY"
+        assert reconciliations == ["CANONICAL_READ"]
+        assert ws.sent[-1] == {"action":"listen","data":{"streams":["trade_updates"]}}
+        inbox.close()
+
+    asyncio.run(run())
+
+
 def test_broker_event_triggers_read_projection_without_writes(tmp_path):
     async def run():
         calls=[]
@@ -172,6 +236,7 @@ def test_isolated_process_rejects_armed_configuration_and_has_no_order_routes(mo
         assert client.get("/health").json()["broker_orders_possible"] is False
         assert client.post("/v2/orders",json={"symbol":"SPY"}).status_code==404
         assert client.get("/v1/command/shadow/status").status_code==401
+        assert client.get("/v1/command/shadow/bootstrap").status_code==401
     for field in ("execution_enabled","bot_armed","live_trading","extended_equity_execution_enabled"):
         with pytest.raises(ValueError): create_app(settings.model_copy(update={field:True}))
     monkeypatch.setenv("CRYPTO_EXECUTION_ENABLED", "true")
