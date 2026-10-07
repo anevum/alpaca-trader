@@ -132,8 +132,32 @@ class ShadowFabric:
         # One deadline timer invalidates quiet symbols. No market polling or
         # fabricated quote/bar event; the publisher supplies ordered state deltas.
         while True:
-            self.freshness_wakeup.clear()
             now = datetime.now(timezone.utc)
+            # Scheduling can resume after a source deadline has already passed.
+            # Invalidate only unpublished expiries before choosing future timers;
+            # otherwise a fresh bar can mask an expired quote until its own timer.
+            overdue = []
+            for symbol in self.store.symbols:
+                reasons = self.visual.scanner.get(symbol, {}).get("rejection_codes", ())
+                timestamps = self.store.rows.get(symbol, {}).get("timestamps", {})
+                if any(source <= now and source + timedelta(milliseconds=limit) < now
+                       and reason not in reasons
+                       for kind, limit, reason in (
+                           ("quote", self.store.QUOTE_FRESHNESS_MS, "STALE_QUOTE"),
+                           ("bar", self.store.BAR_FRESHNESS_MS, "STALE_BAR"))
+                       if (source := timestamps.get(kind)) is not None):
+                    overdue.append(symbol)
+            asset_overdue = (self.asset_reader is not None and self.assets.fetched_at is not None
+                and self.assets.fetched_at + timedelta(seconds=self.assets.MAX_AGE_SECONDS) < now
+                and any(row.get("asset_eligibility", {}).get("quality_state") == "LIVE"
+                        for row in self.visual.scanner.values()))
+            if overdue or asset_overdue:
+                self.refresh_observation(now, symbols=None if asset_overdue else overdue)
+                self.visual.system_patch({"scanner_coverage": self.coverage.summary(self.store, now)})
+                if asset_overdue:
+                    self.visual.system_patch({"asset_eligibility": self.asset_summary(now)})
+            # No await occurs between expiry processing and clearing the wakeup.
+            self.freshness_wakeup.clear()
             deadlines = [at for symbol in self.store.symbols
                          if (at := self.store.freshness_deadline(symbol, now)) is not None]
             if self.asset_reader is not None and (asset_deadline := self.assets.deadline(now)) is not None:
