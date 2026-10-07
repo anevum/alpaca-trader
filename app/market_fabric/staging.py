@@ -8,7 +8,7 @@ import os
 
 import httpx
 import jwt
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Query
 
 from app.command_access import authenticate_command_admin, CommandAuthError
 from app.config import Settings
@@ -60,6 +60,29 @@ def champion_signal(settings):
         volatility_stop_lookback_bars=s.volatility_stop_lookback_bars,max_dynamic_stop_pct=s.max_dynamic_stop_pct)
 
 
+class ReadOnlyChampion:
+    """One explicit runtime reconciliation read, without credentials or writes."""
+    def __init__(self, *, transport=None):
+        self.transport = transport
+
+    async def snapshot(self):
+        # Existing private Railway service; no new public proxy/domain is created.
+        async with httpx.AsyncClient(timeout=10,transport=self.transport) as http:
+            response = await http.get("http://alpaca-trader.railway.internal:8080/health")
+            response.raise_for_status()
+            body = response.json()
+        execution = body.get("execution",{}).get("body",{})
+        identity = execution.get("protected_configuration_identity",{})
+        return {"observed_at":datetime.now(timezone.utc).isoformat(),
+            "source":"RHEN/private_champion_health","provenance":"OPERATIONAL",
+            "runtime_ok":body.get("ok") is True and execution.get("ok") is True,
+            "reconciliation_safe":execution.get("reconciliation_safe") is True,
+            "strategy_version":execution.get("persistence",{}).get("strategy_version_id"),
+            "protected_configuration_fingerprint":identity.get("fingerprint"),
+            "source_commit":execution.get("runtime_provenance",{}).get("git_commit"),
+            "broker_write_authority":False}
+
+
 def create_app(settings=None):
     settings = settings or Settings()
     assert_observer_only(settings)
@@ -76,7 +99,8 @@ def create_app(settings=None):
                     **({"vw":b["vwap"]} if b.get("vwap") is not None else {})} for b in store.rows.get(s,{}).get("bars",())]
             return strategy.evaluate(bars(symbol),{s:bars(s) for s in settings.confirmation_symbols},symbol,False,settings.order_notional,now=now)
         if settings.rhen_market_stream_enabled:
-            fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=ReadOnlyBroker(settings).snapshot)
+            fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=ReadOnlyBroker(settings).snapshot,
+                                  champion_reader=ReadOnlyChampion().snapshot)
             fabric.start()
             async def telemetry():
                 while True:
@@ -89,6 +113,11 @@ def create_app(settings=None):
                         reconstruction_source=fabric.visual.system.get("reconstruction_source"),
                         restored_bar_count=fabric.visual.system.get("restored_bar_count"),
                         bootstrap_error=fabric.visual.system.get("bootstrap_error"),
+                        policy_recovery=fabric.policy_recovery,
+                        champion_health_lineage="VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc)) else "UNAVAILABLE",
+                        protected_configuration_fingerprint=(fabric.champion_observation or {}).get("protected_configuration_fingerprint"),
+                        account_performance_quality=fabric.visual.system.get("account_performance",{}).get("quality_state","UNAVAILABLE"),
+                        archived_observation_count=fabric.checkpoint.db.execute("SELECT count(*) FROM shadow_visual").fetchone()[0],
                         bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
                         quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
                         subscribed_channels=sorted(fabric.manager.subscribed_channels),
@@ -160,4 +189,20 @@ def create_app(settings=None):
             pass
         finally:
             fabric.visual.publisher.unsubscribe(queue)
+
+    @app.get("/v1/command/shadow/history")
+    async def history(series: str, start: str, end: str, clock: str | None = None,
+                      limit: int = Query(default=2400,ge=1,le=5000), authorization: str | None = Header(default=None)):
+        await authorize(authorization)
+        if fabric is None:
+            raise HTTPException(503,"shadow observer unavailable")
+        from .contracts import utc
+        now = datetime.now(timezone.utc)
+        try:
+            replay_clock = utc(clock) if clock else now
+            if replay_clock > now:
+                raise ValueError("future replay clock")
+            return fabric.archive.history(series,start,end,clock=replay_clock,limit=limit)
+        except ValueError as exc:
+            raise HTTPException(422,"invalid source history range") from exc
     return app

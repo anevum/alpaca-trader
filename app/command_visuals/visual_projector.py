@@ -9,6 +9,7 @@ class VisualProjector:
         self.store = store
         self.scanner = {s: store.snapshot(s, datetime.now(timezone.utc)) for s in store.symbols}
         self.series = {}
+        self.forecasts = {}
         self.executions = SeriesBuffer()
         self.system = {"entry_authority": False, "mode": "SHADOW", "quality_state": "WARMING",
                        "provenance": "OPERATIONAL", "source": "RHEN/market_fabric"}
@@ -17,7 +18,21 @@ class VisualProjector:
     def snapshot(self):
         return {"visual_schema": "command-visual.v1", "scanner": dict(self.scanner),
                 "series": {k: list(v.points) for k,v in self.series.items()},
-                "execution_events": list(self.executions.points), "system": dict(self.system)}
+                "execution_events": list(self.executions.points), "forecasts":dict(self.forecasts), "system": dict(self.system)}
+
+    def canonical_forecast(self, record, reference, now):
+        from .forecast_projection import project_nostra_forecast
+        forecast = project_nostra_forecast(record,reference,now)
+        if forecast is None:
+            return False
+        if forecast["symbol"] not in self.store.symbols:
+            raise ValueError("forecast outside observation universe")
+        previous = self.forecasts.get(forecast["symbol"])
+        if previous and previous["issued_at"] > forecast["issued_at"]:
+            return False
+        self.forecasts[forecast["symbol"]] = forecast
+        self.publisher.stage("forecast:"+forecast["symbol"],"forecast_replace",forecast)
+        return True
 
     def market(self, event, now):
         row = self.store.snapshot(event.symbol, now)

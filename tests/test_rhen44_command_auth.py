@@ -27,6 +27,19 @@ def test_unauthorized_socket_rejected_before_snapshot(monkeypatch):
     assert error.value.code == 1008
 
 
+def test_history_read_preserves_authentication_and_disabled_gate(monkeypatch):
+    app = FastAPI()
+    app.add_api_route("/history",main.command_shadow_history,methods=["GET"])
+    monkeypatch.setattr(main,"require_command_admin",AsyncMock(side_effect=HTTPException(401,"Unauthorized")))
+    params={"series":"candles:SPY","start":"2026-10-07T14:00:00Z","end":"2026-10-07T15:00:00Z"}
+    with TestClient(app) as client:
+        assert client.get("/history",params=params).status_code == 401
+        monkeypatch.setattr(main,"require_command_admin",AsyncMock(return_value={"email":"fixture@example.invalid"}))
+        monkeypatch.setattr(main,"settings",main.settings.model_copy(update={"command_live_stream_enabled":False}))
+        monkeypatch.setattr(main,"shadow_fabric",None)
+        assert client.get("/history",params=params).status_code == 503
+
+
 def test_disabled_socket_does_not_activate_observer(monkeypatch):
     monkeypatch.setattr(main,"require_command_admin",AsyncMock(return_value={"email":"fixture@example.invalid"}))
     monkeypatch.setattr(main,"settings",main.settings.model_copy(update={"command_live_stream_enabled":False}))

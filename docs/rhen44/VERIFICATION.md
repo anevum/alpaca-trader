@@ -75,3 +75,16 @@ Live inspection additionally identified the initial supervisor audit overwriting
 an uninitialized checkpoint. Saving a state without session context is now a
 no-op, covered by the same recovery test. These failures are fixed rather than
 waived; the corrected head must pass hosted checks before merge.
+
+
+### Slice 20 validation boundary
+
+Local guarded backend checks: 1,033 passed, 10 environment-specific skips;
+Command: 52 tests passed, TypeScript checks and full gated production build passed.
+New tests exercise policy restart/configuration/session rejection, source correction
+availability and pruning, actual-account baseline recovery, canonical release
+lineage and under-sampled/mismatched evidence rejection, forecast expiry/reference
+and degraded states, immediate disconnect telemetry and private GET-only champion
+reconciliation. Local tests are engineering checks, not independent forward,
+holdout, runtime latency or promotion evidence. Hosted CI and pinned deployment
+results must be recorded separately after they actually occur.

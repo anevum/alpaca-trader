@@ -215,3 +215,46 @@ The retained rollback branch `rollback/rhen-v4.3.2-0270563-20261007-0145` points
 to exact known-good `0270563a613c57a959d1c6b93b97a01509a418df`. Broker-write
 promotion, adaptive ACTIVE, options execution, shorts, additional leverage,
 crypto and expanded 24/5 authority remain unavailable in the new implementation.
+
+
+## Slice 20: policy recovery, bounded replay and release review (2026-10-07)
+
+Implementation added in isolation: checksummed same-session/configuration policy
+confirmation/dwell restoration; bounded source-availability SQLite history;
+protected history reads; persisted broker-account sample baselines, sampled-peak
+drawdown and actual-position exposure diagnostics; immediate operational socket
+state publication; and private read-only champion health/configuration identity.
+The health identity exposes only the existing scheduler protected-contract hash,
+not a complete settings/configuration freeze. Stale, unhealthy or mismatched
+champion reads cannot satisfy canonical health lineage. Baseline execution values
+remain unchanged, evidence approval is still unavailable and ACTIVE remains blocked.
+
+ASC-008 release review checks exact artifact/profile/version/configuration lineage,
+independent forward-session floors, untouched non-overlapping holdout floors,
+VELUM point-in-time and GRAEN frozen validation, every runtime gate, rollback and
+authorization references. It is a pure review contract; authenticated canonical
+artifact resolver/registry integration remains unfinished. Unit fixtures never
+become validation evidence and eligibility never automatically activates execution.
+
+NOSTRA return-forecast projection requires the canonical observed snapshot reference,
+model/methodology versions, horizon/expiry and a supported authority state. Only
+observed-reference and expected-terminal endpoints are projected; their connection
+is labelled visual interpolation. No uncertainty bounds are invented. The adapter
+is implemented but the canonical live forecast producer is not yet wired.
+
+Command adds adaptive/capital observability, account diagnostics and bounded
+source-availability replay with authenticated, gated reads. Replay shows actual
+archived observations and explicitly does not establish a VELUM pass. These
+visuals remain feature gated pending an authorized protected deployment path to
+the isolated observer and browser/runtime validation. Cash-flow-adjusted strategy
+returns remain unavailable. No polling replaces streaming as the primary live path.
+
+Actual pre-deployment observation at 12:09 UTC: existing isolated b0c622 observer
+accepted all 24 PREMARKET/IEX subscriptions (bars, quotes, updatedBars), broker
+stream HEALTHY and account LIVE, with four source bars/eight quotes and zero
+evaluable decisions, candidates or intents. Accepted subscriptions do not establish
+fresh/evaluable coverage. Slice 20 clears stale overnight bootstrap error/count
+when beginning a new-session bootstrap; real reconnect/restart attestations follow
+deployment. All independent-session and untouched-holdout requirements remain
+unpassed. Original 4.3 rollback commit/configuration boundaries remain preserved;
+4.4 writes and future asset authorities remain disabled.

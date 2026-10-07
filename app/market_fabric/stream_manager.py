@@ -21,7 +21,7 @@ class ProviderStreamError(RuntimeError):
 
 class MarketStreamManager:
     def __init__(self, store, *, api_key: str, api_secret: str, on_event,
-                 bootstrap=None, connect_factory=connect, queue_max=10000):
+                 bootstrap=None, connect_factory=connect, queue_max=10000, on_status=None):
         validate_symbols(store.symbols)
         self.store = store
         self.api_key, self.api_secret = api_key, api_secret
@@ -36,19 +36,30 @@ class MarketStreamManager:
         self.unavailable_channels = set()
         self.running = False
         self.sequence = 0
+        self.on_status = on_status
+
+    async def status(self, state, *, force=False):
+        changed = self.store.connection != state
+        self.store.connection = state
+        if self.on_status and (changed or force):
+            await self.on_status({"connection_state":state,"stream_generation":self.store.generation,
+                "subscribed_symbols":len(self.store.subscribed),"intended_symbols":len(self.store.symbols),
+                "subscribed_channels":sorted(self.subscribed_channels),"unavailable_channels":sorted(self.unavailable_channels),
+                "stream_errors":self.errors,"stream_error":self.last_error,"stream_error_code":self.last_error_code,
+                "source_at":datetime.now(timezone.utc).isoformat(),"provenance":"OPERATIONAL","entry_authority":False})
 
     async def consume(self, ws, feed, session_id):
         generation = uuid4().hex
         self.store.begin(generation, feed, session_id)
         self.sequence = 0
-        self.store.connection = "AUTHENTICATING"
+        self.subscribed_channels.clear()
+        self.unavailable_channels.clear()
+        await self.status("AUTHENTICATING",force=True)
         await ws.send(json.dumps({"action": "auth", "key": self.api_key, "secret": self.api_secret}))
         authenticated = False
         subscribe_sent = False
         pending_channel = None
         bootstrapped = False
-        self.subscribed_channels.clear()
-        self.unavailable_channels.clear()
         # Sequential consumption applies transport backpressure; bounded websockets max_queue
         # preserves bars rather than losing them to a quote-only drop policy.
         async for frame in ws:
@@ -64,11 +75,12 @@ class MarketStreamManager:
                         if pending_channel == "bars":
                             self.unavailable_channels.add("updatedBars")
                         pending_channel = None
+                        await self.status(self.store.connection,force=True)
                         continue
                     raise ProviderStreamError(raw.get("code"))
                 if raw.get("T") == "success" and raw.get("msg") == "authenticated":
                     authenticated = True
-                    self.store.connection = "SUBSCRIBING"
+                    await self.status("SUBSCRIBING")
                     channels = ("quotes",) if feed == "overnight" else ("quotes", "bars", "updatedBars")
                     await ws.send(json.dumps({"action": "subscribe", **{k:list(self.store.symbols) for k in channels}}))
                     pending_channel = "quotes" if feed == "overnight" else None
@@ -81,8 +93,8 @@ class MarketStreamManager:
                     if any(set(raw.get(k, [])) != expected for k in required):
                         raise ValueError("subscription coverage mismatch")
                     self.store.subscribed = expected
-                    self.store.connection = "WARMING"
                     self.subscribed_channels = {k for k in ("quotes", "bars", "updatedBars") if set(raw.get(k, [])) == expected}
+                    await self.status("WARMING",force=True)
                     if self.bootstrap and "bars" in self.subscribed_channels and not bootstrapped:
                         await self.bootstrap(feed, session_id)
                         bootstrapped = True
@@ -103,7 +115,7 @@ class MarketStreamManager:
                     if self.store.apply(event):
                         await self.on_event(event)
                     ready = all(self.store.snapshot(s, now)["evaluable"] for s in self.store.symbols)
-                    self.store.connection = "HEALTHY" if ready else "WARMING"
+                    await self.status("HEALTHY" if ready else "WARMING")
 
     async def run(self, feed, session_id):
         if feed not in ENDPOINTS or not self.api_key or not self.api_secret:
@@ -112,7 +124,7 @@ class MarketStreamManager:
         failures = 0
         try:
             while self.running:
-                self.store.connection = "CONNECTING"
+                await self.status("CONNECTING")
                 try:
                     async with self.connect_factory("wss://stream.data.alpaca.markets/"+ENDPOINTS[feed],
                                                     max_queue=self.queue_max, max_size=2**20,
@@ -126,11 +138,11 @@ class MarketStreamManager:
                     self.last_error = type(exc).__name__  # never expose auth frames/secrets
                     self.last_error_code = getattr(exc, "code", None) or getattr(getattr(exc, "response", None), "status_code", None)
                     failures += 1
-                self.store.connection = "DISCONNECTED"
                 self.store.subscribed.clear()
+                await self.status("DISCONNECTED",force=True)
                 self.reconnects += 1
                 await asyncio.sleep(min(30, 2 ** min(failures, 5)) + random.uniform(0, .25))
         finally:
-            self.store.connection = "DISCONNECTED"
             self.store.subscribed.clear()
             self.running = False
+            await self.status("DISCONNECTED",force=True)
