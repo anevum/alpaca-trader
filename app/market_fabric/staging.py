@@ -162,8 +162,16 @@ class ReadOnlyCanonicalUniverse:
 
 
 class ReadOnlyCanonicalResearchEvidence:
-    """Authenticated GET-only read of the canonical RHEN research evidence document."""
+    """Join canonical research evidence to the sealed operator approval projection.
+
+    Authorization decisions from the generic research document are deliberately
+    excluded. Only HMAC-verified current decisions returned by the execution
+    service's scheduler-protected ASC registry are eligible for ASC-008 review.
+    Both reads are GET-only and carry no broker/execution authority.
+    """
     ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/research-agent-gateway"
+    APPROVAL_ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/scheduler/asc/profile-release/approvals"
+    APPROVAL_VERSION = "asc008-profile-approval-registry-v1"
 
     def __init__(self, settings, *, transport=None):
         self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
@@ -173,18 +181,54 @@ class ReadOnlyCanonicalResearchEvidence:
         if not self.token:
             raise ValueError("canonical research evidence read unavailable")
         async with httpx.AsyncClient(timeout=12, transport=self.transport) as http:
-            response = await http.get(
+            research_response = await http.get(
                 self.ENDPOINT,
                 headers={"x-anevum-ingest-token":self.token,"accept":"application/json"})
-            response.raise_for_status()
-            body = response.json()
+            research_response.raise_for_status()
+            approval_response = await http.get(
+                self.APPROVAL_ENDPOINT,
+                headers={"x-anevum-scheduler-token":self.token,"accept":"application/json"})
+            approval_response.raise_for_status()
+            body = research_response.json()
+            approvals = approval_response.json()
+
         evidence = body.get("evidence") if isinstance(body,dict) else None
         if (not isinstance(body,dict) or body.get("ok") is not True
             or body.get("execution_authority") is not False
             or body.get("broker_orders_possible") is not False
             or not isinstance(evidence,dict)):
             raise ValueError("canonical research evidence identity mismatch")
-        return evidence
+        decisions = approvals.get("research_decisions") if isinstance(approvals,dict) else None
+        invalid_count = approvals.get("invalid_record_count") if isinstance(approvals,dict) else None
+        if (not isinstance(approvals,dict) or approvals.get("ok") is not True
+            or approvals.get("schema_version") != self.APPROVAL_VERSION
+            or approvals.get("execution_authority") is not False
+            or approvals.get("broker_orders_possible") is not False
+            or approvals.get("active_mode_authorized") is not False
+            or approvals.get("automatic_application_authorized") is not False
+            or not isinstance(decisions,list)
+            or type(approvals.get("record_count")) is not int
+            or approvals.get("record_count") != len(decisions)
+            or type(invalid_count) is not int or invalid_count != 0):
+            raise ValueError("sealed ASC approval registry identity mismatch")
+
+        # Never allow a generic research decision to impersonate operator
+        # authorization. The sealed registry is the sole authorization source.
+        merged = dict(evidence)
+        merged["research_decisions"] = [dict(row) for row in decisions if isinstance(row,dict)]
+        if len(merged["research_decisions"]) != len(decisions):
+            raise ValueError("sealed ASC approval decision shape mismatch")
+        merged["asc_approval_registry"] = {
+            "schema_version":approvals["schema_version"],
+            "record_count":approvals["record_count"],
+            "invalid_record_count":invalid_count,
+            "source":"RHEN/sealed_profile_release_approval_registry",
+            "provenance":"OPERATIONAL",
+            "execution_authority":False,
+            "broker_write_authority":False,
+            "active_mode_authorized":False,
+        }
+        return merged
 
 
 class ReadOnlyCanonicalLedger:

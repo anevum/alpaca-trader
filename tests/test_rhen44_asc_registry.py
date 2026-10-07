@@ -140,23 +140,63 @@ def test_adaptive_shadow_never_uses_unapproved_non_safety_profile():
         controller.observe(context,enabled=True,mode="active",approved_profiles=("NORMAL",))
 
 
-def test_canonical_research_reader_is_get_only_and_rejects_authority():
+def test_canonical_research_reader_uses_only_sealed_operator_decisions():
     from app.config import Settings
     calls=[]
+    generic={"decision_key":"GENERIC","status":"final","decision_type":"research_authorization",
+             "evidence":{"authorized_action":"authorize_policy_profile_release"}}
+    sealed={"decision_key":"SEALED","status":"final","decision_type":"research_authorization",
+            "evidence":{"authorized_action":"authorize_policy_profile_release","revoked":False}}
     def handle(request):
         calls.append(request)
-        return httpx.Response(200,json={"ok":True,"evidence":{"research_decisions":[]},
-            "execution_authority":False,"broker_orders_possible":False})
+        if request.url.path=="/v1/research-agent-gateway":
+            return httpx.Response(200,json={"ok":True,"evidence":{"research_decisions":[generic],"agent_runs":[]},
+                "execution_authority":False,"broker_orders_possible":False})
+        assert request.url.path=="/v1/scheduler/asc/profile-release/approvals"
+        return httpx.Response(200,json={"ok":True,"schema_version":"asc008-profile-approval-registry-v1",
+            "research_decisions":[sealed],"record_count":1,"invalid_record_count":0,
+            "execution_authority":False,"broker_orders_possible":False,
+            "active_mode_authorized":False,"automatic_application_authorized":False})
+
     settings=Settings(_env_file=None,TRADING_INGEST_TOKEN="fixture")
     result=asyncio.run(ReadOnlyCanonicalResearchEvidence(
         settings,transport=httpx.MockTransport(handle)).snapshot())
-    assert result["research_decisions"]==[]
-    assert len(calls)==1 and calls[0].method=="GET"
+
+    assert result["research_decisions"]==[sealed]
+    assert result["asc_approval_registry"]["record_count"]==1
+    assert [request.method for request in calls]==["GET","GET"]
     assert calls[0].url.path=="/v1/research-agent-gateway"
     assert calls[0].headers["x-anevum-ingest-token"]=="fixture"
+    assert calls[1].url.path=="/v1/scheduler/asc/profile-release/approvals"
+    assert calls[1].headers["x-anevum-scheduler-token"]=="fixture"
 
-    bad=ReadOnlyCanonicalResearchEvidence(settings,transport=httpx.MockTransport(
-        lambda request:httpx.Response(200,json={"ok":True,"evidence":{},
-            "execution_authority":True,"broker_orders_possible":False})))
+
+@pytest.mark.parametrize("mutation", ["research_authority","approval_authority","active_authority",
+                                       "automatic_authority","invalid_signature","count_mismatch"])
+def test_canonical_research_reader_fails_closed_on_authority_or_registry_damage(mutation):
+    from app.config import Settings
+    settings=Settings(_env_file=None,TRADING_INGEST_TOKEN="fixture")
+    def handle(request):
+        if request.url.path=="/v1/research-agent-gateway":
+            body={"ok":True,"evidence":{},"execution_authority":False,"broker_orders_possible":False}
+            if mutation=="research_authority":
+                body["execution_authority"]=True
+            return httpx.Response(200,json=body)
+        body={"ok":True,"schema_version":"asc008-profile-approval-registry-v1",
+              "research_decisions":[],"record_count":0,"invalid_record_count":0,
+              "execution_authority":False,"broker_orders_possible":False,
+              "active_mode_authorized":False,"automatic_application_authorized":False}
+        if mutation=="approval_authority":
+            body["execution_authority"]=True
+        elif mutation=="active_authority":
+            body["active_mode_authorized"]=True
+        elif mutation=="automatic_authority":
+            body["automatic_application_authorized"]=True
+        elif mutation=="invalid_signature":
+            body["invalid_record_count"]=1
+        elif mutation=="count_mismatch":
+            body["record_count"]=1
+        return httpx.Response(200,json=body)
+    reader=ReadOnlyCanonicalResearchEvidence(settings,transport=httpx.MockTransport(handle))
     with pytest.raises(ValueError):
-        asyncio.run(bad.snapshot())
+        asyncio.run(reader.snapshot())
