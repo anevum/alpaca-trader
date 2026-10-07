@@ -337,11 +337,21 @@ def test_canonical_ledger_parity_is_overlap_bounded_and_fail_closed():
     assert parity["entry_authority"] is False
     assert parity["broker_write_authority"] is False
 
+    extra = ShadowFabric.canonical_ledger_parity(canonical,observed+[
+        {**observed[0],"event_id":"obs-extra","order_ref":"unknown"}])
+    assert extra["quality_state"] == "LIVE"
+    assert extra["parity_complete"] is True
+    assert extra["reason"] == "PARITY_WITH_UNATTRIBUTED_ACCOUNT_EVENTS"
+    assert extra["missing_observed_orders"] == 0
+    assert extra["unattributed_observed_orders"] == 1
+
     diverged = ShadowFabric.canonical_ledger_parity(canonical,[{**observed[0],"order_ref":"unknown"}])
     assert diverged["quality_state"] == "DEGRADED"
     assert diverged["parity_complete"] is False
     assert diverged["missing_observed_orders"] == 1
-    assert diverged["unknown_observed_orders"] == 1
+    assert diverged["unattributed_observed_orders"] == 1
+    assert diverged["missing_order_first_at"] == retained
+    assert diverged["missing_order_last_at"] == retained
 
     truncated = ShadowFabric.canonical_ledger_parity({**canonical,"truncated":True},observed)
     assert truncated["quality_state"] == "UNAVAILABLE"
