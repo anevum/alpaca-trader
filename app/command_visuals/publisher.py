@@ -15,6 +15,7 @@ class LivePublisher:
         self.clients = set()
         self.dirty = {}
         self.slow_clients = 0
+        self.max_tick_lag_ms = 0.0
 
     def envelope(self, kind, payload):
         self.sequence += 1
@@ -58,10 +59,13 @@ class LivePublisher:
 
     async def run(self):
         last_heartbeat = asyncio.get_running_loop().time()
+        last_tick = last_heartbeat
         while True:
             await asyncio.sleep(self.flush_ms/1000)
-            self.flush()
             now = asyncio.get_running_loop().time()
+            self.max_tick_lag_ms = max(self.max_tick_lag_ms, (now-last_tick)*1000-self.flush_ms)
+            last_tick = now
+            self.flush()
             if now-last_heartbeat >= 2:
                 self.send("heartbeat", self.snapshot()["system"])
                 last_heartbeat = now

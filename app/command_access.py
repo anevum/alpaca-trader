@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -13,6 +14,67 @@ class CommandAuthError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+_JWKS_TTL_SECONDS = 300.0
+_JWKS_STALE_IF_ERROR_SECONDS = 3600.0
+_JWKS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _matching_jwk(keys: list[dict[str, Any]], kid: str) -> dict[str, Any] | None:
+    return next((item for item in keys if str(item.get("kid") or "") == kid), None)
+
+
+async def _fetch_cloudflare_jwks(issuer: str) -> list[dict[str, Any]]:
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            response = await http.get(
+                issuer + "/cdn-cgi/access/certs",
+                headers={"accept": "application/json"},
+            )
+    except httpx.HTTPError as exc:
+        raise CommandAuthError(503, "Cloudflare Access signing keys are unavailable") from exc
+
+    if not response.is_success:
+        raise CommandAuthError(503, "Cloudflare Access signing keys are unavailable")
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise CommandAuthError(503, "Cloudflare Access signing keys are invalid") from exc
+    keys = body.get("keys") if isinstance(body, dict) else None
+    if not isinstance(keys, list) or not all(isinstance(item, dict) for item in keys):
+        raise CommandAuthError(503, "Cloudflare Access signing keys are invalid")
+    return keys
+
+
+async def _resolve_cloudflare_jwk(issuer: str, kid: str) -> dict[str, Any]:
+    now = monotonic()
+    cached = _JWKS_CACHE.get(issuer)
+    cached_key = None
+    cached_age = None
+    if cached is not None:
+        cached_at, cached_keys = cached
+        cached_age = max(0.0, now - cached_at)
+        cached_key = _matching_jwk(cached_keys, kid)
+        if cached_key is not None and cached_age <= _JWKS_TTL_SECONDS:
+            return cached_key
+
+    try:
+        keys = await _fetch_cloudflare_jwks(issuer)
+    except CommandAuthError:
+        if (
+            cached_key is not None
+            and cached_age is not None
+            and cached_age <= _JWKS_STALE_IF_ERROR_SECONDS
+        ):
+            return cached_key
+        raise
+
+    _JWKS_CACHE[issuer] = (monotonic(), keys)
+    jwk = _matching_jwk(keys, kid)
+    if jwk is None:
+        raise CommandAuthError(401, "Cloudflare Access signing key is unknown")
+    return jwk
 
 
 def normalized_team_domain(value: str) -> str:
@@ -47,29 +109,7 @@ async def verify_cloudflare_access(
     if not kid:
         raise CommandAuthError(401, "Cloudflare Access token is invalid")
 
-    async with httpx.AsyncClient(timeout=5.0) as http:
-        response = await http.get(
-            issuer + "/cdn-cgi/access/certs",
-            headers={"accept": "application/json"},
-        )
-    if not response.is_success:
-        raise CommandAuthError(503, "Cloudflare Access signing keys are unavailable")
-
-    body = response.json()
-    keys = body.get("keys") if isinstance(body, dict) else None
-    if not isinstance(keys, list):
-        raise CommandAuthError(503, "Cloudflare Access signing keys are invalid")
-
-    jwk = next(
-        (
-            item
-            for item in keys
-            if isinstance(item, dict) and str(item.get("kid") or "") == kid
-        ),
-        None,
-    )
-    if jwk is None:
-        raise CommandAuthError(401, "Cloudflare Access signing key is unknown")
+    jwk = await _resolve_cloudflare_jwk(issuer, kid)
 
     try:
         public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))

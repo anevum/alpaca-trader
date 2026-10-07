@@ -12,7 +12,7 @@ class DecisionEvidence:
         db.execute("CREATE TABLE IF NOT EXISTS shadow_session (day TEXT, session TEXT, symbol TEXT, body TEXT NOT NULL, PRIMARY KEY(day,session,symbol))")
         db.execute("CREATE TABLE IF NOT EXISTS shadow_seen (id TEXT PRIMARY KEY, at TEXT NOT NULL)")
 
-    def record(self, identity, body):
+    def record(self, identity, body, *, coverage=None):
         # A decision has one terminal classification; repeated quote updates are not
         # independent candidates. Persist source and derived lineage before publishing.
         encoded = json.dumps(body, sort_keys=True, allow_nan=False)
@@ -29,6 +29,8 @@ class DecisionEvidence:
             candidate = body["classification"] == "CANDIDATE"
             if candidate:
                 self.db.execute("INSERT OR IGNORE INTO shadow_candidate VALUES (?,?,?)", (identity, at, encoded))
+                if coverage is not None:
+                    coverage.candidate(body)
             day, session, symbol = body["session_day"], body["session"], body["symbol"]
             old = self.db.execute("SELECT body FROM shadow_session WHERE day=? AND session=? AND symbol=?", (day, session, symbol)).fetchone()
             totals = json.loads(old[0]) if old else {"decisions": 0, "evaluable_decisions": 0, "candidates": 0, "rejection_counts": {}}

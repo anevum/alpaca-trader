@@ -1,5 +1,29 @@
 # Local verification, 2026-10-07 UTC
 
+Continuation: freshness/coverage slice
+
+- Full guarded local suite: **1050 passed, 8 skipped**. Existing deprecation
+  warnings only. Tests ran with all execution/arming/4.4 stream flags disabled.
+- Required `scripts.staging_check` after scheduling hardening: **1050 passed, 10 skipped**; two additional
+  retired/fixture-specific cases are skipped by that staging guard.
+- Nine new tests exercise exact quote/bar deadline clipping; quiet-symbol
+  invalidation without any market event; clock reversal; disconnect/session
+  separation; restart downtime exclusion; atomic distinct-candidate counting
+  with configuration lineage; and no synthetic market/decision emission.
+- A buffered market burst test verifies cooperative scheduling preserves all
+  40 ordered events while giving other tasks a turn before the burst ends.
+  Completed-bar gap checks cache exact source timestamp tuples, including
+  intermediate corrections; freshness thresholds and formulas are unchanged.
+- Exposure retains 14 session days, at most 5000 lineage rows/table and current
+  lineage in memory. SQLite retains the existing 32 MiB ceiling. Exposure is
+  derived prerequisite availability, not an independently validated session.
+- Frontend 53 tests and TypeScript check passed. A local fixture timer threshold
+  is not used in runtime; real source limits remain 45s quotes / 120s bars.
+- Deployment and actual runtime observations must be recorded separately. The
+  champion must not auto-redeploy for this slice during its live trading session;
+  backend work is committed to an isolated branch/PR and only the shadow service
+  may deploy it. Command can deploy independently without changing trading.
+
 - Unmodified 4.3 backend baseline: 963 passed, 8 skipped.
 - 4.4 branch full backend suite: 1006 passed, 8 skipped, 5 deprecation warnings.
 - New 4.4 tests: 43, including real loopback WebSocket transport, Command auth

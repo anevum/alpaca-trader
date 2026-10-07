@@ -31,13 +31,14 @@ from .shadow_features import regime_observation
 from .signal_reasons import rejection_reasons
 from .policy_state import PolicyStateStore
 from .contracts import utc
+from .coverage_evidence import CoverageEvidence
 from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
     def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None):
         self.settings = settings
-        validate_symbols(settings.extended_equity_symbols)
+        validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
         self.visual = VisualProjector(self.store, flush_ms=settings.command_live_flush_ms)
         self.rejections = RejectionEngine()
@@ -62,6 +63,9 @@ class ShadowFabric:
         # This identifies shadow inputs, not the protected production configuration.
         self.shadow_configuration = fingerprint({"baseline": baseline, "strategy": settings.strategy_version_id,
             "symbols": settings.extended_equity_symbols, "fast_window": settings.fast_window, "slow_window": settings.slow_window})
+        self.coverage = CoverageEvidence(self.checkpoint.db, strategy_version=settings.strategy_version_id,
+                                         configuration=self.shadow_configuration)
+        self.freshness_wakeup = asyncio.Event()
         self.policy = AdaptivePolicyController(self.library, baseline=baseline, hard_limits={"stop_pct": settings.max_dynamic_stop_pct,
             "max_spread_pct": settings.max_spread_pct}, configuration_fingerprint=self.shadow_configuration)
         self.policy_state = PolicyStateStore(self.checkpoint.db)
@@ -80,10 +84,50 @@ class ShadowFabric:
         self.inbox = None
 
     async def on_stream_status(self, status):
+        self.refresh_observation(utc(status["source_at"]))
         self.visual.system_patch(status)
         # Connection loss/recovery is critical operational evidence. Do not wait
         # for the 30-second calendar/reconciliation audit to propagate it.
         self.visual.publisher.flush()
+
+    def refresh_observation(self, now, *, symbols=None):
+        targets = tuple(symbols) if symbols is not None else self.store.symbols
+        self.coverage.advance(self.store, now, symbols=targets)
+        eligibility_changed = False
+        for symbol in targets:
+            row = self.store.snapshot(symbol, now)
+            previous = self.visual.scanner.get(symbol, {})
+            fields = ("feed", "session", "evaluable", "rejection_codes", "quality_state", "observed_bar_count")
+            if any(previous.get(k) != row.get(k) for k in fields):
+                eligibility_changed = eligibility_changed or previous.get("evaluable") != row.get("evaluable")
+                patch = {**previous, **row}
+                if not row["evaluable"]:
+                    patch.update(classification="NOT_EVALUABLE", candidate_state="BLOCKED",
+                        signal_reason="Market prerequisites unavailable; previous signal is historical")
+                self.visual.scanner[symbol] = patch
+                self.visual.publisher.stage("scanner:"+symbol, "scanner_patch", patch)
+        if eligibility_changed:
+            self.regime_key = None
+        self.freshness_wakeup.set()
+
+    async def freshness_observer(self):
+        # One deadline timer invalidates quiet symbols. No market polling or
+        # fabricated quote/bar event; the publisher supplies ordered state deltas.
+        while True:
+            self.freshness_wakeup.clear()
+            now = datetime.now(timezone.utc)
+            deadlines = [at for symbol in self.store.symbols
+                         if (at := self.store.freshness_deadline(symbol, now)) is not None]
+            if not deadlines:
+                await self.freshness_wakeup.wait()
+                continue
+            timeout = max(0, (min(deadlines)-now).total_seconds()) + .001
+            try:
+                await asyncio.wait_for(self.freshness_wakeup.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                now = datetime.now(timezone.utc)
+                self.refresh_observation(now)
+                self.visual.system_patch({"scanner_coverage": self.coverage.summary(self.store, now)})
 
     async def bootstrap(self, feed, session_id):
         now = datetime.now(timezone.utc)
@@ -99,7 +143,7 @@ class ShadowFabric:
                                       "bootstrap_error": "OVERNIGHT_HISTORY_UNAVAILABLE", "recovery_at": now.isoformat()})
             return
         try:
-            self.checkpoint.restore(self.store, now)
+            restored = self.checkpoint.restore(self.store, now)
             start = max(now-timedelta(minutes=120), self.context.starts_at)
             # Explicit feed parameter; inherited 4.3 DATA_FEED cannot substitute a different source.
             async with httpx.AsyncClient(timeout=20) as http:
@@ -111,17 +155,21 @@ class ShadowFabric:
                 body = r.json()
                 if body.get("next_page_token"):
                     raise ValueError("bootstrap incomplete; remain warming")
-                merge_bars(self.store, body.get("bars", {}), now, starts_at=self.context.starts_at)
+                historical = merge_bars(self.store, body.get("bars", {}), now, starts_at=self.context.starts_at)
             for symbol, row in self.store.rows.items():
                 for bar in row["bars"]:
                     self.visual.point("candles:"+symbol, bar)
-            self.visual.system_patch({"reconstruction_source": "checkpoint+ALPACA_HISTORY", "recovery_at": now.isoformat()})
+            self.visual.system_patch({"reconstruction_source": "checkpoint+ALPACA_HISTORY", "recovery_at": now.isoformat(),
+                                      "restored_bar_count": restored, "historical_bar_count": historical})
         except Exception as exc:
             self.last_error = type(exc).__name__
             self.visual.system_patch({"reconstruction_source": "PARTIAL_OR_UNAVAILABLE", "bootstrap_error": self.last_error})
 
     async def on_event(self, event):
         now = event.received_at
+        # A market event can only make its own symbol fresher. Keep the hot quote
+        # path O(1); full-universe expiry/coverage remains on deadline and audit paths.
+        self.refresh_observation(now, symbols=(event.symbol,))
         if self.policy_session != event.session_id:
             self.policy.profile, self.policy.since = "BASELINE_LOCKED", None
             self.policy.pending, self.policy.confirmed, self.policy.last_observation = None, 0, None
@@ -164,7 +212,10 @@ class ShadowFabric:
         if decision_id is None:
             decision_id = fingerprint({"symbol": event.symbol, "session_id": event.session_id, "minute": now.replace(second=0, microsecond=0).isoformat(),
                 "classification": classification, "reasons": reasons, "shadow_configuration": self.shadow_configuration})
-        feature_key = (self.store.context, tuple((s, self.store.rows.get(s, {}).get("feature_revision", 0), self.store.snapshot(s, now)["evaluable"]) for s in self.store.symbols),
+        # NOSTRA inputs are completed bars. Quote bursts must not rebuild every
+        # symbol snapshot merely to discover that no bar feature changed.
+        feature_key = (self.store.context,
+                       tuple((s, self.store.rows.get(s, {}).get("feature_revision", 0)) for s in self.store.symbols),
                        now.replace(second=0, microsecond=0))
         if feature_key != self.regime_key:
             self.regime, self.features = regime_observation(self.store, now, fast_window=self.settings.fast_window, slow_window=self.settings.slow_window)
@@ -199,7 +250,7 @@ class ShadowFabric:
             "policy_library_fingerprint": self.library.fingerprint, "shadow_configuration_fingerprint": self.shadow_configuration,
             "regime": self.regime, "entry_authority": False, "risk_validation_state": "UNAVAILABLE",
             "candidate_kind": "SIGNAL_ONLY_COUNTERFACTUAL", "provenance": "DERIVED", "source": "RHEN/market_fabric"}
-        if decision_id not in self.rejections.ids and self.evidence.record(decision_id, evidence):
+        if decision_id not in self.rejections.ids and self.evidence.record(decision_id, evidence, coverage=self.coverage):
             self.rejections.record(evaluation)
         self.visual.market(event, now)
         if event.kind in {"bar", "bar_revision"}:
@@ -300,6 +351,7 @@ class ShadowFabric:
                             self.stream_task = None
                         last_key = key
                     rows = [self.store.snapshot(s, now) for s in self.store.symbols]
+                    self.refresh_observation(now)
                     self.visual.system_patch({"session": route.session, "feed": route.expected_feed,
                                               "capability": route.capability, "execution_policy": route.execution_policy,
                                               "connection_state": self.store.connection, "stream_generation": self.store.generation,
@@ -310,10 +362,12 @@ class ShadowFabric:
                                               "unavailable_channels": sorted(self.manager.unavailable_channels),
                                               "scanner_summary": self.rejections.summary(now), "entry_authority": False,
                                               "scanner_session_summary": self.evidence.summary(route.session_id.split("/")[0], route.session),
+                                              "scanner_coverage": self.coverage.summary(self.store, now),
                                               "broker_stream_state": self.broker.state if self.broker else "DISABLED",
                                               "quality_state": "LIVE" if all(r["evaluable"] for r in rows) else "DEGRADED",
                                               "source_at": now.isoformat()})
                     self.checkpoint.save(self.store, now)
+                    self.coverage.save()
                     self.checkpoint.save_summary(now.strftime("%Y-%m-%dT%H:%M"), {
                         "observed_at": now.isoformat(), "session": route.session, "feed": route.expected_feed,
                         "strategy_version": self.settings.strategy_version_id, "entry_authority": False,
@@ -326,6 +380,7 @@ class ShadowFabric:
                         self.stream_task = None
                     self.store.connection = "DISCONNECTED"
                     self.store.subscribed.clear()
+                    self.refresh_observation(now)
                     last_key = None
                     self.visual.system_patch({"quality_state": "DEGRADED", "last_error": self.last_error, "entry_authority": False})
                 # Calendar/capability/checkpoint audit, not primary price observation.
@@ -336,7 +391,8 @@ class ShadowFabric:
                 await asyncio.gather(self.stream_task, return_exceptions=True)
 
     def start(self):
-        self.tasks = [asyncio.create_task(self.supervise()), asyncio.create_task(self.visual.publisher.run())]
+        self.tasks = [asyncio.create_task(self.supervise()), asyncio.create_task(self.visual.publisher.run()),
+                      asyncio.create_task(self.freshness_observer())]
         if self.account_reader is not None:
             self.tasks.append(asyncio.create_task(self.account_observer()))
         if self.settings.rhen_broker_stream_shadow_enabled:
@@ -349,6 +405,8 @@ class ShadowFabric:
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.coverage.advance(self.store, datetime.now(timezone.utc))
+        self.coverage.save()
         self.checkpoint.close()
         if self.inbox:
             self.inbox.close()

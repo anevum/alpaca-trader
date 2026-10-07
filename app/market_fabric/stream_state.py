@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .contracts import MarketEvent, utc
 
 
 class MarketStateStore:
+    QUOTE_FRESHNESS_MS = 45000
+    BAR_FRESHNESS_MS = 120000
     def __init__(self, symbols: tuple[str, ...], *, warm_bars: int = 15, max_bars: int = 120):
         if not 1 <= warm_bars <= max_bars <= 2400:
             raise ValueError("invalid rolling window")
@@ -95,9 +97,9 @@ class MarketStateStore:
             reasons.append("STREAM_DISCONNECTED")
         if symbol not in self.subscribed:
             reasons.append("SUBSCRIPTION_MISSING")
-        if age is None or not 0 <= age <= 45000:
+        if age is None or not 0 <= age <= self.QUOTE_FRESHNESS_MS:
             reasons.append("STALE_QUOTE")
-        if bar_age is None or not 0 <= bar_age <= 120000:
+        if bar_age is None or not 0 <= bar_age <= self.BAR_FRESHNESS_MS:
             reasons.append("STALE_BAR")
         if bid is None or bid <= 0:
             reasons.append("NO_BID")
@@ -109,7 +111,15 @@ class MarketStateStore:
         if len(row.get("bars", [])) < self.warm_bars:
             reasons.append("INSUFFICIENT_OBSERVATIONS")
         recent = list(row.get("bars", []))[-self.warm_bars:]
-        if any((utc(b["timestamp"])-utc(a["timestamp"])).total_seconds() > 120 for a,b in zip(recent,recent[1:])):
+        bar_times = tuple(b["timestamp"] for b in recent)
+        # Quote bursts do not change completed-bar continuity. Cache only this
+        # derived calculation and key it by every source timestamp (including
+        # intermediate corrections); source freshness still uses the clock.
+        cached_gap = row.get("gap_cache")
+        if cached_gap is None or cached_gap[0] != bar_times:
+            cached_gap = (bar_times, any((utc(b)-utc(a)).total_seconds() > 120 for a,b in zip(bar_times,bar_times[1:])))
+            row["gap_cache"] = cached_gap
+        if cached_gap[1]:
             reasons.append("DATA_GAP")
         mid = (bid + ask) / 2 if valid else None
         return {"symbol": symbol, "feed": row.get("feed"), "session": row.get("session"),
@@ -117,6 +127,19 @@ class MarketStateStore:
                 "quote_source_at": source.isoformat() if source else None, "quote_age_ms": age,
                 "bar_age_ms": bar_age, "evaluable": not reasons, "rejection_code": reasons[0] if reasons else None,
                 "rejection_codes": reasons, "candidate_state": "BLOCKED" if reasons else "HOLD",
-                "quality_state": "STALE" if age is None or age > 45000 or self.connection == "DISCONNECTED" else "WARMING" if reasons else "LIVE",
+                "quality_state": "STALE" if "STALE_QUOTE" in reasons or "STALE_BAR" in reasons or "STREAM_DISCONNECTED" in reasons else "WARMING" if reasons else "LIVE",
+                "bar_source_at": bar_source.isoformat() if bar_source else None,
+                "observed_bar_count": len(row.get("bars", [])), "required_bar_count": self.warm_bars,
+                "state_observed_at": utc(now).isoformat(), "provenance": "DERIVED", "source": "RHEN/market_fabric",
+                "methodology_version": "stream-state-prerequisites-v1",
                 "events_per_minute": len(activity) if activity is not None else 0,
                 "entry_authority": False}
+
+    def freshness_deadline(self, symbol, now):
+        """Next invalidation of an actual source observation; never create data."""
+        timestamps = self.rows.get(symbol, {}).get("timestamps", {})
+        deadlines = [source + timedelta(milliseconds=limit) for kind, limit in
+                     (("quote", self.QUOTE_FRESHNESS_MS), ("bar", self.BAR_FRESHNESS_MS))
+                     if (source := timestamps.get(kind)) is not None and source <= utc(now)
+                     and source + timedelta(milliseconds=limit) >= utc(now)]
+        return min(deadlines) if deadlines else None
