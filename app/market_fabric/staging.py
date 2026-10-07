@@ -95,6 +95,7 @@ class ReadOnlyChampion:
         if not isinstance(execution, dict) or execution.get("ok") is not True:
             raise ValueError("Champion execution observation unavailable")
         identity = execution.get("protected_configuration_identity",{})
+        persistence = execution.get("persistence",{})
         return {"observed_at":datetime.now(timezone.utc).isoformat(),
             "source":"RHEN/private_champion_health","provenance":"OPERATIONAL",
             "runtime_ok":response.status_code == 200 and body.get("ok") is True and execution.get("ok") is True,
@@ -102,10 +103,39 @@ class ReadOnlyChampion:
             "module_failures":[name for name in body.get("module_failures",())
                                if name in ("graen", "nostra", "velum", "iren", "research_agent")],
             "reconciliation_safe":execution.get("reconciliation_safe") is True,
-            "strategy_version":execution.get("persistence",{}).get("strategy_version_id"),
+            "strategy_version":persistence.get("strategy_version_id"),
+            "run_id":persistence.get("run_id"),
             "protected_configuration_fingerprint":identity.get("fingerprint"),
             "source_commit":execution.get("runtime_provenance",{}).get("git_commit"),
             "broker_write_authority":False}
+
+
+class ReadOnlyCanonicalLedger:
+    """Token-authenticated GET-only projection of the canonical RHEN order/fill ledger."""
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/trading-report-read"
+    VERSION = "rhen-canonical-ledger-read-v1"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self, run_id, *, limit=1000):
+        run_id = str(run_id or "").strip()
+        if not self.token or not run_id or type(limit) is not int or not 1 <= limit <= 5000:
+            raise ValueError("canonical ledger read unavailable")
+        async with httpx.AsyncClient(timeout=10, transport=self.transport) as http:
+            response = await http.get(self.ENDPOINT,
+                headers={"x-anevum-ingest-token":self.token},
+                params={"latest":"ledger","run_id":run_id,"limit":limit})
+            response.raise_for_status()
+            body = response.json()
+        if (not isinstance(body,dict) or body.get("ok") is not True
+            or body.get("ledger_version") != self.VERSION or body.get("run_id") != run_id
+            or body.get("execution_authority") is not False
+            or body.get("broker_orders_possible") is not False
+            or not isinstance(body.get("events"),list)):
+            raise ValueError("canonical ledger identity mismatch")
+        return body
 
 
 def create_app(settings=None):
@@ -126,7 +156,8 @@ def create_app(settings=None):
             return strategy.evaluate(bars(symbol),{s:bars(s) for s in settings.confirmation_symbols},symbol,False,settings.order_notional,now=now)
         if settings.rhen_market_stream_enabled:
             fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=ReadOnlyBroker(settings).snapshot,
-                                  champion_reader=ReadOnlyChampion().snapshot, asset_reader=ReadOnlyBroker(settings).assets)
+                                  champion_reader=ReadOnlyChampion().snapshot, asset_reader=ReadOnlyBroker(settings).assets,
+                                  ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
             fabric.start()
             async def telemetry():
                 while True:
