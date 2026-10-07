@@ -1109,7 +1109,18 @@ async def lifespan(app: FastAPI):
             return strategy.evaluate(bars(symbol), {s: bars(s) for s in settings.confirmation_symbols},
                                      symbol, False, settings.order_notional, now=now)
 
-        shadow_fabric = ShadowFabric(settings, market_data, evaluator=shadow_evaluate)
+        async def shadow_account_reader():
+            from .sizing import calculate_entry_notional, effective_gross_limit, long_exposure, effective_position_limit
+            account, positions, orders = await asyncio.gather(client.account(), client.positions(), client.open_orders())
+            return {"account": account, "positions": positions, "open_orders": orders,
+                    "sizing": {"base_safe_notional": calculate_entry_notional(settings, account, positions),
+                        "cash": max(Decimal("0"), Decimal(str(account["cash"]))),
+                        "hard_gross_envelope": effective_gross_limit(settings, account),
+                        "existing_gross_exposure": long_exposure(positions),
+                        "hard_caps": {"max_order_notional": settings.max_order_notional,
+                                      "max_position_notional": effective_position_limit(settings, account)}}}
+
+        shadow_fabric = ShadowFabric(settings, market_data, evaluator=shadow_evaluate, account_reader=shadow_account_reader)
         shadow_fabric.start()
 
     yield

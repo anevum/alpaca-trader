@@ -50,16 +50,16 @@ identity is not mislabeled as the trading configuration fingerprint.
 | 2: event-driven market observation | Implemented, tested locally, gated | Live Alpaca auth, coverage/reconnect/shadow run |
 | 3: broker trade_updates | Durable shadow inbox/projection implemented | Canonical order/fill ledger reconciliation integration; never silently replace 4.3 reconciliation |
 | 4: warm start | Checkpoints/history bootstrap implemented; local restart test passes | Runtime restart with real positions/orders and gap/backfill evidence |
-| 5: scanner/rejection | Bounded classifications/minute diagnostics implemented | Full risk/cost/asset reason mapping, session/day aggregates, evaluable-symbol-hour exposure, candidate durability |
+| 5: scanner/rejection | Durable bounded decisions/candidates, target-session/day rollups and champion check mapping implemented; quote/reconnect dedup tested | Full risk/cost/asset mapping, evaluable-symbol-hour exposure, canonical research export/completeness |
 | 6: Command WebSocket | Protected route, unified router bridge, worker proxy and single client socket implemented | Authorized end-to-end Cloudflare/Railway proof; live latency measurement |
-| 7: core visuals | Candles/scanner/sparklines/feed strip/broker tape implemented, gated | Real-data screenshot QA; position/stop/target overlays, volume/time-range controls |
-| 8: advanced visuals | Forecast contract/band/expiry and replay PIT primitives implemented | NOSTRA forecast producer wiring, account/performance series, VELUM artifact/control wiring |
+| 7: core visuals | Candles/scanner/source volume/rolling VWAP/broker position and order levels/actual fill markers/window controls implemented, gated | Real-data screenshot QA; full server time-range history and strategy threshold overlays |
+| 8: advanced visuals | Forecast contract/band/expiry, replay PIT and event-triggered read-only broker equity/cash series implemented | NOSTRA forecast producer wiring, normalized/drawdown/session performance, VELUM artifact/control wiring |
 | 9: regular stream promotion | Intentionally not performed | Same-input strategy parity + real stream-vs-poll shadow equivalence; risk/engine data-source release |
 | 10: four sessions | Existing calendar resolver reused; Basic gaps explicit | Live per-session observation, overnight asset eligibility refresh and halt provenance |
 | 11: policy primitives | Library fingerprinting, immutable disabled/shadow snapshots, hysteresis/dwell/vetoes implemented | Profile-release approval registry/ASC-008 trusted activation integration; ACTIVE explicitly rejected |
-| 12: NOSTRA wrapper | Reuses ASC-002 classifier; PIT/missing/stale/fingerprint tested | Canonical feature producer and runtime observation persistence |
-| 13: Capital Governor | Pure no-margin bounded counterfactual expression implemented | Production sizing binding-cap adapters and governed shadow evidence |
-| 14: adaptive shadow | Primitives tested; execution values equal baseline | Durable runtime counterfactual lineage and recorded entry-policy provenance |
+| 12: NOSTRA wrapper | Reuses ASC-002 classifier with completed contiguous-bar cross section; PIT/missing/stale/fingerprint and durable decision lineage tested | Canonical research feature/schema parity and export; all-symbol missing/stale remains UNKNOWN |
+| 13: Capital Governor | Counterfactual adapter reuses existing sizing and exposure caps on observed broker snapshots; evidence veto keeps notional zero | Approved evidence/health factors and governed shadow validation |
+| 14: adaptive shadow | Runtime NOSTRA/policy snapshot lineage persisted with decisions; immutable execution values equal baseline; missing canonical health vetoes entries | Restart-persistent dwell/controller state, canonical health/ASC approval adapters, research lineage export |
 | 15: combined Command | Separate gated market surface inside current Operate | Adaptive panels and full canonical telemetry coverage |
 | 16: VELUM/GRAEN/ASC | Existing machinery preserved; no protected data accessed | Frozen experiments, no-lookahead replay, forward cohorts, untouched holdout results |
 | 17-19: canary/session/assertive promotion | Intentionally disabled | All package promotion gates and lane/profile-specific evidence |
@@ -115,3 +115,26 @@ the known 4.3 path, and verify no new broker intents. Before a later crossover,
 preserve exact 4.3 trading configuration and deployment identity separately. The
 observed deployment is rollback/redeploy capable; actual rollback execution was
 not tested on production because that would interrupt the champion.
+
+## Isolated observer preparation (2026-10-07 UTC)
+
+Created `rhen44-shadow` service `8a587e3d-2464-4bb7-9507-3b3321c8d121` in
+the existing Railway project, separately from champion service `f933a669-8591-4233-8510-e0db1548e463`.
+It has its own 100 MB volume `8a57da9f-dad9-400c-944d-8335ec0bd295` and a
+dedicated `Dockerfile.rhen44-shadow` / `app.market_fabric.staging:create_app` entrypoint.
+No source was attached before execution/arming flags were explicitly disabled.
+Only whitelisted strategy/risk inputs, Alpaca and Command authentication values
+are referenced from `rhen`; no values were exposed or champion variables modified.
+The entrypoint rejects armed settings and does not construct/import the main
+execution engine, research services or canonical ledger writer. Its broker REST
+client has only three allowlisted GET paths. There is no order route or method.
+
+The isolated database has a 32 MiB page ceiling, retains 2000 decision payloads,
+1000 candidate payloads, 40000 dedup identities and 14 target-session-day rollups.
+Retention is bounded; these aggregates do not replace complete canonical ASC/GRAEN
+validation lineage. No independent-session pass is inferred from a calendar bucket
+or local fixture. Broker REST refresh is triggered by trade_updates, with a
+120-second bootstrap/reconciliation/audit timeout.
+
+Deployment/actual feed evidence must be recorded separately after startup. A
+prepared service or healthy HTTP process alone does not prove live feed coverage.

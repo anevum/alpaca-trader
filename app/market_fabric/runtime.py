@@ -13,7 +13,10 @@ from uuid import uuid4
 import httpx
 
 from app.command_visuals.visual_projector import VisualProjector
+from app.command_visuals.account_projection import account_projection
 from app.equity_sessions import EquitySessionResolver
+from app.adaptive_policy import AdaptivePolicyController, PolicyLibrary, PolicyContext, fingerprint
+from app.capital_governor import govern_capital
 
 from .broker_updates import BrokerInbox, BrokerUpdateStream, execution_marker
 from .feed_router import route_feed, validate_symbols
@@ -21,22 +24,43 @@ from .rejection_engine import Evaluation, RejectionEngine
 from .stream_manager import MarketStreamManager
 from .stream_recovery import StreamCheckpoint, merge_bars
 from .stream_state import MarketStateStore
+from .decision_evidence import DecisionEvidence
+from .shadow_features import regime_observation
+from .signal_reasons import rejection_reasons
+from .contracts import utc
+from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
         self.visual = VisualProjector(self.store, flush_ms=settings.command_live_flush_ms)
         self.rejections = RejectionEngine()
         self.evaluator = evaluator
+        self.account_reader = account_reader
+        self.account_refresh = asyncio.Event()
         self.signal_cache = {}
         self.resolver = EquitySessionResolver(market_data)
         self.market_data = market_data
         self.context = None
         self.route = None
         self.checkpoint = StreamCheckpoint(settings.rhen_market_stream_checkpoint_path)
+        # 32 MiB ceiling for isolated bars, summaries and bounded shadow evidence.
+        self.checkpoint.db.execute("PRAGMA max_page_count=8192")
+        self.evidence = DecisionEvidence(self.checkpoint.db)
+        self.library = PolicyLibrary.load()
+        baseline = {k: str(getattr(settings, k)) for k in ("stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes", "max_spread_pct", "min_quality_score")}
+        # This identifies shadow inputs, not the protected production configuration.
+        self.shadow_configuration = fingerprint({"baseline": baseline, "strategy": settings.strategy_version_id,
+            "symbols": settings.extended_equity_symbols, "fast_window": settings.fast_window, "slow_window": settings.slow_window})
+        self.policy = AdaptivePolicyController(self.library, baseline=baseline, hard_limits={"stop_pct": settings.max_dynamic_stop_pct,
+            "max_spread_pct": settings.max_spread_pct}, configuration_fingerprint=self.shadow_configuration)
+        self.regime_key = None
+        self.regime = None
+        self.features = {}
+        self.policy_snapshot = None
         self.manager = MarketStreamManager(self.store, api_key=settings.alpaca_api_key, api_secret=settings.alpaca_api_secret,
                                            on_event=self.on_event, bootstrap=self.bootstrap)
         self.tasks = []
@@ -75,6 +99,7 @@ class ShadowFabric:
         reasons = tuple(row["rejection_codes"])
         classification = "NOT_EVALUABLE"
         signal = None
+        decision_id = None
         if row["evaluable"]:
             if self.evaluator and event.session == "REGULAR":
                 # The champion signal uses completed bars. Quote bursts update cheap
@@ -85,21 +110,61 @@ class ShadowFabric:
                 key = (event.generation, revisions, now.replace(second=0, microsecond=0).isoformat())
                 cached = self.signal_cache.get(event.symbol)
                 if cached is None or cached[0] != key:
-                    cached = (key, self.evaluator(event.symbol, now, self.store))
+                    identity = fingerprint({"symbol": event.symbol, "session_id": event.session_id,
+                        "shadow_configuration": self.shadow_configuration,
+                        "inputs": {s: [b for b in self.store.rows.get(s, {}).get("bars", ()) if utc(b["timestamp"]) < now.replace(second=0, microsecond=0)]
+                                   for s in (event.symbol, *self.settings.confirmation_symbols)}})
+                    cached = (key, self.evaluator(event.symbol, now, self.store), identity)
                     self.signal_cache[event.symbol] = cached
                 signal = cached[1]
+                # Identity uses actual completed-bar input contents, not socket
+                # generation or quote sequence. Reconnects cannot duplicate candidates.
+                decision_id = cached[2]
                 classification = "CANDIDATE" if signal.action == "buy" else "EVALUABLE_REJECTED"
-                reasons = () if signal.action == "buy" else ("SIGNAL_BELOW_THRESHOLD",)
+                reasons = () if signal.action == "buy" else rejection_reasons(signal)
             else:
                 classification = "EVALUABLE_REJECTED"
                 reasons = ("POLICY_NOT_PROMOTED",)
-        evaluation = Evaluation(f"{event.generation}:{event.sequence}", now, event.session, event.feed,
+        if decision_id is None:
+            decision_id = fingerprint({"symbol": event.symbol, "session_id": event.session_id, "minute": now.replace(second=0, microsecond=0).isoformat(),
+                "classification": classification, "reasons": reasons, "shadow_configuration": self.shadow_configuration})
+        feature_key = (self.store.context, tuple((s, self.store.rows.get(s, {}).get("feature_revision", 0), self.store.snapshot(s, now)["evaluable"]) for s in self.store.symbols),
+                       now.replace(second=0, microsecond=0))
+        if feature_key != self.regime_key:
+            self.regime, self.features = regime_observation(self.store, now, fast_window=self.settings.fast_window, slow_window=self.settings.slow_window)
+            context = PolicyContext(now, utc(self.regime["feature_as_of"]), event.session, self.regime["primary_regime"],
+                self.regime["confidence"], self.regime["unknown_probability"], self.regime["market_familiarity"],
+                # Missing canonical health/approval lineage is a veto, not an assumed pass.
+                False, False, False, False, self.shadow_configuration, self.library.fingerprint)
+            self.policy_snapshot = self.policy.observe(context, enabled=True, mode="shadow")
+            self.regime_key = feature_key
+            for symbol, feature in self.features.items():
+                self.visual.point("rolling_vwap:"+symbol, {"timestamp": feature["bar_timestamp"], "value": feature["vwap"],
+                    "symbol": symbol, "provenance": "DERIVED", "source": feature["source"], "quality_state": "LIVE",
+                    "methodology_version": feature["methodology_version"]})
+            self.visual.system_patch({"nostra": self.regime, "adaptive_control": {
+                "mode": self.policy_snapshot.mode, "current_profile": "BASELINE_LOCKED", "proposed_profile": self.policy_snapshot.proposed_profile,
+                "snapshot_fingerprint": self.policy_snapshot.snapshot_fingerprint, "policy_library_fingerprint": self.library.fingerprint,
+                "shadow_configuration_fingerprint": self.shadow_configuration, "protected_configuration_fingerprint": None,
+                "effective": dict(self.policy_snapshot.execution_values), "counterfactual": dict(self.policy_snapshot.counterfactual_values),
+                "reason_codes": list(self.policy_snapshot.reasons), "entry_authority": False, "canonical_health_lineage": "UNAVAILABLE"}})
+        evaluation = Evaluation(decision_id, now, event.session, event.feed,
                                 event.symbol, classification, reasons, strategy_version=self.settings.strategy_version_id)
-        self.rejections.record(evaluation)
+        day = event.session_id.split("/")[0]
+        evidence = {"observed_at": now.isoformat(), "session_day": day, "session": event.session, "session_id": event.session_id,
+            "symbol": event.symbol, "feed": event.feed, "stream_generation": event.generation, "classification": classification,
+            "reasons": list(reasons), "signal_reason": signal.reason if signal else None, "signal_metadata": signal.metadata if signal else {},
+            "strategy_version": self.settings.strategy_version_id, "policy_snapshot": self.policy_snapshot.snapshot_fingerprint,
+            "policy_library_fingerprint": self.library.fingerprint, "shadow_configuration_fingerprint": self.shadow_configuration,
+            "regime": self.regime, "entry_authority": False, "risk_validation_state": "UNAVAILABLE",
+            "candidate_kind": "SIGNAL_ONLY_COUNTERFACTUAL", "provenance": "DERIVED", "source": "RHEN/market_fabric"}
+        if decision_id not in self.rejections.ids and self.evidence.record(decision_id, evidence):
+            self.rejections.record(evaluation)
         self.visual.market(event, now)
         patch = {**self.visual.scanner[event.symbol], "candidate_state": "CANDIDATE" if classification == "CANDIDATE" else row["candidate_state"],
                  "rejection_code": reasons[0] if reasons else None, "classification": classification,
                  "signal_reason": signal.reason if signal else "Strategy integration not validated for this session"}
+        patch.update(decision_id=decision_id, signal_features=signal.metadata if signal else {}, entry_authority=False)
         self.visual.scanner[event.symbol] = patch
         self.visual.publisher.stage("scanner:"+event.symbol, "scanner_patch", patch)
 
@@ -107,7 +172,43 @@ class ShadowFabric:
         # Durable inbox acknowledges source evidence before ephemeral visualization.
         # Canonical 4.3 order/position reconciliation is intentionally not mutated.
         self.visual.critical(execution_marker(event_id, data))
+        self.account_refresh.set()
         return True
+
+    async def reconcile_account(self):
+        if self.account_reader is None:
+            return
+        snapshot = await self.account_reader()
+        now = datetime.now(timezone.utc)
+        projection = account_projection(snapshot, now)
+        for key, point in projection["points"].items():
+            self.visual.point("account:"+key, point)
+        self.visual.system_patch({"account_observation": {k:v for k,v in projection.items() if k != "points"}})
+        sizing = snapshot.get("sizing")
+        if sizing is not None:
+            decision = govern_capital(**sizing, evidence_factor=0)
+            self.visual.system_patch({"capital_governor": {"notional": str(decision.notional),
+                "risk_throttle": str(decision.risk_throttle), "binding_caps": list(decision.binding_caps),
+                "factors": {k:str(v) for k,v in decision.factors.items()}, "allow_margin": False,
+                "entry_authority": False, "mode": "SHADOW", "quality_state": "UNVALIDATED",
+                "evidence_reason": "CANONICAL_POLICY_VALIDATION_UNAVAILABLE", "observed_at": now.isoformat(),
+                "provenance": "DERIVED", "source": "RHEN/canonical_sizing_read", "methodology_version": "capital-governor-v1"}})
+
+    async def account_observer(self):
+        # Event-driven refresh after trade_updates. Timeout is reconciliation/audit,
+        # not a primary market path. No new socket or broker-writing client is created.
+        while True:
+            self.account_refresh.clear()
+            try:
+                await self.reconcile_account()
+            except Exception as exc:
+                self.visual.system_patch({"account_observation": {"quality_state": "UNAVAILABLE", "error": type(exc).__name__},
+                                          "capital_governor": {"quality_state": "UNAVAILABLE", "entry_authority": False}})
+            try:
+                await asyncio.wait_for(self.account_refresh.wait(), timeout=120)
+                await asyncio.sleep(.25)  # coalesce broker bursts; market/critical events continue
+            except asyncio.TimeoutError:
+                pass
 
     async def supervise(self):
         last_key = None
@@ -137,6 +238,7 @@ class ShadowFabric:
                                               "evaluable_fraction": sum(r["evaluable"] for r in rows)/len(rows),
                                               "reconnects": self.manager.reconnects, "out_of_order_events": self.store.out_of_order,
                                               "scanner_summary": self.rejections.summary(now), "entry_authority": False,
+                                              "scanner_session_summary": self.evidence.summary(route.session_id.split("/")[0], route.session),
                                               "broker_stream_state": self.broker.state if self.broker else "DISABLED",
                                               "quality_state": "LIVE" if all(r["evaluable"] for r in rows) else "DEGRADED",
                                               "source_at": now.isoformat()})
@@ -164,6 +266,8 @@ class ShadowFabric:
 
     def start(self):
         self.tasks = [asyncio.create_task(self.supervise()), asyncio.create_task(self.visual.publisher.run())]
+        if self.account_reader is not None:
+            self.tasks.append(asyncio.create_task(self.account_observer()))
         if self.settings.rhen_broker_stream_shadow_enabled:
             self.inbox = BrokerInbox(self.settings.rhen_market_stream_checkpoint_path+".broker")
             self.broker = BrokerUpdateStream(api_key=self.settings.alpaca_api_key, api_secret=self.settings.alpaca_api_secret,
