@@ -12,7 +12,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 
 from app import orchestration_scheduler as scheduler
-from .core import fresh, identity, reduce_state
+from .core import fresh, identity, reduce_state, _workflow_run_key
 from .work import IrenWorkEngine, status_summary
 from app.slack_brand import decorate_slack_message
 from .topology import bounded_health, topology, project_status
@@ -156,7 +156,7 @@ class IrenController:
         rt = scheduler.runtime
         latest_runs = []
         seen = set()
-        for row in recent:
+        for row in sorted(recent, key=_workflow_run_key, reverse=True):
             workflow_id = row.get("workflow_id")
             if workflow_id in seen:
                 continue
