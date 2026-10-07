@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 import app.main as main
@@ -36,3 +37,30 @@ def test_scheduler_universe_route_uses_existing_scheduler_token_guard():
     )
     assert "GET" in route.methods
     assert route.endpoint.__name__=="scheduler_universe"
+
+
+def test_scheduler_universe_route_refreshes_dynamic_universe(monkeypatch):
+    observed=datetime(2026,10,7,20,30,tzinfo=timezone.utc)
+    calls=[]
+    async def refresh(*, now=None, position_symbols=None):
+        calls.append(now)
+        main.runtime_state.set_universe(
+            symbols=["SPY","QQQ","NVDA"],
+            candidate_count=100,
+            eligible_count=5000,
+            source="hierarchical_screener",
+            at=observed,
+            error=None,
+        )
+        return ("SPY","QQQ","NVDA")
+
+    monkeypatch.setattr(main,"require_scheduler_token",lambda token: None)
+    monkeypatch.setattr(main.universe,"active_symbols",refresh)
+    body=asyncio.run(main.scheduler_universe("fixture"))
+
+    assert len(calls)==1
+    assert body["active_symbols"]==["SPY","QQQ","NVDA"]
+    assert body["active_count"]==3
+    assert body["source"]=="hierarchical_screener"
+    assert body["execution_authority"] is False
+    assert body["broker_orders_possible"] is False
