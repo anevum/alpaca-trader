@@ -21,6 +21,21 @@ class AssetEligibility:
             except (KeyError, ValueError, TypeError, AttributeError):
                 self.rows, self.fetched_at = {}, None
 
+    def rotate_symbols(self, symbols):
+        next_symbols = tuple(dict.fromkeys(symbols))
+        if not next_symbols:
+            raise ValueError("asset universe cannot be empty")
+        if next_symbols == self.symbols:
+            return False
+        self.symbols = next_symbols
+        self.rows = {symbol:row for symbol,row in self.rows.items() if symbol in next_symbols}
+        # A rotated universe is not fully attested until the bounded asset GETs
+        # complete. Never carry a prior fetched_at across a changed symbol set.
+        self.fetched_at = None
+        with self.db:
+            self.db.execute("DELETE FROM shadow_assets")
+        return True
+
     def replace(self, assets, fetched_at, *, persist=True):
         if not isinstance(assets, list) or len(assets) > len(self.symbols):
             raise ValueError("invalid bounded asset response")

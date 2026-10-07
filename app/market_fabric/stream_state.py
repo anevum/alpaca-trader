@@ -24,6 +24,19 @@ class MarketStateStore:
         self.connection = "DISCONNECTED"
         self.subscribed = set()
 
+    def rotate_symbols(self, symbols):
+        next_symbols = tuple(dict.fromkeys(str(s).strip().upper() for s in symbols if str(s).strip()))
+        if not next_symbols or len(next_symbols) != len(set(next_symbols)):
+            raise ValueError("invalid rotated symbol set")
+        previous = self.symbols
+        if next_symbols == previous:
+            return (), ()
+        self.symbols = next_symbols
+        self.subscribed.intersection_update(next_symbols)
+        self.dirty.update(previous)
+        self.dirty.update(next_symbols)
+        return tuple(s for s in next_symbols if s not in previous), tuple(s for s in previous if s not in next_symbols)
+
     def begin(self, generation: str, feed: str, session_id: str):
         if self.context != (feed, session_id):
             self.rows.clear()

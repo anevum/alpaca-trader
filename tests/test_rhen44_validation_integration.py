@@ -219,9 +219,14 @@ def test_champion_reader_uses_only_existing_private_health_get():
         requests.append(request)
         return httpx.Response(200,json={"ok":True,"execution":{"body":{"ok":True,"reconciliation_safe":True,
             "protected_configuration_identity":{"fingerprint":"sha256:fixture"},
-            "persistence":{"strategy_version_id":"4.3"},"runtime_provenance":{"git_commit":"fixture"}}}})
+            "persistence":{"strategy_version_id":"4.3"},"runtime_provenance":{"git_commit":"fixture"},
+            "universe":{"enabled":True,"source":"hierarchical_screener","active_count":3,
+                "candidate_count":100,"eligible_count":5000,"updated_at":NOW.isoformat(),
+                "active_symbols":["SPY","QQQ","NVDA"]}}}})
     result = asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(handle)).snapshot())
     assert result["runtime_ok"] and result["reconciliation_safe"] and not result["broker_write_authority"]
+    assert result["universe"]["active_symbols"] == ["SPY","QQQ","NVDA"]
+    assert result["universe"]["candidate_count"] == 100
     assert len(requests) == 1 and requests[0].method == "GET"
     assert str(requests[0].url) == "http://alpaca-trader.railway.internal:8080/health"
     assert "authorization" not in requests[0].headers and "apca-api-key-id" not in requests[0].headers

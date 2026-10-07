@@ -34,6 +34,7 @@ from .policy_state import PolicyStateStore
 from .contracts import utc
 from .coverage_evidence import CoverageEvidence
 from .asset_eligibility import AssetEligibility
+from .hotset import HotsetSelector
 from zoneinfo import ZoneInfo
 
 
@@ -42,6 +43,20 @@ class ShadowFabric:
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
+        self.checkpoint = StreamCheckpoint(settings.rhen_market_stream_checkpoint_path)
+        # 32 MiB ceiling for isolated bars, summaries and bounded shadow evidence.
+        self.checkpoint.db.execute("PRAGMA max_page_count=8192")
+        self.hotset = HotsetSelector(self.checkpoint.db,
+            capacity=settings.rhen_market_stream_capacity,
+            pinned=(*settings.universe_always_include, *settings.confirmation_symbols),
+            min_dwell_seconds=settings.universe_refresh_seconds,
+            max_changes=min(4, settings.rhen_market_stream_capacity))
+        if self.hotset.restored_symbols:
+            self.store.rotate_symbols(self.hotset.restored_symbols)
+        self.hotset_status = {"integrated":True,"active":False,"quality_state":"RESTORED" if self.hotset.restored_symbols else "AWAITING_DISCOVERY",
+            "methodology_version":HotsetSelector.METHODOLOGY_VERSION,"capacity":settings.rhen_market_stream_capacity,
+            "rotation_count":self.hotset.rotations,"entry_authority":False,"broker_write_authority":False}
+        self.supervise_wakeup = asyncio.Event()
         self.visual = VisualProjector(self.store, flush_ms=settings.command_live_flush_ms)
         self.rejections = RejectionEngine()
         self.evaluator = evaluator
@@ -57,9 +72,6 @@ class ShadowFabric:
         self.market_data = market_data
         self.context = None
         self.route = None
-        self.checkpoint = StreamCheckpoint(settings.rhen_market_stream_checkpoint_path)
-        # 32 MiB ceiling for isolated bars, summaries and bounded shadow evidence.
-        self.checkpoint.db.execute("PRAGMA max_page_count=8192")
         self.evidence = DecisionEvidence(self.checkpoint.db)
         self.assets = AssetEligibility(self.checkpoint.db, self.store.symbols)
         self.archive = VisualArchive(self.checkpoint.db)
@@ -73,7 +85,10 @@ class ShadowFabric:
         baseline = {k: str(getattr(settings, k)) for k in ("stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes", "max_spread_pct", "min_quality_score")}
         # This identifies shadow inputs, not the protected production configuration.
         self.shadow_configuration = fingerprint({"baseline": baseline, "strategy": settings.strategy_version_id,
-            "symbols": settings.extended_equity_symbols, "fast_window": settings.fast_window, "slow_window": settings.slow_window,
+            "universe_model":"BROAD_DISCOVERY_NARROW_STREAM",
+            "stream_capacity":settings.rhen_market_stream_capacity,
+            "hotset_methodology":HotsetSelector.METHODOLOGY_VERSION,
+            "fast_window": settings.fast_window, "slow_window": settings.slow_window,
             "asset_eligibility_methodology":AssetEligibility.METHODOLOGY_VERSION if asset_reader is not None else "UNATTESTED"})
         self.coverage = CoverageEvidence(self.checkpoint.db, strategy_version=settings.strategy_version_id,
                                          configuration=self.shadow_configuration)
@@ -429,6 +444,7 @@ class ShadowFabric:
             except Exception:
                 self.champion_observation = None
             self.visual.system_patch({"champion_observation":self.champion_observation or {"quality_state":"UNAVAILABLE"}})
+            self.update_hotset(now)
         if self.ledger_reader:
             run_id = (self.champion_observation or {}).get("run_id")
             try:
@@ -488,6 +504,34 @@ class ShadowFabric:
                 "entry_authority": False, "mode": "SHADOW", "quality_state": "UNVALIDATED",
                 "evidence_reason": "CANONICAL_POLICY_VALIDATION_UNAVAILABLE", "observed_at": now.isoformat(),
                 "provenance": "DERIVED", "source": "RHEN/canonical_sizing_read", "methodology_version": "capital-governor-v1"}})
+
+    def update_hotset(self, now):
+        universe = (self.champion_observation or {}).get("universe") or {}
+        ranked = universe.get("active_symbols") if isinstance(universe, dict) else None
+        if not self.champion_ready(now) or not isinstance(ranked, list):
+            self.hotset_status = {**self.hotset_status,"active":False,"quality_state":"UNAVAILABLE",
+                "reason":"CANONICAL_DISCOVERY_UNAVAILABLE","entry_authority":False,"broker_write_authority":False}
+            self.visual.system_patch({"hotset":dict(self.hotset_status)})
+            return False
+        proposed, status = self.hotset.propose(ranked, self.store.symbols, now)
+        status = {**status,"discovery_source":universe.get("source"),
+                  "discovery_updated_at":universe.get("updated_at"),
+                  "current_count":len(proposed)}
+        if status.get("changed"):
+            prior = tuple(self.store.symbols)
+            self.coverage.advance(self.store, now, symbols=prior)
+            added, removed = self.store.rotate_symbols(proposed)
+            self.assets.rotate_symbols(self.store.symbols)
+            self.signal_cache = {symbol:value for symbol,value in self.signal_cache.items() if symbol in self.store.symbols}
+            self.regime_key = None
+            self.visual.rotate_symbols(now)
+            self.asset_refresh.set()
+            self.freshness_wakeup.set()
+            self.supervise_wakeup.set()
+            status.update(added_count=len(added),removed_count=len(removed),quality_state="ROTATING")
+        self.hotset_status = status
+        self.visual.system_patch({"hotset":dict(status)})
+        return bool(status.get("changed"))
 
     def champion_ready(self, now):
         row = self.champion_observation or {}
@@ -551,11 +595,12 @@ class ShadowFabric:
         last_key = None
         try:
             while True:
+                self.supervise_wakeup.clear()
                 now = datetime.now(timezone.utc)
                 try:
                     context = await self.resolver.classify(now)
                     route = route_feed(context, now)  # Basic only until live entitlement is attested.
-                    key = (route.expected_feed, route.session_id)
+                    key = (route.expected_feed, route.session_id, tuple(self.store.symbols))
                     if key != last_key:
                         self.asset_refresh.set()
                         if self.stream_task:
@@ -564,7 +609,7 @@ class ShadowFabric:
                         self.context, self.route = context, route
                         self.store.connection = "DISCONNECTED"
                         if route.expected_feed:
-                            self.stream_task = asyncio.create_task(self.manager.run(*key))
+                            self.stream_task = asyncio.create_task(self.manager.run(route.expected_feed, route.session_id))
                         else:
                             self.stream_task = None
                         last_key = key
@@ -601,8 +646,12 @@ class ShadowFabric:
                     self.refresh_observation(now)
                     last_key = None
                     self.visual.system_patch({"quality_state": "DEGRADED", "last_error": self.last_error, "entry_authority": False})
-                # Calendar/capability/checkpoint audit, not primary price observation.
-                await asyncio.sleep(30)
+                # Calendar/capability/checkpoint audit, plus immediate structural
+                # wakeup when the canonical discovery hotset rotates.
+                try:
+                    await asyncio.wait_for(self.supervise_wakeup.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass
         finally:
             if self.stream_task:
                 self.stream_task.cancel()

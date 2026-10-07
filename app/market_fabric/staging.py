@@ -60,8 +60,11 @@ class ReadOnlyBroker:
                 "hard_gross_envelope":effective_gross_limit(s,account),"existing_gross_exposure":long_exposure(positions),
                 "hard_caps":{"max_order_notional":s.max_order_notional,"max_position_notional":effective_position_limit(s,account)}}}
 
-    async def assets(self):
-        # Exactly the configured observation set; no writes or broad asset dump.
+    async def assets(self, symbols=None):
+        # Exactly the bounded current hotset; no writes or broad asset dump.
+        requested = tuple(dict.fromkeys(symbols or self.settings.extended_equity_symbols))
+        if not 1 <= len(requested) <= self.settings.rhen_market_stream_capacity:
+            raise ValueError("asset read exceeds bounded stream capacity")
         async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
             async def read_asset(symbol):
                 response = await client.get(self.settings.base_url+"/v2/assets/"+symbol,
@@ -74,7 +77,7 @@ class ReadOnlyBroker:
                 if not isinstance(body, dict) or body.get("symbol") != symbol:
                     raise ValueError("asset identity mismatch")
                 return body
-            rows = await asyncio.gather(*(read_asset(s) for s in self.settings.extended_equity_symbols))
+            rows = await asyncio.gather(*(read_asset(s) for s in requested))
         return [row for row in rows if row is not None]
 
 
@@ -119,6 +122,16 @@ class ReadOnlyChampion:
             "run_id":persistence.get("run_id"),
             "protected_configuration_fingerprint":identity.get("fingerprint"),
             "source_commit":execution.get("runtime_provenance",{}).get("git_commit"),
+            "universe":{
+                "enabled":bool((execution.get("universe") or {}).get("enabled")),
+                "source":(execution.get("universe") or {}).get("source"),
+                "active_count":len((execution.get("universe") or {}).get("active_symbols") or ()),
+                "candidate_count":(execution.get("universe") or {}).get("candidate_count"),
+                "eligible_count":(execution.get("universe") or {}).get("eligible_count"),
+                "updated_at":(execution.get("universe") or {}).get("updated_at"),
+                "active_symbols":[str(s).upper() for s in ((execution.get("universe") or {}).get("active_symbols") or ())
+                                  if isinstance(s,str) and s and len(s) <= 16][:500],
+            },
             "broker_write_authority":False}
 
 
@@ -167,8 +180,13 @@ def create_app(settings=None):
                     **({"vw":b["vwap"]} if b.get("vwap") is not None else {})} for b in store.rows.get(s,{}).get("bars",())]
             return strategy.evaluate(bars(symbol),{s:bars(s) for s in settings.confirmation_symbols},symbol,False,settings.order_notional,now=now)
         if settings.rhen_market_stream_enabled:
-            fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=ReadOnlyBroker(settings).snapshot,
-                                  champion_reader=ReadOnlyChampion().snapshot, asset_reader=ReadOnlyBroker(settings).assets,
+            broker = ReadOnlyBroker(settings)
+            async def current_assets():
+                if fabric is None:
+                    return []
+                return await broker.assets(fabric.store.symbols)
+            fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=broker.snapshot,
+                                  champion_reader=ReadOnlyChampion().snapshot, asset_reader=current_assets,
                                   ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
             fabric.start()
             async def telemetry():
