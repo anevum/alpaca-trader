@@ -285,3 +285,87 @@ def test_champion_reader_rejects_unavailable_execution_on_503(body):
     with pytest.raises(ValueError):
         asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(
             lambda request: httpx.Response(503,json=body))).snapshot())
+
+
+def test_canonical_ledger_reader_is_get_only_and_validates_authority():
+    import httpx
+    from app.config import Settings
+    from app.market_fabric.staging import ReadOnlyCanonicalLedger
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200,json={"ok":True,"ledger_version":"rhen-canonical-ledger-read-v1",
+            "run_id":"run-live","event_count":0,"truncated":False,"events":[],
+            "execution_authority":False,"broker_orders_possible":False})
+    settings = Settings(_env_file=None, TRADING_INGEST_TOKEN="fixture-token")
+    result = asyncio.run(ReadOnlyCanonicalLedger(settings,transport=httpx.MockTransport(handle)).snapshot("run-live"))
+    assert result["run_id"] == "run-live"
+    assert len(calls) == 1 and calls[0].method == "GET"
+    assert calls[0].url.path == "/v1/trading-report-read"
+    assert calls[0].url.params["latest"] == "ledger"
+    assert calls[0].url.params["run_id"] == "run-live"
+    assert calls[0].headers["x-anevum-ingest-token"] == "fixture-token"
+
+    bad = ReadOnlyCanonicalLedger(settings,transport=httpx.MockTransport(
+        lambda request:httpx.Response(200,json={**result,"execution_authority":True})))
+    with pytest.raises(ValueError):
+        asyncio.run(bad.snapshot("run-live"))
+
+
+def test_canonical_ledger_parity_is_overlap_bounded_and_fail_closed():
+    from app.market_fabric.runtime import ShadowFabric
+    earlier = (NOW-timedelta(minutes=10)).isoformat()
+    retained = NOW.isoformat()
+    canonical = {"ok":True,"truncated":False,"events":[
+        {"event_key":"old","event_type":"broker_order","occurred_at":earlier,
+            "order":{"id":"old-order"}},
+        {"event_key":"new","event_type":"broker_order","occurred_at":retained,
+            "order":{"id":"order-1"}},
+        {"event_key":"fill","event_type":"broker_fill","occurred_at":retained,
+            "fill":{"id":"fill-1","order_id":"order-1"}},
+    ]}
+    observed = [{"event_id":"obs-1","timestamp":retained,"event_type":"FILL",
+        "order_ref":"order-1","symbol":"SPY"}]
+    parity = ShadowFabric.canonical_ledger_parity(canonical,observed)
+    assert parity["quality_state"] == "LIVE"
+    assert parity["parity_complete"] is True
+    assert parity["canonical_order_count"] == 1
+    assert parity["missing_observed_orders"] == 0
+    assert parity["entry_authority"] is False
+    assert parity["broker_write_authority"] is False
+
+    diverged = ShadowFabric.canonical_ledger_parity(canonical,[{**observed[0],"order_ref":"unknown"}])
+    assert diverged["quality_state"] == "DEGRADED"
+    assert diverged["parity_complete"] is False
+    assert diverged["missing_observed_orders"] == 1
+    assert diverged["unknown_observed_orders"] == 1
+
+    truncated = ShadowFabric.canonical_ledger_parity({**canonical,"truncated":True},observed)
+    assert truncated["quality_state"] == "UNAVAILABLE"
+    assert truncated["parity_complete"] is False
+
+
+def test_reconcile_account_publishes_unavailable_ledger_without_authority(tmp_path):
+    from app.config import Settings
+    from app.market_fabric.runtime import ShadowFabric
+    from types import SimpleNamespace
+    async def account_reader():
+        return {"account":{"id":"fixture","equity":"100","cash":"100","last_equity":"100"},
+            "positions":[],"open_orders":[]}
+    async def champion_reader():
+        return {"run_id":"run-live","observed_at":NOW.isoformat(),"runtime_ok":True,
+            "reconciliation_safe":True,"strategy_version":"LIVE-2026-09-25-003",
+            "protected_configuration_fingerprint":"sha256:"+"a"*64}
+    async def ledger_reader(run_id):
+        assert run_id == "run-live"
+        raise RuntimeError("fixture-unavailable")
+    settings=Settings(_env_file=None,RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"ledger.db"))
+    fabric=ShadowFabric(settings,SimpleNamespace(),account_reader=account_reader,
+        champion_reader=champion_reader,ledger_reader=ledger_reader)
+    asyncio.run(fabric.reconcile_account())
+    parity=fabric.visual.system["canonical_ledger_parity"]
+    assert parity["quality_state"]=="UNAVAILABLE"
+    assert parity["parity_complete"] is False
+    assert parity["entry_authority"] is False
+    assert parity["broker_write_authority"] is False
+    fabric.checkpoint.close()
