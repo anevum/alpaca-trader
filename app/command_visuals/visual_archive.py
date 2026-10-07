@@ -58,9 +58,11 @@ class VisualArchive:
             "artifact_fingerprint":fingerprint({"series":series,"clock":clock.isoformat(),"points":points}),
             "methodology_version":"source-availability-replay-v2", "provenance":"DERIVED", "source":"RHEN/shadow_visual"}
 
-    def executions(self, clock, symbols, *, limit=2400):
+    def executions(self, clock, symbols=None, *, limit=2400):
         # Recover recorded broker evidence, never infer fills from positions or
-        # replay delivered events into the broker/order ledger.
+        # replay delivered events into the broker/order ledger. Passing symbols
+        # scopes a visual view; None preserves the account-wide broker stream for
+        # canonical ledger parity.
         at = utc(clock).isoformat()
         rows = self.db.execute("SELECT series,body FROM shadow_visual WHERE series LIKE 'executions:%' "
             "AND source_at<=? AND available_at<=? ORDER BY source_at DESC,available_at DESC,id DESC LIMIT ?",
@@ -73,7 +75,8 @@ class VisualArchive:
                 if (point.get("provenance") != "OBSERVED" or point.get("source") != "ALPACA/trade_updates"
                     or not point.get("event_id") or not point.get("order_ref")
                     or point.get("event_type") not in {"ACCEPTED","FILL","PARTIAL_FILL","CANCEL","REJECT"}
-                    or point.get("symbol") not in symbols or series != "executions:"+point["symbol"]):
+                    or (symbols is not None and point.get("symbol") not in symbols)
+                    or series != "executions:"+point["symbol"]):
                     raise ValueError("execution source identity mismatch")
                 if point.get("price") is not None:
                     number(point["price"],positive=True)
