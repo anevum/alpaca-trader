@@ -259,6 +259,40 @@ def test_public_live_feed_uses_core_activity_without_private_trade_fields(
     assert "dollar_values" in feed["disclosure"]["excluded_fields"]
 
 
+def test_public_live_feed_bounds_general_event_read_to_two_hours(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 7, 18, 0, tzinfo=UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "recent-feed-event",
+                "event_type": "runtime_start",
+                "occurred_at": (observed - timedelta(minutes=1)).isoformat(),
+                "run_id": "run-live",
+                "strategy_version_id": "v-live",
+                "source": "test",
+                "payload": {"strategy_name": "test"},
+            }
+        ]
+    )
+    captured = []
+    original = store._event_rows
+
+    def bounded_event_rows(**kwargs):
+        captured.append(dict(kwargs))
+        return original(**kwargs)
+
+    monkeypatch.setattr(store, "_event_rows", bounded_event_rows)
+    store.public_live_feed(now=observed)
+
+    primary = captured[0]
+    assert primary["since"] == (observed - timedelta(hours=2)).isoformat()
+    assert primary["limit"] == 5000
+    assert primary["newest_first"] is True
+
+
 def test_reconciliation_allows_known_position_with_standing_hardstop(
     tmp_path, monkeypatch
 ):
@@ -321,6 +355,43 @@ def test_reconciliation_allows_known_position_with_standing_hardstop(
     assert evidence["reason"] == "reconciled"
     assert evidence["unknown_open_orders"] == []
     assert evidence["untracked_positions"] == []
+
+
+def test_reconciliation_scopes_event_read_to_active_run(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 7, 18, 0, tzinfo=UTC)
+    captured = {}
+    original = store._event_rows
+
+    def scoped_event_rows(**kwargs):
+        captured.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(store, "_event_rows", scoped_event_rows)
+    result = store.reconcile(
+        {
+            "action": "reconcile",
+            "reconcile": {
+                "run_id": "run-live",
+                "strategy_version_id": "v-live",
+                "observed_at": observed.isoformat(),
+                "managed_symbols": [],
+                "broker_positions": [],
+                "open_orders": [],
+            },
+        }
+    )
+
+    assert result["result"]["safe_to_enter"] is True
+    assert captured["run_id"] == "run-live"
+    assert captured["event_types"] == {
+        "order_intent",
+        "broker_order",
+        "intent_reconciliation",
+    }
+    assert captured["newest_first"] is False
 
 
 def test_reconciliation_rejects_hardstop_without_known_filled_buy(
