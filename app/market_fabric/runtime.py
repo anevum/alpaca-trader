@@ -116,6 +116,9 @@ class ShadowFabric:
         while True:
             self.freshness_wakeup.clear()
             now = datetime.now(timezone.utc)
+            # Scheduling can resume after an expiry. Invalidate that state
+            # before waiting for the next still-future source deadline.
+            self.refresh_observation(now)
             deadlines = [at for symbol in self.store.symbols
                          if (at := self.store.freshness_deadline(symbol, now)) is not None]
             if not deadlines:

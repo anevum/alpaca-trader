@@ -204,3 +204,27 @@ def test_cached_continuity_detects_intermediate_source_timestamp_changes():
     assert store.snapshot("SPY",NOW)["evaluable"]
     row["bars"][1] = {**row["bars"][1], "timestamp":(NOW-timedelta(minutes=6)).isoformat()}
     assert "DATA_GAP" in store.snapshot("SPY",NOW)["rejection_codes"]
+
+
+def test_late_deadline_observer_invalidates_before_waiting(tmp_path, monkeypatch):
+    async def run():
+        fabric = ShadowFabric(Settings(_env_file=None, EXTENDED_EQUITY_SYMBOLS="SPY",
+            RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path / "late-timer.db")), SimpleNamespace())
+        fabric.store = store_ready(NOW)
+        fabric.store.QUOTE_FRESHNESS_MS = 25
+        fabric.refresh_observation(NOW)
+        class LateClock:
+            @staticmethod
+            def now(_timezone):
+                return NOW + timedelta(milliseconds=50)
+        monkeypatch.setattr("app.market_fabric.runtime.datetime", LateClock)
+        task = asyncio.create_task(fabric.freshness_observer())
+        try:
+            await asyncio.sleep(0)
+            assert fabric.visual.scanner["SPY"]["rejection_code"] == "STALE_QUOTE"
+            assert fabric.coverage.summary(fabric.store, NOW + timedelta(milliseconds=50))["evaluable_symbol_hours"] * 3600 <= .0251
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            fabric.checkpoint.close()
+    asyncio.run(run())
