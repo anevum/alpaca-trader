@@ -247,13 +247,13 @@
     "No production service/source/variable/trading path change was made."
   ],
   "latest_followup": {
-    "observed_at": "2026-10-07T17:24:31Z",
-    "backend_commit": "b23f9d09c81e360ff9898f168534f4b538f65acc",
+    "observed_at": "2026-10-07T17:33:54Z",
+    "backend_commit": "980c32578a06627bd7fb74d4c7c6e251c62be275",
     "backend_pr": 430,
     "hosted_ci": {
-      "run_id": 37658279361,
+      "run_id": 37659677774,
       "status": "SUCCESS",
-      "runtime_audit_run_id": 37658279678,
+      "runtime_audit_run_id": 37659677647,
       "runtime_audit_status": "SUCCESS"
     },
     "local_validation": {
@@ -264,7 +264,7 @@
       "command_typecheck_and_build": "PASSED"
     },
     "shadow_deployment": {
-      "deployment_id": "83b95140-d2c6-42ab-8c6d-221e08132aff",
+      "deployment_id": "613a9fc0-4c78-4657-9b05-eea45d1f516b",
       "status": "SUCCESS",
       "broker_write_authority": false,
       "initial_restored_bars": 2840,
@@ -272,14 +272,26 @@
       "restart_broker_stream_state": "HEALTHY",
       "restart_subscribed_symbols": 24,
       "restart_policy_state": "RESTORED_SHADOW_ONLY",
-      "anonymous_bootstrap_status": 401
+      "anonymous_bootstrap_status": 401,
+      "restart_evidence_deployment_id": "83b95140-d2c6-42ab-8c6d-221e08132aff",
+      "latest_restored_bars": 2843,
+      "broker_stream_state": "HEALTHY",
+      "subscribed_symbols": 24,
+      "policy_recovery": "RESTORED_SHADOW_ONLY",
+      "champion_health_lineage": "DEGRADED_READ"
     },
     "command": {
       "pr": 197,
-      "commit": "932e9d4bd742162fa53834cbd7d11d3445498787",
-      "hosted_verification": "IN_PROGRESS_BROWSER_CAPTURE",
+      "commit": "b67ee12d39410b90f6469588de32ab336d8fc03e",
+      "hosted_verification": "FAILED_UPSTREAM_PUBLIC_FEED_HTTP_502",
       "production_deployed": false,
-      "live_visual_acceptance": "UNPASSED"
+      "live_visual_acceptance": "UNPASSED",
+      "previous_run": 37657553629,
+      "previous_run_status": "CANCELLED_CHROME_CLI_CAPTURE_HANG",
+      "hosted_run": 37659961655,
+      "capture_fix": "BOUNDED_EXISTING_CDP_RUNNER_WITH_ALL_ORIGINAL_ARTIFACTS_AND_MARKERS",
+      "failed_probe": "/api/public/trading/live",
+      "capture_fix_hosted_acceptance": "NOT_REACHED"
     },
     "champion": {
       "source_commit": "edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac",
@@ -300,7 +312,7 @@
       "preserved_runtime_instance_id": "27c3f39c-a2c7-44e9-973e-3449a471c13b"
     },
     "research": {
-      "observed_prerequisite_coverage_fraction": 0.6918266785527224,
+      "observed_prerequisite_coverage_fraction": 0.711571380577331,
       "required_forward_coverage_fraction": 0.95,
       "forward_gate": "UNPASSED",
       "holdout_gate": "UNPASSED",
@@ -308,6 +320,6 @@
     },
     "production_crossover_performed": false,
     "promotion_eligible": false,
-    "degraded_health_adapter": "IMPLEMENTED_PENDING_HOSTED_CHECKS_AND_SHADOW_DEPLOYMENT"
+    "degraded_health_adapter": "DEPLOYED_SHADOW_ONLY"
   }
 }

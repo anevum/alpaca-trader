@@ -256,3 +256,42 @@ keeping runtime_ok/reconciliation_safe false. It rejects an absent/failed execut
 body. This does not change production health, reconciliation or authority.
 Local guarded checks: 1,075 passed / 10 skipped; dedicated 4.4: 111 passed.
 Deployment of this follow-up is separate from the b23f9d0 restart evidence above.
+
+### 13:34 ET deployment and hosted Command capture fix
+
+Backend 980c325 passed hosted CI 37659677774 and audit 37659677647, and
+shadow deployment 613a9fc0-4c78-4657-9b05-eea45d1f516b is SUCCESS.
+The earlier b23f9d0 isolated restart validation remains separately identified.
+No champion deployment, configuration or process restart was performed.
+
+Command hosted run 37657553629 was cancelled at job timeout: the duplicate
+Chrome CLI process hung before the first release screenshot. Tests, build,
+privacy/route probes and bounded browser runtime/visual checks had passed.
+Companion b67ee12 now captures identical release screenshots and rendered
+marker checks through the existing bounded hydrated CDP visual runner, retaining
+14 desktop/mobile images and seven rendered DOM artifacts. New hosted run
+37659961655 is in progress. PR #197 remains unmerged, production UI unchanged.
+The capture fix does not bypass the upstream healthy-runtime or visual gates.
+
+### 13:35 ET final observed checkpoint
+
+Shadow 980c325 / deployment 613a9fc0 was observed at 17:33:54 UTC with
+HEALTHY broker, 24 subscriptions, 2,843 recovered bars, RESTORED_SHADOW_ONLY
+policy, DEGRADED_READ champion lineage and broker-write authority false.
+Observed prerequisite coverage 0.711571380577331 remains below 0.95.
+
+Command retry 37659961655 FAILED: tests/build passed, then the live public-feed
+probe returned HTTP 502 at /api/public/trading/live. Browser capture changes
+were not reached in this retry, so their hosted acceptance remains unverified.
+The prior browser CLI hang was addressed in source; no check was removed or
+relaxed. PR #197 remains unmerged and production Command is unchanged.
+This is an observed upstream resource/runtime blocker, not proof of a client
+bootstrap defect. No new market fixtures or authority were enabled.
+
+Backend code and documentation remain isolated in draft #430. Production
+4.3.2 still has the same source, configuration fingerprint and runtime instance.
+Its current reconciliation flag is false; no crossover was attempted. This is a
+responsible partial 4.4 implementation checkpoint, not definition-of-done or
+promotion completion. Canonical ledger bridge, discovery hotset rotation, trusted
+adaptive approvals, forecast producers, VELUM replay and independent forward/
+holdout/visual runtime acceptance remain explicit unfinished work.
