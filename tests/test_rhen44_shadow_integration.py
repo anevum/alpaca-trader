@@ -33,9 +33,9 @@ def ready(store, generation="g1"):
         store.apply(quote(symbol,generation=generation))
 
 
-def quote(symbol="SPY", *, seconds=0, generation="g1",sequence=20):
+def quote(symbol="SPY", *, seconds=0, generation="g1",sequence=20,spread=.01):
     at=NOW+timedelta(seconds=seconds)
-    return normalize({"T":"q","S":symbol,"t":at.isoformat(),"bp":100,"ap":100.01},generation=generation,sequence=sequence,
+    return normalize({"T":"q","S":symbol,"t":at.isoformat(),"bp":100,"ap":100+spread},generation=generation,sequence=sequence,
         feed="iex",session="REGULAR",session_id="2026-10-06/REGULAR",received_at=at)
 
 
@@ -162,3 +162,19 @@ def test_staging_broker_client_only_issues_allowlisted_gets():
         with pytest.raises(ValueError): await reader.read("/v2/orders/new")
     asyncio.run(run())
     assert sorted(calls)==[("GET","/v2/account"),("GET","/v2/orders"),("GET","/v2/positions")]
+
+
+def test_valid_but_wide_quote_is_rejected_before_signal_evaluation(tmp_path):
+    def evaluate(*args):
+        raise AssertionError("wide spread must veto candidate evaluation")
+    async def run():
+        fabric=ShadowFabric(Settings(_env_file=None,EXTENDED_EQUITY_SYMBOLS="SPY",RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"spread.db")),SimpleNamespace(),evaluator=evaluate)
+        ready(fabric.store)
+        event=quote(seconds=1,spread=1)
+        fabric.store.apply(event)
+        assert fabric.store.snapshot("SPY",event.received_at)["evaluable"]
+        await fabric.on_event(event)
+        assert fabric.visual.scanner["SPY"]["classification"]=="EVALUABLE_REJECTED"
+        assert fabric.visual.scanner["SPY"]["rejection_code"]=="SPREAD_TOO_WIDE"
+        fabric.checkpoint.close()
+    asyncio.run(run())

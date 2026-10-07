@@ -138,3 +138,21 @@ or local fixture. Broker REST refresh is triggered by trade_updates, with a
 
 Deployment/actual feed evidence must be recorded separately after startup. A
 prepared service or healthy HTTP process alone does not prove live feed coverage.
+
+### Deployment observation
+
+Backend #421 merged as `f662d600d9b123b537381643a5a95f1a3c31f0d0` after
+hosted test/Postgres/inventory checks passed. Champion deployment
+`906f5e4a-c441-440c-afbf-0ee906e06bac` succeeded with the existing gates off.
+Isolated observer is pinned to `ef3b26530df3d4b407132114972bb17d3f163d6b`,
+deployment `f26cb87a-1576-4869-b1e9-f105b84ddc67` SUCCESS, one running replica,
+separate volume, zero active warnings/criticals. This confirms process deployment,
+not subscription coverage, Alpaca entitlement or shadow equivalence.
+
+Automatic approval review rejected generating a public Railway domain for the
+observer: isolated shadow authorization did not clearly authorize public exposure
+of its authenticated observation surface, and private access is safer. No domain
+was created and no indirect public proxy was substituted. Public Command-to-shadow
+integration remains blocked pending explicit exposure authorization. A bounded
+private operational log reports stream/coverage/reconstruction state without
+credentials, account dollars, position/order/fill payloads or market prices.

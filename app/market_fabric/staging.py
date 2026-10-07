@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 import asyncio
+import json
 import os
 
 import httpx
@@ -67,6 +68,7 @@ def create_app(settings=None):
     @asynccontextmanager
     async def lifespan(app):
         nonlocal fabric
+        telemetry_task = None
         strategy = champion_signal(settings)
         def evaluate(symbol, now, store):
             def bars(s):
@@ -76,9 +78,27 @@ def create_app(settings=None):
         if settings.rhen_market_stream_enabled:
             fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=ReadOnlyBroker(settings).snapshot)
             fabric.start()
+            async def telemetry():
+                while True:
+                    # Private Railway operational logs; no credentials, token,
+                    # account dollars, positions, symbols, orders or fill payloads.
+                    body = await health()
+                    body.update(provenance="OPERATIONAL",observed_at=datetime.now(timezone.utc).isoformat(),
+                        broker_stream_state=fabric.broker.state if fabric.broker else "DISABLED",
+                        account_quality=fabric.visual.system.get("account_observation",{}).get("quality_state","UNAVAILABLE"),
+                        reconstruction_source=fabric.visual.system.get("reconstruction_source"),
+                        bootstrap_error=fabric.visual.system.get("bootstrap_error"),
+                        bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
+                        scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
+                    print("RHEN44_SHADOW_TELEMETRY "+json.dumps(body,allow_nan=False),flush=True)
+                    await asyncio.sleep(30)
+            telemetry_task = asyncio.create_task(telemetry())
         try:
             yield
         finally:
+            if telemetry_task is not None:
+                telemetry_task.cancel()
+                await asyncio.gather(telemetry_task,return_exceptions=True)
             if fabric is not None:
                 await fabric.stop()
                 fabric = None
