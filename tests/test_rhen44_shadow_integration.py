@@ -80,7 +80,8 @@ def quote(symbol="SPY", *, seconds=0, generation="g1",sequence=20,spread=.01):
         feed="iex",session="REGULAR",session_id="2026-10-06/REGULAR",received_at=at)
 
 
-def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path):
+@pytest.mark.parametrize("profile_evidence_healthy", [False, True])
+def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path, profile_evidence_healthy):
     settings = Settings(_env_file=None,EXTENDED_EQUITY_SYMBOLS="SPY,QQQ",CONFIRMATION_SYMBOLS="QQQ",RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"state.db"))
     calls=[]
     def evaluate(*args):
@@ -89,6 +90,7 @@ def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path):
     async def run():
         for cycle in range(2):
             fabric=ShadowFabric(settings,SimpleNamespace(),evaluator=evaluate)
+            fabric.asc_approval["evidence_healthy"] = profile_evidence_healthy
             ready(fabric.store,generation="g"+str(cycle))
             for i in range(100):
                 event=quote(seconds=i*.001,generation="g"+str(cycle),sequence=30+i)
@@ -100,6 +102,10 @@ def test_quote_bursts_and_restart_keep_one_durable_candidate(tmp_path):
             assert not fabric.policy_snapshot.entry_authority
             assert fabric.policy_snapshot.proposed_profile == "NO_TRADE"
             assert fabric.visual.scanner["SPY"]["classification"] == "CANDIDATE"
+            import json
+            candidate = json.loads(fabric.evidence.db.execute("SELECT body FROM shadow_candidate").fetchone()[0])
+            assert candidate["risk_validation_state"] == "NOT_EVALUATED_SIGNAL_ONLY"
+            assert candidate["entry_authority"] is False
             fabric.checkpoint.close()
     asyncio.run(run())
     assert len(calls)==2

@@ -340,7 +340,9 @@ class ShadowFabric:
             "strategy_version": self.settings.strategy_version_id, "policy_snapshot": self.policy_snapshot.snapshot_fingerprint,
             "policy_library_fingerprint": self.library.fingerprint, "shadow_configuration_fingerprint": self.shadow_configuration,
             "regime": self.regime, "entry_authority": False,
-            "risk_validation_state": "ASC008_SHADOW_APPROVED" if self.asc_approval.get("evidence_healthy") is True else "UNAVAILABLE",
+            # Profile approval is not portfolio/risk validation. These decisions
+            # still stop at the signal-only boundary until that path is integrated.
+            "risk_validation_state": "NOT_EVALUATED_SIGNAL_ONLY",
             "approved_profiles":list(self.asc_approval.get("approved_profiles",())),
             "candidate_kind": "SIGNAL_ONLY_COUNTERFACTUAL", "provenance": "DERIVED", "source": "RHEN/market_fabric"}
         if self.asset_reader is not None:

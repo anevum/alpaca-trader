@@ -1,5 +1,51 @@
 # RHEN 4.4 pre-crossover implementation status
 
+## Current checkpoint — 2026-10-07 18:39 ET
+
+This checkpoint supersedes the runtime and next-slice statements below.
+The website is deployed at `f96f0082217fb16e2f1ea11d19eb80fa1cf93ea3`
+(web PRs 198–199). Hosted PR verification passed browser, layout, privacy,
+release-registry, tests and build checks. Authenticated production Command
+now shows real shadow discovery, ledger, approval and forecast projections.
+Railway telemetry at `2026-10-07T22:39:02.966976+00:00` confirms one bootstrap
+read, one accepted WebSocket, zero authentication rejections and one client.
+Using manual redirect handling restored the upstream connection; a credential
+is never forwarded by an automatic cross-origin redirect.
+
+Shadow commit `57ad13cd1d73e07c52b369c2a141fa3100d41b0a`, deployment
+`e87aeccb-cbbc-4e92-9dff-fad35e9a7f2b`, is SUCCESS. PR 439 corrected NOSTRA
+reference projection to use normalized `close`, only completed candles, and
+archive availability at the forecast feature time. Later corrections cannot
+rebase an earlier forecast. All 137 RHEN 4.4 tests passed for that deployed slice.
+The current evidence-label correction passes 138 tests; profile approval is
+explicitly separate from unevaluated signal-only portfolio/risk evidence.
+
+Production remains RHEN 4.3.2 behavior at
+`7412d31a54d7fdd307ee7c8dfaed18708b45d4ff`, deployment
+`64446f4d-711b-4825-b382-c10ce9314617` SUCCESS. Protected configuration remains
+`sha256:5c0d873224669c156ebc0d4d5f4024ad2afc7bdc945dfff61db556c3a7c1e7bd`.
+No 4.4 trading crossover or adaptive ACTIVE authority was granted.
+
+Current shadow market-feed unavailability is expected after the Basic IEX
+08:00–17:00 ET window. Command displays AFTER_HOURS / FEED_UNAVAILABLE;
+no unavailable source is presented as live market observations. The broker
+stream and champion reads remain healthy. Canonical recovery is complete;
+raw stream parity still retains one known missing order and fill. No approved
+profile or projected forecast currently exists.
+
+Engineering is **not complete**. Remaining implementation includes full
+risk/cost candidate mapping and canonical research exports, VELUM integration
+and artifacts, complete normalized/drawdown/session visuals, strategy threshold
+overlays and authenticated acceptance with live market observations. The 95%
+coverage, same-input parity, forward outcomes, independent untouched holdout,
+profile-release and live recovery/rollback gates remain unpassed. Website
+publication and unit tests do not substitute for those gates.
+
+Next work: integrate canonical read-only risk/cost candidate evidence and its
+research exports, then VELUM/visual acceptance. Collect eligible-market
+coverage and independent forward/holdout sessions before any 4.4 crossover.
+
+
 ## Current checkpoint — 2026-10-07 16:57 ET
 
 Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
