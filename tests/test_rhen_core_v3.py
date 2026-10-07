@@ -533,6 +533,115 @@ def test_weekly_range_read_returns_canonical_input_shape(
     assert inputs["daily_reports"][0]["payload"]["session"] == "2026-10-02"
 
 
+def test_canonical_ledger_read_is_run_scoped_and_sanitized(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    observed = datetime(2026, 10, 7, 18, 40, tzinfo=UTC)
+    store.ingest_events(
+        [
+            {
+                "event_key": "intent-live",
+                "event_type": "order_intent",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-live",
+                "strategy_version_id": "v-live",
+                "symbol": "ORCL",
+                "source": "test",
+                "payload": {
+                    "intent": {
+                        "intent_id": "intent-1",
+                        "idempotency_key": "anevum-orcl-buy-rhen-1",
+                        "symbol": "ORCL",
+                        "side": "buy",
+                        "intended_at": observed.isoformat(),
+                        "private_note": "must-not-project",
+                    }
+                },
+            },
+            {
+                "event_key": "order-live",
+                "event_type": "broker_order",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-live",
+                "strategy_version_id": "v-live",
+                "symbol": "ORCL",
+                "source": "test",
+                "payload": {
+                    "order": {
+                        "id": "order-1",
+                        "client_order_id": "anevum-orcl-buy-rhen-1",
+                        "symbol": "ORCL",
+                        "side": "buy",
+                        "status": "filled",
+                        "filled_qty": "0.25",
+                        "filled_avg_price": "165.00",
+                        "account_id": "must-not-project",
+                    }
+                },
+            },
+            {
+                "event_key": "fill-live",
+                "event_type": "broker_fill",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-live",
+                "strategy_version_id": "v-live",
+                "symbol": "ORCL",
+                "source": "test",
+                "payload": {
+                    "activity": {
+                        "id": "fill-1",
+                        "order_id": "order-1",
+                        "symbol": "ORCL",
+                        "side": "buy",
+                        "qty": "0.25",
+                        "price": "165.00",
+                        "transaction_time": observed.isoformat(),
+                        "private_field": "must-not-project",
+                    }
+                },
+            },
+            {
+                "event_key": "order-other-run",
+                "event_type": "broker_order",
+                "occurred_at": observed.isoformat(),
+                "run_id": "run-other",
+                "strategy_version_id": "v-other",
+                "symbol": "RKT",
+                "source": "test",
+                "payload": {"order": {"id": "other-order", "symbol": "RKT"}},
+            },
+        ]
+    )
+
+    report = store.report_read({"latest": "ledger", "run_id": "run-live"})
+
+    assert report["ok"] is True
+    assert report["ledger_version"] == "rhen-canonical-ledger-read-v1"
+    assert report["run_id"] == "run-live"
+    assert report["event_count"] == 3
+    assert report["truncated"] is False
+    assert report["execution_authority"] is False
+    assert report["broker_orders_possible"] is False
+    assert {row["event_key"] for row in report["events"]} == {
+        "intent-live", "order-live", "fill-live"
+    }
+    order = next(row["order"] for row in report["events"] if row["event_type"] == "broker_order")
+    fill = next(row["fill"] for row in report["events"] if row["event_type"] == "broker_fill")
+    intent = next(row["intent"] for row in report["events"] if row["event_type"] == "order_intent")
+    assert order["id"] == "order-1"
+    assert "account_id" not in order
+    assert fill["id"] == "fill-1"
+    assert "private_field" not in fill
+    assert intent["intent_id"] == "intent-1"
+    assert "private_note" not in intent
+
+    assert store.report_read({"latest": "ledger"}) == {
+        "ok": False, "error": "invalid_run_id"
+    }
+    assert store.report_read({
+        "latest": "ledger", "run_id": "run-live", "limit": "0"
+    }) == {"ok": False, "error": "invalid_limit"}
+
+
 def test_weekly_range_read_rejects_invalid_period(tmp_path, monkeypatch):
     store = _store(tmp_path, monkeypatch)
 
