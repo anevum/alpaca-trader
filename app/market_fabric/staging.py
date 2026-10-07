@@ -231,6 +231,40 @@ class ReadOnlyCanonicalResearchEvidence:
         return merged
 
 
+class ReadOnlyCanonicalForecasts:
+    """Token-authenticated GET-only projection of canonical NOSTRA forecasts."""
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/scheduler/nostra-forecasts"
+    VERSION = "nostra-canonical-forecast-read-v1"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self):
+        if not self.token:
+            raise ValueError("canonical forecast read unavailable")
+        async with httpx.AsyncClient(timeout=10, transport=self.transport) as http:
+            response = await http.get(
+                self.ENDPOINT,
+                headers={"x-anevum-scheduler-token": self.token},
+            )
+            response.raise_for_status()
+            body = response.json()
+        forecasts = body.get("forecasts") if isinstance(body, dict) else None
+        if (
+            not isinstance(body, dict)
+            or body.get("ok") is not True
+            or body.get("schema_version") != self.VERSION
+            or body.get("research_only") is not True
+            or body.get("execution_authority") is not False
+            or body.get("broker_write_authority") is not False
+            or not isinstance(forecasts, list)
+            or len(forecasts) > 200
+        ):
+            raise ValueError("canonical forecast identity mismatch")
+        return body
+
+
 class ReadOnlyCanonicalLedger:
     """Token-authenticated GET-only projection of the canonical RHEN order/fill ledger."""
     ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/trading-report-read"
@@ -285,6 +319,7 @@ def create_app(settings=None):
                                   champion_reader=ReadOnlyChampion().snapshot,
                                   discovery_reader=ReadOnlyCanonicalUniverse(settings).snapshot,
                                   asc_reader=ReadOnlyCanonicalResearchEvidence(settings).snapshot,
+                                  forecast_reader=ReadOnlyCanonicalForecasts(settings).snapshot,
                                   asset_reader=current_assets,ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
             fabric.start()
             async def telemetry():
