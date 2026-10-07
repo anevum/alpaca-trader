@@ -422,6 +422,43 @@ async def create_command(
     return {"ok": True, **created}
 
 
+@app.post("/v1/iren/configuration/accept")
+async def accept_configuration(
+    body: dict,
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    scheduler._require_scheduler_token(x_anevum_scheduler_token)
+    fingerprint = str(body.get("fingerprint") or "").strip()
+    reviewed_by = str(body.get("reviewed_by") or "operator").strip()[:200]
+    if not fingerprint:
+        raise HTTPException(status_code=400, detail="configuration_fingerprint_required")
+
+    async with controller.lock:
+        saved = await controller.gateway("iren_read")
+        result = await controller.gateway(
+            "iren_configuration_accept",
+            expected_revision=int(saved.get("revision") or 0),
+            fingerprint=fingerprint,
+            reviewed_by=reviewed_by,
+        )
+        if result.get("conflict"):
+            raise HTTPException(status_code=409, detail="configuration_review_state_changed")
+        if result.get("accepted") is not True:
+            raise HTTPException(status_code=409, detail="configuration_not_accepted")
+        controller.state = result.get("state") or controller.state
+        controller.revision = int(result.get("revision") or controller.revision)
+        controller.last_persisted_at = datetime.now(UTC).isoformat()
+
+    return {
+        "ok": True,
+        "accepted": True,
+        "fingerprint": result.get("fingerprint"),
+        "accepted_at": result.get("accepted_at"),
+        "revision": result.get("revision"),
+        "state": "ACCEPTED_PENDING_REOBSERVATION",
+    }
+
+
 @app.post("/v1/iren/jobs/{job_id}/callback")
 async def job_callback(
     job_id: str,
