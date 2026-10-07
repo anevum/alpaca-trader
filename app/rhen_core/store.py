@@ -21,7 +21,7 @@ CRITICAL_EVENT_TYPES = {
     "runtime_error", "strategy_promotion",
     # The scheduler depends on these durable reports. Storage pressure may
     # shed high-volume observations, but must not silently discard its inputs.
-    "research_daily_report", "research_weekly_report",
+    "research_daily_report", "research_weekly_report", "extended_research_snapshot",
 }
 
 
@@ -583,6 +583,12 @@ class RhenCoreStore:
         }
         deleted: dict[str, int] = {}
         with self._lock, self.connect() as conn:
+            # Bounded derived checkpoints, distinct from permanent execution truth.
+            cur = conn.execute(
+                "delete from events where event_type='extended_research_snapshot' and occurred_at < ?",
+                ((now - timedelta(days=35)).isoformat(),),
+            )
+            deleted["extended_research_snapshots"] = cur.rowcount
             cur = conn.execute(
                 "delete from events where critical=0 and event_type='decision_cycle' and occurred_at < ?",
                 (cuts["cycles"],),
@@ -687,15 +693,7 @@ class RhenCoreStore:
         try:
             self.prune()
             self._maintenance_error = None
-            # Read-only allocation evidence; no payloads or trading records logged.
-            with self.connect() as conn:
-                rows = conn.execute(
-                    "select name, sum(pgsize) as bytes from dbstat "
-                    "group by name order by bytes desc limit 12"
-                ).fetchall()
-            print(json.dumps({"event": "core_storage_allocation",
-                "objects": [{"name": row[0], "bytes": row[1]} for row in rows]},
-                sort_keys=True), flush=True)
+
         except Exception as exc:
             self._maintenance_error = f"{type(exc).__name__}: {exc}"
 
@@ -781,6 +779,15 @@ class RhenCoreStore:
             self.prune()
             self.compact_storage()
             self._maintenance_error = None
+            # Read-only allocation evidence; no payloads or trading records logged.
+            with self.connect() as conn:
+                rows = conn.execute(
+                    "select name, sum(pgsize) as bytes from dbstat "
+                    "group by name order by bytes desc limit 12"
+                ).fetchall()
+            print(json.dumps({"event": "core_storage_allocation",
+                "objects": [{"name": row[0], "bytes": row[1]} for row in rows]},
+                sort_keys=True), flush=True)
         except Exception as exc:
             self._maintenance_error = f"{type(exc).__name__}: {exc}"
         finally:

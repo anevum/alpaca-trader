@@ -1317,6 +1317,10 @@ class ResearchReportScheduler:
         )
         if not persisted:
             raise RuntimeError("canonical daily report could not be durably persisted")
+        print(json.dumps({"event": "daily_research_confirmed", "session": session.isoformat(),
+            "classification": payload.get("classification"), "metrics": payload.get("metrics"),
+            "warnings": payload.get("data_quality_warnings"), "focus": payload.get("focus")},
+            sort_keys=True, default=str), flush=True)
         self.last_daily_report = payload
         self.last_error = None
         self._record_asc_notifications(adaptive_control)
