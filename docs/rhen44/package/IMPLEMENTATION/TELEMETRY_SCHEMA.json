@@ -1,0 +1,142 @@
+{
+  "schema_version": "rhen-4.4-command.v3",
+  "adaptive_control": {
+    "enabled": false,
+    "mode": "DISABLED",
+    "controller_state": "DISABLED",
+    "observed_at": null,
+    "snapshot_id": null,
+    "snapshot_fingerprint": null,
+    "policy_library_version": null,
+    "policy_library_fingerprint": null,
+    "protected_configuration_fingerprint": null,
+    "current_profile": "BASELINE_LOCKED",
+    "profile_version": null,
+    "profile_since": null,
+    "next_upgrade_eligible_at": null,
+    "transition": {
+      "previous_profile": null,
+      "selected_profile": "BASELINE_LOCKED",
+      "reason_codes": [],
+      "safety_downgrade": false,
+      "dwell_bypassed": false
+    },
+    "nostra": {
+      "methodology_version": null,
+      "feature_as_of": null,
+      "primary_regime": "UNKNOWN",
+      "confidence": 0.0,
+      "unknown_probability": 1.0,
+      "market_familiarity": 0.0,
+      "regime_probabilities": {},
+      "stale": true,
+      "missing_features": []
+    },
+    "capital_governor": {
+      "allocation_multiplier": 1.0,
+      "gross_envelope_fraction": 1.0,
+      "regime_factor": 1.0,
+      "health_factor": 1.0,
+      "drawdown_factor": 1.0,
+      "evidence_factor": 1.0,
+      "risk_throttle": 1.0,
+      "allow_margin": false
+    },
+    "effective": {
+      "min_quality_score": null,
+      "net_edge_hurdle_bps": null,
+      "stop_pct": null,
+      "target_pct": null,
+      "max_hold_minutes": null,
+      "reentry_cooldown_minutes": null,
+      "max_spread_pct": null,
+      "max_gross_exposure": null,
+      "max_position_exposure": null,
+      "max_portfolio_stop_risk": null
+    },
+    "baseline": {},
+    "hard_limits": {},
+    "health": {
+      "evidence_integrity": null,
+      "strategy_health": null,
+      "reconciliation_safe": null,
+      "fallback_active": false,
+      "fallback_reason_codes": []
+    },
+    "research": {
+      "shadow_lineage_id": null,
+      "validation_state": null,
+      "independent_sessions": 0,
+      "complete_candidates": 0,
+      "differential_decisions": 0,
+      "holdout_state": null,
+      "promotion_blockers": []
+    }
+  },
+  "market_fabric": {
+    "enabled": true,
+    "session": "CLOSED",
+    "feed": null,
+    "data_tier": "basic",
+    "capability": "MARKET_CLOSED",
+    "stream_generation": null,
+    "connection_state": "DISCONNECTED",
+    "intended_symbols": 24,
+    "subscribed_symbols": 0,
+    "events_per_second": 0.0,
+    "quote_age_p50_ms": null,
+    "quote_age_p95_ms": null,
+    "transport_latency_p50_ms": null,
+    "transport_latency_p95_ms": null,
+    "coalesced_quotes": 0,
+    "out_of_order_events": 0,
+    "reconnects": 0,
+    "evaluable_fraction": 0.0,
+    "entry_authority": false,
+    "block_reasons": [],
+    "symbols": []
+  },
+  "scanner": {
+    "evaluation_window_seconds": 60,
+    "eligible_evaluations": 0,
+    "evaluable_evaluations": 0,
+    "evaluable_rate": 0.0,
+    "candidates": 0,
+    "candidate_rate_per_1000_evaluations": 0.0,
+    "order_intents": 0,
+    "fills": 0,
+    "rejection_counts": {}
+  },
+  "visual_intelligence": {
+    "enabled": true,
+    "schema_version": "command-visual.v1",
+    "publish_interval_ms": 125,
+    "provenance_required": true,
+    "allow_synthetic_market_points": false,
+    "selected_symbol": null,
+    "live_series": {
+      "candles": 0,
+      "market_overlays": 0,
+      "account_series": 0,
+      "forecast_series": 0,
+      "system_series": 0
+    },
+    "forecast": {
+      "active_forecast_id": null,
+      "issued_at": null,
+      "expires_at": null,
+      "horizon_seconds": null,
+      "model_version": null,
+      "methodology_version": null,
+      "confidence_level": null,
+      "quality_state": "UNAVAILABLE"
+    },
+    "render_health": {
+      "client_connected": false,
+      "last_snapshot_at": null,
+      "last_delta_at": null,
+      "dropped_visual_batches": 0,
+      "series_resets": 0
+    }
+  }
+}

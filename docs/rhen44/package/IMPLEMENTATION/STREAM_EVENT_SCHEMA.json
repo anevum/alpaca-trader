@@ -1,0 +1,56 @@
+{
+  "schema_version": "rhen-stream.v2",
+  "market_event": {
+    "stream_generation": "uuid/string",
+    "sequence": "integer",
+    "feed": "iex|sip|overnight|boats|unknown",
+    "session": "PREMARKET|REGULAR|AFTER_HOURS|OVERNIGHT|CLOSED",
+    "symbol": "string",
+    "event_type": "quote|trade|bar|status|session|feed_health",
+    "source_timestamp": "RFC3339",
+    "received_timestamp": "RFC3339",
+    "source_age_ms": "integer",
+    "transport_latency_ms": "integer|null",
+    "payload": "feed-normalized object"
+  },
+  "symbol_state": {
+    "symbol": "string",
+    "feed": "string",
+    "session": "string",
+    "bid": "number|null",
+    "ask": "number|null",
+    "mid": "number|null",
+    "spread_bps": "number|null",
+    "quote_source_at": "RFC3339|null",
+    "quote_age_ms": "integer|null",
+    "last_trade": "number|null",
+    "last_trade_source_at": "RFC3339|null",
+    "bar_source_at": "RFC3339|null",
+    "evaluable": "boolean",
+    "candidate_state": "WARMING|BLOCKED|HOLD|WATCH|NEAR|CANDIDATE|ORDER_INTENT",
+    "rejection_code": "string|null",
+    "rejection_details": "object|null"
+  },
+  "stream_health": {
+    "state": "DISCONNECTED|CONNECTING|AUTHENTICATING|SUBSCRIBING|WARMING|HEALTHY|DEGRADED|RECONNECTING|CLOSED",
+    "intended_symbols": "integer",
+    "subscribed_symbols": "integer",
+    "events_per_second": "number",
+    "quote_age_p50_ms": "number|null",
+    "quote_age_p95_ms": "number|null",
+    "transport_latency_p50_ms": "number|null",
+    "transport_latency_p95_ms": "number|null",
+    "coalesced_quotes": "integer",
+    "out_of_order_events": "integer",
+    "reconnects": "integer",
+    "evaluable_fraction": "number",
+    "entry_authority": "boolean",
+    "block_reasons": "string[]"
+  },
+  "visual_projection": {
+    "schema": "command-visual.v1",
+    "rule": "read-only projection of canonical stream state; no execution authority",
+    "normal_publish_ms": "100-250",
+    "critical_events": "immediate"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "canonical_session": "ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE",
+  "target_release": "RHEN 4.4",
+  "package_date": "2026-10-06",
+  "activation_dependency": "RHEN 4.3 fully live and frozen as rollback baseline",
+  "backend_repo": "anevum/rhen",
+  "frontend_repo": "anevum/anevum-web",
+  "railway_project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
+  "preparation_snapshot": {
+    "github_main_sha": "01ad6a06ce68aba5cd9e6699b6ed617fa542875b",
+    "railway_deployment_id": "c07a1d2b-d1a5-4192-a86a-7ec7fc4fb862",
+    "railway_deployment_status": "DEPLOYING",
+    "note": "Preparation snapshot only; final 4.3 baseline must be refreshed before implementation merge."
+  },
+  "authority": {
+    "development_authorized_by_package": true,
+    "live_profile_promotion_authorized_by_package": false,
+    "risk_ceiling_expansion_authorized_by_package": false,
+    "margin_or_leverage_authorized": false,
+    "crypto_authorized": false,
+    "extended_live_promotion_authorized_by_package": false,
+    "options_broker_write_authorized": false,
+    "short_equities_authorized": false,
+    "overnight_live_authorized": false
+  },
+  "parent_package": "ANEVUM.RHEN.PACKAGE.2026-10-06.002.V4-4-REALTIME-EXTENDED",
+  "package_scope": [
+    "adaptive_policy_control",
+    "event_driven_market_fabric",
+    "extended_24_5_observation",
+    "realtime_command_stream",
+    "stream_state_recovery",
+    "visual_intelligence_layer",
+    "realtime_candlesticks",
+    "forecast_visualization",
+    "velum_replay_visualization"
+  ],
+  "market_data": {
+    "current_default_tier": "basic",
+    "basic_stock_feed": "iex",
+    "basic_stock_stream_symbol_limit": 30,
+    "configured_extended_universe": 24,
+    "basic_overnight_feed": "overnight",
+    "future_plus_stock_feed": "sip",
+    "future_plus_overnight_feed": "boats",
+    "plus_required_for_full_realtime_24_5_market_coverage": true
+  },
+  "visual_intelligence": {
+    "enabled_in_package": true,
+    "broker_write_authority": false,
+    "provenance_classes": [
+      "OBSERVED",
+      "DERIVED",
+      "FORECAST",
+      "OPERATIONAL"
+    ],
+    "normal_publish_interval_ms": 125,
+    "normal_publish_range_ms": [
+      100,
+      250
+    ],
+    "synthetic_market_points_allowed": false,
+    "required_views": [
+      "LIVE",
+      "SYMBOL",
+      "FORECAST",
+      "PERFORMANCE",
+      "SYSTEM",
+      "REPLAY"
+    ]
+  },
+  "package_file_count_excluding_internal_checksum": 34
+}

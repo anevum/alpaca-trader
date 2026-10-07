@@ -11,7 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .alpaca_client import AlpacaClient
@@ -104,6 +104,7 @@ slack_notifier = SlackNotifier(settings)
 _stop = asyncio.Event()
 NY = ZoneInfo("America/New_York")
 runtime_provenance = None
+shadow_fabric = None
 
 
 def emit_runtime_event(event: dict) -> None:
@@ -1093,7 +1094,28 @@ async def lifespan(app: FastAPI):
         )
     slack_market_task = asyncio.create_task(slack_market_observer_loop())
 
+    # 4.4 cannot modify the live engine, risk, sizing, or reconciliation state.
+    # Construction/imports and file I/O happen only when explicitly opted in.
+    global shadow_fabric
+    if settings.rhen_market_stream_enabled:
+        from .market_fabric.runtime import ShadowFabric
+
+        def shadow_evaluate(symbol, now, store):
+            def bars(s):
+                return [{"t": b["timestamp"], "o": b["open"], "h": b["high"], "l": b["low"],
+                         "c": b["close"], "v": b["volume"], **({"vw": b["vwap"]} if b.get("vwap") is not None else {})}
+                        for b in store.rows.get(s, {}).get("bars", [])]
+            # Signal-only counterfactual: no account/risk/order intent, no sizing mutation.
+            return strategy.evaluate(bars(symbol), {s: bars(s) for s in settings.confirmation_symbols},
+                                     symbol, False, settings.order_notional, now=now)
+
+        shadow_fabric = ShadowFabric(settings, market_data, evaluator=shadow_evaluate)
+        shadow_fabric.start()
+
     yield
+    if shadow_fabric is not None:
+        await shadow_fabric.stop()
+        shadow_fabric = None
     _stop.set()
     if equity_task is not None:
         await equity_task
@@ -1117,6 +1139,43 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RHEN", version=RHEN_VERSION, lifespan=lifespan)
+
+
+@app.websocket("/v1/command/stream")
+async def command_live_stream(websocket: WebSocket):
+    # Browser enters via the same-origin Cloudflare Access worker; never query tokens.
+    try:
+        await require_command_admin(websocket.headers.get("authorization"))
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+    if not settings.command_live_stream_enabled or shadow_fabric is None:
+        await websocket.close(code=1013)
+        return
+    import jwt
+    token = websocket.headers["authorization"][7:]
+    # Assertion was verified above; enforce its expiry throughout the socket lifetime.
+    expiry = float(jwt.decode(token, options={"verify_signature": False})["exp"])
+    await websocket.accept()
+    publisher = shadow_fabric.visual.publisher
+    queue = publisher.subscribe()
+    try:
+        while True:
+            remaining = expiry-datetime.now(timezone.utc).timestamp()
+            if remaining <= 0:
+                await websocket.close(code=1008)
+                break
+            message = await asyncio.wait_for(queue.get(), timeout=min(remaining, 10))
+            if message is None:
+                await websocket.close(code=1013)
+                break
+            await websocket.send_json(message)
+    except asyncio.TimeoutError:
+        await websocket.close(code=1008)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        publisher.unsubscribe(queue)
 
 
 @app.get("/health")

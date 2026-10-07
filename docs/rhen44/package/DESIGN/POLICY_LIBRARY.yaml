@@ -1,0 +1,90 @@
+schema_version: adaptive-policy-library-v1
+release_target: RHEN-4.4
+status: PROPOSED_SHADOW_DEFAULTS_NOT_LIVE_AUTHORIZED
+strategy_scope: rolling_momentum_vwap
+session_scope:
+  - regular
+hard_rules:
+  allow_margin: false
+  allow_short: false
+  allow_crypto: false
+  may_exceed_existing_risk_limits: false
+  may_mutate_environment: false
+  may_call_broker_directly: false
+  profile_switch_requires_approved_profile: true
+fallback: BASELINE_LOCKED
+controller:
+  refresh_seconds: 300
+  min_dwell_seconds: 900
+  upgrade_confirmations: 2
+  safety_downgrade_confirmations: 1
+  normal_downgrade_confirmations: 2
+  max_regime_age_seconds: 600
+  minimum_upgrade_confidence: 0.75
+profiles:
+  NO_TRADE:
+    allow_new_entries: false
+    allocation_multiplier: 0.0
+    gross_envelope_fraction: 0.0
+  DEFENSIVE:
+    allow_new_entries: true
+    allocation_multiplier: 0.50
+    gross_envelope_fraction: 0.50
+    quality_score_delta: 8
+    net_edge_hurdle_multiplier: 1.50
+    target_multiplier: 0.80
+    stop_multiplier: 0.90
+    hold_multiplier: 0.60
+    reentry_cooldown_multiplier: 2.0
+    spread_limit_multiplier: 0.75
+  FAST_SCALP:
+    allow_new_entries: true
+    allocation_multiplier: 0.65
+    gross_envelope_fraction: 0.70
+    quality_score_delta: 2
+    net_edge_hurdle_multiplier: 1.10
+    target_multiplier: 0.70
+    stop_multiplier: 0.85
+    hold_multiplier: 0.50
+    reentry_cooldown_multiplier: 0.50
+    spread_limit_multiplier: 0.85
+  NORMAL:
+    allow_new_entries: true
+    allocation_multiplier: 0.80
+    gross_envelope_fraction: 0.80
+    quality_score_delta: 0
+    net_edge_hurdle_multiplier: 1.00
+    target_multiplier: 1.00
+    stop_multiplier: 1.00
+    hold_multiplier: 1.00
+    reentry_cooldown_multiplier: 1.00
+    spread_limit_multiplier: 1.00
+  TREND_EXTEND:
+    allow_new_entries: true
+    allocation_multiplier: 0.90
+    gross_envelope_fraction: 0.90
+    quality_score_delta: 0
+    net_edge_hurdle_multiplier: 1.00
+    target_multiplier: 1.40
+    stop_multiplier: 1.05
+    hold_multiplier: 2.00
+    reentry_cooldown_multiplier: 1.00
+    spread_limit_multiplier: 1.00
+  ASSERTIVE_TREND:
+    allow_new_entries: true
+    allocation_multiplier: 1.00
+    gross_envelope_fraction: 1.00
+    quality_score_delta: -3
+    minimum_quality_score_floor: 76
+    net_edge_hurdle_multiplier: 0.90
+    minimum_absolute_net_edge_hurdle_preserved: true
+    target_multiplier: 1.25
+    stop_multiplier: 1.00
+    hold_multiplier: 1.50
+    reentry_cooldown_multiplier: 0.50
+    spread_limit_multiplier: 1.00
+notes:
+  - These values are candidate shadow defaults only.
+  - Every non-baseline profile must pass the validation/promotion gates before ACTIVE mode can use it.
+  - Hard RHEN Settings remain authoritative and may only be tightened by the profile resolver.
+  - A profile library change creates a new fingerprint and validation lineage.

@@ -32,6 +32,13 @@ def parse_csv(value: str) -> tuple[str, ...]:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Isolated 4.4 observation. No flag in this release promotes a data/decision path.
+    rhen_market_stream_enabled: bool = Field(default=False, alias="RHEN_MARKET_STREAM_ENABLED")
+    rhen_broker_stream_shadow_enabled: bool = Field(default=False, alias="RHEN_BROKER_STREAM_SHADOW_ENABLED")
+    command_live_stream_enabled: bool = Field(default=False, alias="COMMAND_LIVE_STREAM_ENABLED")
+    command_live_flush_ms: int = Field(default=125, ge=100, le=250, alias="COMMAND_LIVE_FLUSH_MS")
+    rhen_market_stream_checkpoint_path: str = Field(default="/data/rhen44-shadow-checkpoint.db", alias="RHEN_MARKET_STREAM_CHECKPOINT_PATH")
+
     alpaca_api_key: str = Field(default="", alias="ALPACA_API_KEY")
     alpaca_api_secret: str = Field(default="", alias="ALPACA_API_SECRET")
 
