@@ -13,6 +13,12 @@ from .contracts import normalize
 from .feed_router import ENDPOINTS, validate_symbols
 
 
+class ProviderStreamError(RuntimeError):
+    def __init__(self, code):
+        self.code = code if isinstance(code, int) and not isinstance(code, bool) else None
+        super().__init__("market provider rejected stream")
+
+
 class MarketStreamManager:
     def __init__(self, store, *, api_key: str, api_secret: str, on_event,
                  bootstrap=None, connect_factory=connect, queue_max=10000):
@@ -25,6 +31,7 @@ class MarketStreamManager:
         self.reconnects = 0
         self.errors = 0
         self.last_error = None
+        self.last_error_code = None
         self.running = False
         self.sequence = 0
 
@@ -44,7 +51,7 @@ class MarketStreamManager:
                 raise ValueError("invalid market frame")
             for raw in messages:
                 if raw.get("T") == "error":
-                    raise RuntimeError(f"market stream error code {raw.get('code')}")
+                    raise ProviderStreamError(raw.get("code"))
                 if raw.get("T") == "success" and raw.get("msg") == "authenticated":
                     authenticated = True
                     self.store.connection = "SUBSCRIBING"
@@ -92,6 +99,7 @@ class MarketStreamManager:
                 except Exception as exc:
                     self.errors += 1
                     self.last_error = type(exc).__name__  # never expose auth frames/secrets
+                    self.last_error_code = getattr(exc, "code", None) or getattr(getattr(exc, "response", None), "status_code", None)
                     failures += 1
                 self.store.connection = "DISCONNECTED"
                 self.store.subscribed.clear()
