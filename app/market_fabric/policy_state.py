@@ -35,6 +35,8 @@ class PolicyStateStore:
             return "UNAVAILABLE"
         try:
             body = json.loads(row[0])
+            if not isinstance(body, dict):
+                return "REJECTED_STATE"
             checksum = body.pop("checksum")
             if checksum != fingerprint(body) or body["version"] != 1 or body["entry_authority"] is not False:
                 return "REJECTED_INTEGRITY"

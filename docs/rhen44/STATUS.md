@@ -258,3 +258,24 @@ when beginning a new-session bootstrap; real reconnect/restart attestations foll
 deployment. All independent-session and untouched-holdout requirements remain
 unpassed. Original 4.3 rollback commit/configuration boundaries remain preserved;
 4.4 writes and future asset authorities remain disabled.
+
+
+Slice 20 deployment attestation: #426 merged as fd6d917; isolated observer
+116317279a4033c79d21d7c0f5fbb14b8919e855 is SUCCESS on Railway deployment
+848f0d94-56e8-48a9-86b5-a5f3f1a279dc. At 12:39:25 UTC after an authorized
+isolated restart, policy recovery was RESTORED_SHADOW_ONLY, retained archive
+21 observations, all 24 IEX subscriptions returned, broker HEALTHY, account and
+account diagnostics LIVE, no stream errors, and private champion health identity
+matched the existing production protected-contract hash. Market remained WARMING
+and candidate/evaluable/intent counts zero; this is recovery evidence, not a
+coverage or promotion pass. Production remained healthy 4.3.2 with all three
+4.4 gates false, no observer and reconciliation safe. Retained rollback ref
+0270563a613c57a959d1c6b93b97a01509a418df independently reverified.
+
+Authority hardening requires explicit false options-write, expanded-session and
+expanded-leverage envelope fields, rejects unknown policy-value fields, rejects
+non-object checkpoint corruption without mutating state, and treats malformed or
+stale private champion lineage as unavailable. No new execution authority or
+protected activation path is introduced. Canonical integration/promotion remains
+incomplete. Command #191 uploaded successfully but production desktop scroll QA
+failed its precondition; #192 corrects setup while preserving the outcome assertion.

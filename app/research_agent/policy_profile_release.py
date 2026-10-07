@@ -7,7 +7,7 @@ authenticated canonical evidence lane, not to a client-supplied pass flag.
 from decimal import Decimal
 from collections.abc import Mapping
 
-from app.adaptive_policy import ORDER, HARD_FALSE, d, fingerprint
+from app.adaptive_policy import ORDER, HARD_FALSE, PolicyLibrary, d, fingerprint
 from app.market_fabric.contracts import utc
 from .adaptive_shadow import aggregate_shadow_validation
 
@@ -50,6 +50,15 @@ def evaluate_profile_release(proposal, *, resolve_artifact, now):
                 reasons.append("HARD_AUTHORITY_ENVELOPE_VIOLATION")
     except (KeyError, TypeError, ValueError, ArithmeticError):
         reasons.append("INVALID_RELEASE_VALUES")
+    # Releases describe bounded policy values, never new asset/session authority.
+    allowed_values = set().union(*(profile.keys() for profile in PolicyLibrary.load().profiles.values())) | {
+        "stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes",
+        "max_spread_pct", "net_edge_hurdle_bps", "min_quality_score"}
+    if set(proposal.get("profile_values", {})) - allowed_values:
+        reasons.append("UNSUPPORTED_PROFILE_VALUE_OR_AUTHORITY")
+    if any(proposal.get("hard_envelope", {}).get(k) is not False for k in (
+        "options_broker_write_authority", "expanded_session_execution", "expanded_leverage")):
+        reasons.append("FUTURE_AUTHORITY_ENVELOPE_VIOLATION")
     bindings = {k:proposal.get(k) for k in ("release_id", "profile_id", "profile_version", "source_strategy_version",
         "target_strategy_version", "configuration_fingerprint", "policy_library_fingerprint", "nostra_methodology_fingerprint")}
     bindings["profile_fingerprint"] = fingerprint(proposal.get("profile_values", {}))
