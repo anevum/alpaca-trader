@@ -1,5 +1,48 @@
 # RHEN 4.4 pre-crossover implementation status
 
+## Current checkpoint — 2026-10-07 15:58 ET
+
+Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
+
+The isolated RHEN 4.4 observer is running commit
+`88fcb342ce1661b8f5ac2e7f137105d0b2084682` as Railway deployment
+`8535829d-e84f-4de0-a2d0-b8586037f94e` with terminal SUCCESS. Hosted CI
+`37678163978` and Foundation runtime audit `37678163953` both passed. Main
+production remains RHEN 4.3.2 behavior; the only main change in this slice is
+the bounded GET-only canonical-ledger projection at
+`f1316eb4706028d7c499be491f7dd9654a62fa10`, deployment
+`fdd49a81-46a3-45ef-9126-7f19bd716770` SUCCESS.
+
+The observer now reads the canonical run-scoped order/fill ledger without write
+authority and compares it with the account-wide Alpaca `trade_updates` archive.
+A real historical stream gap was identified: one canonical order at
+`2026-10-07T14:00:36.257963Z` and one fill at
+`2026-10-07T14:00:36.260396Z` were absent from raw websocket observations.
+Historical runtime telemetry proves the broker stream was disconnected with
+`ConnectionClosedError` during that exact minute. This is not hidden or
+reclassified as raw parity.
+
+Reconnect handling now requests canonical reconciliation immediately after every
+successful broker `trade_updates` subscription/reconnect. The final same-image
+restart recovered a HEALTHY broker stream, 24 symbols, 2,880 bars,
+`RESTORED_SHADOW_ONLY` policy state and `VERIFIED_READ` champion lineage.
+Canonical reconciliation completed after reconnect and no new restart-time order
+or fill gap appeared. Raw stream parity therefore remains DEGRADED by the one
+known historical miss, while canonical reconciliation is complete. Throughout
+the exercise `execution_authority=false`, `broker_orders_possible=false` and
+`broker_write_authority=false`.
+
+Both Railway services are currently online with no warnings, critical issues or
+recent deployment failures. This closes the canonical ledger/reconnect recovery
+implementation slice. It does **not** pass crossover, forward/holdout, 95% source
+coverage, Command visual acceptance, hotset rotation, NOSTRA producer, trusted
+adaptive approval or VELUM promotion gates.
+
+Next implementation slice: discovery-to-stream hotset rotation for the
+`BROAD_DISCOVERY_NARROW_STREAM` model, keeping at most 24 streamed symbols and
+remaining shadow-only/fail-closed.
+
+
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 

@@ -62,10 +62,10 @@
       "system": "RHEN",
       "system_version": "4.3.2",
       "source": "railway",
-      "git_commit": "edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac",
+      "git_commit": "f1316eb4706028d7c499be491f7dd9654a62fa10",
       "branch": "main",
       "repository": "anevum/rhen",
-      "deployment_id": "b7676403-c01a-4d9b-adf4-983ad43ca8fc",
+      "deployment_id": "fdd49a81-46a3-45ef-9126-7f19bd716770",
       "snapshot_id": "bba40ee2-7c1a-4a34-9f81-9b45adc64721",
       "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
       "project_name": "RHEN",
@@ -86,16 +86,16 @@
     "modified_or_restarted_in_this_continuation": false
   },
   "shadow": {
-    "code_commit": "3ce688c3f3182ea8e4f09e2690b028cca2052cd6",
-    "source_branch_config": "work/rhen44-eligibility-replay-20261007",
-    "preserved_code_branch": "work/rhen44-eligibility-replay-perf-20261007",
-    "deployment_id": "b6fbfee1-240f-4f2b-8326-59880eb0ed9c",
+    "code_commit": "88fcb342ce1661b8f5ac2e7f137105d0b2084682",
+    "source_branch_config": "work/rhen44-pre-crossover-20261007",
+    "preserved_code_branch": "work/rhen44-pre-crossover-20261007",
+    "deployment_id": "8535829d-e84f-4de0-a2d0-b8586037f94e",
     "deployment_status": "SUCCESS",
-    "observed_at": "2026-10-07T16:58:01.584510+00:00",
+    "observed_at": "2026-10-07T19:58:02.411232725Z",
     "market_connection": "WARMING",
     "broker_stream_state": "HEALTHY",
     "account_quality": "LIVE",
-    "restored_bar_count": 2831,
+    "restored_bar_count": 2880,
     "policy_recovery": "RESTORED_SHADOW_ONLY",
     "subscribed_symbols": 24,
     "subscribed_channels": [
@@ -160,7 +160,37 @@
       "window_may_be_truncated": false
     },
     "execution_authority": false,
-    "broker_orders_possible": false
+    "broker_orders_possible": false,
+    "champion_health_lineage": "VERIFIED_READ",
+    "canonical_ledger": {
+      "projection_version": "rhen-canonical-ledger-read-v1",
+      "methodology_version": "canonical-observation-parity-v1",
+      "reconciliation_complete": true,
+      "stream_parity_complete": false,
+      "historical_gap_orders": 1,
+      "historical_gap_fills": 1,
+      "gap_order_at": "2026-10-07T14:00:36.257963+00:00",
+      "gap_fill_at": "2026-10-07T14:00:36.260396+00:00",
+      "gap_cause": "ALPACA trade_updates websocket disconnected with ConnectionClosedError during the gap minute",
+      "restart_introduced_new_gap": false,
+      "unattributed_observed_orders": 11,
+      "entry_authority": false,
+      "broker_write_authority": false
+    },
+    "restart_recovery": {
+      "validated": true,
+      "deployment_id": "8535829d-e84f-4de0-a2d0-b8586037f94e",
+      "broker_stream_state": "HEALTHY",
+      "subscribed_symbols": 24,
+      "restored_bar_count": 2880,
+      "policy_recovery": "RESTORED_SHADOW_ONLY",
+      "champion_health_lineage": "VERIFIED_READ",
+      "canonical_reconciliation_complete": true,
+      "new_missing_orders": 0,
+      "new_missing_fills": 0,
+      "execution_authority": false,
+      "broker_orders_possible": false
+    }
   },
   "validation": {
     "guarded_backend": {
@@ -178,12 +208,21 @@
       "runtime_audit_run": 37655113668,
       "runtime_audit": "SUCCESS"
     },
-    "latest_code_hosted": "BLOCKED_PR_CREATION_CONNECTOR_INTERNAL_ERROR",
+    "latest_code_hosted": {
+      "commit": "88fcb342ce1661b8f5ac2e7f137105d0b2084682",
+      "ci_run": 37678163978,
+      "ci": "SUCCESS",
+      "runtime_audit_run": 37678163953,
+      "runtime_audit": "SUCCESS"
+    },
     "live_end_to_end_latency": "UNPASSED",
     "replay_source_methodology": "source-availability-replay-v2",
     "velum_package_replay": "UNPASSED",
     "independent_forward_and_holdout": "UNPASSED",
-    "full_configuration_and_broker_baseline": "UNPASSED"
+    "full_configuration_and_broker_baseline": "UNPASSED",
+    "canonical_ledger_reconnect_recovery": "PASSED_WITH_ONE_KNOWN_HISTORICAL_RAW_STREAM_GAP",
+    "raw_trade_updates_parity": "DEGRADED_ONE_HISTORICAL_GAP",
+    "canonical_reconciliation": "COMPLETE"
   },
   "status_groups": {
     "implemented_and_deployed": [
@@ -191,7 +230,10 @@
       "explicit equity/session asset eligibility veto and scanner telemetry",
       "point-in-time correction selection before history limit",
       "distinct simultaneous fill preservation",
-      "indexed bounded excess-only retention"
+      "indexed bounded excess-only retention",
+      "bounded read-only canonical order/fill ledger projection",
+      "account-wide broker observation parity against the canonical run ledger",
+      "broker reconnect-triggered canonical reconciliation with no write authority"
     ],
     "implemented_but_gated": [
       "adaptive policy snapshots and recovery primitives",
@@ -205,7 +247,9 @@
       "scanner rejection and distinct signal-only candidate accounting",
       "asset eligibility refresh",
       "champion private health reconciliation",
-      "source history archive and policy-state recovery"
+      "source history archive and policy-state recovery",
+      "canonical run reconciliation after broker websocket reconnect",
+      "explicit raw-stream gap accounting without masking canonical recovery"
     ],
     "still_collecting_research_evidence": [
       "coverage below 95%",
@@ -213,7 +257,8 @@
       "required independent forward and untouched holdout sessions",
       "overnight asset/halt and per-session live evidence",
       "same-input 4.3 parity and stream equivalence",
-      "live kill-switch/degraded/rollback drills and complete order reconciliation"
+      "live kill-switch/degraded/rollback drills and complete order reconciliation",
+      "raw trade_updates parity retains one proven historical ConnectionClosedError gap while canonical reconciliation is complete"
     ],
     "blocked_by_external_resources": [
       "Railway OAuth withholds full variable-value export",
@@ -231,7 +276,6 @@
     ]
   },
   "remaining_implementation": [
-    "canonical order/fill ledger integration",
     "discovery-to-stream hotset rotation",
     "trusted ASC profile-release/approval adapters",
     "full risk/cost mapped candidate and canonical research export",
@@ -244,82 +288,46 @@
     "Local performance fixtures are synthetic test data only and are not published as market data.",
     "Current live timing window is short; command_clients=0, so no browser latency or visual gate passed.",
     "Retained original and current champion refs identify code; withheld configuration values prevent claiming a complete rollback freeze.",
-    "No production service/source/variable/trading path change was made."
+    "No production service/source/variable/trading path change was made.",
+    "Canonical reconciliation now recovers broker websocket gaps after reconnect; raw trade_updates parity is intentionally not labeled complete because one historical gap remains proven."
   ],
   "latest_followup": {
-    "observed_at": "2026-10-07T17:33:54Z",
-    "backend_commit": "980c32578a06627bd7fb74d4c7c6e251c62be275",
+    "observed_at": "2026-10-07T19:58:02.411232725Z",
+    "backend_commit": "88fcb342ce1661b8f5ac2e7f137105d0b2084682",
     "backend_pr": 430,
     "hosted_ci": {
-      "run_id": 37659677774,
+      "run_id": 37678163978,
       "status": "SUCCESS",
-      "runtime_audit_run_id": 37659677647,
+      "runtime_audit_run_id": 37678163953,
       "runtime_audit_status": "SUCCESS"
     },
-    "local_validation": {
-      "staging_passed": 1075,
-      "staging_skipped": 10,
-      "dedicated_rhen44_passed": 111,
-      "command_passed": 54,
-      "command_typecheck_and_build": "PASSED"
-    },
     "shadow_deployment": {
-      "deployment_id": "613a9fc0-4c78-4657-9b05-eea45d1f516b",
+      "deployment_id": "8535829d-e84f-4de0-a2d0-b8586037f94e",
       "status": "SUCCESS",
       "broker_write_authority": false,
-      "initial_restored_bars": 2840,
-      "restart_restored_bars": 2842,
-      "restart_broker_stream_state": "HEALTHY",
-      "restart_subscribed_symbols": 24,
-      "restart_policy_state": "RESTORED_SHADOW_ONLY",
-      "anonymous_bootstrap_status": 401,
-      "restart_evidence_deployment_id": "83b95140-d2c6-42ab-8c6d-221e08132aff",
-      "latest_restored_bars": 2843,
+      "execution_authority": false,
+      "broker_orders_possible": false,
+      "restored_bars": 2880,
       "broker_stream_state": "HEALTHY",
       "subscribed_symbols": 24,
       "policy_recovery": "RESTORED_SHADOW_ONLY",
-      "champion_health_lineage": "DEGRADED_READ"
-    },
-    "command": {
-      "pr": 197,
-      "commit": "b67ee12d39410b90f6469588de32ab336d8fc03e",
-      "hosted_verification": "FAILED_UPSTREAM_PUBLIC_FEED_HTTP_502",
-      "production_deployed": false,
-      "live_visual_acceptance": "UNPASSED",
-      "previous_run": 37657553629,
-      "previous_run_status": "CANCELLED_CHROME_CLI_CAPTURE_HANG",
-      "hosted_run": 37659961655,
-      "capture_fix": "BOUNDED_EXISTING_CDP_RUNNER_WITH_ALL_ORIGINAL_ARTIFACTS_AND_MARKERS",
-      "failed_probe": "/api/public/trading/live",
-      "capture_fix_hosted_acceptance": "NOT_REACHED"
+      "champion_health_lineage": "VERIFIED_READ",
+      "canonical_reconciliation_complete": true,
+      "raw_stream_parity_complete": false,
+      "known_historical_missing_orders": 1,
+      "known_historical_missing_fills": 1,
+      "restart_introduced_new_gap": false
     },
     "champion": {
-      "source_commit": "edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac",
-      "deployment_id": "b7676403-c01a-4d9b-adf4-983ad43ca8fc",
+      "source_commit": "f1316eb4706028d7c499be491f7dd9654a62fa10",
+      "deployment_id": "fdd49a81-46a3-45ef-9126-7f19bd716770",
       "railway_deployment_status": "SUCCESS",
-      "code_configuration_restart_mutations": false,
-      "health_read_status": 503,
-      "current_reconciliation_safety": "BLOCKED_FALSE",
-      "observed_errors": [
-        "upstream ReadTimeout",
-        "LEDGER_RECONCILE_ERROR"
-      ],
-      "module_failures": [
-        "graen",
-        "nostra"
-      ],
-      "core_error": "ReadTimeout",
-      "preserved_runtime_instance_id": "27c3f39c-a2c7-44e9-973e-3449a471c13b"
+      "behavior_version": "4.3.2",
+      "reconciliation_safety": "VERIFIED_READ_SAFE",
+      "code_configuration_restart_mutations": false
     },
-    "research": {
-      "observed_prerequisite_coverage_fraction": 0.711571380577331,
-      "required_forward_coverage_fraction": 0.95,
-      "forward_gate": "UNPASSED",
-      "holdout_gate": "UNPASSED",
-      "source_counters_are_independent_validated_sessions": false
-    },
+    "next_slice": "discovery-to-stream hotset rotation",
     "production_crossover_performed": false,
-    "promotion_eligible": false,
-    "degraded_health_adapter": "DEPLOYED_SHADOW_ONLY"
+    "promotion_eligible": false
   }
 }
