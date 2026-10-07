@@ -1362,6 +1362,12 @@ async def scheduler_nostra_forecasts(
         response.raise_for_status()
         body = response.json()
     except Exception as exc:
+        downstream_status = getattr(getattr(exc, "response", None), "status_code", None)
+        print(
+            {"event":"canonical_nostra_forecast_read_failed",
+             "error_type":type(exc).__name__,"downstream_status":downstream_status},
+            flush=True,
+        )
         raise HTTPException(
             status_code=503,
             detail=f"canonical NOSTRA forecast read unavailable:{type(exc).__name__}",

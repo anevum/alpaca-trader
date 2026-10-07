@@ -808,6 +808,10 @@ def nostra_forecasts_get(
     try:
         return read_nostra_forecasts(database_url())
     except Exception as exc:
+        print(
+            {"event":"nostra_forecast_read_failed","error_type":type(exc).__name__},
+            flush=True,
+        )
         raise HTTPException(
             status_code=500,
             detail=f"nostra_forecast_read_failed:{type(exc).__name__}",
