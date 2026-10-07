@@ -344,6 +344,7 @@ def test_status_is_authenticated_and_legacy_scheduler_routes_preserved(monkeypat
     asyncio.run(scenario())
     paths = {r.path for r in app.routes}
     assert {"/v1/status", "/v1/registry", "/v1/diagnostics"} <= paths
+    assert "/v1/iren/configuration/accept" in paths
     assert not any("promote" in p or "restart" in p or "order" in p for p in paths)
 
 
