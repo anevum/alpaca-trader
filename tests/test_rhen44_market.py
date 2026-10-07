@@ -205,6 +205,30 @@ def test_broker_inbox_restart_idempotence_and_overload(tmp_path):
     inbox.close()
 
 
+@pytest.mark.parametrize("bars_available", [False, True])
+def test_overnight_channel_rejection_preserves_verified_quotes(bars_available):
+    store = MarketStateStore(("SPY",), warm_bars=1)
+    seen = []
+    async def callback(event): seen.append(event)
+    bootstrap = AsyncMock()
+    manager = MarketStreamManager(store, api_key="test", api_secret="test", on_event=callback, bootstrap=bootstrap)
+    frames = [[{"T":"success", "msg":"authenticated"}],
+              [{"T":"subscription", "quotes":["SPY"]}]]
+    if bars_available:
+        frames.append([{"T":"subscription", "quotes":["SPY"], "bars":["SPY"]}])
+    frames.extend([[{"T":"error", "code":410}],
+                   [{"T":"q", "S":"SPY", "t":NOW.isoformat(), "bp":100, "ap":101}]])
+    ws = FakeSocket(frames)
+    asyncio.run(manager.consume(ws, "overnight", "2026-10-07/OVERNIGHT"))
+    assert store.subscribed == {"SPY"} and len(seen) == 1
+    assert manager.subscribed_channels == ({"quotes", "bars"} if bars_available else {"quotes"})
+    assert manager.unavailable_channels == ({"updatedBars"} if bars_available else {"bars", "updatedBars"})
+    assert bootstrap.await_count == int(bars_available)
+    assert ws.sent[1] == {"action":"subscribe", "quotes":["SPY"]}
+    assert ws.sent[2] == {"action":"subscribe", "bars":["SPY"]}
+    assert not store.snapshot("SPY", NOW)["evaluable"]
+
+
 def test_broker_handshake_never_accepts_before_listening(tmp_path):
     inbox = BrokerInbox(str(tmp_path/"b.db"))
     stream = BrokerUpdateStream(api_key="test",api_secret="test",paper=True,inbox=inbox,callback=AsyncMock(return_value=True))

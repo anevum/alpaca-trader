@@ -89,6 +89,9 @@ def create_app(settings=None):
                         reconstruction_source=fabric.visual.system.get("reconstruction_source"),
                         bootstrap_error=fabric.visual.system.get("bootstrap_error"),
                         bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
+                        quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
+                        subscribed_channels=sorted(fabric.manager.subscribed_channels),
+                        unavailable_channels=sorted(fabric.manager.unavailable_channels),
                         scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
                     print("RHEN44_SHADOW_TELEMETRY "+json.dumps(body,allow_nan=False),flush=True)
                     await asyncio.sleep(30)
