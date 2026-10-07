@@ -1624,3 +1624,19 @@ def test_scan_payload_compaction_is_lossless_and_leaves_execution_truth_unchange
     assert rows["preserved-fill"] == raw
     assert _loads(rows["legacy-scan"], None) == payload
     assert _loads('{"_rhen_payload_codec":"zlib-json-v1","raw_bytes":3000000,"data":"eA=="}', "invalid") == "invalid"
+
+
+def test_core_readiness_allows_bounded_hosted_maintenance(monkeypatch):
+    from contextlib import nullcontext
+    ticks = iter((0.0, 20.0, 30.0))
+    calls = []
+    def connect(address, timeout):
+        calls.append(address)
+        if len(calls) == 1:
+            raise ConnectionRefusedError()
+        return nullcontext()
+    monkeypatch.setattr("app.rhen_core.supervisor.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("app.rhen_core.supervisor.time.sleep", lambda _: None)
+    monkeypatch.setattr("app.rhen_core.supervisor.socket.create_connection", connect)
+    _wait_tcp_ready(ProcessSpec("core", "example:app", 8102))
+    assert calls == [("127.0.0.1", 8102), ("127.0.0.1", 8102)]

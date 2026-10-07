@@ -180,7 +180,11 @@ def _launch(spec: ProcessSpec) -> subprocess.Popen[bytes]:
     return subprocess.Popen(command, env=_child_env(spec))
 
 
-def _wait_tcp_ready(spec: ProcessSpec, timeout_seconds: float = 15.0) -> None:
+def _wait_tcp_ready(spec: ProcessSpec, timeout_seconds: float | None = None) -> None:
+    # Core performs bounded durable maintenance before opening its listener.
+    # Hosted volume latency can exceed the ordinary child startup window.
+    if timeout_seconds is None:
+        timeout_seconds = 120.0 if spec.name == "core" else 15.0
     deadline = time.monotonic() + timeout_seconds
     last_error: OSError | None = None
     while time.monotonic() < deadline:
