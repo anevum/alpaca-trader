@@ -1,5 +1,45 @@
 # RHEN 4.4 pre-crossover implementation status
 
+## Current checkpoint — 2026-10-07 16:40 ET
+
+Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
+
+The discovery-to-stream hotset slice is now implemented and live only in the isolated
+RHEN 4.4 observer. Main production commit
+`49577a52513b4ff4d24de76e1f0fc7154492c7c9`, Railway deployment
+`14d9d59c-9813-401c-a66c-1321ff90f652`, is terminal SUCCESS and preserves RHEN
+4.3.2 trading behavior while exposing the bounded token-protected canonical universe
+read. The read refreshes the existing DynamicUniverse using GET-only broker/market
+data so a restart outside regular hours does not leave discovery empty.
+
+Shadow commit `b0efd6fde8d3299244f677e7c69d511a1fa6faae`, deployment
+`ef4a3815-626f-4c6d-82c1-56f3d68fb287`, is terminal SUCCESS. Hosted CI
+`37681271822` and Foundation runtime audit `37681272025` passed. The observer
+consumes a canonical 100-symbol ranked discovery set, keeps exactly 24 streamed
+symbols, pins core/confirmation symbols, changes at most four symbols per rotation
+and enforces a five-minute dwell. Three live rotations were observed. Rotation
+invalidates stale asset attestation and reconnects/bootstraps fail-closed instead of
+performing unsafe mid-frame subscription surgery.
+
+A same-image restart restored hotset generation 3 from durable state, then returned
+to LIVE with 24/24 subscriptions, 24/24 asset attestation, HEALTHY broker stream,
+57 reconstructed bars, VERIFIED_READ champion lineage and
+RESTORED_SHADOW_ONLY policy state. The canonical ledger remained reconciled and
+the only raw websocket miss remained the previously proven
+`2026-10-07T14:00:36Z` ConnectionClosedError gap. No new missing order or fill was
+introduced by the hotset/restart exercise. Execution and broker-write authority
+remained false throughout.
+
+This closes discovery-to-stream hotset rotation as an implementation blocker. It
+does **not** pass the 95% source-coverage, same-input equivalence, Command visual,
+trusted ASC approval, canonical forecast producer, VELUM replay, forward/holdout
+or crossover gates.
+
+Next implementation slice: trusted ASC profile-release/approval adapters. Approval
+evidence may authorize only shadow policy selection; ACTIVE execution authority
+remains structurally unavailable.
+
+
 ## Current checkpoint — 2026-10-07 15:58 ET
 
 Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.

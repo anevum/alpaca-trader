@@ -40,20 +40,18 @@
         "stream_capacity": 24,
         "configured_stream_symbols": 24,
         "hotset_rotation_required": true,
-        "hotset_rotation_integrated": false
+        "hotset_rotation_integrated": true
       },
       "broker_write_authority": false,
       "adaptive_active_available": false,
       "promotion_eligible": false,
       "promotion_blockers": [
-        "canonical_integration_incomplete",
         "exact_configuration_and_broker_baseline_unattested",
         "live_entitlement_and_stream_coverage_unattested",
         "replay_and_shadow_validation_incomplete",
         "runtime_recovery_and_reconciliation_validation_incomplete",
         "command_live_visual_acceptance_incomplete",
-        "research_and_holdout_gates_incomplete",
-        "discovery_stream_hotset_rotation_incomplete"
+        "research_and_holdout_gates_incomplete"
       ]
     },
     "runtime_provenance": {
@@ -62,10 +60,10 @@
       "system": "RHEN",
       "system_version": "4.3.2",
       "source": "railway",
-      "git_commit": "f1316eb4706028d7c499be491f7dd9654a62fa10",
+      "git_commit": "49577a52513b4ff4d24de76e1f0fc7154492c7c9",
       "branch": "main",
       "repository": "anevum/rhen",
-      "deployment_id": "fdd49a81-46a3-45ef-9126-7f19bd716770",
+      "deployment_id": "14d9d59c-9813-401c-a66c-1321ff90f652",
       "snapshot_id": "bba40ee2-7c1a-4a34-9f81-9b45adc64721",
       "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
       "project_name": "RHEN",
@@ -83,19 +81,19 @@
       "rollback/rhen-v4.3.2-edd089b-20261007-1655"
     ],
     "configuration_export_complete": false,
-    "modified_or_restarted_in_this_continuation": false
+    "modified_or_restarted_in_this_continuation": true
   },
   "shadow": {
-    "code_commit": "88fcb342ce1661b8f5ac2e7f137105d0b2084682",
+    "code_commit": "b0efd6fde8d3299244f677e7c69d511a1fa6faae",
     "source_branch_config": "work/rhen44-pre-crossover-20261007",
     "preserved_code_branch": "work/rhen44-pre-crossover-20261007",
-    "deployment_id": "8535829d-e84f-4de0-a2d0-b8586037f94e",
+    "deployment_id": "ef4a3815-626f-4c6d-82c1-56f3d68fb287",
     "deployment_status": "SUCCESS",
-    "observed_at": "2026-10-07T19:58:02.411232725Z",
+    "observed_at": "2026-10-07T20:39:47.105559500Z",
     "market_connection": "WARMING",
     "broker_stream_state": "HEALTHY",
     "account_quality": "LIVE",
-    "restored_bar_count": 2880,
+    "restored_bar_count": 57,
     "policy_recovery": "RESTORED_SHADOW_ONLY",
     "subscribed_symbols": 24,
     "subscribed_channels": [
@@ -179,17 +177,36 @@
     },
     "restart_recovery": {
       "validated": true,
-      "deployment_id": "8535829d-e84f-4de0-a2d0-b8586037f94e",
+      "deployment_id": "ef4a3815-626f-4c6d-82c1-56f3d68fb287",
       "broker_stream_state": "HEALTHY",
       "subscribed_symbols": 24,
-      "restored_bar_count": 2880,
+      "restored_bar_count": 57,
       "policy_recovery": "RESTORED_SHADOW_ONLY",
       "champion_health_lineage": "VERIFIED_READ",
       "canonical_reconciliation_complete": true,
       "new_missing_orders": 0,
       "new_missing_fills": 0,
       "execution_authority": false,
-      "broker_orders_possible": false
+      "broker_orders_possible": false,
+      "hotset_state_restored": true,
+      "hotset_rotation_count": 3,
+      "asset_attested_symbols": 24
+    },
+    "hotset": {
+      "model": "BROAD_DISCOVERY_NARROW_STREAM",
+      "methodology_version": "canonical-discovery-hotset-v1",
+      "discovery_count": 100,
+      "stream_capacity": 24,
+      "current_stream_symbols": 24,
+      "rotation_count": 3,
+      "max_changes_per_rotation": 4,
+      "minimum_dwell_seconds": 300,
+      "persistent_restart_restore": true,
+      "restart_restored_generation": 3,
+      "post_restart_state": "LIVE",
+      "asset_attested_symbols": 24,
+      "entry_authority": false,
+      "broker_write_authority": false
     }
   },
   "validation": {
@@ -209,10 +226,10 @@
       "runtime_audit": "SUCCESS"
     },
     "latest_code_hosted": {
-      "commit": "88fcb342ce1661b8f5ac2e7f137105d0b2084682",
-      "ci_run": 37678163978,
+      "commit": "b0efd6fde8d3299244f677e7c69d511a1fa6faae",
+      "ci_run": 37681271822,
       "ci": "SUCCESS",
-      "runtime_audit_run": 37678163953,
+      "runtime_audit_run": 37681272025,
       "runtime_audit": "SUCCESS"
     },
     "live_end_to_end_latency": "UNPASSED",
@@ -222,7 +239,12 @@
     "full_configuration_and_broker_baseline": "UNPASSED",
     "canonical_ledger_reconnect_recovery": "PASSED_WITH_ONE_KNOWN_HISTORICAL_RAW_STREAM_GAP",
     "raw_trade_updates_parity": "DEGRADED_ONE_HISTORICAL_GAP",
-    "canonical_reconciliation": "COMPLETE"
+    "canonical_reconciliation": "COMPLETE",
+    "discovery_hotset_rotation": "PASSED_IMPLEMENTATION_AND_RESTART_PERSISTENCE",
+    "hotset_live_rotations_observed": 3,
+    "hotset_stream_capacity": 24,
+    "hotset_discovery_count": 100,
+    "production_crossover": "UNPERFORMED"
   },
   "status_groups": {
     "implemented_and_deployed": [
@@ -233,7 +255,10 @@
       "indexed bounded excess-only retention",
       "bounded read-only canonical order/fill ledger projection",
       "account-wide broker observation parity against the canonical run ledger",
-      "broker reconnect-triggered canonical reconciliation with no write authority"
+      "broker reconnect-triggered canonical reconciliation with no write authority",
+      "token-protected canonical DynamicUniverse projection with after-hours read refresh",
+      "persistent canonical 100-to-24 discovery hotset rotation",
+      "bounded four-symbol hotset churn with five-minute dwell and pinned symbols"
     ],
     "implemented_but_gated": [
       "adaptive policy snapshots and recovery primitives",
@@ -249,7 +274,9 @@
       "champion private health reconciliation",
       "source history archive and policy-state recovery",
       "canonical run reconciliation after broker websocket reconnect",
-      "explicit raw-stream gap accounting without masking canonical recovery"
+      "explicit raw-stream gap accounting without masking canonical recovery",
+      "canonical discovery-driven 24-symbol IEX hotset",
+      "restart restoration of persisted hotset state and re-attestation"
     ],
     "still_collecting_research_evidence": [
       "coverage below 95%",
@@ -276,7 +303,6 @@
     ]
   },
   "remaining_implementation": [
-    "discovery-to-stream hotset rotation",
     "trusted ASC profile-release/approval adapters",
     "full risk/cost mapped candidate and canonical research export",
     "canonical NOSTRA forecast producer/reference wiring",
@@ -292,26 +318,29 @@
     "Canonical reconciliation now recovers broker websocket gaps after reconnect; raw trade_updates parity is intentionally not labeled complete because one historical gap remains proven."
   ],
   "latest_followup": {
-    "observed_at": "2026-10-07T19:58:02.411232725Z",
-    "backend_commit": "88fcb342ce1661b8f5ac2e7f137105d0b2084682",
+    "observed_at": "2026-10-07T20:39:47.105559500Z",
+    "backend_commit": "b0efd6fde8d3299244f677e7c69d511a1fa6faae",
     "backend_pr": 430,
     "hosted_ci": {
-      "run_id": 37678163978,
+      "run_id": 37681271822,
       "status": "SUCCESS",
-      "runtime_audit_run_id": 37678163953,
+      "runtime_audit_run_id": 37681272025,
       "runtime_audit_status": "SUCCESS"
     },
     "shadow_deployment": {
-      "deployment_id": "8535829d-e84f-4de0-a2d0-b8586037f94e",
+      "deployment_id": "ef4a3815-626f-4c6d-82c1-56f3d68fb287",
       "status": "SUCCESS",
       "broker_write_authority": false,
       "execution_authority": false,
       "broker_orders_possible": false,
-      "restored_bars": 2880,
+      "restored_bars": 57,
       "broker_stream_state": "HEALTHY",
       "subscribed_symbols": 24,
       "policy_recovery": "RESTORED_SHADOW_ONLY",
       "champion_health_lineage": "VERIFIED_READ",
+      "hotset_active": true,
+      "hotset_rotation_count": 3,
+      "hotset_discovery_count": 100,
       "canonical_reconciliation_complete": true,
       "raw_stream_parity_complete": false,
       "known_historical_missing_orders": 1,
@@ -319,14 +348,17 @@
       "restart_introduced_new_gap": false
     },
     "champion": {
-      "source_commit": "f1316eb4706028d7c499be491f7dd9654a62fa10",
-      "deployment_id": "fdd49a81-46a3-45ef-9126-7f19bd716770",
+      "source_commit": "49577a52513b4ff4d24de76e1f0fc7154492c7c9",
+      "deployment_id": "14d9d59c-9813-401c-a66c-1321ff90f652",
       "railway_deployment_status": "SUCCESS",
       "behavior_version": "4.3.2",
       "reconciliation_safety": "VERIFIED_READ_SAFE",
-      "code_configuration_restart_mutations": false
+      "read_only_support_changes": [
+        "canonical-ledger projection",
+        "canonical-universe projection/refresh"
+      ]
     },
-    "next_slice": "discovery-to-stream hotset rotation",
+    "next_slice": "trusted ASC profile-release/approval adapters",
     "production_crossover_performed": false,
     "promotion_eligible": false
   }
