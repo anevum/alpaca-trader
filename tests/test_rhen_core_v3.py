@@ -1600,3 +1600,27 @@ def test_nostra_forecast_projection_reads_only_still_live_research_forecasts(
     assert result["research_only"] is True
     assert result["execution_authority"] is False
     assert result["broker_write_authority"] is False
+
+
+def test_scan_payload_compaction_is_lossless_and_leaves_execution_truth_unchanged(tmp_path, monkeypatch):
+    from app.rhen_core.store import _json, _loads, _pack_scan_json
+    store = _store(tmp_path, monkeypatch)
+    payload = {"symbol": "SPY", "metadata": {"observations": [{"price": "500.1234", "note": "exact ü"}] * 200}}
+    raw = _json(payload)
+    assert len(_pack_scan_json(raw)) < len(raw)
+    assert _loads(_pack_scan_json(raw), None) == payload
+    now = datetime.now(UTC).isoformat()
+    with store.connect() as conn:
+        for key, event_type, critical in (("legacy-scan", "scan", 0), ("preserved-fill", "broker_fill", 1)):
+            conn.execute("insert into events(event_key,event_type,occurred_at,payload_json,critical,created_at) values(?,?,?,?,?,?)",
+                         (key, event_type, now, raw, critical, now))
+        conn.commit()
+    result = store.compact_scan_payloads()
+    assert result["changed"] == 1
+    assert result["payload_bytes_saved"] > 0
+    assert store.compact_scan_payloads()["changed"] == 0
+    with store.connect() as conn:
+        rows = {r["event_key"]: r["payload_json"] for r in conn.execute("select event_key,payload_json from events")}
+    assert rows["preserved-fill"] == raw
+    assert _loads(rows["legacy-scan"], None) == payload
+    assert _loads('{"_rhen_payload_codec":"zlib-json-v1","raw_bytes":3000000,"data":"eA=="}', "invalid") == "invalid"

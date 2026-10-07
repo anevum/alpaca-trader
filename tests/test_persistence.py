@@ -619,3 +619,15 @@ def test_durable_report_requires_an_insert_receipt():
         assert sink.sent_count == 1
 
     asyncio.run(run())
+
+
+def test_shed_receipts_remain_visible_without_retrying_disposable_analytics():
+    import httpx
+    async def scenario():
+        sink = CapturingSink()
+        receipt = {"ok": True, "inserted": 0, "shed": 1, "storage": {"analytics_shedding": True}}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=receipt))) as client:
+            assert await sink._send_batch(client, [{"event_key": "scan", "event_type": "scan"}])
+        assert sink.status()["shed_count"] == 1
+        assert sink.status()["storage_analytics_shedding"] is True
+    asyncio.run(scenario())
