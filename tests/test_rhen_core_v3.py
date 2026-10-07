@@ -1206,6 +1206,22 @@ def test_compact_storage_keeps_small_incremental_fragmentation_bounded():
 
 
 
+def test_report_inputs_survive_analytics_shedding(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(store, "storage_state", lambda: {
+        "warning": True, "analytics_shedding": True,
+    })
+    events = [{"event_key": kind, "event_type": kind,
+               "payload": {"session": "2026-10-07"}}
+              for kind in ("decision_cycle", "research_daily_report", "research_weekly_report")]
+    receipt = store.ingest_events(events)
+    assert receipt["inserted"] == 2 and receipt["shed"] == 1
+    with store.connect() as conn:
+        rows = conn.execute("select event_type from events order by event_type").fetchall()
+    assert [r[0] for r in rows] == ["research_daily_report", "research_weekly_report"]
+    assert store.report_read({"latest": "daily"})["report"]["session"] == "2026-10-07"
+
+
 def test_storage_shedding_uses_effective_live_bytes_not_sqlite_freelist():
     import threading
 

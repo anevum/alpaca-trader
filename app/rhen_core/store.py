@@ -19,6 +19,9 @@ CRITICAL_EVENT_TYPES = {
     "order_intent", "broker_order", "broker_fill", "order_update",
     "position_opened", "position_closed", "reconciliation",
     "runtime_error", "strategy_promotion",
+    # The scheduler depends on these durable reports. Storage pressure may
+    # shed high-volume observations, but must not silently discard its inputs.
+    "research_daily_report", "research_weekly_report",
 }
 
 
@@ -684,6 +687,15 @@ class RhenCoreStore:
         try:
             self.prune()
             self._maintenance_error = None
+            # Read-only allocation evidence; no payloads or trading records logged.
+            with self.connect() as conn:
+                rows = conn.execute(
+                    "select name, sum(pgsize) as bytes from dbstat "
+                    "group by name order by bytes desc limit 12"
+                ).fetchall()
+            print(json.dumps({"event": "core_storage_allocation",
+                "objects": [{"name": row[0], "bytes": row[1]} for row in rows]},
+                sort_keys=True), flush=True)
         except Exception as exc:
             self._maintenance_error = f"{type(exc).__name__}: {exc}"
 

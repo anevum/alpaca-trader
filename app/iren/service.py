@@ -154,6 +154,25 @@ class IrenController:
                 config = {}
         recent = await scheduler.runtime.ledger.recent(limit=100)
         rt = scheduler.runtime
+        latest_runs = []
+        seen = set()
+        for row in recent:
+            workflow_id = row.get("workflow_id")
+            if workflow_id in seen:
+                continue
+            seen.add(workflow_id)
+            completion = row.get("completion") or {}
+            error = completion.get("error_summary") or {}
+            reason = error.get("message")
+            latest_runs.append({"workflow_id": workflow_id,
+                "job_key": row.get("job_key"), "status": row.get("status"),
+                "scheduled_at": row.get("scheduled_at"),
+                "completed_at": row.get("completed_at"),
+                "error_classification": completion.get("error_classification"),
+                "error_type": error.get("type"),
+                "reason_code": reason if reason in {
+                    "canonical_report_not_current", "research_completion_unconfirmed"
+                } else None})
         return {"observed_at": datetime.now(UTC).isoformat(), "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
             "services": services, "provider_inventory": provider_inventory,
             "configuration": config, "runs": recent,
@@ -167,7 +186,7 @@ class IrenController:
                 "started_at": rt.started_at.isoformat(),
                 "last_success_at": rt.last_success_at.isoformat() if rt.last_success_at else None,
                 "last_error": bool(rt.last_error), "running_job": rt.running_job,
-                "next_expected_runs": dict(rt.next_runs)}}
+                "next_expected_runs": dict(rt.next_runs), "latest_runs": latest_runs}}
 
     async def tick(self):
         async with self.lock:
@@ -213,7 +232,8 @@ class IrenController:
                 "open_incident_keys": open_incident_keys,
                 "runtime_inventory_complete": topology_state.get("inventory_complete") is True,
                 "runtime_inventory_gap_count": len(inventory_gaps),
-                "runtime_inventory_gaps": inventory_gaps}, sort_keys=True), flush=True)
+                "runtime_inventory_gaps": inventory_gaps,
+                "scheduler_latest_runs": (observation.get("scheduler") or {}).get("latest_runs", [])}, sort_keys=True), flush=True)
 
     async def dispatch(self):
         owner = str(uuid4())
