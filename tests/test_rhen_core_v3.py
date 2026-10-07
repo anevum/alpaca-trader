@@ -1281,3 +1281,87 @@ def test_candidate_evidence_readiness_marks_partial_cohort(
 def test_router_health_identity_uses_current_v4_3_generation():
     assert RHEN_RUNTIME_GENERATION == "rhen-unified-v4.3"
     assert RHEN_VERSION == "4.3.2"
+
+
+def test_iren_configuration_acceptance_is_revision_and_fingerprint_bound(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    fingerprint = "sha256:" + "a" * 64
+    current = {
+        "schema_version": "rhen_protected_configuration.v2",
+        "fingerprint": fingerprint,
+        "comparison": {"strategy_name": "rolling_momentum_vwap"},
+        "protected": {
+            "strategy": {"version_id": "LIVE-2026-09-25-003"},
+            "execution": {
+                "trading_mode": "live",
+                "execution_authorized": True,
+                "live_execution_authorized": True,
+                "bot_armed": True,
+            },
+            "asset_authority": {
+                "live_asset_scope": "long_us_equities_etfs_only",
+                "options_research_only": True,
+                "short_equities": False,
+                "leverage_expansion": False,
+            },
+        },
+    }
+    state = {
+        "version": "iren-control-v2.1.1",
+        "state": "ATTENTION_REQUIRED",
+        "observed_at": datetime.now(UTC).isoformat(),
+        "configuration_current": current,
+        "configuration_review": {
+            "status": "CONFIGURATION_REVIEW_REQUIRED",
+            "baseline_fingerprint": "sha256:" + "b" * 64,
+            "current_fingerprint": fingerprint,
+            "comparison_completeness": "legacy_partial",
+        },
+        "configuration_drift": {
+            "comparison_completeness": "legacy_partial",
+            "detail_unavailable": True,
+        },
+        "incidents": {
+            "configuration.drift": {
+                "status": "OPEN",
+                "severity": "critical",
+                "failure_count": 1,
+                "recovery_count": 0,
+                "episode": 1,
+            }
+        },
+    }
+    revision = store.set_kv("iren", "state", state)
+
+    with pytest.raises(ValueError, match="configuration_fingerprint_mismatch"):
+        store.accept_iren_configuration(
+            expected_revision=revision,
+            fingerprint="sha256:" + "c" * 64,
+            reviewed_by="devon@anevum.com",
+        )
+
+    accepted = store.accept_iren_configuration(
+        expected_revision=revision,
+        fingerprint=fingerprint,
+        reviewed_by="devon@anevum.com",
+    )
+    assert accepted["accepted"] is True
+    assert accepted["revision"] == revision + 1
+    accepted_state = accepted["state"]
+    assert accepted_state["configuration_baseline"]["fingerprint"] == fingerprint
+    assert accepted_state["configuration_baseline"]["snapshot"] == current
+    assert accepted_state["configuration_baseline"]["basis"] == "explicit_operator_acceptance"
+    assert accepted_state["configuration_review"]["status"] == "ACCEPTED_PENDING_REOBSERVATION"
+    assert accepted_state["configuration_drift"] is None
+    assert accepted_state["incidents"]["configuration.drift"]["status"] == "OPEN"
+
+    conflict = store.accept_iren_configuration(
+        expected_revision=revision,
+        fingerprint=fingerprint,
+        reviewed_by="devon@anevum.com",
+    )
+    assert conflict["accepted"] is False
+    assert conflict["conflict"] is True
+    assert conflict["revision"] == revision + 1
