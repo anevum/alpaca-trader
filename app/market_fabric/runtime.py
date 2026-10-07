@@ -68,6 +68,7 @@ class ShadowFabric:
         self.ledger_reader = ledger_reader
         self.champion_observation = None
         self.discovery_observation = None
+        self.discovery_error = None
         self.account_refresh = asyncio.Event()
         self.signal_cache = {}
         self.resolver = EquitySessionResolver(market_data)
@@ -449,8 +450,11 @@ class ShadowFabric:
         if self.discovery_reader:
             try:
                 self.discovery_observation = await self.discovery_reader()
-            except Exception:
+                self.discovery_error = None
+            except Exception as exc:
                 self.discovery_observation = None
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                self.discovery_error = type(exc).__name__ + (f":HTTP_{status}" if status else "")
             self.update_hotset(now)
         if self.ledger_reader:
             run_id = (self.champion_observation or {}).get("run_id")
@@ -515,15 +519,21 @@ class ShadowFabric:
     def update_hotset(self, now):
         universe = self.discovery_observation or {}
         ranked = universe.get("active_symbols") if isinstance(universe, dict) else None
-        if not self.champion_ready(now) or not isinstance(ranked, list):
+        champion_ready = self.champion_ready(now)
+        if not champion_ready or not isinstance(ranked, list):
+            reason = "CHAMPION_NOT_READY" if not champion_ready else "CANONICAL_DISCOVERY_UNAVAILABLE"
             self.hotset_status = {**self.hotset_status,"active":False,"quality_state":"UNAVAILABLE",
-                "reason":"CANONICAL_DISCOVERY_UNAVAILABLE","entry_authority":False,"broker_write_authority":False}
+                "reason":reason,"discovery_error":self.discovery_error,
+                "entry_authority":False,"broker_write_authority":False}
             self.visual.system_patch({"hotset":dict(self.hotset_status)})
             print("RHEN44_HOTSET "+json.dumps({
                 "quality_state":self.hotset_status.get("quality_state"),
                 "reason":self.hotset_status.get("reason"),
+                "discovery_error":self.discovery_error,
+                "champion_ready":champion_ready,
                 "active":False,"integrated":True,
-                "discovery_count":0,"current_count":len(self.store.symbols),
+                "discovery_count":len(ranked) if isinstance(ranked,list) else 0,
+                "current_count":len(self.store.symbols),
                 "rotation_count":self.hotset.rotations,
                 "entry_authority":False,"broker_write_authority":False
             },allow_nan=False),flush=True)
