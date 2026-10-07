@@ -32,11 +32,12 @@ from .signal_reasons import rejection_reasons
 from .policy_state import PolicyStateStore
 from .contracts import utc
 from .coverage_evidence import CoverageEvidence
+from .asset_eligibility import AssetEligibility
 from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, asset_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
@@ -44,6 +45,8 @@ class ShadowFabric:
         self.rejections = RejectionEngine()
         self.evaluator = evaluator
         self.account_reader = account_reader
+        self.asset_reader = asset_reader
+        self.asset_refresh = asyncio.Event()
         self.champion_reader = champion_reader
         self.champion_observation = None
         self.account_refresh = asyncio.Event()
@@ -56,13 +59,15 @@ class ShadowFabric:
         # 32 MiB ceiling for isolated bars, summaries and bounded shadow evidence.
         self.checkpoint.db.execute("PRAGMA max_page_count=8192")
         self.evidence = DecisionEvidence(self.checkpoint.db)
+        self.assets = AssetEligibility(self.checkpoint.db, self.store.symbols)
         self.archive = VisualArchive(self.checkpoint.db)
         self.performance = AccountPerformance(self.checkpoint.db)
         self.library = PolicyLibrary.load()
         baseline = {k: str(getattr(settings, k)) for k in ("stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes", "max_spread_pct", "min_quality_score")}
         # This identifies shadow inputs, not the protected production configuration.
         self.shadow_configuration = fingerprint({"baseline": baseline, "strategy": settings.strategy_version_id,
-            "symbols": settings.extended_equity_symbols, "fast_window": settings.fast_window, "slow_window": settings.slow_window})
+            "symbols": settings.extended_equity_symbols, "fast_window": settings.fast_window, "slow_window": settings.slow_window,
+            "asset_eligibility_methodology":AssetEligibility.METHODOLOGY_VERSION if asset_reader is not None else "UNATTESTED"})
         self.coverage = CoverageEvidence(self.checkpoint.db, strategy_version=settings.strategy_version_id,
                                          configuration=self.shadow_configuration)
         self.freshness_wakeup = asyncio.Event()
@@ -96,14 +101,22 @@ class ShadowFabric:
         eligibility_changed = False
         for symbol in targets:
             row = self.store.snapshot(symbol, now)
+            if self.asset_reader is not None:
+                row["asset_eligibility"] = self.assets.snapshot(symbol, (self.store.context or (None,"CLOSED"))[1].split("/")[-1], now)
             previous = self.visual.scanner.get(symbol, {})
             fields = ("feed", "session", "evaluable", "rejection_codes", "quality_state", "observed_bar_count")
-            if any(previous.get(k) != row.get(k) for k in fields):
+            asset_changed = any(previous.get("asset_eligibility",{}).get(k) != row.get("asset_eligibility",{}).get(k)
+                                for k in ("eligible", "fetched_at", "facts", "rejection_codes"))
+            if asset_changed or any(previous.get(k) != row.get(k) for k in fields):
                 eligibility_changed = eligibility_changed or previous.get("evaluable") != row.get("evaluable")
                 patch = {**previous, **row}
                 if not row["evaluable"]:
                     patch.update(classification="NOT_EVALUABLE", candidate_state="BLOCKED",
                         signal_reason="Market prerequisites unavailable; previous signal is historical")
+                elif self.asset_reader is not None and not row["asset_eligibility"]["eligible"]:
+                    patch.update(classification="EVALUABLE_REJECTED", candidate_state="BLOCKED",
+                        rejection_code=row["asset_eligibility"]["rejection_codes"][0],
+                        signal_reason="Fresh asset eligibility evidence is required")
                 self.visual.scanner[symbol] = patch
                 self.visual.publisher.stage("scanner:"+symbol, "scanner_patch", patch)
         if eligibility_changed:
@@ -118,6 +131,8 @@ class ShadowFabric:
             now = datetime.now(timezone.utc)
             deadlines = [at for symbol in self.store.symbols
                          if (at := self.store.freshness_deadline(symbol, now)) is not None]
+            if self.asset_reader is not None and (asset_deadline := self.assets.deadline(now)) is not None:
+                deadlines.append(asset_deadline)
             if not deadlines:
                 await self.freshness_wakeup.wait()
                 continue
@@ -128,6 +143,8 @@ class ShadowFabric:
                 now = datetime.now(timezone.utc)
                 self.refresh_observation(now)
                 self.visual.system_patch({"scanner_coverage": self.coverage.summary(self.store, now)})
+                if self.asset_reader is not None:
+                    self.visual.system_patch({"asset_eligibility":self.asset_summary(now)})
 
     async def bootstrap(self, feed, session_id):
         now = datetime.now(timezone.utc)
@@ -182,7 +199,11 @@ class ShadowFabric:
         signal = None
         decision_id = None
         if row["evaluable"]:
-            if row["spread_bps"] is not None and row["spread_bps"] > float(self.settings.max_spread_pct)*10000:
+            asset = self.assets.snapshot(event.symbol, event.session, now) if self.asset_reader is not None else None
+            if asset is not None and not asset["eligible"]:
+                classification = "EVALUABLE_REJECTED"
+                reasons = tuple(asset["rejection_codes"])
+            elif row["spread_bps"] is not None and row["spread_bps"] > float(self.settings.max_spread_pct)*10000:
                 classification = "EVALUABLE_REJECTED"
                 reasons = ("SPREAD_TOO_WIDE",)
             elif self.evaluator and event.session == "REGULAR":
@@ -250,6 +271,8 @@ class ShadowFabric:
             "policy_library_fingerprint": self.library.fingerprint, "shadow_configuration_fingerprint": self.shadow_configuration,
             "regime": self.regime, "entry_authority": False, "risk_validation_state": "UNAVAILABLE",
             "candidate_kind": "SIGNAL_ONLY_COUNTERFACTUAL", "provenance": "DERIVED", "source": "RHEN/market_fabric"}
+        if self.asset_reader is not None:
+            evidence["asset_eligibility"] = self.assets.snapshot(event.symbol, event.session, now)
         if decision_id not in self.rejections.ids and self.evidence.record(decision_id, evidence, coverage=self.coverage):
             self.rejections.record(evaluation)
         self.visual.market(event, now)
@@ -259,6 +282,10 @@ class ShadowFabric:
                  "rejection_code": reasons[0] if reasons else None, "classification": classification,
                  "signal_reason": signal.reason if signal else "Strategy integration not validated for this session"}
         patch.update(decision_id=decision_id, signal_features=signal.metadata if signal else {}, entry_authority=False)
+        if self.asset_reader is not None:
+            patch["asset_eligibility"] = evidence["asset_eligibility"]
+            if not patch["asset_eligibility"]["eligible"]:
+                patch["candidate_state"] = "BLOCKED"
         self.visual.scanner[event.symbol] = patch
         self.visual.publisher.stage("scanner:"+event.symbol, "scanner_patch", patch)
 
@@ -330,6 +357,37 @@ class ShadowFabric:
             except asyncio.TimeoutError:
                 pass
 
+    def asset_summary(self, now):
+        session = (self.store.context or (None, "CLOSED"))[1].split("/")[-1]
+        rows = [self.assets.snapshot(s, session, now) for s in self.store.symbols]
+        return {"intended_symbols":len(rows),"eligible_symbols":sum(r["eligible"] for r in rows),
+            "attested_symbols":sum(r["quality_state"] == "LIVE" for r in rows),
+            "fetched_at":self.assets.fetched_at.isoformat() if self.assets.fetched_at else None,
+            "session":session,"entry_authority":False,"provenance":"OPERATIONAL","source":"RHEN/asset_eligibility"}
+
+    async def asset_observer(self):
+        # REST is an eligibility audit, never the primary price/scanner path.
+        while True:
+            self.asset_refresh.clear()
+            try:
+                rows = await self.asset_reader()
+                self.assets.replace(rows, datetime.now(timezone.utc))
+                self.freshness_wakeup.set()
+                self.refresh_observation(datetime.now(timezone.utc))
+                self.visual.system_patch({"asset_eligibility":self.asset_summary(datetime.now(timezone.utc)),"asset_error":None})
+            except Exception as exc:
+                self.visual.system_patch({"asset_error":type(exc).__name__,"asset_eligibility":self.asset_summary(datetime.now(timezone.utc))})
+            # Refresh at 19:55 ET for the pre-session sync, as well as every
+            # ten minutes and immediately when the session changes.
+            now = datetime.now(timezone.utc)
+            local = now.astimezone(ZoneInfo("America/New_York"))
+            preflight = local.replace(hour=19,minute=55,second=0,microsecond=0)
+            timeout = min(600,max(.01,(preflight-local).total_seconds())) if local < preflight else 600
+            try:
+                await asyncio.wait_for(self.asset_refresh.wait(),timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+
     async def supervise(self):
         last_key = None
         try:
@@ -340,6 +398,7 @@ class ShadowFabric:
                     route = route_feed(context, now)  # Basic only until live entitlement is attested.
                     key = (route.expected_feed, route.session_id)
                     if key != last_key:
+                        self.asset_refresh.set()
                         if self.stream_task:
                             self.stream_task.cancel()
                             await asyncio.gather(self.stream_task, return_exceptions=True)
@@ -395,6 +454,8 @@ class ShadowFabric:
                       asyncio.create_task(self.freshness_observer())]
         if self.account_reader is not None:
             self.tasks.append(asyncio.create_task(self.account_observer()))
+        if self.asset_reader is not None:
+            self.tasks.append(asyncio.create_task(self.asset_observer()))
         if self.settings.rhen_broker_stream_shadow_enabled:
             self.inbox = BrokerInbox(self.settings.rhen_market_stream_checkpoint_path+".broker")
             self.broker = BrokerUpdateStream(api_key=self.settings.alpaca_api_key, api_secret=self.settings.alpaca_api_secret,

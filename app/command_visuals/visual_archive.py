@@ -38,16 +38,20 @@ class VisualArchive:
         start, end, clock = utc(start), utc(end), utc(clock)
         if start >= end or end-start > timedelta(days=1) or end > clock or type(limit) is not int or not 1 <= limit <= 5000:
             raise ValueError("invalid bounded visual range")
-        rows = self.db.execute("SELECT source_at,available_at,body FROM shadow_visual WHERE series=? AND source_at>=? AND source_at<=? AND available_at<=? ORDER BY source_at,available_at,id LIMIT ?",
+        # Select the latest revision available at the replay clock BEFORE limiting
+        # distinct source points. Limiting raw revisions can return an obsolete
+        # candle and let repeated corrections consume the entire response budget.
+        rows = self.db.execute("""SELECT source_at,available_at,body FROM (
+            SELECT source_at,available_at,body,
+                ROW_NUMBER() OVER (PARTITION BY COALESCE(json_extract(body,'$.event_id'),source_at)
+                    ORDER BY available_at DESC,rowid DESC) AS revision
+            FROM shadow_visual WHERE series=? AND source_at>=? AND source_at<=? AND available_at<=?
+        ) WHERE revision=1 ORDER BY source_at LIMIT ?""",
             (series,start.isoformat(),end.isoformat(),clock.isoformat(),limit+1)).fetchall()
-        # A later correction is visible only after its actual availability time.
-        latest = {}
-        for stamp, _, body in rows[:limit]:
-            latest[stamp] = json.loads(body)
         pruned = self.db.execute("SELECT pruned FROM shadow_visual_meta WHERE id=1").fetchone()[0]
-        points = list(latest.values())
+        points = [json.loads(body) for _, _, body in rows[:limit]]
         return {"series_id":series, "points":points, "range_start":start.isoformat(), "range_end":end.isoformat(),
             "replay_clock":clock.isoformat(), "truncated":len(rows)>limit, "pruned_records":pruned,
             "coverage_state":"BOUNDED_OBSERVATIONS_ONLY", "entry_authority":False,
             "artifact_fingerprint":fingerprint({"series":series,"clock":clock.isoformat(),"points":points}),
-            "methodology_version":"source-availability-replay-v1", "provenance":"DERIVED", "source":"RHEN/shadow_visual"}
+            "methodology_version":"source-availability-replay-v2", "provenance":"DERIVED", "source":"RHEN/shadow_visual"}

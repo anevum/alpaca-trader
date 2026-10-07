@@ -3,21 +3,50 @@
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 
-Latest operational continuation (2026-10-07): champion main is `a9385e3`,
-still 4.3.2; Command #193 merged as `e4772ac` and deployed Worker
-`fcd9a022-5a9c-4dd3-9d02-3f01fac4f710` with hosted verify/deploy/audit and
-public desktop/mobile QA passing. The explicitly authorized public observer
-domain is `https://rhen44-shadow-production.up.railway.app`. Status/history
-reject anonymous requests (401), malformed bearer fails (401), anonymous
-WebSocket handshakes fail (403), and broker routes remain absent (404).
-Command's authenticated stream/history connection is deployed. Authenticated
-browser visual/replay/reconnect/latency acceptance remains unpassed: the cloud
-browser sign-in reports a Cloudflare verification error, and the user cannot
-complete that handoff on mobile. Connected GitHub/Railway access is being used
-for implementation and runtime validation; it does not provide a Command session.
+Latest operational continuation (2026-10-07, 16:50 UTC): observed champion main
+is `edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac`, deployed as
+`b7676403-c01a-4d9b-adf4-983ad43ca8fc`; behavior remains RHEN 4.3.2,
+strategy `LIVE-2026-09-25-003`. Protected trading configuration fingerprint:
+`sha256:5c0d873224669c156ebc0d4d5f4024ad2afc7bdc945dfff61db556c3a7c1e7bd`.
+The continuation uses an isolated branch and does not merge runtime changes to
+main, because main automatically deploys the only production trading service.
 
-The observations below retain their original chronology. Earlier statements
-about a missing domain or disabled Command UI are superseded by this continuation.
+Command main is `9a2c789` (#196). The authenticated production page was inspected:
+4.3 account/order/runtime panels render; the 4.4 observer reports disconnected
+or stale transport, with no scanner or authoritative candle snapshot. The browser
+client blocked direct navigation to the shadow-history API (`ERR_BLOCKED_BY_CLIENT`),
+and no corresponding shadow upstream HTTP request was observed. This does not
+identify a production socket root cause or prove an outage. Authenticated visual,
+replay, reconnect and end-to-end latency acceptance remain UNPASSED. The older
+sign-in blocker below is superseded: this session reached authenticated Command.
+
+The separate observer was SUCCESS on `edd089b` deployment
+`08cc56bd-6dfb-4db9-9a37-543207f81365`, with 24 IEX quote/bar/updatedBar
+subscriptions, a healthy broker observation stream, warm reconstruction and private
+champion reconciliation. About 61% evaluable symbol-time was observed, below the
+package's 95% coverage threshold; signal-only candidates are not complete,
+risk-validated decisions. Core production storage is analytics-shedding above
+750 MB, and forward research has no complete outcome comparisons. These remain
+promotion blockers, not facts repaired by local tests.
+
+The current isolated slice adds bounded GET-only Alpaca asset capability evidence,
+durable source timestamps, explicit regular/overnight vetoes, quiet-time expiry,
+and distinct observed facts versus derived eligibility. It changes shadow lineage
+so old counterfactual evidence is not pooled with the new eligibility methodology.
+It also selects point-in-time bar revisions before applying history limits and
+retains simultaneous fills with distinct event identities. Replay methodology is
+versioned `source-availability-replay-v2`. No live broker-write route is added.
+
+Local validation: 1,068 backend checks pass with 10 environment-specific skips;
+53 unchanged Command unit checks pass. Hosted CI and the new pinned shadow
+runtime must be recorded separately after completion. No package promotion gate
+is inferred from these engineering tests.
+
+The explicitly authorized public observer domain is
+`https://rhen44-shadow-production.up.railway.app`; authenticated status/history
+and stream routes retain Cloudflare Access verification. Anonymous market history
+and broker writes remain unavailable. Older missing-domain statements below are
+historical and superseded. The observations below retain their original chronology.
 
 Initial production baseline: RHEN 4.3.2, source `0270563a613c57a959d1c6b93b97a01509a418df`,
 Railway deployment `4ec33727-f98b-4ffe-97f8-1ce30a2e95e2` SUCCESS.

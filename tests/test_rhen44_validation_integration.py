@@ -72,6 +72,25 @@ def test_visual_replay_hides_late_corrections_and_reports_retention_loss():
     with pytest.raises(ValueError): archive.history("SPY",NOW-timedelta(days=2),NOW,clock=NOW)
 
 
+def test_replay_limit_applies_to_source_points_after_latest_available_revision():
+    archive = VisualArchive(sqlite3.connect(":memory:"))
+    for i in range(5):
+        archive.append("SPY",source_point(100+i),NOW+timedelta(seconds=i))
+    archive.append("SPY",{**source_point(200),"timestamp":(NOW+timedelta(minutes=1)).isoformat()},NOW+timedelta(minutes=1))
+    latest=archive.history("SPY",NOW-timedelta(minutes=1),NOW+timedelta(minutes=1),clock=NOW+timedelta(minutes=1),limit=1)
+    assert latest["truncated"] and latest["points"][0]["value"] == 104
+    before=archive.history("SPY",NOW-timedelta(minutes=1),NOW,clock=NOW+timedelta(seconds=2),limit=1)
+    assert before["points"][0]["value"] == 102 and not before["truncated"]
+
+
+def test_replay_preserves_distinct_fills_at_the_same_source_timestamp():
+    archive = VisualArchive(sqlite3.connect(":memory:"))
+    for identity in ("fill1","fill2"):
+        archive.append("executions:SPY",{**source_point(),"event_id":identity},NOW)
+    replay=archive.history("executions:SPY",NOW-timedelta(minutes=1),NOW,clock=NOW)
+    assert {p["event_id"] for p in replay["points"]} == {"fill1","fill2"}
+
+
 def test_account_diagnostics_preserve_observed_peak_across_restart(tmp_path):
     path = tmp_path/"account.db"
     db = sqlite3.connect(path)

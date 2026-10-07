@@ -118,3 +118,31 @@ Added explicit future-authority/unknown-policy-field rejection, non-object corru
 checkpoint rejection without controller mutation, and stale/malformed/mismatched
 private champion-read rejection. Actual slice 20 restart observation is recorded
 in STATUS.md and #426; these checks do not claim canonical promotion eligibility.
+
+
+### 2026-10-07 isolated asset eligibility and replay revision slice
+
+Canonical package: all 34 checksums verified and all package files read before
+implementation. Baseline repository `edd089b`; no production flags or source
+changed. Guarded staging suite: **1,068 passed, 10 skipped** (5 existing
+warnings). Unchanged Command unit suite: **53 passed**. New cases exercise fresh,
+stale and future-dated persisted asset evidence, missing capabilities, equity-only
+identity, overnight tradability/halt rejection, malformed refresh retention,
+bounded GET-only broker reads, scanner vetoes, corrected-bar limit semantics,
+point-in-time availability and simultaneous distinct fills.
+
+Actual production health: 4.3.2 armed/live, reconciliation safe, all 4.4 production
+stream/Command gates false. Exact trading fingerprint recorded in STATUS.md;
+full variable-value export remains withheld by Railway OAuth. Authenticated
+Command 4.3 panels were observed. The 4.4 section had no snapshot and reported
+disconnected/stale transport; direct history navigation was browser-client blocked.
+This is an unpassed browser validation, not proof of a server or authentication
+failure. No token/cookie was extracted or authentication weakened.
+
+Asset support remains observation-only and does not authorize overnight execution,
+options, crypto, short selling or leverage. Separate shadow asset facts and the
+new configuration lineage need actual deployment/restart observations. Replay
+history is bounded source evidence, not VELUM validation. Independent forward,
+holdout, trusted promotion adapters, complete research outcomes, >=95% coverage,
+live browser latency, kill-switch/rollback drills and canonical ledger integration
+remain unpassed. The champion and original rollback commit remain preserved.

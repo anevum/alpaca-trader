@@ -48,6 +48,23 @@ class ReadOnlyBroker:
                 "hard_gross_envelope":effective_gross_limit(s,account),"existing_gross_exposure":long_exposure(positions),
                 "hard_caps":{"max_order_notional":s.max_order_notional,"max_position_notional":effective_position_limit(s,account)}}}
 
+    async def assets(self):
+        # Exactly the configured observation set; no writes or broad asset dump.
+        async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
+            async def read_asset(symbol):
+                response = await client.get(self.settings.base_url+"/v2/assets/"+symbol,
+                    headers={"APCA-API-KEY-ID":self.settings.alpaca_api_key,
+                             "APCA-API-SECRET-KEY":self.settings.alpaca_api_secret})
+                if response.status_code == 404:
+                    return None
+                response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, dict) or body.get("symbol") != symbol:
+                    raise ValueError("asset identity mismatch")
+                return body
+            rows = await asyncio.gather(*(read_asset(s) for s in self.settings.extended_equity_symbols))
+        return [row for row in rows if row is not None]
+
 
 def champion_signal(settings):
     s = settings
@@ -100,7 +117,7 @@ def create_app(settings=None):
             return strategy.evaluate(bars(symbol),{s:bars(s) for s in settings.confirmation_symbols},symbol,False,settings.order_notional,now=now)
         if settings.rhen_market_stream_enabled:
             fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=ReadOnlyBroker(settings).snapshot,
-                                  champion_reader=ReadOnlyChampion().snapshot)
+                                  champion_reader=ReadOnlyChampion().snapshot, asset_reader=ReadOnlyBroker(settings).assets)
             fabric.start()
             async def telemetry():
                 while True:
@@ -132,6 +149,7 @@ def create_app(settings=None):
                             "command_clients":len(fabric.visual.publisher.clients)},
                         scanner_coverage={k:v for k,v in fabric.coverage.summary(fabric.store,datetime.now(timezone.utc)).items() if k != "symbols"},
                         scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
+                    body["asset_eligibility"] = fabric.asset_summary(datetime.now(timezone.utc))
                     print("RHEN44_SHADOW_TELEMETRY "+json.dumps(body,allow_nan=False),flush=True)
                     await asyncio.sleep(30)
             telemetry_task = asyncio.create_task(telemetry())
