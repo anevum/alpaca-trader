@@ -1,7 +1,10 @@
 """Real local WebSocket transport exercises; fixtures are never live evidence."""
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -9,6 +12,10 @@ from websockets.asyncio.server import serve
 from app.command_visuals.publisher import LivePublisher
 from app.market_fabric.stream_manager import MarketStreamManager
 from app.market_fabric.stream_state import MarketStateStore
+
+# The existing staging job deliberately blocks all socket access, including
+# loopback. Run real transport separately; never weaken that safety boundary.
+pytestmark = pytest.mark.skipif(os.getenv("RHEN_STAGING") == "1", reason="loopback transport runs in the separate CI step; staging socket guard remains intact")
 
 
 def test_actual_market_socket_handshake_and_event_processing():

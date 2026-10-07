@@ -15,7 +15,10 @@
 - Baseline GitHub backend checks: test, codex-postgres, inventory SUCCESS.
 - Baseline GitHub frontend checks: audit, deploy, verify SUCCESS.
 
-Skipped local tests are the same 8 environment-dependent skips as baseline.
+The unrestricted full suite has the same 8 environment-dependent skips as baseline.
+The network-denied staging suite additionally skips the 2 real loopback transport
+tests (1004 passed, 10 skipped); the separate `tests/test_rhen44_*.py` CI step runs
+all 43 new tests, including those two sockets, without weakening the staging guard.
 Postgres integration is not represented as locally executed; baseline hosted
 Postgres CI passed. New branch hosted CI status is separate from these local results.
 
