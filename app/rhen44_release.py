@@ -46,7 +46,7 @@ def release_status(settings, observer=None):
             "hotset_rotation_active": rotation_active,
             "hotset_quality_state": hotset.get("quality_state","UNAVAILABLE"),
             "hotset_rotation_count": hotset.get("rotation_count",0),
-            "current_stream_symbols": len(observer.store.symbols) if running else configured_stream_symbols,
+            "current_stream_symbols": len(getattr(getattr(observer, "store", None), "symbols", settings.extended_equity_symbols)) if running else configured_stream_symbols,
         },
         "broker_write_authority": False,
         "adaptive_active_available": False,
