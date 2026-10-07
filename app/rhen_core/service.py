@@ -467,6 +467,21 @@ def research_gateway_write(
     raise HTTPException(status_code=422, detail="invalid_action")
 
 
+@app.get("/v1/nostra-forecasts")
+def nostra_forecasts(
+    x_anevum_ingest_token: str | None = Header(
+        default=None, alias="x-anevum-ingest-token"
+    ),
+) -> dict[str, Any]:
+    _require(
+        x_anevum_ingest_token,
+        "FOUNDATION_INGEST_TOKEN",
+        "TRADING_INGEST_TOKEN",
+        "RHEN_CORE_TOKEN",
+    )
+    return store.nostra_forecasts()
+
+
 @app.get("/v1/nostra-gateway")
 def nostra_gateway(
     x_nostra_gateway_token: str | None = Header(
