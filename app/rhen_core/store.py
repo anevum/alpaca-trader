@@ -4978,6 +4978,105 @@ class RhenCoreStore:
         if latest == "graen_shadow":
             return self._shadow_report(params.get("shadow_candidate_id"))
 
+        if latest == "ledger":
+            run_id = str(params.get("run_id") or "").strip()
+            if not run_id:
+                return {"ok": False, "error": "invalid_run_id"}
+            try:
+                limit = int(params.get("limit") or 500)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "invalid_limit"}
+            if limit < 1 or limit > 5000:
+                return {"ok": False, "error": "invalid_limit"}
+
+            rows = self._event_rows(
+                event_types={
+                    "order_intent",
+                    "broker_order",
+                    "broker_fill",
+                    "intent_reconciliation",
+                },
+                run_id=run_id,
+                limit=limit,
+                newest_first=True,
+            )
+            events = []
+            for row in rows:
+                payload = row.get("payload") or {}
+                event = {
+                    "event_key": row.get("event_key"),
+                    "event_type": row.get("event_type"),
+                    "occurred_at": row.get("occurred_at"),
+                    "symbol": row.get("symbol"),
+                }
+                if row.get("event_type") == "broker_order":
+                    order = payload.get("order") or {}
+                    event["order"] = {
+                        key: order.get(key)
+                        for key in (
+                            "id",
+                            "client_order_id",
+                            "symbol",
+                            "side",
+                            "type",
+                            "status",
+                            "qty",
+                            "filled_qty",
+                            "filled_avg_price",
+                            "submitted_at",
+                            "updated_at",
+                            "filled_at",
+                        )
+                        if order.get(key) is not None
+                    }
+                elif row.get("event_type") == "broker_fill":
+                    activity = payload.get("activity") or {}
+                    event["fill"] = {
+                        key: activity.get(key)
+                        for key in (
+                            "id",
+                            "order_id",
+                            "symbol",
+                            "side",
+                            "qty",
+                            "price",
+                            "transaction_time",
+                            "date",
+                        )
+                        if activity.get(key) is not None
+                    }
+                elif row.get("event_type") == "order_intent":
+                    intent = payload.get("intent") or {}
+                    event["intent"] = {
+                        key: intent.get(key)
+                        for key in (
+                            "intent_id",
+                            "idempotency_key",
+                            "symbol",
+                            "side",
+                            "intended_at",
+                        )
+                        if intent.get(key) is not None
+                    }
+                elif row.get("event_type") == "intent_reconciliation":
+                    event["intent_reconciliation"] = {
+                        key: payload.get(key)
+                        for key in ("client_order_id", "state")
+                        if payload.get(key) is not None
+                    }
+                events.append(event)
+            return {
+                "ok": True,
+                "ledger_version": "rhen-canonical-ledger-read-v1",
+                "run_id": run_id,
+                "generated_at": _iso(),
+                "event_count": len(events),
+                "truncated": len(rows) >= limit,
+                "events": events,
+                "execution_authority": False,
+                "broker_orders_possible": False,
+            }
+
         evidence_session = params.get("evidence_session")
         if evidence_session:
             rows = self._candidate_report_rows(evidence_session)
