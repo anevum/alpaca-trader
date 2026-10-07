@@ -23,6 +23,7 @@ from .extended_equity import ExtendedEquityEngine
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .protected_configuration import build_protected_configuration
+from .profile_release_approval_registry import ProfileReleaseApprovalRegistry
 from .provenance import RHEN_VERSION, capture_runtime_provenance
 from .research_scheduler import ResearchReportScheduler
 from .sizing import sizing_snapshot
@@ -212,6 +213,35 @@ async def scheduler_session_detail(session: date) -> dict:
 class SchedulerSessionRequest(BaseModel):
     session: date
     scheduled_at: datetime | None = None
+
+
+class ProfileReleaseAuthorizationRequest(BaseModel):
+    release_id: str
+    release_fingerprint: str
+    profile_id: str
+    profile_version: str
+    source_strategy_version: str
+    target_strategy_version: str
+    configuration_fingerprint: str
+    policy_library_fingerprint: str
+    authorization_reference: str
+
+
+class ProfileReleaseRevocationRequest(BaseModel):
+    release_fingerprint: str
+
+
+_profile_release_registry = None
+
+
+def profile_release_registry():
+    global _profile_release_registry
+    if not settings.admin_token:
+        raise HTTPException(status_code=503,detail="profile release approval registry unavailable")
+    if _profile_release_registry is None:
+        _profile_release_registry=ProfileReleaseApprovalRegistry(
+            "/data/rhen-profile-release-approvals.db",settings.admin_token)
+    return _profile_release_registry
 
 
 async def require_command_admin(authorization: str | None) -> dict:
@@ -1307,6 +1337,14 @@ async def scheduler_universe(x_anevum_scheduler_token: str | None = Header(defau
     return scheduler_universe_snapshot()
 
 
+@app.get("/v1/scheduler/asc/profile-release/approvals")
+async def scheduler_profile_release_approvals(
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    return profile_release_registry().current()
+
+
 @app.get("/v1/scheduler/calendar")
 async def scheduler_calendar(
     start: date,
@@ -1645,6 +1683,50 @@ async def command_session(authorization: str | None = Header(default=None)):
         "email": identity.get("email"),
         "auth_source": identity.get("auth_source") or "cloudflare_access",
         "command_admin": True,
+    }
+
+
+@app.post("/v1/command/asc/profile-release/authorize")
+async def command_authorize_profile_release(
+    body: ProfileReleaseAuthorizationRequest,
+    authorization: str | None = Header(default=None),
+):
+    identity=await require_command_admin(authorization)
+    try:
+        record=profile_release_registry().authorize(
+            body.model_dump(),authorized_by=str(identity.get("email") or "command-admin"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+    return {
+        "ok":True,
+        "authorization":record,
+        "execution_authority":False,
+        "broker_orders_possible":False,
+        "active_mode_authorized":False,
+        "automatic_application_authorized":False,
+    }
+
+
+@app.post("/v1/command/asc/profile-release/revoke")
+async def command_revoke_profile_release(
+    body: ProfileReleaseRevocationRequest,
+    authorization: str | None = Header(default=None),
+):
+    identity=await require_command_admin(authorization)
+    try:
+        record=profile_release_registry().revoke(
+            body.release_fingerprint,revoked_by=str(identity.get("email") or "command-admin"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404,detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+    return {
+        "ok":True,
+        "authorization":record,
+        "execution_authority":False,
+        "broker_orders_possible":False,
+        "active_mode_authorized":False,
+        "automatic_application_authorized":False,
     }
 
 
