@@ -1180,11 +1180,13 @@ async def command_live_stream(websocket: WebSocket):
 
 @app.get("/health")
 async def health():
+    from .rhen44_release import release_status
     signal = runtime_state.last_signal or {}
     order = runtime_state.last_order or {}
     return {
         "ok": True,
         "system": "RHEN",
+        "rhen44": release_status(settings, shadow_fabric),
         "trading_mode": settings.trading_mode,
         "order_execution_present": True,
         "execution_enabled": settings.execution_enabled,
