@@ -22,6 +22,10 @@ class StreamCheckpoint:
             self.db.execute("DELETE FROM summary WHERE bucket NOT IN (SELECT bucket FROM summary ORDER BY bucket DESC LIMIT ?)", (retain,))
 
     def save(self, store, now):
+        # Supervisor starts before the socket establishes its context. Preserve
+        # the durable checkpoint until bootstrap has had a chance to restore it.
+        if store.context is None:
+            return
         body = {"version": 1, "saved_at": utc(now).isoformat(), "context": store.context,
                 "generation": store.generation,
                 "bars": {s: list(row["bars"]) for s, row in store.rows.items()}}

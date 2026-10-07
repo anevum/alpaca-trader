@@ -23,7 +23,8 @@ NOW = datetime(2026,10,6,15,30,tzinfo=timezone.utc)
 
 def test_overnight_restart_restores_only_matching_observed_bars(tmp_path):
     now = datetime.now(timezone.utc)
-    settings = Settings(rhen_market_stream_checkpoint_path=str(tmp_path/"overnight.db"))
+    settings = Settings(RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"overnight.db"))
+    assert settings.rhen_market_stream_checkpoint_path == str(tmp_path/"overnight.db")
     fabric = ShadowFabric(settings, SimpleNamespace())
     symbol = fabric.store.symbols[0]
     sid = "2026-10-07/OVERNIGHT"
@@ -33,6 +34,8 @@ def test_overnight_restart_restores_only_matching_observed_bars(tmp_path):
         feed="overnight", session="OVERNIGHT", session_id=sid, received_at=now)
     fabric.store.apply(event)
     fabric.checkpoint.save(fabric.store, now)
+    # The initial supervisor audit runs before the socket establishes context.
+    fabric.checkpoint.save(MarketStateStore(fabric.store.symbols), now)
     fabric.store.rows.clear()
     fabric.store.begin("new", "overnight", sid)
     asyncio.run(fabric.bootstrap("overnight", sid))

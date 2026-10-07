@@ -67,3 +67,11 @@ VELUM experiment replay, independent forward/holdout evidence, authorized live
 Command real-data visual QA and latency, runtime kill switches and rollback drill.
 The public shadow domain was rejected by automatic approval review and remains
 absent. Private operational inspection continues without exposing the service.
+
+The first #425 hosted test run caught a test-only settings alias mistake: the
+temporary path was ignored and the runner attempted `/data`. The test now uses
+the explicit `RHEN_MARKET_STREAM_CHECKPOINT_PATH` alias and asserts that path.
+Live inspection additionally identified the initial supervisor audit overwriting
+an uninitialized checkpoint. Saving a state without session context is now a
+no-op, covered by the same recovery test. These failures are fixed rather than
+waived; the corrected head must pass hosted checks before merge.
