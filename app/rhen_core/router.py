@@ -8,6 +8,8 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from app.provenance import RHEN_RUNTIME_GENERATION, RHEN_VERSION
+
 EXECUTION_URL = "http://127.0.0.1:8101"
 CORE_URL = "http://127.0.0.1:8102"
 
@@ -44,7 +46,7 @@ CORE_PREFIXES = (
     "/v1/maintenance/",
 )
 
-app = FastAPI(title="RHEN", version="3.0.0")
+app = FastAPI(title="RHEN", version=RHEN_VERSION)
 
 
 def _truthy(value: str | None) -> bool:
@@ -102,7 +104,8 @@ async def health() -> JSONResponse:
         content={
             "ok": critical_ok,
             "system": "RHEN",
-            "runtime": "rhen-unified-v3",
+            "runtime": RHEN_RUNTIME_GENERATION,
+            "version": RHEN_VERSION,
             "execution": execution,
             "core": core,
             "modules": modules,
