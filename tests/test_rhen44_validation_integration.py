@@ -318,6 +318,45 @@ def test_canonical_universe_reader_is_get_only_and_validates_authority():
         asyncio.run(bad.snapshot())
 
 
+def test_canonical_forecast_reader_is_get_only_and_validates_authority():
+    import httpx
+    from app.config import Settings
+    from app.market_fabric.staging import ReadOnlyCanonicalForecasts
+    calls=[]
+    body={"ok":True,"schema_version":"nostra-canonical-forecast-read-v1",
+        "observed_at":NOW.isoformat(),"forecasts":[],"returned_count":0,
+        "rejected_count":0,"truncated":False,"research_only":True,
+        "execution_authority":False,"broker_write_authority":False}
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200,json=body)
+    settings=Settings(_env_file=None,TRADING_INGEST_TOKEN="fixture-token")
+    result=asyncio.run(ReadOnlyCanonicalForecasts(settings,transport=httpx.MockTransport(handle)).snapshot())
+    assert result["forecasts"]==[]
+    assert len(calls)==1 and calls[0].method=="GET"
+    assert calls[0].url.path=="/v1/scheduler/nostra-forecasts"
+    assert calls[0].headers["x-anevum-scheduler-token"]=="fixture-token"
+    bad=ReadOnlyCanonicalForecasts(settings,transport=httpx.MockTransport(
+        lambda request:httpx.Response(200,json={**body,"execution_authority":True})))
+    with pytest.raises(ValueError):
+        asyncio.run(bad.snapshot())
+
+
+def test_forecast_reference_uses_only_observed_pre_feature_candle():
+    from types import SimpleNamespace
+    from app.market_fabric.runtime import ShadowFabric
+    record={"symbol":"SPY","snapshot_id":"nss-1","as_of_timestamp":NOW.isoformat()}
+    point={"symbol":"SPY","timestamp":(NOW-timedelta(seconds=30)).isoformat(),"c":100.0,
+        "provenance":"OBSERVED","source":"ALPACA/iex","quality_state":"LIVE"}
+    archive=SimpleNamespace(history=lambda *a,**k:{"points":[point]})
+    subject=SimpleNamespace(store=SimpleNamespace(symbols=("SPY",)),archive=archive)
+    ref=ShadowFabric.forecast_reference(subject,record,NOW+timedelta(seconds=1))
+    assert ref["snapshot_id"]=="nss-1"
+    assert ref["value"]==100.0
+    assert ref["timestamp"]==point["timestamp"]
+    assert ref["provenance"]=="OBSERVED"
+
+
 def test_canonical_ledger_reader_is_get_only_and_validates_authority():
     import httpx
     from app.config import Settings
