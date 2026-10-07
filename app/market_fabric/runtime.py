@@ -94,6 +94,8 @@ class ShadowFabric:
         self.last_error = None
         self.broker = None
         self.inbox = None
+        self.broker_reconnects = 0
+        self.last_broker_reconnect = None
 
     async def on_stream_status(self, status):
         self.refresh_observation(utc(status["source_at"]))
@@ -320,6 +322,17 @@ class ShadowFabric:
         self.visual.scanner[event.symbol] = patch
         self.visual.publisher.stage("scanner:"+event.symbol, "scanner_patch", patch)
 
+    async def broker_reconnect(self):
+        now = datetime.now(timezone.utc)
+        self.broker_reconnects += 1
+        self.last_broker_reconnect = now
+        self.visual.system_patch({"broker_reconciliation":{
+            "last_reconnect_at":now.isoformat(),"reconnect_count":self.broker_reconnects,
+            "canonical_reconciliation_requested":True,"entry_authority":False,
+            "broker_write_authority":False,"source":"ALPACA/trade_updates",
+            "provenance":"OPERATIONAL"}})
+        self.account_refresh.set()
+
     async def broker_event(self, event_id, data):
         # Durable inbox acknowledges source evidence before ephemeral visualization.
         # Canonical 4.3 order/position reconciliation is intentionally not mutated.
@@ -335,7 +348,8 @@ class ShadowFabric:
         """Compare only the source-time overlap retained by the shadow archive."""
         base = {"entry_authority":False,"broker_write_authority":False,
             "source":"RHEN/canonical_ledger_read","provenance":"DERIVED",
-            "methodology_version":"canonical-observation-parity-v1","parity_complete":False}
+            "methodology_version":"canonical-observation-parity-v1","parity_complete":False,
+            "stream_parity_complete":False,"reconciliation_complete":False}
         if (not isinstance(canonical,dict) or canonical.get("ok") is not True
             or canonical.get("truncated") is True or not isinstance(canonical.get("events"),list)):
             return {**base,"quality_state":"UNAVAILABLE","reason":"CANONICAL_LEDGER_UNAVAILABLE_OR_TRUNCATED"}
@@ -389,7 +403,9 @@ class ShadowFabric:
         reason = ("PARITY_WITH_UNATTRIBUTED_ACCOUNT_EVENTS" if complete and (unattributed_orders or unattributed_fills)
                   else "PARITY" if complete else "DIVERGENCE")
         return {**base,"quality_state":"LIVE" if complete else "DEGRADED",
-            "reason":reason,"parity_complete":complete,
+            "reason":reason,"parity_complete":complete,"stream_parity_complete":complete,
+            "reconciliation_complete":True,
+            "recovered_gap_orders":len(missing_orders),"recovered_gap_fills":len(missing_fills),
             "overlap_started_at":start.isoformat(),"canonical_events":len(events),"observed_events":len(points),
             "canonical_order_count":len(canonical_orders),"observed_order_count":len(observed_orders),
             "canonical_fill_order_count":len(canonical_fills),"observed_fill_order_count":len(observed_fills),
@@ -422,14 +438,19 @@ class ShadowFabric:
             except Exception as exc:
                 parity = {"quality_state":"UNAVAILABLE","reason":type(exc).__name__,
                     "entry_authority":False,"broker_write_authority":False,
-                    "parity_complete":False,"source":"RHEN/canonical_ledger_read",
-                    "provenance":"DERIVED","methodology_version":"canonical-observation-parity-v1"}
+                    "parity_complete":False,"stream_parity_complete":False,"reconciliation_complete":False,
+                    "source":"RHEN/canonical_ledger_read","provenance":"DERIVED",
+                    "methodology_version":"canonical-observation-parity-v1"}
             self.visual.system_patch({"canonical_ledger_parity":parity})
             print("RHEN44_LEDGER_PARITY "+json.dumps({
                 "observed_at":now.isoformat(),
                 "quality_state":parity.get("quality_state"),
                 "reason":parity.get("reason"),
                 "parity_complete":parity.get("parity_complete") is True,
+                "stream_parity_complete":parity.get("stream_parity_complete") is True,
+                "reconciliation_complete":parity.get("reconciliation_complete") is True,
+                "recovered_gap_orders":parity.get("recovered_gap_orders"),
+                "recovered_gap_fills":parity.get("recovered_gap_fills"),
                 "canonical_events":parity.get("canonical_events"),
                 "observed_events":parity.get("observed_events"),
                 "canonical_order_count":parity.get("canonical_order_count"),
@@ -597,7 +618,8 @@ class ShadowFabric:
         if self.settings.rhen_broker_stream_shadow_enabled:
             self.inbox = BrokerInbox(self.settings.rhen_market_stream_checkpoint_path+".broker")
             self.broker = BrokerUpdateStream(api_key=self.settings.alpaca_api_key, api_secret=self.settings.alpaca_api_secret,
-                                             paper=self.settings.trading_mode != "live", inbox=self.inbox, callback=self.broker_event)
+                                             paper=self.settings.trading_mode != "live", inbox=self.inbox, callback=self.broker_event,
+                                             on_reconnect=self.broker_reconnect)
             self.tasks.append(asyncio.create_task(self.broker.run()))
 
     async def stop(self):
