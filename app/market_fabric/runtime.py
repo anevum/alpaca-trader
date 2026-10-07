@@ -90,19 +90,24 @@ class ShadowFabric:
         # for the 30-second calendar/reconciliation audit to propagate it.
         self.visual.publisher.flush()
 
-    def refresh_observation(self, now):
-        self.coverage.advance(self.store, now)
-        for symbol in self.store.symbols:
+    def refresh_observation(self, now, *, symbols=None):
+        targets = tuple(symbols) if symbols is not None else self.store.symbols
+        self.coverage.advance(self.store, now, symbols=targets)
+        eligibility_changed = False
+        for symbol in targets:
             row = self.store.snapshot(symbol, now)
             previous = self.visual.scanner.get(symbol, {})
             fields = ("feed", "session", "evaluable", "rejection_codes", "quality_state", "observed_bar_count")
             if any(previous.get(k) != row.get(k) for k in fields):
+                eligibility_changed = eligibility_changed or previous.get("evaluable") != row.get("evaluable")
                 patch = {**previous, **row}
                 if not row["evaluable"]:
                     patch.update(classification="NOT_EVALUABLE", candidate_state="BLOCKED",
                         signal_reason="Market prerequisites unavailable; previous signal is historical")
                 self.visual.scanner[symbol] = patch
                 self.visual.publisher.stage("scanner:"+symbol, "scanner_patch", patch)
+        if eligibility_changed:
+            self.regime_key = None
         self.freshness_wakeup.set()
 
     async def freshness_observer(self):
@@ -162,7 +167,9 @@ class ShadowFabric:
 
     async def on_event(self, event):
         now = event.received_at
-        self.refresh_observation(now)
+        # A market event can only make its own symbol fresher. Keep the hot quote
+        # path O(1); full-universe expiry/coverage remains on deadline and audit paths.
+        self.refresh_observation(now, symbols=(event.symbol,))
         if self.policy_session != event.session_id:
             self.policy.profile, self.policy.since = "BASELINE_LOCKED", None
             self.policy.pending, self.policy.confirmed, self.policy.last_observation = None, 0, None
@@ -205,7 +212,10 @@ class ShadowFabric:
         if decision_id is None:
             decision_id = fingerprint({"symbol": event.symbol, "session_id": event.session_id, "minute": now.replace(second=0, microsecond=0).isoformat(),
                 "classification": classification, "reasons": reasons, "shadow_configuration": self.shadow_configuration})
-        feature_key = (self.store.context, tuple((s, self.store.rows.get(s, {}).get("feature_revision", 0), self.store.snapshot(s, now)["evaluable"]) for s in self.store.symbols),
+        # NOSTRA inputs are completed bars. Quote bursts must not rebuild every
+        # symbol snapshot merely to discover that no bar feature changed.
+        feature_key = (self.store.context,
+                       tuple((s, self.store.rows.get(s, {}).get("feature_revision", 0)) for s in self.store.symbols),
                        now.replace(second=0, microsecond=0))
         if feature_key != self.regime_key:
             self.regime, self.features = regime_observation(self.store, now, fast_window=self.settings.fast_window, slow_window=self.settings.slow_window)
