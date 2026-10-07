@@ -117,6 +117,7 @@ def create_app(settings=None):
             "execution_authority":False,"broker_orders_possible":False,"isolated_runtime":True,
             "rhen44":release_status(settings,fabric),"market_connection":fabric.store.connection if fabric else "DISABLED",
             "stream_errors":fabric.manager.errors if fabric else 0,"stream_error":fabric.manager.last_error if fabric else None,
+            "stream_error_code":fabric.manager.last_error_code if fabric else None,
             "subscribed_symbols":len(fabric.store.subscribed) if fabric else 0,"intended_symbols":len(settings.extended_equity_symbols),
             "context":fabric.store.context if fabric else None}
 
