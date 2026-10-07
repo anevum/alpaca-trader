@@ -9,7 +9,7 @@ from app.extended_research import ExtendedResearchRecorder
 def test_checkpoint_receipt_retry_separate_lane_and_no_stale_reuse():
     async def scenario():
         stamp = datetime(2026, 10, 7, 23, 15, tzinfo=timezone.utc)
-        snapshot = {"observed_at": stamp.isoformat(), "strategy_version_id": "EXT-001",
+        snapshot = {"scan_observed_at": stamp.isoformat(), "strategy_version_id": "EXT-001",
                     "session": {"session": "after_hours"}, "scanner": {
                         "SPY": {"action": "hold", "reason": "stale quote", "reference_price": "0"}}}
         sink = SimpleNamespace(enabled=True, emit_critical=AsyncMock(side_effect=[False, True]))

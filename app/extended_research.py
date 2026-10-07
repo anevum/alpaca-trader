@@ -18,7 +18,7 @@ class ExtendedResearchRecorder:
     async def capture(self, now=None):
         now = now or datetime.now(timezone.utc)
         snapshot = self.engine.snapshot()
-        observed = snapshot.get("observed_at")
+        observed = snapshot.get("scan_observed_at")
         if not observed or not self.sink.enabled:
             return False
         stamp = datetime.fromisoformat(observed)
@@ -33,7 +33,7 @@ class ExtendedResearchRecorder:
         key = f"extended-research:{strategy}:{session}:{bucket.isoformat()}"
         if key == self.last_key:
             return False
-        reasons = Counter(str(row.get("reason") or "unclassified") for row in scan.values())
+        reasons = Counter(str(row.get("reason") or "unclassified") for row in scan.values() if row.get("action") != "buy")
         payload = {"schema_version": "extended-research-v1", "session_date": stamp.astimezone(NY).date().isoformat(),
             "market_lane": "us_equity_extended", "market_session": session,
             "strategy_version_id": strategy, "observed_at": observed, "checkpoint_minutes": 5,
