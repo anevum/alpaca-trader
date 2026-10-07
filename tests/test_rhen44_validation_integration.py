@@ -28,10 +28,13 @@ def test_execution_archive_recovery_preserves_distinct_fills_and_source_without_
     archive.append("executions:SPY",{**marker,"event_id":"f2"},NOW)
     archive.append("executions:SPY",{**marker,"event_id":"late"},NOW+timedelta(seconds=1))
     archive.append("candles:SPY",{**marker,"event_id":"not-an-execution"},NOW)
+    archive.append("executions:QQQ",{**marker,"event_id":"q1","order_ref":"o2","symbol":"QQQ"},NOW)
     recovery=archive.executions(NOW,("SPY",))
     assert {p["event_id"] for p in recovery["points"]} == {"f1","f2"}
     assert all(p["quality_state"] == "HISTORICAL" for p in recovery["points"])
-    assert not recovery["entry_authority"] and not archive.executions(NOW,("QQQ",))["points"]
+    assert recovery["rejected_records"] == 1
+    assert {p["event_id"] for p in archive.executions(NOW,None)["points"]} == {"f1","f2","q1"}
+    assert not recovery["entry_authority"]
     replay = replay_frame(recovery["points"],NOW)
     assert replay[0]["source"] == "ALPACA/trade_updates" and replay[0]["replay_source"] == "VELUM_REPLAY"
 
