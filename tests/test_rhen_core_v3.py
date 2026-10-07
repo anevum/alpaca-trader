@@ -6,6 +6,7 @@ import json
 from app.rhen_core.store import RhenCoreStore
 from app.rhen_core.supervisor import PROCESSES, ProcessSpec, _child_env, _wait_tcp_ready
 from app.rhen_core.router import enabled_modules
+from app.provenance import RHEN_RUNTIME_GENERATION, RHEN_VERSION
 
 
 UTC = timezone.utc
@@ -1275,3 +1276,8 @@ def test_candidate_evidence_readiness_marks_partial_cohort(
     assert readiness["measurement_ready_count"] == 1
     assert readiness["measurement_ready_rate_pct"] == 50.0
     assert readiness["missing_bar_time_count"] == 1
+
+
+def test_router_health_identity_uses_current_v4_3_generation():
+    assert RHEN_RUNTIME_GENERATION == "rhen-unified-v4.3"
+    assert RHEN_VERSION == "4.3.2"
