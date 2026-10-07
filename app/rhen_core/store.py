@@ -828,7 +828,18 @@ class RhenCoreStore:
             self.prune()
             if self.storage_state()["warning"]:
                 print(json.dumps({"event": "core_scan_payload_compacted", **self.compact_scan_payloads()}, sort_keys=True), flush=True)
-            self.compact_storage()
+            # Shrinking row payloads leaves free space inside live B-tree pages,
+            # which the freelist does not measure. Repack once after codec migration.
+            repacked, _ = self.get_kv("maintenance", "scan_codec_repacked_v1", False)
+            with self.connect() as conn:
+                packed = conn.execute(
+                    "select 1 from events where event_type='scan' "
+                    "and payload_json like '{\"_rhen_payload_codec\":%' limit 1"
+                ).fetchone()
+            needs_repack = not repacked and packed is not None
+            compacted = self.compact_storage(force=needs_repack)
+            if needs_repack and compacted.get("reason") == "vacuum_completed":
+                self.set_kv("maintenance", "scan_codec_repacked_v1", {"completed_at": _iso()})
             self._maintenance_error = None
             # Read-only allocation evidence; no payloads or trading records logged.
             with self.connect() as conn:

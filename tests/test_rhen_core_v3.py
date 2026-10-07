@@ -1640,3 +1640,25 @@ def test_core_readiness_allows_bounded_hosted_maintenance(monkeypatch):
     monkeypatch.setattr("app.rhen_core.supervisor.socket.create_connection", connect)
     _wait_tcp_ready(ProcessSpec("core", "example:app", 8102))
     assert calls == [("127.0.0.1", 8102), ("127.0.0.1", 8102)]
+
+
+def test_migrated_scan_pages_repack_once_without_changing_logical_evidence(tmp_path, monkeypatch):
+    from app.rhen_core.store import _loads
+    store = _store(tmp_path, monkeypatch)
+    payload = {"symbol": "SPY", "observations": [{"price": "600.1234"}] * 200}
+    store.ingest_events([{"event_key": "packed-scan", "event_type": "scan", "payload": payload}])
+    actual = store.compact_storage
+    forces = []
+    def compact(*, force=False):
+        forces.append(force)
+        return actual(force=force)
+    monkeypatch.setattr(store, "compact_storage", compact)
+    store._startup_maintenance()
+    assert store._maintenance_error is None
+    assert forces[-1] is True
+    assert store.get_kv("maintenance", "scan_codec_repacked_v1")[0]
+    store._startup_maintenance()
+    assert forces[-1] is False
+    with store.connect() as conn:
+        row = conn.execute("select payload_json from events where event_key='packed-scan'").fetchone()
+    assert _loads(row[0], None) == payload
