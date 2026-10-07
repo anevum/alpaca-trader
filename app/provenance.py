@@ -7,7 +7,8 @@ from typing import Mapping
 from uuid import uuid4
 
 
-RHEN_VERSION = "0.8.2"
+RHEN_VERSION = "4.3.2"
+RHEN_RUNTIME_GENERATION = "rhen-unified-v4.3"
 
 
 def _value(env: Mapping[str, str], name: str) -> str | None:
