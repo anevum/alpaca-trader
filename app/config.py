@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     command_live_stream_enabled: bool = Field(default=False, alias="COMMAND_LIVE_STREAM_ENABLED")
     command_live_flush_ms: int = Field(default=125, ge=100, le=250, alias="COMMAND_LIVE_FLUSH_MS")
     rhen_market_stream_checkpoint_path: str = Field(default="/data/rhen44-shadow-checkpoint.db", alias="RHEN_MARKET_STREAM_CHECKPOINT_PATH")
+    rhen_market_stream_capacity: int = Field(
+        default=24, ge=1, le=30, alias="RHEN_MARKET_STREAM_CAPACITY"
+    )
 
     alpaca_api_key: str = Field(default="", alias="ALPACA_API_KEY")
     alpaca_api_secret: str = Field(default="", alias="ALPACA_API_SECRET")
@@ -618,6 +621,10 @@ class Settings(BaseSettings):
             )
         if not self.extended_equity_symbols:
             raise ValueError("EXTENDED_EQUITY_SYMBOLS cannot be empty")
+        if len(self.extended_equity_symbols) > self.rhen_market_stream_capacity:
+            raise ValueError(
+                "EXTENDED_EQUITY_SYMBOLS exceeds RHEN_MARKET_STREAM_CAPACITY"
+            )
         if not self.extended_equity_confirmation_symbols:
             raise ValueError(
                 "EXTENDED_EQUITY_CONFIRMATION_SYMBOLS cannot be empty"

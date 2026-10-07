@@ -38,7 +38,7 @@ from zoneinfo import ZoneInfo
 class ShadowFabric:
     def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None):
         self.settings = settings
-        validate_symbols(settings.extended_equity_symbols)
+        validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
         self.visual = VisualProjector(self.store, flush_ms=settings.command_live_flush_ms)
         self.rejections = RejectionEngine()

@@ -295,3 +295,21 @@ stale private champion lineage as unavailable. No new execution authority or
 protected activation path is introduced. Canonical integration/promotion remains
 incomplete. Command #191 uploaded successfully but production desktop scroll QA
 failed its precondition; #192 corrects setup while preserving the outcome assertion.
+
+## Closure realignment: broad discovery versus narrow stream (2026-10-07)
+
+Current 4.3.2 production discovery scans a 100-symbol active universe while the
+Basic-plan 4.4 market WebSocket intentionally observes a bounded 24-symbol set.
+These are separate layers, not competing universe definitions. The release truth
+now reports `BROAD_DISCOVERY_NARROW_STREAM` and fails promotion closed with
+`discovery_stream_hotset_rotation_incomplete` whenever broad discovery exceeds
+the stream capacity. A future crossover must preserve the broad discovery pool
+and rotate a bounded high-priority stream hot set; promoting the current static
+24-symbol observer as the entire live opportunity universe is forbidden.
+
+The Command Cloudflare Access verifier also now caches validated JWKS for five
+minutes, permits bounded stale-key use for transient fetch failures, refreshes on
+unknown key IDs, and converts network/JSON failures into controlled Command 503
+errors. This addresses the observed single production `httpx.ReadTimeout`
+without weakening token signature, issuer, audience, expiry or email checks.
+
