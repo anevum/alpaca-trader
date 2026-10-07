@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, asset_reader=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, asset_reader=None, ledger_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
@@ -48,6 +48,7 @@ class ShadowFabric:
         self.asset_reader = asset_reader
         self.asset_refresh = asyncio.Event()
         self.champion_reader = champion_reader
+        self.ledger_reader = ledger_reader
         self.champion_observation = None
         self.account_refresh = asyncio.Event()
         self.signal_cache = {}
@@ -328,6 +329,52 @@ class ShadowFabric:
         self.account_refresh.set()
         return True
 
+    @staticmethod
+    def canonical_ledger_parity(canonical, observed):
+        """Compare only the source-time overlap retained by the shadow archive."""
+        base = {"entry_authority":False,"broker_write_authority":False,
+            "source":"RHEN/canonical_ledger_read","provenance":"DERIVED",
+            "methodology_version":"canonical-observation-parity-v1","parity_complete":False}
+        if (not isinstance(canonical,dict) or canonical.get("ok") is not True
+            or canonical.get("truncated") is True or not isinstance(canonical.get("events"),list)):
+            return {**base,"quality_state":"UNAVAILABLE","reason":"CANONICAL_LEDGER_UNAVAILABLE_OR_TRUNCATED"}
+        points = [p for p in observed if isinstance(p,dict) and p.get("order_ref") and p.get("timestamp")]
+        if not points:
+            return {**base,"quality_state":"NO_OVERLAP","reason":"NO_RETAINED_BROKER_OBSERVATIONS",
+                "canonical_events":len(canonical["events"]),"observed_events":0}
+        try:
+            start = min(utc(p["timestamp"]) for p in points)
+        except (ValueError,TypeError):
+            return {**base,"quality_state":"UNAVAILABLE","reason":"INVALID_OBSERVED_EXECUTION_TIME"}
+        events = []
+        for event in canonical["events"]:
+            try:
+                if utc(event.get("occurred_at")) >= start:
+                    events.append(event)
+            except (ValueError,TypeError):
+                continue
+        canonical_orders = {str((e.get("order") or {}).get("id") or "")
+            for e in events if e.get("event_type") == "broker_order"}
+        canonical_orders.discard("")
+        canonical_fills = {str((e.get("fill") or {}).get("order_id") or "")
+            for e in events if e.get("event_type") == "broker_fill"}
+        canonical_fills.discard("")
+        observed_orders = {str(p["order_ref"]) for p in points}
+        observed_fills = {str(p["order_ref"]) for p in points
+            if p.get("event_type") in {"FILL","PARTIAL_FILL"}}
+        missing_orders = canonical_orders-observed_orders
+        unknown_orders = observed_orders-canonical_orders
+        missing_fills = canonical_fills-observed_fills
+        unknown_fills = observed_fills-canonical_fills
+        complete = not (missing_orders or unknown_orders or missing_fills or unknown_fills)
+        return {**base,"quality_state":"LIVE" if complete else "DEGRADED",
+            "reason":"PARITY" if complete else "DIVERGENCE","parity_complete":complete,
+            "overlap_started_at":start.isoformat(),"canonical_events":len(events),"observed_events":len(points),
+            "canonical_order_count":len(canonical_orders),"observed_order_count":len(observed_orders),
+            "canonical_fill_order_count":len(canonical_fills),"observed_fill_order_count":len(observed_fills),
+            "missing_observed_orders":len(missing_orders),"unknown_observed_orders":len(unknown_orders),
+            "missing_observed_fills":len(missing_fills),"unknown_observed_fills":len(unknown_fills)}
+
     async def reconcile_account(self):
         if self.account_reader is None:
             return
@@ -339,6 +386,18 @@ class ShadowFabric:
             except Exception:
                 self.champion_observation = None
             self.visual.system_patch({"champion_observation":self.champion_observation or {"quality_state":"UNAVAILABLE"}})
+        if self.ledger_reader:
+            run_id = (self.champion_observation or {}).get("run_id")
+            try:
+                canonical = await self.ledger_reader(run_id)
+                observed = self.archive.executions(now,self.store.symbols)["points"]
+                parity = self.canonical_ledger_parity(canonical,observed)
+            except Exception as exc:
+                parity = {"quality_state":"UNAVAILABLE","reason":type(exc).__name__,
+                    "entry_authority":False,"broker_write_authority":False,
+                    "parity_complete":False,"source":"RHEN/canonical_ledger_read",
+                    "provenance":"DERIVED","methodology_version":"canonical-observation-parity-v1"}
+            self.visual.system_patch({"canonical_ledger_parity":parity})
         projection = account_projection(snapshot, now)
         for key, point in projection["points"].items():
             self.visual.point("account:"+key, point)
