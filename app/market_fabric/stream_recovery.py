@@ -56,6 +56,8 @@ def merge_bars(store, bars, now, *, starts_at=None):
             raw = {"T": "b", "S": symbol, "t": timestamp.isoformat(),
                    **{short: bar.get(long, bar.get(short)) for short, long in
                       (("o", "open"), ("h", "high"), ("l", "low"), ("c", "close"), ("v", "volume"))}}
+            if bar.get("vwap", bar.get("vw")) is not None:
+                raw["vw"] = bar.get("vwap", bar.get("vw"))
             event = normalize(raw, generation=store.generation, sequence=0, feed=store.context[0],
                               session=store.context[1].split("/")[-1], session_id=store.context[1], received_at=now)
             count += int(store.apply(event))
