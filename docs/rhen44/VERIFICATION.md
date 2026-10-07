@@ -88,3 +88,9 @@ and degraded states, immediate disconnect telemetry and private GET-only champio
 reconciliation. Local tests are engineering checks, not independent forward,
 holdout, runtime latency or promotion evidence. Hosted CI and pinned deployment
 results must be recorded separately after they actually occur.
+
+Authority/recovery hardening follow-up: guarded suite 1,041 passed, 10 skipped.
+Added explicit future-authority/unknown-policy-field rejection, non-object corrupt
+checkpoint rejection without controller mutation, and stale/malformed/mismatched
+private champion-read rejection. Actual slice 20 restart observation is recorded
+in STATUS.md and #426; these checks do not claim canonical promotion eligibility.

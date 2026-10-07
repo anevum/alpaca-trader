@@ -94,7 +94,7 @@ def release_evidence():
         "source_strategy_version":"4.3","target_strategy_version":"4.4","configuration_fingerprint":"cfg",
         "policy_library_fingerprint":"lib","nostra_methodology_fingerprint":"nostra",
         "profile_values":{"allocation_multiplier":".5","gross_envelope_fraction":".5"},
-        "hard_envelope":{k:False for k in ("allow_margin","allow_short","allow_crypto","may_exceed_existing_risk_limits")},
+        "hard_envelope":{k:False for k in ("allow_margin","allow_short","allow_crypto","may_exceed_existing_risk_limits","options_broker_write_authority","expanded_session_execution","expanded_leverage")},
         "rollback_profile":"BASELINE_LOCKED","rollback_version":"4.3","authorization_reference":"unit-test-only",
         "activation_at":(NOW+timedelta(hours=1)).isoformat(),
         "artifact_ids":{k:k+"-fixture" for k in ("shadow","velum","holdout","graen","runtime","authorization")}}
@@ -185,3 +185,39 @@ def test_champion_reader_uses_only_existing_private_health_get():
     assert len(requests) == 1 and requests[0].method == "GET"
     assert str(requests[0].url) == "http://alpaca-trader.railway.internal:8080/health"
     assert "authorization" not in requests[0].headers and "apca-api-key-id" not in requests[0].headers
+
+
+@pytest.mark.parametrize("value", ["null", '"corrupt"', "[]", "123"])
+def test_policy_restore_rejects_non_object_checkpoint_without_mutation(value):
+    db = sqlite3.connect(":memory:")
+    storage = PolicyStateStore(db)
+    db.execute("INSERT INTO shadow_policy_state VALUES (1,?)",(value,))
+    state = controller()
+    assert storage.restore(state,"2026-10-07/REGULAR",NOW) == "REJECTED_STATE"
+    assert state.profile == "BASELINE_LOCKED" and state.last_observation is None
+
+
+@pytest.mark.parametrize("capability", ["options_broker_write_authority", "expanded_session_execution", "expanded_leverage"])
+def test_profile_release_never_approves_future_authority(capability):
+    proposal, artifacts = release_evidence()
+    proposal["hard_envelope"][capability] = True
+    assert "FUTURE_AUTHORITY_ENVELOPE_VIOLATION" in evaluate_profile_release(proposal,resolve_artifact=artifacts.get,now=NOW)["reason_codes"]
+    proposal, artifacts = release_evidence()
+    proposal["profile_values"][capability] = True
+    assert "UNSUPPORTED_PROFILE_VALUE_OR_AUTHORITY" in evaluate_profile_release(proposal,resolve_artifact=artifacts.get,now=NOW)["reason_codes"]
+
+
+def test_champion_lineage_rejects_stale_invalid_and_mismatched_reads():
+    from types import SimpleNamespace
+    from app.market_fabric.runtime import ShadowFabric
+    subject = SimpleNamespace(settings=SimpleNamespace(strategy_version_id="4.3"),champion_observation={
+        "observed_at":NOW.isoformat(),"runtime_ok":True,"reconciliation_safe":True,"strategy_version":"4.3",
+        "protected_configuration_fingerprint":"sha256:"+"a"*64})
+    assert ShadowFabric.champion_ready(subject,NOW)
+    assert not ShadowFabric.champion_ready(subject,NOW+timedelta(seconds=151))
+    for field, bad in (("observed_at","malformed"),("strategy_version","4.4"),("reconciliation_safe",False),
+                       ("protected_configuration_fingerprint","sha256:bad")):
+        old = subject.champion_observation[field]
+        subject.champion_observation[field] = bad
+        assert not ShadowFabric.champion_ready(subject,NOW)
+        subject.champion_observation[field] = old

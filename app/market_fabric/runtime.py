@@ -254,10 +254,14 @@ class ShadowFabric:
 
     def champion_ready(self, now):
         row = self.champion_observation or {}
-        return bool(row.get("observed_at") and 0 <= (utc(now)-utc(row["observed_at"])).total_seconds() <= 150
-            and row.get("runtime_ok") is True and row.get("reconciliation_safe") is True
-            and row.get("strategy_version") == self.settings.strategy_version_id
-            and str(row.get("protected_configuration_fingerprint") or "").startswith("sha256:"))
+        try:
+            identity = str(row.get("protected_configuration_fingerprint") or "")
+            valid_hash = len(identity) == 71 and identity.startswith("sha256:") and all(c in "0123456789abcdef" for c in identity[7:])
+            return bool(row.get("observed_at") and 0 <= (utc(now)-utc(row["observed_at"])).total_seconds() <= 150
+                and row.get("runtime_ok") is True and row.get("reconciliation_safe") is True
+                and row.get("strategy_version") == self.settings.strategy_version_id and valid_hash)
+        except (ValueError, TypeError):
+            return False
 
     async def account_observer(self):
         # Event-driven refresh after trade_updates. Timeout is reconciliation/audit,
