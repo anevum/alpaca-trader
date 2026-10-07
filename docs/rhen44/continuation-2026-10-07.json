@@ -1,0 +1,249 @@
+{
+  "schema_version": "rhen44-continuation.v1",
+  "documentation_branch": "work/rhen44-pre-crossover-20261007",
+  "session_id": "ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION",
+  "canonical_package": "ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE",
+  "package_files_verified": 34,
+  "package_completely_read": true,
+  "promotion_eligible": false,
+  "production_crossover_performed": false,
+  "champion": {
+    "ok": true,
+    "reconciliation_safe": true,
+    "execution_enabled": true,
+    "bot_armed": true,
+    "scan_only": false,
+    "protected_configuration_identity": {
+      "fingerprint": "sha256:5c0d873224669c156ebc0d4d5f4024ad2afc7bdc945dfff61db556c3a7c1e7bd",
+      "schema_version": "rhen_protected_configuration.v2",
+      "source": "RHEN/protected_configuration",
+      "scope": "existing_scheduler_comparison_and_protected_contract",
+      "provenance": "OPERATIONAL"
+    },
+    "rhen44": {
+      "provenance": "OPERATIONAL",
+      "implementation_version": "rhen-4.4-foundations-v1",
+      "implementation_complete": false,
+      "champion_behavior": "4.3",
+      "state": "IMPLEMENTED_GATED",
+      "configured": {
+        "market_stream": false,
+        "broker_shadow_stream": false,
+        "command_stream": false
+      },
+      "observer_constructed": false,
+      "broker_stream_state": "DISABLED",
+      "command_stream_available": false,
+      "universe_contract": {
+        "model": "BROAD_DISCOVERY_NARROW_STREAM",
+        "discovery_universe_size": 100,
+        "stream_capacity": 24,
+        "configured_stream_symbols": 24,
+        "hotset_rotation_required": true,
+        "hotset_rotation_integrated": false
+      },
+      "broker_write_authority": false,
+      "adaptive_active_available": false,
+      "promotion_eligible": false,
+      "promotion_blockers": [
+        "canonical_integration_incomplete",
+        "exact_configuration_and_broker_baseline_unattested",
+        "live_entitlement_and_stream_coverage_unattested",
+        "replay_and_shadow_validation_incomplete",
+        "runtime_recovery_and_reconciliation_validation_incomplete",
+        "command_live_visual_acceptance_incomplete",
+        "research_and_holdout_gates_incomplete",
+        "discovery_stream_hotset_rotation_incomplete"
+      ]
+    },
+    "runtime_provenance": {
+      "runtime_instance_id": "27c3f39c-a2c7-44e9-973e-3449a471c13b",
+      "runtime_started_at": "2026-10-07T16:21:13.669104+00:00",
+      "system": "RHEN",
+      "system_version": "4.3.2",
+      "source": "railway",
+      "git_commit": "edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac",
+      "branch": "main",
+      "repository": "anevum/rhen",
+      "deployment_id": "b7676403-c01a-4d9b-adf4-983ad43ca8fc",
+      "snapshot_id": "bba40ee2-7c1a-4a34-9f81-9b45adc64721",
+      "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
+      "project_name": "RHEN",
+      "environment_id": "63a64723-574d-497b-b01b-a9fef7ea78ab",
+      "environment_name": "production",
+      "service_id": "f933a669-8591-4233-8510-e0db1548e463",
+      "service_name": "rhen",
+      "replica_id": "19cd2329-86bd-49f8-a6d6-46da41ae8a45",
+      "replica_region": "sfo",
+      "metadata_quality": "complete",
+      "missing_critical_fields": []
+    },
+    "rollback_refs": [
+      "rollback/rhen-v4.3.2-0270563-20261007-0145",
+      "rollback/rhen-v4.3.2-edd089b-20261007-1655"
+    ],
+    "configuration_export_complete": false,
+    "modified_or_restarted_in_this_continuation": false
+  },
+  "shadow": {
+    "code_commit": "3ce688c3f3182ea8e4f09e2690b028cca2052cd6",
+    "source_branch_config": "work/rhen44-eligibility-replay-20261007",
+    "preserved_code_branch": "work/rhen44-eligibility-replay-perf-20261007",
+    "deployment_id": "b6fbfee1-240f-4f2b-8326-59880eb0ed9c",
+    "deployment_status": "SUCCESS",
+    "observed_at": "2026-10-07T16:58:01.584510+00:00",
+    "market_connection": "WARMING",
+    "broker_stream_state": "HEALTHY",
+    "account_quality": "LIVE",
+    "restored_bar_count": 2831,
+    "policy_recovery": "RESTORED_SHADOW_ONLY",
+    "subscribed_symbols": 24,
+    "subscribed_channels": [
+      "bars",
+      "quotes",
+      "updatedBars"
+    ],
+    "asset_eligibility": {
+      "intended_symbols": 24,
+      "eligible_symbols": 24,
+      "attested_symbols": 24,
+      "fetched_at": "2026-10-07T16:56:32.134269+00:00",
+      "session": "REGULAR",
+      "entry_authority": false,
+      "provenance": "OPERATIONAL",
+      "source": "RHEN/asset_eligibility"
+    },
+    "market_processing": {
+      "processed_events": 32174,
+      "cooperative_yields": 3921,
+      "max_callback_ms": 63.00000101327896,
+      "max_publisher_tick_lag_ms": 67.99999997019768,
+      "command_clients": 0
+    },
+    "scanner_coverage": {
+      "evaluable_symbol_hours": 1.9709019013888902,
+      "eligible_symbol_hours": 2.8358998266666697,
+      "session_id": "2026-10-07/REGULAR",
+      "feed": "iex",
+      "strategy_version": "LIVE-2026-09-25-003",
+      "shadow_configuration_fingerprint": "a4bb8a5334def3d83d06addf33a1938fd393db3c5b217399f9f9f9af4c81e347",
+      "evaluable_time_fraction": 0.6949829055511803,
+      "signal_candidates": 4,
+      "signal_candidates_per_evaluable_symbol_hour": 2.0295276985532404,
+      "observed_at": "2026-10-07T16:58:01.585396+00:00",
+      "provenance": "DERIVED",
+      "source": "RHEN/shadow_coverage",
+      "methodology_version": "source-deadline-exposure-v1",
+      "entry_authority": false,
+      "validation_state": "UNVALIDATED",
+      "independent_evaluation_sessions": null,
+      "restart_downtime_included": false,
+      "retention_session_days": 14
+    },
+    "scanner_summary": {
+      "eligible_evaluations": 52,
+      "evaluable_evaluations": 36,
+      "evaluable_rate": 0.6923076923076923,
+      "candidates": 0,
+      "candidate_rate_per_1000_evaluations": 0,
+      "order_intents": 0,
+      "rejection_counts": {
+        "MOMENTUM_FAIL": 27,
+        "STALE_BAR": 15,
+        "SPREAD_TOO_WIDE": 9,
+        "DATA_GAP": 1
+      },
+      "pipeline_diagnostic": null,
+      "window_seconds": 60,
+      "retained_events": 93,
+      "retention_capacity": 20000,
+      "window_may_be_truncated": false
+    },
+    "execution_authority": false,
+    "broker_orders_possible": false
+  },
+  "validation": {
+    "guarded_backend": {
+      "passed": 1069,
+      "skipped": 10,
+      "warnings": 5
+    },
+    "command_unit": {
+      "passed": 53
+    },
+    "first_slice_hosted": {
+      "commit": "d308fee0b7cdd99124168b66f8f88125cfc50c9a",
+      "ci_run": 37655113671,
+      "ci": "SUCCESS",
+      "runtime_audit_run": 37655113668,
+      "runtime_audit": "SUCCESS"
+    },
+    "latest_code_hosted": "BLOCKED_PR_CREATION_CONNECTOR_INTERNAL_ERROR",
+    "live_end_to_end_latency": "UNPASSED",
+    "replay_source_methodology": "source-availability-replay-v2",
+    "velum_package_replay": "UNPASSED",
+    "independent_forward_and_holdout": "UNPASSED",
+    "full_configuration_and_broker_baseline": "UNPASSED"
+  },
+  "status_groups": {
+    "implemented_and_deployed": [
+      "GET-only asset fact refresh and source-age persistence in isolated observer",
+      "explicit equity/session asset eligibility veto and scanner telemetry",
+      "point-in-time correction selection before history limit",
+      "distinct simultaneous fill preservation",
+      "indexed bounded excess-only retention"
+    ],
+    "implemented_but_gated": [
+      "adaptive policy snapshots and recovery primitives",
+      "Capital Governor counterfactual adapter",
+      "forecast/version/horizon/expiry/uncertainty contracts",
+      "research promotion evidence assessment; no ACTIVE authority"
+    ],
+    "running_in_shadow_validation": [
+      "24-symbol IEX quotes/bars/updatedBars",
+      "broker trade_updates and account observations",
+      "scanner rejection and distinct signal-only candidate accounting",
+      "asset eligibility refresh",
+      "champion private health reconciliation",
+      "source history archive and policy-state recovery"
+    ],
+    "still_collecting_research_evidence": [
+      "coverage below 95%",
+      "no complete forward outcome comparisons on current research observation",
+      "required independent forward and untouched holdout sessions",
+      "overnight asset/halt and per-session live evidence",
+      "same-input 4.3 parity and stream equivalence",
+      "live kill-switch/degraded/rollback drills and complete order reconciliation"
+    ],
+    "blocked_by_external_resources": [
+      "Railway OAuth withholds full variable-value export",
+      "authenticated cloud browser shows disconnected 4.4 stream and blocks direct history navigation; root cause unestablished",
+      "GitHub PR/ref update mutations returned repeated internal/GraphQL errors; latest code remains branch-preserved"
+    ],
+    "intentionally_disabled_future_capabilities": [
+      "4.4 broker-write crossover",
+      "adaptive ACTIVE policies",
+      "options broker writes",
+      "short equities",
+      "expanded leverage",
+      "crypto",
+      "blanket 24/5 execution"
+    ]
+  },
+  "remaining_implementation": [
+    "canonical order/fill ledger integration",
+    "discovery-to-stream hotset rotation",
+    "trusted ASC profile-release/approval adapters",
+    "full risk/cost mapped candidate and canonical research export",
+    "canonical NOSTRA forecast producer/reference wiring",
+    "normalized/drawdown/session visuals and VELUM artifacts/control integration",
+    "strategy threshold overlays and full authenticated visual acceptance"
+  ],
+  "notes": [
+    "Shadow symbol-time and candidates are UNVALIDATED diagnostics, not independent sessions or complete risk-validated candidates.",
+    "Local performance fixtures are synthetic test data only and are not published as market data.",
+    "Current live timing window is short; command_clients=0, so no browser latency or visual gate passed.",
+    "Retained original and current champion refs identify code; withheld configuration values prevent claiming a complete rollback freeze.",
+    "No production service/source/variable/trading path change was made."
+  ]
+}

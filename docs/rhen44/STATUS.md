@@ -3,7 +3,7 @@
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 
-Latest operational continuation (2026-10-07, 16:50 UTC): observed champion main
+Latest operational continuation (2026-10-07, 16:58 UTC): observed champion main
 is `edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac`, deployed as
 `b7676403-c01a-4d9b-adf4-983ad43ca8fc`; behavior remains RHEN 4.3.2,
 strategy `LIVE-2026-09-25-003`. Protected trading configuration fingerprint:
@@ -52,8 +52,22 @@ oldest rows inside the existing atomic transactions. Hard retention bounds and
 restart deduplication are preserved. A local in-memory capacity-filled fixture
 (2,000 decisions, 1,000 candidates, 40,000 seen identities; 20 new inserts)
 improved median decision insertion from 56.77 ms to 0.075 ms. This is a local
-engineering comparison, not a live latency measurement. Follow-up runtime
-and hosted results remain separate until observed. No package promotion gate
+engineering comparison, not a live latency measurement. Follow-up commit
+`3ce688c3f3182ea8e4f09e2690b028cca2052cd6` deployed SUCCESS only to shadow as
+`b6fbfee1-240f-4f2b-8326-59880eb0ed9c`. At 16:58 UTC, 32,174 events had been
+processed with observed max callback 63 ms / publisher lag 68 ms; broker/account
+were healthy/live, 24 assets attested, policy restored and 2,831 bars reconstructed.
+Coverage remained ~69.5%, market WARMING and Command clients zero. This short
+window is not a browser or end-to-end latency gate.
+
+GitHub branch-ref updates and new PR creation repeatedly returned connector
+internal/GraphQL errors. Both commits are preserved on
+`work/rhen44-eligibility-replay-perf-20261007`. Draft #429 still contains the first
+slice only; its CI/audit passed. Latest code's hosted checks are UNRUN because no
+successor PR could be created. No latest-head hosted success is claimed. The
+observer remains exactly commit-pinned; source branch pushes cannot redeploy it.
+`continuation-2026-10-07.json` records sanitized observations and the six status
+groups, including incomplete canonical integrations and disabled future authority. No package promotion gate
 is inferred from these engineering tests.
 
 The explicitly authorized public observer domain is
@@ -81,7 +95,9 @@ Release metadata remains 4.3.2 until a validated behavioral crossover.
 `baseline-observation.json` records actual read-only health evidence. It is an
 observed rollback candidate, **not** a complete configuration freeze: Railway
 OAuth withholds variable values and protected Command/account endpoints require
-authorization not available in this execution environment. IREN's configuration
+a complete baseline export not available in this execution environment. This
+session did inspect authenticated Command; it did not export broker identity/order
+artifacts or secret configuration values. IREN's configuration
 identity is not mislabeled as the trading configuration fingerprint.
 
 ## Actual-state discrepancies

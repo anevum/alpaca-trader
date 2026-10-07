@@ -167,3 +167,18 @@ A new capacity/restart dedup test is included. Guarded suite now 1,069 passed,
 Current known-good production commit additionally preserved at
 `rollback/rhen-v4.3.2-edd089b-20261007-1655`; original `0270563` rollback ref is unchanged.
 No production service restart, source, config, trading path or release change occurred.
+
+
+Retention follow-up runtime: `3ce688c` / Railway `b6fbfee1` SUCCESS. At
+2026-10-07T16:58:01.585396Z, 32,174 market events processed, max callback 63 ms,
+max publisher lag 68 ms, 24 assets/subscriptions, broker HEALTHY/account LIVE,
+policy RESTORED_SHADOW_ONLY, 2,831 restored bars, coverage ~69.5% and zero order
+intents. This short observation window is not end-to-end browser latency evidence.
+Production still has the original runtime instance `27c3f39c-a2c7-44e9-973e-3449a471c13b`,
+start timestamp 16:21:13Z, edd089b / b7676403 and the same protected fingerprint.
+
+Latest-code hosted CI remains UNRUN: GitHub connector branch-ref/PR mutations
+returned repeated GraphQL/internal errors, although commit/tree/branch creation
+and reads worked. Both code commits are branch-preserved; #429 is still draft
+on d308fee. Main is untouched. The JSON continuation records this external blocker
+without conflating earlier green hosted checks with the latest head.
