@@ -391,7 +391,7 @@ class ShadowFabric:
             run_id = (self.champion_observation or {}).get("run_id")
             try:
                 canonical = await self.ledger_reader(run_id)
-                observed = self.archive.executions(now,self.store.symbols)["points"]
+                observed = self.archive.executions(now,None)["points"]
                 parity = self.canonical_ledger_parity(canonical,observed)
             except Exception as exc:
                 parity = {"quality_state":"UNAVAILABLE","reason":type(exc).__name__,
