@@ -71,6 +71,11 @@ class ShadowFabric:
 
     async def bootstrap(self, feed, session_id):
         now = datetime.now(timezone.utc)
+        if feed == "overnight":
+            # This feed has no historical endpoint. Delayed BOATS history is a
+            # different source and cannot silently become live overnight bars.
+            self.visual.system_patch({"reconstruction_source": "LIVE_STREAM_ONLY", "bootstrap_error": "OVERNIGHT_HISTORY_UNAVAILABLE"})
+            return
         try:
             self.checkpoint.restore(self.store, now)
             start = max(now-timedelta(minutes=120), self.context.starts_at)
@@ -240,6 +245,8 @@ class ShadowFabric:
                                               "subscribed_symbols": len(self.store.subscribed), "intended_symbols": len(self.store.symbols),
                                               "evaluable_fraction": sum(r["evaluable"] for r in rows)/len(rows),
                                               "reconnects": self.manager.reconnects, "out_of_order_events": self.store.out_of_order,
+                                              "subscribed_channels": sorted(self.manager.subscribed_channels),
+                                              "unavailable_channels": sorted(self.manager.unavailable_channels),
                                               "scanner_summary": self.rejections.summary(now), "entry_authority": False,
                                               "scanner_session_summary": self.evidence.summary(route.session_id.split("/")[0], route.session),
                                               "broker_stream_state": self.broker.state if self.broker else "DISABLED",
