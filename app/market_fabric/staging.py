@@ -86,13 +86,21 @@ class ReadOnlyChampion:
         # Existing private Railway service; no new public proxy/domain is created.
         async with httpx.AsyncClient(timeout=10,transport=self.transport) as http:
             response = await http.get("http://alpaca-trader.railway.internal:8080/health")
-            response.raise_for_status()
+            if response.status_code not in (200, 503):
+                response.raise_for_status()
             body = response.json()
+        if not isinstance(body, dict) or not isinstance(body.get("execution"), dict):
+            raise ValueError("Champion health envelope unavailable")
         execution = body.get("execution",{}).get("body",{})
+        if not isinstance(execution, dict) or execution.get("ok") is not True:
+            raise ValueError("Champion execution observation unavailable")
         identity = execution.get("protected_configuration_identity",{})
         return {"observed_at":datetime.now(timezone.utc).isoformat(),
             "source":"RHEN/private_champion_health","provenance":"OPERATIONAL",
-            "runtime_ok":body.get("ok") is True and execution.get("ok") is True,
+            "runtime_ok":response.status_code == 200 and body.get("ok") is True and execution.get("ok") is True,
+            "aggregate_http_status":response.status_code,
+            "module_failures":[name for name in body.get("module_failures",())
+                               if name in ("graen", "nostra", "velum", "iren", "research_agent")],
             "reconciliation_safe":execution.get("reconciliation_safe") is True,
             "strategy_version":execution.get("persistence",{}).get("strategy_version_id"),
             "protected_configuration_fingerprint":identity.get("fingerprint"),
@@ -132,7 +140,8 @@ def create_app(settings=None):
                         restored_bar_count=fabric.visual.system.get("restored_bar_count"),
                         bootstrap_error=fabric.visual.system.get("bootstrap_error"),
                         policy_recovery=fabric.policy_recovery,
-                        champion_health_lineage="VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc)) else "UNAVAILABLE",
+                        champion_health_lineage=("VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc))
+                            else "DEGRADED_READ" if fabric.champion_observation else "UNAVAILABLE"),
                         protected_configuration_fingerprint=(fabric.champion_observation or {}).get("protected_configuration_fingerprint"),
                         account_performance_quality=fabric.visual.system.get("account_performance",{}).get("quality_state","UNAVAILABLE"),
                         archived_observation_count=fabric.checkpoint.db.execute("SELECT count(*) FROM shadow_visual").fetchone()[0],

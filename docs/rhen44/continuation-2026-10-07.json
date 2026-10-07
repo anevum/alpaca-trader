@@ -257,9 +257,9 @@
       "runtime_audit_status": "SUCCESS"
     },
     "local_validation": {
-      "staging_passed": 1071,
+      "staging_passed": 1075,
       "staging_skipped": 10,
-      "dedicated_rhen44_passed": 107,
+      "dedicated_rhen44_passed": 111,
       "command_passed": 54,
       "command_typecheck_and_build": "PASSED"
     },
@@ -287,11 +287,17 @@
       "railway_deployment_status": "SUCCESS",
       "code_configuration_restart_mutations": false,
       "health_read_status": 503,
-      "current_reconciliation_safety": "UNATTESTED",
+      "current_reconciliation_safety": "BLOCKED_FALSE",
       "observed_errors": [
         "upstream ReadTimeout",
         "LEDGER_RECONCILE_ERROR"
-      ]
+      ],
+      "module_failures": [
+        "graen",
+        "nostra"
+      ],
+      "core_error": "ReadTimeout",
+      "preserved_runtime_instance_id": "27c3f39c-a2c7-44e9-973e-3449a471c13b"
     },
     "research": {
       "observed_prerequisite_coverage_fraction": 0.6918266785527224,
@@ -301,6 +307,7 @@
       "source_counters_are_independent_validated_sessions": false
     },
     "production_crossover_performed": false,
-    "promotion_eligible": false
+    "promotion_eligible": false,
+    "degraded_health_adapter": "IMPLEMENTED_PENDING_HOSTED_CHECKS_AND_SHADOW_DEPLOYMENT"
   }
 }

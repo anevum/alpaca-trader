@@ -241,3 +241,18 @@ Actual restart observation at 17:24:31 UTC: same isolated deployment recovered
 2,842 bars, policy RESTORED_SHADOW_ONLY, broker HEALTHY and 24 subscriptions.
 Broker-write authority false; transport counters reset after container restart.
 No full promotion gate is inferred from this recovery exercise.
+
+### 13:30 ET degraded champion reconciliation
+
+The aggregate production health HTTP 503 contains an execution body. That body
+confirms the exact preserved source, runtime instance and configuration identity,
+armed 4.3 execution and **reconciliation_safe=false**. Aggregate module failures
+are graen/nostra and core error ReadTimeout. This supersedes the earlier
+UNATTESTED reconciliation reading; current production entry safety is blocked.
+
+The isolated health adapter now retains a valid execution observation inside an
+aggregate 503, labels the read DEGRADED_READ and preserves source identity while
+keeping runtime_ok/reconciliation_safe false. It rejects an absent/failed execution
+body. This does not change production health, reconciliation or authority.
+Local guarded checks: 1,075 passed / 10 skipped; dedicated 4.4: 111 passed.
+Deployment of this follow-up is separate from the b23f9d0 restart evidence above.

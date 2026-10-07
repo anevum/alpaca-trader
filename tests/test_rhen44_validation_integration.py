@@ -258,3 +258,30 @@ def test_champion_lineage_rejects_stale_invalid_and_mismatched_reads():
         subject.champion_observation[field] = bad
         assert not ShadowFabric.champion_ready(subject,NOW)
         subject.champion_observation[field] = old
+
+
+def test_champion_reader_preserves_degraded_observation_without_safety_pass():
+    import httpx
+    from app.market_fabric.staging import ReadOnlyChampion
+    def handle(request):
+        assert request.method == "GET"
+        return httpx.Response(503, json={"ok":False,"module_failures":["graen","nostra"],
+            "execution":{"body":{"ok":True,"reconciliation_safe":False,
+                "protected_configuration_identity":{"fingerprint":"sha256:fixture"},
+                "persistence":{"strategy_version_id":"4.3"},
+                "runtime_provenance":{"git_commit":"fixture"}}}})
+    result = asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(handle)).snapshot())
+    assert result["source_commit"] == "fixture"
+    assert result["protected_configuration_fingerprint"] == "sha256:fixture"
+    assert result["aggregate_http_status"] == 503 and result["module_failures"] == ["graen","nostra"]
+    assert not result["runtime_ok"] and not result["reconciliation_safe"]
+    assert not result["broker_write_authority"]
+
+
+@pytest.mark.parametrize("body", [{"ok":False}, {"execution":{"body":{"ok":False}}}, []])
+def test_champion_reader_rejects_unavailable_execution_on_503(body):
+    import httpx
+    from app.market_fabric.staging import ReadOnlyChampion
+    with pytest.raises(ValueError):
+        asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(
+            lambda request: httpx.Response(503,json=body))).snapshot())
