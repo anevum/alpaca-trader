@@ -219,14 +219,9 @@ def test_champion_reader_uses_only_existing_private_health_get():
         requests.append(request)
         return httpx.Response(200,json={"ok":True,"execution":{"body":{"ok":True,"reconciliation_safe":True,
             "protected_configuration_identity":{"fingerprint":"sha256:fixture"},
-            "persistence":{"strategy_version_id":"4.3"},"runtime_provenance":{"git_commit":"fixture"},
-            "universe":{"enabled":True,"source":"hierarchical_screener","active_count":3,
-                "candidate_count":100,"eligible_count":5000,"updated_at":NOW.isoformat(),
-                "active_symbols":["SPY","QQQ","NVDA"]}}}})
+            "persistence":{"strategy_version_id":"4.3"},"runtime_provenance":{"git_commit":"fixture"}}}})
     result = asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(handle)).snapshot())
     assert result["runtime_ok"] and result["reconciliation_safe"] and not result["broker_write_authority"]
-    assert result["universe"]["active_symbols"] == ["SPY","QQQ","NVDA"]
-    assert result["universe"]["candidate_count"] == 100
     assert len(requests) == 1 and requests[0].method == "GET"
     assert str(requests[0].url) == "http://alpaca-trader.railway.internal:8080/health"
     assert "authorization" not in requests[0].headers and "apca-api-key-id" not in requests[0].headers
@@ -293,6 +288,31 @@ def test_champion_reader_rejects_unavailable_execution_on_503(body):
     with pytest.raises(ValueError):
         asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(
             lambda request: httpx.Response(503,json=body))).snapshot())
+
+
+def test_canonical_universe_reader_is_get_only_and_validates_authority():
+    import httpx
+    from app.config import Settings
+    from app.market_fabric.staging import ReadOnlyCanonicalUniverse
+    calls=[]
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200,json={"ok":True,"universe_version":"rhen-canonical-universe-read-v1",
+            "enabled":True,"source":"hierarchical_screener","active_count":3,
+            "candidate_count":100,"eligible_count":5000,"updated_at":NOW.isoformat(),"error":None,
+            "active_symbols":["SPY","QQQ","NVDA"],"execution_authority":False,
+            "broker_orders_possible":False})
+    settings=Settings(_env_file=None,TRADING_INGEST_TOKEN="fixture-token")
+    result=asyncio.run(ReadOnlyCanonicalUniverse(settings,transport=httpx.MockTransport(handle)).snapshot())
+    assert result["active_symbols"]==["SPY","QQQ","NVDA"]
+    assert len(calls)==1 and calls[0].method=="GET"
+    assert calls[0].url.path=="/v1/scheduler/universe"
+    assert calls[0].headers["x-anevum-scheduler-token"]=="fixture-token"
+
+    bad=ReadOnlyCanonicalUniverse(settings,transport=httpx.MockTransport(
+        lambda request:httpx.Response(200,json={**result,"execution_authority":True})))
+    with pytest.raises(ValueError):
+        asyncio.run(bad.snapshot())
 
 
 def test_canonical_ledger_reader_is_get_only_and_validates_authority():

@@ -39,7 +39,7 @@ from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, asset_reader=None, ledger_reader=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, discovery_reader=None, asset_reader=None, ledger_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
@@ -64,8 +64,10 @@ class ShadowFabric:
         self.asset_reader = asset_reader
         self.asset_refresh = asyncio.Event()
         self.champion_reader = champion_reader
+        self.discovery_reader = discovery_reader
         self.ledger_reader = ledger_reader
         self.champion_observation = None
+        self.discovery_observation = None
         self.account_refresh = asyncio.Event()
         self.signal_cache = {}
         self.resolver = EquitySessionResolver(market_data)
@@ -444,6 +446,11 @@ class ShadowFabric:
             except Exception:
                 self.champion_observation = None
             self.visual.system_patch({"champion_observation":self.champion_observation or {"quality_state":"UNAVAILABLE"}})
+        if self.discovery_reader:
+            try:
+                self.discovery_observation = await self.discovery_reader()
+            except Exception:
+                self.discovery_observation = None
             self.update_hotset(now)
         if self.ledger_reader:
             run_id = (self.champion_observation or {}).get("run_id")
@@ -506,12 +513,20 @@ class ShadowFabric:
                 "provenance": "DERIVED", "source": "RHEN/canonical_sizing_read", "methodology_version": "capital-governor-v1"}})
 
     def update_hotset(self, now):
-        universe = (self.champion_observation or {}).get("universe") or {}
+        universe = self.discovery_observation or {}
         ranked = universe.get("active_symbols") if isinstance(universe, dict) else None
         if not self.champion_ready(now) or not isinstance(ranked, list):
             self.hotset_status = {**self.hotset_status,"active":False,"quality_state":"UNAVAILABLE",
                 "reason":"CANONICAL_DISCOVERY_UNAVAILABLE","entry_authority":False,"broker_write_authority":False}
             self.visual.system_patch({"hotset":dict(self.hotset_status)})
+            print("RHEN44_HOTSET "+json.dumps({
+                "quality_state":self.hotset_status.get("quality_state"),
+                "reason":self.hotset_status.get("reason"),
+                "active":False,"integrated":True,
+                "discovery_count":0,"current_count":len(self.store.symbols),
+                "rotation_count":self.hotset.rotations,
+                "entry_authority":False,"broker_write_authority":False
+            },allow_nan=False),flush=True)
             return False
         proposed, status = self.hotset.propose(ranked, self.store.symbols, now)
         status = {**status,"discovery_source":universe.get("source"),
@@ -531,6 +546,14 @@ class ShadowFabric:
             status.update(added_count=len(added),removed_count=len(removed),quality_state="ROTATING")
         self.hotset_status = status
         self.visual.system_patch({"hotset":dict(status)})
+        print("RHEN44_HOTSET "+json.dumps({
+            "quality_state":status.get("quality_state"),"reason":status.get("reason"),
+            "active":status.get("active") is True,"integrated":status.get("integrated") is True,
+            "discovery_count":status.get("discovery_count"),"current_count":len(self.store.symbols),
+            "added_count":status.get("added_count"),"removed_count":status.get("removed_count"),
+            "rotation_count":status.get("rotation_count"),
+            "entry_authority":False,"broker_write_authority":False
+        },allow_nan=False),flush=True)
         return bool(status.get("changed"))
 
     def champion_ready(self, now):

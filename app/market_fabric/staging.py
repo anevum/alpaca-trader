@@ -122,17 +122,36 @@ class ReadOnlyChampion:
             "run_id":persistence.get("run_id"),
             "protected_configuration_fingerprint":identity.get("fingerprint"),
             "source_commit":execution.get("runtime_provenance",{}).get("git_commit"),
-            "universe":{
-                "enabled":bool((execution.get("universe") or {}).get("enabled")),
-                "source":(execution.get("universe") or {}).get("source"),
-                "active_count":len((execution.get("universe") or {}).get("active_symbols") or ()),
-                "candidate_count":(execution.get("universe") or {}).get("candidate_count"),
-                "eligible_count":(execution.get("universe") or {}).get("eligible_count"),
-                "updated_at":(execution.get("universe") or {}).get("updated_at"),
-                "active_symbols":[str(s).upper() for s in ((execution.get("universe") or {}).get("active_symbols") or ())
-                                  if isinstance(s,str) and s and len(s) <= 16][:500],
-            },
             "broker_write_authority":False}
+
+
+class ReadOnlyCanonicalUniverse:
+    """Token-authenticated GET-only projection of RHEN's canonical discovery ranking."""
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/scheduler/universe"
+    VERSION = "rhen-canonical-universe-read-v1"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self):
+        if not self.token:
+            raise ValueError("canonical universe read unavailable")
+        async with httpx.AsyncClient(timeout=10, transport=self.transport) as http:
+            response = await http.get(self.ENDPOINT,headers={"x-anevum-scheduler-token":self.token})
+            response.raise_for_status()
+            body = response.json()
+        symbols = body.get("active_symbols") if isinstance(body,dict) else None
+        if (not isinstance(body,dict) or body.get("ok") is not True
+            or body.get("universe_version") != self.VERSION
+            or body.get("execution_authority") is not False
+            or body.get("broker_orders_possible") is not False
+            or not isinstance(symbols,list) or len(symbols) > 500
+            or body.get("active_count") != len(symbols)
+            or len(symbols) != len(set(symbols))
+            or any(not isinstance(s,str) or not s for s in symbols)):
+            raise ValueError("canonical universe identity mismatch")
+        return body
 
 
 class ReadOnlyCanonicalLedger:
@@ -186,8 +205,9 @@ def create_app(settings=None):
                     return []
                 return await broker.assets(fabric.store.symbols)
             fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=broker.snapshot,
-                                  champion_reader=ReadOnlyChampion().snapshot, asset_reader=current_assets,
-                                  ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
+                                  champion_reader=ReadOnlyChampion().snapshot,
+                                  discovery_reader=ReadOnlyCanonicalUniverse(settings).snapshot,
+                                  asset_reader=current_assets,ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
             fabric.start()
             async def telemetry():
                 failures = 0
