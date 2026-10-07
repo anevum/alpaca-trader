@@ -6,6 +6,7 @@ deferred until signed equivalence and runtime gates are established.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -398,6 +399,25 @@ class ShadowFabric:
                     "parity_complete":False,"source":"RHEN/canonical_ledger_read",
                     "provenance":"DERIVED","methodology_version":"canonical-observation-parity-v1"}
             self.visual.system_patch({"canonical_ledger_parity":parity})
+            print("RHEN44_LEDGER_PARITY "+json.dumps({
+                "observed_at":now.isoformat(),
+                "quality_state":parity.get("quality_state"),
+                "reason":parity.get("reason"),
+                "parity_complete":parity.get("parity_complete") is True,
+                "canonical_events":parity.get("canonical_events"),
+                "observed_events":parity.get("observed_events"),
+                "canonical_order_count":parity.get("canonical_order_count"),
+                "observed_order_count":parity.get("observed_order_count"),
+                "canonical_fill_order_count":parity.get("canonical_fill_order_count"),
+                "observed_fill_order_count":parity.get("observed_fill_order_count"),
+                "missing_observed_orders":parity.get("missing_observed_orders"),
+                "unknown_observed_orders":parity.get("unknown_observed_orders"),
+                "missing_observed_fills":parity.get("missing_observed_fills"),
+                "unknown_observed_fills":parity.get("unknown_observed_fills"),
+                "entry_authority":False,
+                "broker_write_authority":False,
+                "methodology_version":parity.get("methodology_version"),
+            },allow_nan=False),flush=True)
         projection = account_projection(snapshot, now)
         for key, point in projection["points"].items():
             self.visual.point("account:"+key, point)
