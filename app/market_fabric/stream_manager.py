@@ -37,6 +37,9 @@ class MarketStreamManager:
         self.running = False
         self.sequence = 0
         self.on_status = on_status
+        self.processed_events = 0
+        self.cooperative_yields = 0
+        self.max_callback_ms = 0.0
 
     async def status(self, state, *, force=False):
         changed = self.store.connection != state
@@ -46,6 +49,8 @@ class MarketStreamManager:
                 "subscribed_symbols":len(self.store.subscribed),"intended_symbols":len(self.store.symbols),
                 "subscribed_channels":sorted(self.subscribed_channels),"unavailable_channels":sorted(self.unavailable_channels),
                 "stream_errors":self.errors,"stream_error":self.last_error,"stream_error_code":self.last_error_code,
+                "processed_market_events":self.processed_events,"cooperative_yields":self.cooperative_yields,
+                "max_market_callback_ms":self.max_callback_ms,
                 "source_at":datetime.now(timezone.utc).isoformat(),"provenance":"OPERATIONAL","entry_authority":False})
 
     async def consume(self, ws, feed, session_id):
@@ -60,6 +65,8 @@ class MarketStreamManager:
         subscribe_sent = False
         pending_channel = None
         bootstrapped = False
+        loop = asyncio.get_running_loop()
+        yielded_at = loop.time()
         # Sequential consumption applies transport backpressure; bounded websockets max_queue
         # preserves bars rather than losing them to a quote-only drop policy.
         async for frame in ws:
@@ -113,9 +120,20 @@ class MarketStreamManager:
                     event = normalize(raw, generation=generation, sequence=self.sequence, feed=feed,
                                       session=session_id.split("/")[-1], session_id=session_id, received_at=now)
                     if self.store.apply(event):
+                        callback_at = loop.time()
                         await self.on_event(event)
+                        self.max_callback_ms = max(self.max_callback_ms, (loop.time()-callback_at)*1000)
+                        self.processed_events += 1
                     ready = all(self.store.snapshot(s, now)["evaluable"] for s in self.store.symbols)
                     await self.status("HEALTHY" if ready else "WARMING")
+                # Buffered frames can make recv and synchronous shadow callbacks
+                # complete without yielding. Give broker, ping/reconnect, freshness
+                # and Command publisher tasks a turn after a bounded work slice.
+                # Every event remains ordered; no quote/bar or broker event is dropped.
+                if loop.time()-yielded_at >= .01:
+                    await asyncio.sleep(0)
+                    self.cooperative_yields += 1
+                    yielded_at = loop.time()
 
     async def run(self, feed, session_id):
         if feed not in ENDPOINTS or not self.api_key or not self.api_secret:

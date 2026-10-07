@@ -122,6 +122,15 @@ def create_app(settings=None):
                         quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
                         subscribed_channels=sorted(fabric.manager.subscribed_channels),
                         unavailable_channels=sorted(fabric.manager.unavailable_channels),
+                        scanner_prerequisites={"required_bars":fabric.store.warm_bars,
+                            "symbols_with_required_bars":sum(len(row.get("bars",())) >= fabric.store.warm_bars for row in fabric.store.rows.values()),
+                            "evaluable_symbols":sum(fabric.store.snapshot(s,datetime.now(timezone.utc))["evaluable"] for s in fabric.store.symbols)},
+                        market_processing={"processed_events":fabric.manager.processed_events,
+                            "cooperative_yields":fabric.manager.cooperative_yields,
+                            "max_callback_ms":fabric.manager.max_callback_ms,
+                            "max_publisher_tick_lag_ms":fabric.visual.publisher.max_tick_lag_ms,
+                            "command_clients":len(fabric.visual.publisher.clients)},
+                        scanner_coverage={k:v for k,v in fabric.coverage.summary(fabric.store,datetime.now(timezone.utc)).items() if k != "symbols"},
                         scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
                     print("RHEN44_SHADOW_TELEMETRY "+json.dumps(body,allow_nan=False),flush=True)
                     await asyncio.sleep(30)

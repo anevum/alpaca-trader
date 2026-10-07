@@ -3,6 +3,22 @@
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 
+Latest operational continuation (2026-10-07): champion main is `a9385e3`,
+still 4.3.2; Command #193 merged as `e4772ac` and deployed Worker
+`fcd9a022-5a9c-4dd3-9d02-3f01fac4f710` with hosted verify/deploy/audit and
+public desktop/mobile QA passing. The explicitly authorized public observer
+domain is `https://rhen44-shadow-production.up.railway.app`. Status/history
+reject anonymous requests (401), malformed bearer fails (401), anonymous
+WebSocket handshakes fail (403), and broker routes remain absent (404).
+Command's authenticated stream/history connection is deployed. Authenticated
+browser visual/replay/reconnect/latency acceptance remains unpassed: the cloud
+browser sign-in reports a Cloudflare verification error, and the user cannot
+complete that handoff on mobile. Connected GitHub/Railway access is being used
+for implementation and runtime validation; it does not provide a Command session.
+
+The observations below retain their original chronology. Earlier statements
+about a missing domain or disabled Command UI are superseded by this continuation.
+
 Initial production baseline: RHEN 4.3.2, source `0270563a613c57a959d1c6b93b97a01509a418df`,
 Railway deployment `4ec33727-f98b-4ffe-97f8-1ce30a2e95e2` SUCCESS.
 Command source baseline is `bd4999cbd98e6c209c451a183e9f965e9682ebdf`; GitHub
@@ -50,8 +66,8 @@ identity is not mislabeled as the trading configuration fingerprint.
 | 2: event-driven market observation | Implemented; isolated runtime deployed; overnight subscription diagnosis/fix merged | Verify actual accepted channels and source coverage, reconnect and shadow equivalence |
 | 3: broker trade_updates | Durable shadow inbox/projection implemented | Canonical order/fill ledger reconciliation integration; never silently replace 4.3 reconciliation |
 | 4: warm start | Checkpoints/history bootstrap implemented; local restart test passes | Runtime restart with real positions/orders and gap/backfill evidence |
-| 5: scanner/rejection | Durable bounded decisions/candidates, target-session/day rollups and champion check mapping implemented; quote/reconnect dedup tested | Full risk/cost/asset mapping, evaluable-symbol-hour exposure, canonical research export/completeness |
-| 6: Command WebSocket | Protected route, unified router bridge, worker proxy and single client socket implemented | Authorized end-to-end Cloudflare/Railway proof; live latency measurement |
+| 5: scanner/rejection | Durable bounded decisions/candidates, rejection rollups, deadline invalidation and source-valid symbol-hour accounting implemented; distinct-candidate/lineage/restart tests pass | Full risk/cost/asset mapping, canonical research export/completeness and runtime exposure attestation |
+| 6: Command WebSocket | Protected route, unified router bridge, worker proxy and single client socket deployed to authenticated shadow | Authenticated end-to-end browser acceptance; live latency measurement |
 | 7: core visuals | Candles/scanner/source volume/rolling VWAP/broker position and order levels/actual fill markers/window controls implemented, gated | Real-data screenshot QA; full server time-range history and strategy threshold overlays |
 | 8: advanced visuals | Forecast contract/band/expiry, replay PIT and event-triggered read-only broker equity/cash series implemented | NOSTRA forecast producer wiring, normalized/drawdown/session performance, VELUM artifact/control wiring |
 | 9: regular stream promotion | Intentionally not performed | Same-input strategy parity + real stream-vs-poll shadow equivalence; risk/engine data-source release |
@@ -59,8 +75,8 @@ identity is not mislabeled as the trading configuration fingerprint.
 | 11: policy primitives | Library fingerprinting, immutable disabled/shadow snapshots, hysteresis/dwell/vetoes implemented | Profile-release approval registry/ASC-008 trusted activation integration; ACTIVE explicitly rejected |
 | 12: NOSTRA wrapper | Reuses ASC-002 classifier with completed contiguous-bar cross section; PIT/missing/stale/fingerprint and durable decision lineage tested | Canonical research feature/schema parity and export; all-symbol missing/stale remains UNKNOWN |
 | 13: Capital Governor | Counterfactual adapter reuses existing sizing and exposure caps on observed broker snapshots; evidence veto keeps notional zero | Approved evidence/health factors and governed shadow validation |
-| 14: adaptive shadow | Runtime NOSTRA/policy snapshot lineage persisted with decisions; immutable execution values equal baseline; missing canonical health vetoes entries | Restart-persistent dwell/controller state, canonical health/ASC approval adapters, research lineage export |
-| 15: combined Command | Separate gated market surface inside current Operate | Adaptive panels and full canonical telemetry coverage |
+| 14: adaptive shadow | Runtime NOSTRA/policy lineage, persistent dwell/controller recovery and read-only champion health deployed; immutable execution values equal baseline | Canonical ASC approval adapters and research lineage export |
+| 15: combined Command | Authenticated market/adaptive/account diagnostics/replay surface connected inside current Operate | Authenticated visual acceptance, full canonical telemetry/forecast/replay integration |
 | 16: VELUM/GRAEN/ASC | Existing machinery preserved; no protected data accessed | Frozen experiments, no-lookahead replay, forward cohorts, untouched holdout results |
 | 17-19: canary/session/assertive promotion | Intentionally disabled | All package promotion gates and lane/profile-specific evidence |
 
