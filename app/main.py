@@ -1299,6 +1299,11 @@ def scheduler_universe_snapshot() -> dict:
 @app.get("/v1/scheduler/universe")
 async def scheduler_universe(x_anevum_scheduler_token: str | None = Header(default=None)):
     require_scheduler_token(x_anevum_scheduler_token)
+    # DynamicUniverse is normally refreshed by the regular-session scanner.
+    # A production restart outside regular hours would otherwise leave the
+    # canonical discovery projection empty until the next open. Refreshing here
+    # performs broker/market-data reads only and preserves all execution gates.
+    await universe.active_symbols(now=datetime.now(NY))
     return scheduler_universe_snapshot()
 
 
