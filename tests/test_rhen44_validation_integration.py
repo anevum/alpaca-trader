@@ -341,6 +341,8 @@ def test_canonical_ledger_parity_is_overlap_bounded_and_fail_closed():
         {**observed[0],"event_id":"obs-extra","order_ref":"unknown"}])
     assert extra["quality_state"] == "LIVE"
     assert extra["parity_complete"] is True
+    assert extra["stream_parity_complete"] is True
+    assert extra["reconciliation_complete"] is True
     assert extra["reason"] == "PARITY_WITH_UNATTRIBUTED_ACCOUNT_EVENTS"
     assert extra["missing_observed_orders"] == 0
     assert extra["unattributed_observed_orders"] == 1
@@ -348,6 +350,10 @@ def test_canonical_ledger_parity_is_overlap_bounded_and_fail_closed():
     diverged = ShadowFabric.canonical_ledger_parity(canonical,[{**observed[0],"order_ref":"unknown"}])
     assert diverged["quality_state"] == "DEGRADED"
     assert diverged["parity_complete"] is False
+    assert diverged["stream_parity_complete"] is False
+    assert diverged["reconciliation_complete"] is True
+    assert diverged["recovered_gap_orders"] == 1
+    assert diverged["recovered_gap_fills"] == 1
     assert diverged["missing_observed_orders"] == 1
     assert diverged["unattributed_observed_orders"] == 1
     assert diverged["missing_order_first_at"] == retained
