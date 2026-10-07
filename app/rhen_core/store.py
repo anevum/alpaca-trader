@@ -4206,6 +4206,73 @@ class RhenCoreStore:
             "evidence_cutoff": max(cutoffs) if cutoffs else None,
         }
 
+    def nostra_forecasts(
+        self, now: datetime | None = None, *, limit: int = 200
+    ) -> dict[str, Any]:
+        """Bounded projection of still-live canonical NOSTRA forecast events."""
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        bounded = max(1, min(int(limit), 200))
+        since = (current - timedelta(hours=24)).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """select payload_json,occurred_at from events
+                   where event_type='nostra_forecast'
+                     and occurred_at >= ?
+                   order by occurred_at desc, rowid desc
+                   limit ?""",
+                (since, bounded),
+            ).fetchall()
+
+        forecasts: list[dict[str, Any]] = []
+        rejected = 0
+        for row in rows:
+            payload = _loads(row["payload_json"], {})
+            if not isinstance(payload, dict):
+                rejected += 1
+                continue
+            try:
+                generated = datetime.fromisoformat(
+                    str(payload.get("generated_at") or row["occurred_at"]).replace("Z","+00:00")
+                )
+                as_of = datetime.fromisoformat(
+                    str(payload.get("as_of_timestamp") or "").replace("Z","+00:00")
+                )
+                if generated.tzinfo is None or as_of.tzinfo is None:
+                    raise ValueError("naive timestamp")
+                generated = generated.astimezone(UTC)
+                as_of = as_of.astimezone(UTC)
+                horizon = int(payload.get("horizon_minutes") or 0)
+                if (
+                    payload.get("research_only") is not True
+                    or payload.get("execution_authority") is not False
+                    or payload.get("target_kind") != "return"
+                    or payload.get("authority_state") not in {"NORMAL","LOW_SUPPORT"}
+                    or not str(payload.get("forecast_id") or "").strip()
+                    or not str(payload.get("snapshot_id") or "").strip()
+                    or not str(payload.get("symbol") or "").strip()
+                    or as_of > generated
+                    or generated > current
+                    or not 1 <= horizon <= 1440
+                    or generated + timedelta(minutes=horizon) <= current
+                ):
+                    raise ValueError("invalid forecast")
+                forecasts.append(payload)
+            except (TypeError, ValueError):
+                rejected += 1
+
+        return {
+            "ok": True,
+            "schema_version": "nostra-canonical-forecast-read-v1",
+            "observed_at": current.isoformat(),
+            "forecasts": forecasts,
+            "returned_count": len(forecasts),
+            "rejected_count": rejected,
+            "truncated": len(rows) >= bounded,
+            "research_only": True,
+            "execution_authority": False,
+            "broker_write_authority": False,
+        }
+
     def nostra_work(
         self, now: datetime | None = None
     ) -> dict[str, Any]:
