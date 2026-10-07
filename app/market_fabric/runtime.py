@@ -101,7 +101,10 @@ class ShadowFabric:
         signal = None
         decision_id = None
         if row["evaluable"]:
-            if self.evaluator and event.session == "REGULAR":
+            if row["spread_bps"] is not None and row["spread_bps"] > float(self.settings.max_spread_pct)*10000:
+                classification = "EVALUABLE_REJECTED"
+                reasons = ("SPREAD_TOO_WIDE",)
+            elif self.evaluator and event.session == "REGULAR":
                 # The champion signal uses completed bars. Quote bursts update cheap
                 # state without recalculating identical signal inputs. Confirmation
                 # bar revisions invalidate the key too; no formula is reimplemented.
