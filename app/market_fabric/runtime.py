@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, discovery_reader=None, asc_reader=None, asset_reader=None, ledger_reader=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, discovery_reader=None, asc_reader=None, forecast_reader=None, asset_reader=None, ledger_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
@@ -67,10 +67,13 @@ class ShadowFabric:
         self.champion_reader = champion_reader
         self.discovery_reader = discovery_reader
         self.asc_reader = asc_reader
+        self.forecast_reader = forecast_reader
         self.ledger_reader = ledger_reader
         self.champion_observation = None
         self.discovery_observation = None
         self.discovery_error = None
+        self.forecast_observation = None
+        self.forecast_error = None
         self.asc_approval = {
             "quality_state":"UNAVAILABLE","reason":"CANONICAL_PROFILE_RELEASE_UNREAD",
             "approved_profiles":[],"evidence_healthy":False,
@@ -507,6 +510,15 @@ class ShadowFabric:
                 "active_mode_authorized":False,"entry_authority":False,
                 "broker_write_authority":False,
             },allow_nan=False),flush=True)
+        if self.forecast_reader:
+            try:
+                self.forecast_observation = await self.forecast_reader()
+                self.forecast_error = None
+            except Exception as exc:
+                self.forecast_observation = None
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                self.forecast_error = type(exc).__name__ + (f":HTTP_{status}" if status else "")
+            self.update_forecasts(datetime.now(timezone.utc))
         if self.ledger_reader:
             run_id = (self.champion_observation or {}).get("run_id")
             try:
@@ -566,6 +578,140 @@ class ShadowFabric:
                 "entry_authority": False, "mode": "SHADOW", "quality_state": "UNVALIDATED",
                 "evidence_reason": "CANONICAL_POLICY_VALIDATION_UNAVAILABLE", "observed_at": now.isoformat(),
                 "provenance": "DERIVED", "source": "RHEN/canonical_sizing_read", "methodology_version": "capital-governor-v1"}})
+
+    def forecast_reference(self, record, now):
+        try:
+            feature = utc(record.get("as_of_timestamp"))
+            symbol = str(record.get("symbol") or "").strip().upper()
+            snapshot_id = str(record.get("snapshot_id") or "").strip()
+            if not symbol or not snapshot_id or symbol not in self.store.symbols:
+                return None
+            history = self.archive.history(
+                "candles:"+symbol,
+                feature-timedelta(seconds=120),
+                feature,
+                clock=utc(now),
+                limit=5,
+            )
+            candidates = []
+            for point in history.get("points") or []:
+                try:
+                    stamp = utc(point.get("timestamp"))
+                    if (
+                        stamp <= feature
+                        and point.get("provenance") == "OBSERVED"
+                        and point.get("quality_state") == "LIVE"
+                        and point.get("source")
+                        and point.get("c") is not None
+                    ):
+                        candidates.append((stamp, point))
+                except (ValueError, TypeError):
+                    continue
+            if not candidates:
+                return None
+            _, point = max(candidates, key=lambda row: row[0])
+            return {
+                "symbol":symbol,
+                "snapshot_id":snapshot_id,
+                "timestamp":point["timestamp"],
+                "value":point["c"],
+                "provenance":"OBSERVED",
+                "source":point["source"],
+                "quality_state":"LIVE",
+            }
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    def update_forecasts(self, now):
+        body = self.forecast_observation
+        base = {
+            "integrated":True,
+            "research_only":True,
+            "execution_authority":False,
+            "broker_write_authority":False,
+            "source":"NOSTRA/canonical_forecast_read",
+            "methodology_version":"nostra-command-projection-v1",
+        }
+        if (
+            not isinstance(body,dict)
+            or body.get("ok") is not True
+            or body.get("schema_version") != "nostra-canonical-forecast-read-v1"
+            or body.get("research_only") is not True
+            or body.get("execution_authority") is not False
+            or body.get("broker_write_authority") is not False
+            or not isinstance(body.get("forecasts"),list)
+        ):
+            result={**base,
+                "quality_state":"UNAVAILABLE",
+                "reason":"CANONICAL_FORECAST_READ_UNAVAILABLE",
+                "read_error":self.forecast_error,
+                "canonical_count":0,
+                "projected_count":0,
+                "missing_reference_count":0,
+                "rejected_count":0,
+            }
+            self.visual.system_patch({"nostra_forecasts":result})
+            print("RHEN44_NOSTRA_FORECASTS "+json.dumps(result,allow_nan=False),flush=True)
+            return result
+
+        removed=False
+        for symbol, old in list(self.visual.forecasts.items()):
+            try:
+                if utc(old.get("expires_at")) <= utc(now) or symbol not in self.store.symbols:
+                    self.visual.forecasts.pop(symbol,None)
+                    removed=True
+            except (ValueError,TypeError):
+                self.visual.forecasts.pop(symbol,None)
+                removed=True
+
+        by_symbol={}
+        for record in body["forecasts"][:200]:
+            if not isinstance(record,dict):
+                continue
+            symbol=str(record.get("symbol") or "").strip().upper()
+            if symbol not in self.store.symbols:
+                continue
+            try:
+                generated=utc(record.get("generated_at"))
+            except (ValueError,TypeError):
+                continue
+            rank=(generated,1 if record.get("model_id")=="shrunken_drift" else 0,
+                  str(record.get("forecast_id") or ""))
+            prior=by_symbol.get(symbol)
+            if prior is None or rank > prior[0]:
+                by_symbol[symbol]=(rank,record)
+
+        projected=0
+        missing_reference=0
+        rejected=0
+        model_ids=set()
+        for _,record in by_symbol.values():
+            reference=self.forecast_reference(record,now)
+            if reference is None:
+                missing_reference+=1
+                continue
+            try:
+                if self.visual.canonical_forecast(record,reference,now):
+                    projected+=1
+                    model_ids.add(str(record.get("model_id") or ""))
+            except (ValueError,TypeError,KeyError):
+                rejected+=1
+        if removed:
+            self.visual.publisher.send("snapshot",self.visual.snapshot())
+        result={**base,
+            "quality_state":"LIVE",
+            "reason":"PROJECTED" if projected else "NO_PROJECTABLE_ACTIVE_FORECASTS",
+            "canonical_count":len(body["forecasts"]),
+            "selected_symbol_count":len(by_symbol),
+            "projected_count":projected,
+            "missing_reference_count":missing_reference,
+            "rejected_count":rejected,
+            "model_ids":sorted(model_ids),
+            "observed_at":utc(now).isoformat(),
+        }
+        self.visual.system_patch({"nostra_forecasts":result})
+        print("RHEN44_NOSTRA_FORECASTS "+json.dumps(result,allow_nan=False),flush=True)
+        return result
 
     def update_hotset(self, now):
         universe = self.discovery_observation or {}
