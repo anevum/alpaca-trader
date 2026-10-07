@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 
+import pytest
+
 from app.rhen_core.store import RhenCoreStore
 from app.rhen_core.supervisor import PROCESSES, ProcessSpec, _child_env, _wait_tcp_ready
 from app.rhen_core.router import enabled_modules
