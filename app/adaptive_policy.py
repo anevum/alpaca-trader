@@ -154,7 +154,7 @@ class AdaptivePolicyController:
             dwell = self.since is None or (context.observed_at-self.since).total_seconds() >= self.min_dwell_seconds
             if selected != self.profile and selected != "BASELINE_LOCKED" and not safety:
                 if fresh_observation:
-                    self.confirmed = self.confirmed+1 if self.pending == selected else 1
+                    self.confirmed = min(self.confirmations, self.confirmed+1) if self.pending == selected else 1
                     self.pending = selected
                 if self.confirmed < self.confirmations or (upgrade and (not dwell or context.confidence < .75)):
                     selected = self.profile

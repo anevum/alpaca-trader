@@ -1189,15 +1189,40 @@ async def command_live_stream(websocket: WebSocket):
         publisher.unsubscribe(queue)
 
 
+@app.get("/v1/command/shadow/history")
+async def command_shadow_history(series: str, start: str, end: str, clock: str | None = None,
+                                 limit: int = 2400, authorization: str | None = Header(default=None)):
+    await require_command_admin(authorization)
+    if not settings.command_live_stream_enabled or shadow_fabric is None:
+        raise HTTPException(503,"shadow history unavailable")
+    from .market_fabric.contracts import utc
+    now = datetime.now(timezone.utc)
+    try:
+        replay_clock = utc(clock) if clock else now
+        if replay_clock > now:
+            raise ValueError("future replay clock")
+        return shadow_fabric.archive.history(series,start,end,clock=replay_clock,limit=limit)
+    except ValueError as exc:
+        raise HTTPException(422,"invalid source history range") from exc
+
+
 @app.get("/health")
 async def health():
     from .rhen44_release import release_status
     signal = runtime_state.last_signal or {}
     order = runtime_state.last_order or {}
+    protected_identity = scheduler_configuration_snapshot()
     return {
         "ok": True,
         "system": "RHEN",
         "rhen44": release_status(settings, shadow_fabric),
+        "protected_configuration_identity": {
+            "fingerprint": protected_identity["fingerprint"],
+            "schema_version": protected_identity["schema_version"],
+            "source": "RHEN/protected_configuration",
+            "scope": "existing_scheduler_comparison_and_protected_contract",
+            "provenance": "OPERATIONAL",
+        },
         "trading_mode": settings.trading_mode,
         "order_execution_present": True,
         "execution_enabled": settings.execution_enabled,

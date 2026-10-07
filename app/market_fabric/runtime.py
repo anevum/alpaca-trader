@@ -14,6 +14,8 @@ import httpx
 
 from app.command_visuals.visual_projector import VisualProjector
 from app.command_visuals.account_projection import account_projection
+from app.command_visuals.visual_archive import VisualArchive
+from app.command_visuals.performance_projection import AccountPerformance
 from app.equity_sessions import EquitySessionResolver
 from app.adaptive_policy import AdaptivePolicyController, PolicyLibrary, PolicyContext, fingerprint
 from app.capital_governor import govern_capital
@@ -27,12 +29,13 @@ from .stream_state import MarketStateStore
 from .decision_evidence import DecisionEvidence
 from .shadow_features import regime_observation
 from .signal_reasons import rejection_reasons
+from .policy_state import PolicyStateStore
 from .contracts import utc
 from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
@@ -40,6 +43,8 @@ class ShadowFabric:
         self.rejections = RejectionEngine()
         self.evaluator = evaluator
         self.account_reader = account_reader
+        self.champion_reader = champion_reader
+        self.champion_observation = None
         self.account_refresh = asyncio.Event()
         self.signal_cache = {}
         self.resolver = EquitySessionResolver(market_data)
@@ -50,6 +55,8 @@ class ShadowFabric:
         # 32 MiB ceiling for isolated bars, summaries and bounded shadow evidence.
         self.checkpoint.db.execute("PRAGMA max_page_count=8192")
         self.evidence = DecisionEvidence(self.checkpoint.db)
+        self.archive = VisualArchive(self.checkpoint.db)
+        self.performance = AccountPerformance(self.checkpoint.db)
         self.library = PolicyLibrary.load()
         baseline = {k: str(getattr(settings, k)) for k in ("stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes", "max_spread_pct", "min_quality_score")}
         # This identifies shadow inputs, not the protected production configuration.
@@ -57,20 +64,30 @@ class ShadowFabric:
             "symbols": settings.extended_equity_symbols, "fast_window": settings.fast_window, "slow_window": settings.slow_window})
         self.policy = AdaptivePolicyController(self.library, baseline=baseline, hard_limits={"stop_pct": settings.max_dynamic_stop_pct,
             "max_spread_pct": settings.max_spread_pct}, configuration_fingerprint=self.shadow_configuration)
+        self.policy_state = PolicyStateStore(self.checkpoint.db)
+        self.policy_session = None
+        self.policy_recovery = "UNAVAILABLE"
         self.regime_key = None
         self.regime = None
         self.features = {}
         self.policy_snapshot = None
         self.manager = MarketStreamManager(self.store, api_key=settings.alpaca_api_key, api_secret=settings.alpaca_api_secret,
-                                           on_event=self.on_event, bootstrap=self.bootstrap)
+                                           on_event=self.on_event, bootstrap=self.bootstrap, on_status=self.on_stream_status)
         self.tasks = []
         self.stream_task = None
         self.last_error = None
         self.broker = None
         self.inbox = None
 
+    async def on_stream_status(self, status):
+        self.visual.system_patch(status)
+        # Connection loss/recovery is critical operational evidence. Do not wait
+        # for the 30-second calendar/reconciliation audit to propagate it.
+        self.visual.publisher.flush()
+
     async def bootstrap(self, feed, session_id):
         now = datetime.now(timezone.utc)
+        self.visual.system_patch({"bootstrap_error": None, "restored_bar_count": 0})
         if feed == "overnight":
             # This feed has no historical endpoint. Delayed BOATS history is a
             # different source and cannot silently become live overnight bars.
@@ -105,6 +122,12 @@ class ShadowFabric:
 
     async def on_event(self, event):
         now = event.received_at
+        if self.policy_session != event.session_id:
+            self.policy.profile, self.policy.since = "BASELINE_LOCKED", None
+            self.policy.pending, self.policy.confirmed, self.policy.last_observation = None, 0, None
+            self.policy_recovery = self.policy_state.restore(self.policy, event.session_id, now)
+            self.policy_session = event.session_id
+            self.regime_key = None
         row = self.store.snapshot(event.symbol, now)
         reasons = tuple(row["rejection_codes"])
         classification = "NOT_EVALUABLE"
@@ -148,8 +171,9 @@ class ShadowFabric:
             context = PolicyContext(now, utc(self.regime["feature_as_of"]), event.session, self.regime["primary_regime"],
                 self.regime["confidence"], self.regime["unknown_probability"], self.regime["market_familiarity"],
                 # Missing canonical health/approval lineage is a veto, not an assumed pass.
-                False, False, False, False, self.shadow_configuration, self.library.fingerprint)
+                False, self.champion_ready(now), self.champion_ready(now), False, self.shadow_configuration, self.library.fingerprint)
             self.policy_snapshot = self.policy.observe(context, enabled=True, mode="shadow")
+            self.policy_state.save(self.policy, event.session_id, now)
             self.regime_key = feature_key
             for symbol, feature in self.features.items():
                 self.visual.point("rolling_vwap:"+symbol, {"timestamp": feature["bar_timestamp"], "value": feature["vwap"],
@@ -158,9 +182,13 @@ class ShadowFabric:
             self.visual.system_patch({"nostra": self.regime, "adaptive_control": {
                 "mode": self.policy_snapshot.mode, "current_profile": "BASELINE_LOCKED", "proposed_profile": self.policy_snapshot.proposed_profile,
                 "snapshot_fingerprint": self.policy_snapshot.snapshot_fingerprint, "policy_library_fingerprint": self.library.fingerprint,
-                "shadow_configuration_fingerprint": self.shadow_configuration, "protected_configuration_fingerprint": None,
+                "shadow_configuration_fingerprint": self.shadow_configuration,
+                "protected_configuration_fingerprint": (self.champion_observation or {}).get("protected_configuration_fingerprint"),
                 "effective": dict(self.policy_snapshot.execution_values), "counterfactual": dict(self.policy_snapshot.counterfactual_values),
-                "reason_codes": list(self.policy_snapshot.reasons), "entry_authority": False, "canonical_health_lineage": "UNAVAILABLE"}})
+                "reason_codes": list(self.policy_snapshot.reasons), "entry_authority": False,
+                "canonical_health_lineage": "VERIFIED_READ" if self.champion_ready(now) else "UNAVAILABLE",
+                "recovery_state": self.policy_recovery, "profile_since": self.policy.since.isoformat() if self.policy.since else None,
+                "pending_profile": self.policy.pending, "confirmation_count": self.policy.confirmed}})
         evaluation = Evaluation(decision_id, now, event.session, event.feed,
                                 event.symbol, classification, reasons, strategy_version=self.settings.strategy_version_id)
         day = event.session_id.split("/")[0]
@@ -174,6 +202,8 @@ class ShadowFabric:
         if decision_id not in self.rejections.ids and self.evidence.record(decision_id, evidence):
             self.rejections.record(evaluation)
         self.visual.market(event, now)
+        if event.kind in {"bar", "bar_revision"}:
+            self.archive.append("candles:"+event.symbol, self.store._bar(event), now)
         patch = {**self.visual.scanner[event.symbol], "candidate_state": "CANDIDATE" if classification == "CANDIDATE" else row["candidate_state"],
                  "rejection_code": reasons[0] if reasons else None, "classification": classification,
                  "signal_reason": signal.reason if signal else "Strategy integration not validated for this session"}
@@ -184,7 +214,10 @@ class ShadowFabric:
     async def broker_event(self, event_id, data):
         # Durable inbox acknowledges source evidence before ephemeral visualization.
         # Canonical 4.3 order/position reconciliation is intentionally not mutated.
-        self.visual.critical(execution_marker(event_id, data))
+        marker = execution_marker(event_id, data)
+        if marker:
+            self.archive.append("executions:"+marker["symbol"], marker, datetime.now(timezone.utc))
+        self.visual.critical(marker)
         self.account_refresh.set()
         return True
 
@@ -193,10 +226,22 @@ class ShadowFabric:
             return
         snapshot = await self.account_reader()
         now = datetime.now(timezone.utc)
+        if self.champion_reader:
+            try:
+                self.champion_observation = await self.champion_reader()
+            except Exception:
+                self.champion_observation = None
+            self.visual.system_patch({"champion_observation":self.champion_observation or {"quality_state":"UNAVAILABLE"}})
         projection = account_projection(snapshot, now)
         for key, point in projection["points"].items():
             self.visual.point("account:"+key, point)
+            self.archive.append("account:"+key, point, now)
         self.visual.system_patch({"account_observation": {k:v for k,v in projection.items() if k != "points"}})
+        performance = self.performance.observe(snapshot, now)
+        for key, point in performance["points"].items():
+            self.visual.point("performance:"+key, point)
+            self.archive.append("performance:"+key, point, now)
+        self.visual.system_patch({"account_performance":{k:v for k,v in performance.items() if k != "points"}})
         sizing = snapshot.get("sizing")
         if sizing is not None:
             decision = govern_capital(**sizing, evidence_factor=0)
@@ -206,6 +251,13 @@ class ShadowFabric:
                 "entry_authority": False, "mode": "SHADOW", "quality_state": "UNVALIDATED",
                 "evidence_reason": "CANONICAL_POLICY_VALIDATION_UNAVAILABLE", "observed_at": now.isoformat(),
                 "provenance": "DERIVED", "source": "RHEN/canonical_sizing_read", "methodology_version": "capital-governor-v1"}})
+
+    def champion_ready(self, now):
+        row = self.champion_observation or {}
+        return bool(row.get("observed_at") and 0 <= (utc(now)-utc(row["observed_at"])).total_seconds() <= 150
+            and row.get("runtime_ok") is True and row.get("reconciliation_safe") is True
+            and row.get("strategy_version") == self.settings.strategy_version_id
+            and str(row.get("protected_configuration_fingerprint") or "").startswith("sha256:"))
 
     async def account_observer(self):
         # Event-driven refresh after trade_updates. Timeout is reconciliation/audit,
