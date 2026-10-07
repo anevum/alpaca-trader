@@ -60,10 +60,10 @@
       "system": "RHEN",
       "system_version": "4.3.2",
       "source": "railway",
-      "git_commit": "49577a52513b4ff4d24de76e1f0fc7154492c7c9",
+      "git_commit": "13796f7eb1d7461f880d9dc9f6015d9bcfececb5",
       "branch": "main",
       "repository": "anevum/rhen",
-      "deployment_id": "14d9d59c-9813-401c-a66c-1321ff90f652",
+      "deployment_id": "6ec2911b-4a79-4d3e-8b4f-936b60af3914",
       "snapshot_id": "bba40ee2-7c1a-4a34-9f81-9b45adc64721",
       "project_id": "808098a9-937e-4ca4-ac98-dd2dcfef5d0c",
       "project_name": "RHEN",
@@ -84,10 +84,10 @@
     "modified_or_restarted_in_this_continuation": true
   },
   "shadow": {
-    "code_commit": "b0efd6fde8d3299244f677e7c69d511a1fa6faae",
+    "code_commit": "976a49f2ea468ab9a8e27e7eca5e2b164a1b140f",
     "source_branch_config": "work/rhen44-pre-crossover-20261007",
     "preserved_code_branch": "work/rhen44-pre-crossover-20261007",
-    "deployment_id": "ef4a3815-626f-4c6d-82c1-56f3d68fb287",
+    "deployment_id": "a28d92b6-f563-4371-ac65-3bc079e0a32c",
     "deployment_status": "SUCCESS",
     "observed_at": "2026-10-07T20:39:47.105559500Z",
     "market_connection": "WARMING",
@@ -207,6 +207,20 @@
       "asset_attested_symbols": 24,
       "entry_authority": false,
       "broker_write_authority": false
+    },
+    "asc_profile_release": {
+      "methodology_version": "asc008-trusted-profile-registry-v1",
+      "canonical_read_error": null,
+      "quality_state": "UNAVAILABLE",
+      "reason": "NO_CANONICAL_PROFILE_RELEASE",
+      "proposal_count": 0,
+      "approved_profiles": [],
+      "evidence_healthy": false,
+      "sealed_operator_registry": true,
+      "generic_research_decisions_trusted_for_authorization": false,
+      "active_mode_authorized": false,
+      "entry_authority": false,
+      "broker_write_authority": false
     }
   },
   "validation": {
@@ -226,10 +240,10 @@
       "runtime_audit": "SUCCESS"
     },
     "latest_code_hosted": {
-      "commit": "b0efd6fde8d3299244f677e7c69d511a1fa6faae",
-      "ci_run": 37681271822,
+      "commit": "976a49f2ea468ab9a8e27e7eca5e2b164a1b140f",
+      "ci_run": 37685766806,
       "ci": "SUCCESS",
-      "runtime_audit_run": 37681272025,
+      "runtime_audit_run": 37685766734,
       "runtime_audit": "SUCCESS"
     },
     "live_end_to_end_latency": "UNPASSED",
@@ -244,7 +258,13 @@
     "hotset_live_rotations_observed": 3,
     "hotset_stream_capacity": 24,
     "hotset_discovery_count": 100,
-    "production_crossover": "UNPERFORMED"
+    "production_crossover": "UNPERFORMED",
+    "asc_profile_release_plumbing": "PASSED_FAIL_CLOSED_NO_APPROVED_RELEASE",
+    "asc_operator_registry_deployment": {
+      "commit": "13796f7eb1d7461f880d9dc9f6015d9bcfececb5",
+      "deployment_id": "6ec2911b-4a79-4d3e-8b4f-936b60af3914",
+      "status": "SUCCESS"
+    }
   },
   "status_groups": {
     "implemented_and_deployed": [
@@ -258,7 +278,10 @@
       "broker reconnect-triggered canonical reconciliation with no write authority",
       "token-protected canonical DynamicUniverse projection with after-hours read refresh",
       "persistent canonical 100-to-24 discovery hotset rotation",
-      "bounded four-symbol hotset churn with five-minute dwell and pinned symbols"
+      "bounded four-symbol hotset churn with five-minute dwell and pinned symbols",
+      "sealed Command-admin ASC-008 operator authorization/revocation registry",
+      "shadow ASC-008 exact-release validation against sealed operator decisions",
+      "adaptive shadow profile allowlist with ACTIVE structurally unavailable"
     ],
     "implemented_but_gated": [
       "adaptive policy snapshots and recovery primitives",
@@ -285,7 +308,8 @@
       "overnight asset/halt and per-session live evidence",
       "same-input 4.3 parity and stream equivalence",
       "live kill-switch/degraded/rollback drills and complete order reconciliation",
-      "raw trade_updates parity retains one proven historical ConnectionClosedError gap while canonical reconciliation is complete"
+      "raw trade_updates parity retains one proven historical ConnectionClosedError gap while canonical reconciliation is complete",
+      "no canonical policy profile-release proposal/artifact bundle or explicit operator authorization currently exists"
     ],
     "blocked_by_external_resources": [
       "Railway OAuth withholds full variable-value export",
@@ -303,7 +327,6 @@
     ]
   },
   "remaining_implementation": [
-    "trusted ASC profile-release/approval adapters",
     "full risk/cost mapped candidate and canonical research export",
     "canonical NOSTRA forecast producer/reference wiring",
     "normalized/drawdown/session visuals and VELUM artifacts/control integration",
@@ -318,47 +341,44 @@
     "Canonical reconciliation now recovers broker websocket gaps after reconnect; raw trade_updates parity is intentionally not labeled complete because one historical gap remains proven."
   ],
   "latest_followup": {
-    "observed_at": "2026-10-07T20:39:47.105559500Z",
-    "backend_commit": "b0efd6fde8d3299244f677e7c69d511a1fa6faae",
+    "observed_at": "2026-10-07T20:56:30.758840576Z",
+    "backend_commit": "976a49f2ea468ab9a8e27e7eca5e2b164a1b140f",
     "backend_pr": 430,
     "hosted_ci": {
-      "run_id": 37681271822,
+      "run_id": 37685766806,
       "status": "SUCCESS",
-      "runtime_audit_run_id": 37681272025,
+      "runtime_audit_run_id": 37685766734,
       "runtime_audit_status": "SUCCESS"
     },
     "shadow_deployment": {
-      "deployment_id": "ef4a3815-626f-4c6d-82c1-56f3d68fb287",
+      "deployment_id": "a28d92b6-f563-4371-ac65-3bc079e0a32c",
       "status": "SUCCESS",
-      "broker_write_authority": false,
-      "execution_authority": false,
-      "broker_orders_possible": false,
-      "restored_bars": 57,
-      "broker_stream_state": "HEALTHY",
-      "subscribed_symbols": 24,
-      "policy_recovery": "RESTORED_SHADOW_ONLY",
-      "champion_health_lineage": "VERIFIED_READ",
       "hotset_active": true,
-      "hotset_rotation_count": 3,
       "hotset_discovery_count": 100,
+      "current_stream_symbols": 24,
+      "asc_profile_release_state": "UNAVAILABLE",
+      "asc_reason": "NO_CANONICAL_PROFILE_RELEASE",
+      "approved_profiles": [],
+      "active_mode_authorized": false,
       "canonical_reconciliation_complete": true,
       "raw_stream_parity_complete": false,
       "known_historical_missing_orders": 1,
       "known_historical_missing_fills": 1,
-      "restart_introduced_new_gap": false
+      "execution_authority": false,
+      "broker_write_authority": false
     },
     "champion": {
-      "source_commit": "49577a52513b4ff4d24de76e1f0fc7154492c7c9",
-      "deployment_id": "14d9d59c-9813-401c-a66c-1321ff90f652",
+      "source_commit": "13796f7eb1d7461f880d9dc9f6015d9bcfececb5",
+      "deployment_id": "6ec2911b-4a79-4d3e-8b4f-936b60af3914",
       "railway_deployment_status": "SUCCESS",
       "behavior_version": "4.3.2",
-      "reconciliation_safety": "VERIFIED_READ_SAFE",
       "read_only_support_changes": [
         "canonical-ledger projection",
-        "canonical-universe projection/refresh"
+        "canonical-universe projection/refresh",
+        "sealed ASC operator approval registry"
       ]
     },
-    "next_slice": "trusted ASC profile-release/approval adapters",
+    "next_slice": "canonical NOSTRA forecast producer/reference wiring",
     "production_crossover_performed": false,
     "promotion_eligible": false
   }

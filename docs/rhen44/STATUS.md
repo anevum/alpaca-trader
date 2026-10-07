@@ -1,5 +1,44 @@
 # RHEN 4.4 pre-crossover implementation status
 
+## Current checkpoint — 2026-10-07 16:57 ET
+
+Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
+
+Trusted ASC-008 profile-release authorization plumbing is now implemented and
+fail-closed. Main production support commit
+`13796f7eb1d7461f880d9dc9f6015d9bcfececb5`, Railway deployment
+`6ec2911b-4a79-4d3e-8b4f-936b60af3914`, is terminal SUCCESS. It adds an
+append-only HMAC-sealed operator authorization registry on the execution process.
+Only existing Command-admin authentication can authorize or revoke an exact
+release fingerprint; pure Core/GRAEN/Research/NOSTRA/IREN/router children do not
+inherit the sealing secret. The registry itself cannot validate a release, change
+configuration/risk, activate policy mode, deploy, or call a broker.
+
+Shadow commit `976a49f2ea468ab9a8e27e7eca5e2b164a1b140f`, deployment
+`a28d92b6-f563-4371-ac65-3bc079e0a32c`, is terminal SUCCESS. Hosted CI
+`37685766806` and Foundation runtime audit `37685766734` passed. The shadow
+joins canonical research evidence with only the sealed scheduler projection of
+current operator decisions; generic research decisions are explicitly excluded
+from authorization input. Any tampered registry record, authority bit, count
+mismatch, malformed decision, revoked decision or incomplete ASC-008 evidence
+fails closed.
+
+No profile was authorized in this work. Live state is therefore correctly
+`NO_CANONICAL_PROFILE_RELEASE`, proposal count 0, approved profiles empty,
+canonical read error null, and evidence healthy false. ACTIVE mode, entry
+authority and broker-write authority remain false. Hotset remained LIVE at
+100 discovery / 24 streamed symbols, and canonical ledger reconciliation retained
+only the previously proven historical websocket gap with no new gap.
+
+This closes trusted ASC approval **plumbing** as an implementation blocker. It
+does not pass the research/holdout/profile-release evidence gate and does not
+authorize an adaptive ACTIVE canary.
+
+Next implementation slice: canonical NOSTRA forecast producer/reference wiring
+for real Command forecast projection, preserving NOSTRA as research-only and
+non-authoritative.
+
+
 ## Current checkpoint — 2026-10-07 16:40 ET
 
 Canonical session: `ANEVUM.RHEN.BUILD.2026-10-07.001.V4-4-PRE-CROSSOVER-VALIDATION`.
