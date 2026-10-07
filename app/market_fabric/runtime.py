@@ -364,17 +364,43 @@ class ShadowFabric:
         observed_fills = {str(p["order_ref"]) for p in points
             if p.get("event_type") in {"FILL","PARTIAL_FILL"}}
         missing_orders = canonical_orders-observed_orders
-        unknown_orders = observed_orders-canonical_orders
+        unattributed_orders = observed_orders-canonical_orders
         missing_fills = canonical_fills-observed_fills
-        unknown_fills = observed_fills-canonical_fills
-        complete = not (missing_orders or unknown_orders or missing_fills or unknown_fills)
+        unattributed_fills = observed_fills-canonical_fills
+
+        def missing_range(event_type, missing_ids):
+            stamps = []
+            for event in events:
+                if event.get("event_type") != event_type:
+                    continue
+                payload = event.get("order") or {} if event_type == "broker_order" else event.get("fill") or {}
+                identity = payload.get("id") if event_type == "broker_order" else payload.get("order_id")
+                if str(identity or "") not in missing_ids:
+                    continue
+                try:
+                    stamps.append(utc(event.get("occurred_at")))
+                except (ValueError, TypeError):
+                    continue
+            return (min(stamps).isoformat(), max(stamps).isoformat()) if stamps else (None, None)
+
+        missing_order_first, missing_order_last = missing_range("broker_order", missing_orders)
+        missing_fill_first, missing_fill_last = missing_range("broker_fill", missing_fills)
+        complete = not (missing_orders or missing_fills)
+        reason = ("PARITY_WITH_UNATTRIBUTED_ACCOUNT_EVENTS" if complete and (unattributed_orders or unattributed_fills)
+                  else "PARITY" if complete else "DIVERGENCE")
         return {**base,"quality_state":"LIVE" if complete else "DEGRADED",
-            "reason":"PARITY" if complete else "DIVERGENCE","parity_complete":complete,
+            "reason":reason,"parity_complete":complete,
             "overlap_started_at":start.isoformat(),"canonical_events":len(events),"observed_events":len(points),
             "canonical_order_count":len(canonical_orders),"observed_order_count":len(observed_orders),
             "canonical_fill_order_count":len(canonical_fills),"observed_fill_order_count":len(observed_fills),
-            "missing_observed_orders":len(missing_orders),"unknown_observed_orders":len(unknown_orders),
-            "missing_observed_fills":len(missing_fills),"unknown_observed_fills":len(unknown_fills)}
+            "missing_observed_orders":len(missing_orders),
+            "unattributed_observed_orders":len(unattributed_orders),
+            "unknown_observed_orders":len(unattributed_orders),
+            "missing_observed_fills":len(missing_fills),
+            "unattributed_observed_fills":len(unattributed_fills),
+            "unknown_observed_fills":len(unattributed_fills),
+            "missing_order_first_at":missing_order_first,"missing_order_last_at":missing_order_last,
+            "missing_fill_first_at":missing_fill_first,"missing_fill_last_at":missing_fill_last}
 
     async def reconcile_account(self):
         if self.account_reader is None:
@@ -411,9 +437,13 @@ class ShadowFabric:
                 "canonical_fill_order_count":parity.get("canonical_fill_order_count"),
                 "observed_fill_order_count":parity.get("observed_fill_order_count"),
                 "missing_observed_orders":parity.get("missing_observed_orders"),
-                "unknown_observed_orders":parity.get("unknown_observed_orders"),
+                "unattributed_observed_orders":parity.get("unattributed_observed_orders"),
                 "missing_observed_fills":parity.get("missing_observed_fills"),
-                "unknown_observed_fills":parity.get("unknown_observed_fills"),
+                "unattributed_observed_fills":parity.get("unattributed_observed_fills"),
+                "missing_order_first_at":parity.get("missing_order_first_at"),
+                "missing_order_last_at":parity.get("missing_order_last_at"),
+                "missing_fill_first_at":parity.get("missing_fill_first_at"),
+                "missing_fill_last_at":parity.get("missing_fill_last_at"),
                 "entry_authority":False,
                 "broker_write_authority":False,
                 "methodology_version":parity.get("methodology_version"),
