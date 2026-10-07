@@ -338,6 +338,7 @@ class TradingEventSink:
         correlation_id: str | None = None,
         occurred_at: str | None = None,
         event_key: str | None = None,
+        strategy_version_id: str | None = None,
     ) -> bool:
         """Persist before a new entry. Protective exits never depend on this path."""
         if not self.enabled and not self.foundation_enabled:
@@ -349,6 +350,7 @@ class TradingEventSink:
             correlation_id=correlation_id,
             occurred_at=occurred_at,
             event_key=event_key,
+            strategy_version_id=strategy_version_id,
         )
         self._mirror_foundation(event)
         if not self.enabled:
@@ -356,7 +358,7 @@ class TradingEventSink:
         async with httpx.AsyncClient(timeout=5.0) as http:
             for attempt in range(3):
                 if await self._send_batch(http, [event], require_all=event_type in {
-                    "research_daily_report", "research_weekly_report"
+                    "research_daily_report", "research_weekly_report", "extended_research_snapshot"
                 }):
                     return True
                 await asyncio.sleep(0.25 * (2 ** attempt))

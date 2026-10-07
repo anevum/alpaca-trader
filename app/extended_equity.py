@@ -89,6 +89,7 @@ class ExtendedEquityEngine:
         self.last_cycle_at: datetime | None = None
         self.last_session: dict[str, Any] | None = None
         self.last_scan: dict[str, dict[str, Any]] = {}
+        self.last_scan_at: datetime | None = None
         self.last_decision: str = "awaiting first extended-equity cycle"
         self.last_error: str | None = None
         self.last_order: dict[str, Any] | None = None
@@ -121,6 +122,7 @@ class ExtendedEquityEngine:
                 ),
             },
             "scanner": self.last_scan,
+            "scan_observed_at": self.last_scan_at.isoformat() if self.last_scan_at else None,
             "last_decision": self.last_decision,
             "last_error": self.last_error,
             "last_order": self.last_order,
@@ -1233,6 +1235,7 @@ class ExtendedEquityEngine:
                 candidates.append(signal)
 
         self.last_scan = scan
+        self.last_scan_at = now
         self._event(
             action="scan",
             message=(

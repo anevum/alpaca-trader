@@ -20,6 +20,7 @@ from .cash_flow import day_pnl, risk_reference_equity
 from .command_access import CommandAuthError, authenticate_command_admin
 from .execution import ExecutionEngine
 from .extended_equity import ExtendedEquityEngine
+from .extended_research import ExtendedResearchRecorder
 from .market_data import MarketDataClient
 from .persistence import TradingEventSink
 from .protected_configuration import build_protected_configuration
@@ -812,6 +813,18 @@ async def monitor_loop():
             pass
 
 
+async def extended_research_loop():
+    recorder = ExtendedResearchRecorder(extended_equity_engine, event_sink)
+    while not _stop.is_set():
+        await recorder.capture()
+        if recorder.last_error:
+            print({"event": "extended_research_checkpoint_failed", "error": recorder.last_error}, flush=True)
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def extended_equity_monitor_loop():
     """Independent 24/5 U.S. equity lane outside the regular session."""
     while not _stop.is_set():
@@ -1099,6 +1112,7 @@ async def lifespan(app: FastAPI):
             },
         )
     equity_task: asyncio.Task | None = None
+    extended_research_task: asyncio.Task | None = None
     extended_equity_task: asyncio.Task | None = None
     slack_market_task: asyncio.Task | None = None
     research_started = False
@@ -1122,6 +1136,8 @@ async def lifespan(app: FastAPI):
         extended_equity_task = asyncio.create_task(
             extended_equity_monitor_loop()
         )
+    if settings.extended_equity_lane_enabled:
+        extended_research_task = asyncio.create_task(extended_research_loop())
     slack_market_task = asyncio.create_task(slack_market_observer_loop())
 
     # 4.4 cannot modify the live engine, risk, sizing, or reconciliation state.
@@ -1162,6 +1178,8 @@ async def lifespan(app: FastAPI):
         await equity_task
     if extended_equity_task is not None:
         await extended_equity_task
+    if extended_research_task is not None:
+        await extended_research_task
     if slack_market_task is not None:
         await slack_market_task
     if research_started:
