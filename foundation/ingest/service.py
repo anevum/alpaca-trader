@@ -17,7 +17,7 @@ from foundation.iren_gateway import handle_action as handle_iren_action, recent_
 from foundation.graen_gateway import handle_graen_action
 from foundation.research_agent_gateway import read_evidence, record_run, record_search_ledger
 from foundation.public_feed import read_public_feed
-from foundation.nostra_gateway import read_nostra_work
+from foundation.nostra_gateway import read_nostra_work, read_nostra_forecasts
 from foundation.cloudflare_access import (
     AccessAuthorizationError,
     AccessConfigurationError,
@@ -794,6 +794,23 @@ def nostra_gateway_get(
         raise HTTPException(
             status_code=500,
             detail=f"nostra_gateway_failed:{type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/v1/nostra-forecasts")
+def nostra_forecasts_get(
+    x_anevum_ingest_token: str | None = Header(
+        default=None,
+        alias="x-anevum-ingest-token",
+    ),
+) -> dict[str, Any]:
+    require_foundation_token(ingest_token=x_anevum_ingest_token)
+    try:
+        return read_nostra_forecasts(database_url())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"nostra_forecast_read_failed:{type(exc).__name__}",
         ) from exc
 
 

@@ -1345,6 +1345,41 @@ async def scheduler_profile_release_approvals(
     return profile_release_registry().current()
 
 
+@app.get("/v1/scheduler/nostra-forecasts")
+async def scheduler_nostra_forecasts(
+    x_anevum_scheduler_token: str | None = Header(default=None),
+):
+    require_scheduler_token(x_anevum_scheduler_token)
+    token = str(getattr(settings, "foundation_ingest_token", "") or "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="foundation forecast read unavailable")
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            response = await http.get(
+                "http://127.0.0.1:8102/v1/nostra-forecasts",
+                headers={"x-anevum-ingest-token": token},
+            )
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"canonical NOSTRA forecast read unavailable:{type(exc).__name__}",
+        ) from exc
+    if (
+        not isinstance(body, dict)
+        or body.get("ok") is not True
+        or body.get("schema_version") != "nostra-canonical-forecast-read-v1"
+        or body.get("research_only") is not True
+        or body.get("execution_authority") is not False
+        or body.get("broker_write_authority") is not False
+        or not isinstance(body.get("forecasts"), list)
+        or len(body["forecasts"]) > 200
+    ):
+        raise HTTPException(status_code=503, detail="canonical NOSTRA forecast identity mismatch")
+    return body
+
+
 @app.get("/v1/scheduler/calendar")
 async def scheduler_calendar(
     start: date,
