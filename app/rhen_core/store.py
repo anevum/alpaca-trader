@@ -723,7 +723,7 @@ class RhenCoreStore:
         except Exception as exc:
             self._maintenance_error = f"{type(exc).__name__}: {exc}"
 
-    def compact_storage(self, *, force: bool = False) -> dict[str, Any]:
+    def compact_storage(self, *, force: bool = False, repack: bool = False) -> dict[str, Any]:
         before = self.storage_state()
         allocated = int(before.get("allocated_db_bytes") or 0)
         reclaimable = int(before.get("reclaimable_db_bytes") or 0)
@@ -749,6 +749,7 @@ class RhenCoreStore:
         incremental_threshold = 8 * 1024 * 1024
         if (
             auto_vacuum_mode == 2
+            and not repack
             and reclaimable > 0
             and (force or reclaimable >= incremental_threshold)
         ):
@@ -837,7 +838,7 @@ class RhenCoreStore:
                     "and payload_json like '{\"_rhen_payload_codec\":%' limit 1"
                 ).fetchone()
             needs_repack = not repacked and packed is not None
-            compacted = self.compact_storage(force=needs_repack)
+            compacted = self.compact_storage(force=needs_repack, repack=needs_repack)
             if needs_repack and compacted.get("reason") == "vacuum_completed":
                 self.set_kv("maintenance", "scan_codec_repacked_v1", {"completed_at": _iso()})
             self._maintenance_error = None

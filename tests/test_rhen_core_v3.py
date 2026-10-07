@@ -1647,11 +1647,16 @@ def test_migrated_scan_pages_repack_once_without_changing_logical_evidence(tmp_p
     store = _store(tmp_path, monkeypatch)
     payload = {"symbol": "SPY", "observations": [{"price": "600.1234"}] * 200}
     store.ingest_events([{"event_key": "packed-scan", "event_type": "scan", "payload": payload}])
+    with store.connect() as conn:
+        conn.execute("create table temporary_payload(x text)")
+        conn.executemany("insert into temporary_payload values(?)", [("x" * 4096,)] * 100)
+        conn.execute("drop table temporary_payload")
+        conn.commit()
     actual = store.compact_storage
     forces = []
-    def compact(*, force=False):
+    def compact(*, force=False, repack=False):
         forces.append(force)
-        return actual(force=force)
+        return actual(force=force, repack=repack)
     monkeypatch.setattr(store, "compact_storage", compact)
     store._startup_maintenance()
     assert store._maintenance_error is None
