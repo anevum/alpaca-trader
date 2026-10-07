@@ -157,6 +157,50 @@ def test_account_projection_uses_only_broker_values_and_order_identities():
     with pytest.raises(ValueError): account_projection(snapshot,NOW)
 
 
+def test_broker_reconnect_requests_canonical_reconciliation(tmp_path):
+    import json
+    from app.market_fabric.broker_updates import BrokerInbox, BrokerUpdateStream
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self.messages = iter([
+                json.dumps({"stream":"authorization","data":{"status":"authorized"}}),
+                json.dumps({"stream":"listening","data":{"streams":["trade_updates"]}}),
+            ])
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.messages)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    async def run():
+        reconciliations = []
+        async def sink(event_id, data):
+            return True
+        async def reconcile():
+            reconciliations.append("CANONICAL_READ")
+
+        inbox = BrokerInbox(str(tmp_path/"broker.db"))
+        stream = BrokerUpdateStream(api_key="k",api_secret="s",paper=False,
+            inbox=inbox,callback=sink,on_reconnect=reconcile)
+        ws = FakeWebSocket()
+        await stream.consume(ws)
+        assert stream.state == "HEALTHY"
+        assert reconciliations == ["CANONICAL_READ"]
+        assert ws.sent[-1] == {"action":"listen","data":{"streams":["trade_updates"]}}
+        inbox.close()
+
+    asyncio.run(run())
+
+
 def test_broker_event_triggers_read_projection_without_writes(tmp_path):
     async def run():
         calls=[]
