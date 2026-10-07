@@ -96,6 +96,16 @@ def test_distinct_candidates_and_exposure_have_matching_configuration_lineage():
     assert not coverage.db.execute("SELECT id FROM shadow_seen WHERE id='wrong'").fetchone()
 
 
+def test_targeted_coverage_advance_only_touches_the_event_symbol():
+    store, coverage = store_ready(symbols=("SPY", "QQQ")), tracker()
+    coverage.advance(store, NOW, symbols=("SPY",))
+    assert set(coverage.cursors) == {"SPY"}
+    assert len(coverage.totals) == 1
+    coverage.advance(store, NOW+timedelta(seconds=5), symbols=("QQQ",))
+    assert set(coverage.cursors) == {"SPY", "QQQ"}
+    assert len(coverage.totals) == 2
+
+
 def test_clock_reversal_cannot_duplicate_exposure_and_rows_are_bounded():
     store, coverage = store_ready(symbols=("SPY", "QQQ")), tracker()
     coverage.advance(store, NOW)
