@@ -455,7 +455,10 @@ class ShadowFabric:
                 self.discovery_observation = None
                 status = getattr(getattr(exc, "response", None), "status_code", None)
                 self.discovery_error = type(exc).__name__ + (f":HTTP_{status}" if status else "")
-            self.update_hotset(now)
+            # Champion/discovery observations are stamped after their network
+            # reads. Evaluate freshness against a clock captured after those reads;
+            # using the pre-read account timestamp can create a false negative age.
+            self.update_hotset(datetime.now(timezone.utc))
         if self.ledger_reader:
             run_id = (self.champion_observation or {}).get("run_id")
             try:
