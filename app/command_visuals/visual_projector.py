@@ -27,6 +27,7 @@ class VisualProjector:
             self.point("mid:"+event.symbol, {"timestamp": event.source_at.isoformat(), "value": row["mid"],
                        "symbol": event.symbol, "provenance": "DERIVED", "source": f"ALPACA/{event.feed}",
                        "methodology_version": "quote-mid-v1", "quality_state": row["quality_state"],
+                       "data_character": "INDICATIVE" if event.feed == "overnight" else "OBSERVED_QUOTE_MID",
                        "session": event.session})
         elif event.kind in {"bar", "bar_revision"}:
             key = "candles:"+event.symbol

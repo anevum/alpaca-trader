@@ -74,7 +74,12 @@ class ShadowFabric:
         if feed == "overnight":
             # This feed has no historical endpoint. Delayed BOATS history is a
             # different source and cannot silently become live overnight bars.
-            self.visual.system_patch({"reconstruction_source": "LIVE_STREAM_ONLY", "bootstrap_error": "OVERNIGHT_HISTORY_UNAVAILABLE"})
+            restored = self.checkpoint.restore(self.store, now)
+            for symbol, row in self.store.rows.items():
+                for bar in row["bars"]:
+                    self.visual.point("candles:"+symbol, bar)
+            self.visual.system_patch({"reconstruction_source": "CHECKPOINT+LIVE_STREAM", "restored_bar_count": restored,
+                                      "bootstrap_error": "OVERNIGHT_HISTORY_UNAVAILABLE", "recovery_at": now.isoformat()})
             return
         try:
             self.checkpoint.restore(self.store, now)

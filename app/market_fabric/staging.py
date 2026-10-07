@@ -87,6 +87,7 @@ def create_app(settings=None):
                         broker_stream_state=fabric.broker.state if fabric.broker else "DISABLED",
                         account_quality=fabric.visual.system.get("account_observation",{}).get("quality_state","UNAVAILABLE"),
                         reconstruction_source=fabric.visual.system.get("reconstruction_source"),
+                        restored_bar_count=fabric.visual.system.get("restored_bar_count"),
                         bootstrap_error=fabric.visual.system.get("bootstrap_error"),
                         bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
                         quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
