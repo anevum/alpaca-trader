@@ -3,12 +3,21 @@
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 
-Production remains RHEN 4.3.2, source `0270563a613c57a959d1c6b93b97a01509a418df`,
+Initial production baseline: RHEN 4.3.2, source `0270563a613c57a959d1c6b93b97a01509a418df`,
 Railway deployment `4ec33727-f98b-4ffe-97f8-1ce30a2e95e2` SUCCESS.
 Command source baseline is `bd4999cbd98e6c209c451a183e9f965e9682ebdf`; GitHub
-audit/deploy/verify checks succeeded. No 4.4 change has been merged or deployed to
-production. Branch merging triggers automatic deployment and is **not** a safe
-substitute for a separately verified staging release.
+audit/deploy/verify checks succeeded. Backend PR #419 subsequently merged as
+`acf324e1ebb3be04b1c87e1d23dd294ca7a500f5`; Command PR #189 merged as
+`de2419937edca46fdcf230b2407092348a156f43`, explicitly authorized by the user.
+Their automatic deployments contain disabled 4.4 foundations and preserve the
+4.3 trading implementation. Deployment completion must be observed separately.
+A merged commit is not evidence of 4.4 validation or promotion.
+
+`execution.body.rhen44` in unified health reports configured flags, observer
+availability, incomplete implementation and promotion blockers. No flag grants
+4.4 broker-write authority or active adaptive policy. The request to make 4.4
+fully live is recorded as the target; unmet package gates remain required.
+Release metadata remains 4.3.2 until a validated behavioral crossover.
 
 `baseline-observation.json` records actual read-only health evidence. It is an
 observed rollback candidate, **not** a complete configuration freeze: Railway
