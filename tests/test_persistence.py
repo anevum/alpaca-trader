@@ -602,3 +602,20 @@ def test_transport_chunks_respect_count_and_body_limits():
             default=str,
         ).encode("utf-8")
         assert len(encoded) <= 900
+
+
+def test_durable_report_requires_an_insert_receipt():
+    import httpx
+
+    async def run():
+        sink = CapturingSink()
+        event = {"event_key": "report-test", "event_type": "research_daily_report", "payload": {}}
+        for receipt, expected in (({"ok": True, "inserted": 0, "shed": 1}, False),
+                                  ({"ok": True}, False),
+                                  ({"ok": True, "inserted": 1, "shed": 0}, True)):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json=receipt))) as client:
+                assert await sink._send_batch(client, [event], require_all=True) is expected
+        assert sink.sent_count == 1
+
+    asyncio.run(run())

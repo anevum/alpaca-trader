@@ -355,7 +355,9 @@ class TradingEventSink:
             return True
         async with httpx.AsyncClient(timeout=5.0) as http:
             for attempt in range(3):
-                if await self._send_batch(http, [event]):
+                if await self._send_batch(http, [event], require_all=event_type in {
+                    "research_daily_report", "research_weekly_report"
+                }):
                     return True
                 await asyncio.sleep(0.25 * (2 ** attempt))
         return False
@@ -1735,6 +1737,8 @@ class TradingEventSink:
         self,
         http: httpx.AsyncClient,
         events: list[dict[str, Any]],
+        *,
+        require_all: bool = False,
     ) -> bool:
         if not events:
             return True
@@ -1755,6 +1759,13 @@ class TradingEventSink:
                     json={"events": chunk},
                 )
                 response.raise_for_status()
+                if require_all:
+                    receipt = response.json()
+                    if (not isinstance(receipt, dict)
+                            or receipt.get("ok") is not True
+                            or receipt.get("inserted") != len(chunk)
+                            or receipt.get("shed", 0) != 0):
+                        raise RuntimeError("canonical_report_write_unconfirmed")
                 self.sent_count += len(chunk)
 
             self.last_sent_at = datetime.now(timezone.utc)
