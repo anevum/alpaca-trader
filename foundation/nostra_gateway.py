@@ -606,3 +606,82 @@ def read_nostra_work(
             ),
         },
     }
+
+
+def read_nostra_forecasts(
+    database_url: str,
+    *,
+    now: datetime | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Read bounded, still-live canonical NOSTRA research forecasts.
+
+    This is a projection-only read. It never evaluates a model, mutates NOSTRA
+    evidence, or grants execution authority.
+    """
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    bounded_limit = max(1, min(int(limit), 200))
+    with psycopg.connect(database_url, connect_timeout=5) as conn:
+        with conn.cursor() as cur:
+            _configure_low_memory_read(cur)
+            cur.execute(
+                """
+                select f.payload
+                from nostra.evidence_forecasts f
+                where f.target_kind = 'return'
+                  and f.generated_at <= %s
+                  and f.generated_at >= %s
+                  and f.generated_at
+                        + (f.horizon_minutes * interval '1 minute') > %s
+                order by f.generated_at desc, f.forecast_id desc
+                limit %s
+                """,
+                (current, current - timedelta(hours=24), current, bounded_limit),
+            )
+            rows = [row[0] for row in cur.fetchall()]
+
+    forecasts: list[dict[str, Any]] = []
+    rejected = 0
+    for payload in rows:
+        if not isinstance(payload, dict):
+            rejected += 1
+            continue
+        try:
+            generated = _as_utc(payload.get("generated_at"))
+            as_of = _as_utc(payload.get("as_of_timestamp"))
+            symbol = str(payload.get("symbol") or "").strip().upper()
+            forecast_id = str(payload.get("forecast_id") or "").strip()
+            snapshot_id = str(payload.get("snapshot_id") or "").strip()
+            horizon = int(payload.get("horizon_minutes") or 0)
+            if (
+                payload.get("research_only") is not True
+                or payload.get("execution_authority") is not False
+                or payload.get("target_kind") != "return"
+                or payload.get("authority_state") not in {"NORMAL", "LOW_SUPPORT"}
+                or not symbol
+                or not forecast_id
+                or not snapshot_id
+                or generated is None
+                or as_of is None
+                or as_of > generated
+                or generated > current
+                or not 1 <= horizon <= 1440
+                or generated + timedelta(minutes=horizon) <= current
+            ):
+                raise ValueError("invalid canonical forecast")
+            forecasts.append(payload)
+        except (TypeError, ValueError):
+            rejected += 1
+
+    return {
+        "ok": True,
+        "schema_version": "nostra-canonical-forecast-read-v1",
+        "observed_at": current.isoformat(),
+        "forecasts": forecasts,
+        "returned_count": len(forecasts),
+        "rejected_count": rejected,
+        "truncated": len(rows) >= bounded_limit,
+        "research_only": True,
+        "execution_authority": False,
+        "broker_write_authority": False,
+    }
