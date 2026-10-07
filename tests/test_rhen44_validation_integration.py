@@ -218,10 +218,13 @@ def test_champion_reader_uses_only_existing_private_health_get():
     def handle(request):
         requests.append(request)
         return httpx.Response(200,json={"ok":True,"execution":{"body":{"ok":True,"reconciliation_safe":True,
+            "startup_reconciled":True,"last_reconciliation":{"safe_to_enter":True,"reason":"fixture-safe"},
             "protected_configuration_identity":{"fingerprint":"sha256:fixture"},
             "persistence":{"strategy_version_id":"4.3"},"runtime_provenance":{"git_commit":"fixture"}}}})
     result = asyncio.run(ReadOnlyChampion(transport=httpx.MockTransport(handle)).snapshot())
     assert result["runtime_ok"] and result["reconciliation_safe"] and not result["broker_write_authority"]
+    assert result["startup_reconciled"] is True
+    assert result["reconciliation_detail"] == {"safe_to_enter":True,"reason":"fixture-safe"}
     assert len(requests) == 1 and requests[0].method == "GET"
     assert str(requests[0].url) == "http://alpaca-trader.railway.internal:8080/health"
     assert "authorization" not in requests[0].headers and "apca-api-key-id" not in requests[0].headers

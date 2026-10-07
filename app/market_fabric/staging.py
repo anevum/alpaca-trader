@@ -118,6 +118,13 @@ class ReadOnlyChampion:
             "module_failures":[name for name in body.get("module_failures",())
                                if name in ("graen", "nostra", "velum", "iren", "research_agent")],
             "reconciliation_safe":execution.get("reconciliation_safe") is True,
+            "startup_reconciled":execution.get("startup_reconciled") is True,
+            "reconciliation_detail":{
+                key:(execution.get("last_reconciliation") or {}).get(key)
+                for key in ("safe_to_enter","reason","error")
+                if (execution.get("last_reconciliation") or {}).get(key) is not None
+            },
+            "runtime_error":str(execution.get("last_error") or "")[:240] or None,
             "strategy_version":persistence.get("strategy_version_id"),
             "run_id":persistence.get("run_id"),
             "protected_configuration_fingerprint":identity.get("fingerprint"),
