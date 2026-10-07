@@ -1265,6 +1265,43 @@ async def scheduler_configuration(x_anevum_scheduler_token: str | None = Header(
     return scheduler_configuration_snapshot()
 
 
+def scheduler_universe_snapshot() -> dict:
+    """Bounded non-secret projection of the canonical DynamicUniverse ranking."""
+    symbols = []
+    for value in runtime_state.universe_active_symbols:
+        symbol = str(value or "").strip().upper()
+        if (not symbol or "/" in symbol or " " in symbol
+                or not all(c.isalnum() or c in {".", "-"} for c in symbol)):
+            continue
+        if symbol not in symbols:
+            symbols.append(symbol)
+        if len(symbols) >= min(500, max(1, settings.universe_size)):
+            break
+    return {
+        "ok": True,
+        "universe_version": "rhen-canonical-universe-read-v1",
+        "enabled": settings.dynamic_universe_enabled,
+        "source": runtime_state.universe_source,
+        "active_count": len(symbols),
+        "candidate_count": runtime_state.universe_candidate_count,
+        "eligible_count": runtime_state.universe_eligible_count,
+        "updated_at": (
+            runtime_state.universe_updated_at.isoformat()
+            if runtime_state.universe_updated_at is not None else None
+        ),
+        "error": runtime_state.universe_error,
+        "active_symbols": symbols,
+        "execution_authority": False,
+        "broker_orders_possible": False,
+    }
+
+
+@app.get("/v1/scheduler/universe")
+async def scheduler_universe(x_anevum_scheduler_token: str | None = Header(default=None)):
+    require_scheduler_token(x_anevum_scheduler_token)
+    return scheduler_universe_snapshot()
+
+
 @app.get("/v1/scheduler/calendar")
 async def scheduler_calendar(
     start: date,
