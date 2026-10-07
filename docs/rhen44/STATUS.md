@@ -47,7 +47,7 @@ identity is not mislabeled as the trading configuration fingerprint.
 |---|---|---|
 | 0: freeze 4.3 | Partially verified, preserved | Exact trading fingerprints, account/order/position reads, migration head |
 | 1: stream/feed primitives | Implemented, tested, gated | Actual entitlement attestation |
-| 2: event-driven market observation | Implemented, tested locally, gated | Live Alpaca auth, coverage/reconnect/shadow run |
+| 2: event-driven market observation | Implemented; isolated runtime deployed; overnight subscription diagnosis/fix merged | Verify actual accepted channels and source coverage, reconnect and shadow equivalence |
 | 3: broker trade_updates | Durable shadow inbox/projection implemented | Canonical order/fill ledger reconciliation integration; never silently replace 4.3 reconciliation |
 | 4: warm start | Checkpoints/history bootstrap implemented; local restart test passes | Runtime restart with real positions/orders and gap/backfill evidence |
 | 5: scanner/rejection | Durable bounded decisions/candidates, target-session/day rollups and champion check mapping implemented; quote/reconnect dedup tested | Full risk/cost/asset mapping, evaluable-symbol-hour exposure, canonical research export/completeness |
@@ -67,6 +67,9 @@ identity is not mislabeled as the trading configuration fingerprint.
 These are engineering artifacts and local tests, not live shadow evidence. No
 stream equivalence, trading benefit, broker reconciliation change, active policy
 approval, holdout pass, or full visual acceptance is claimed.
+
+Later live observations below separately attest broker socket/account-read health;
+they do not establish market coverage, canonical ledger parity or promotion.
 
 ## Authority and configuration
 
@@ -156,3 +159,59 @@ was created and no indirect public proxy was substituted. Public Command-to-shad
 integration remains blocked pending explicit exposure authorization. A bounded
 private operational log reports stream/coverage/reconstruction state without
 credentials, account dollars, position/order/fill payloads or market prices.
+
+### Actual runtime reconciliation, 2026-10-07 02:24 UTC
+
+Backend #422 and #423 passed hosted test/Postgres/inventory checks and merged.
+Command #190 merged as `dc1e643330927145de81965064c2897b9f7921ac`; its main
+audit/verify/deploy checks all succeeded. Command live-stream feature gates remain
+disabled, so this deployment is not a public live visual acceptance pass.
+
+At 02:24 UTC, champion health reported source
+`75436d3aa7d6c4596cb162d65c6ac4ca91eb6033`, deployment
+`d14cfe27-d543-4e45-9dc3-b001c1d03f3a`, RHEN 4.3.2 and strategy
+`LIVE-2026-09-25-003`, all three 4.4 flags false, observer absent, reconciliation
+safe, no unresolved intents/unknown orders/untracked positions, and no module
+failures. This is an observed reconciliation summary, not an exact protected
+configuration freeze. Core effective storage was 732.83 MB against a 750 MB
+shedding threshold; the observer uses its separate volume.
+
+Private shadow telemetry at 02:21:45 UTC on
+`f4894de35a7dfbe6256e5c3ea04ee781f89a80e4` attested authenticated broker
+`trade_updates` HEALTHY and account snapshot quality LIVE, with no write authority.
+The overnight market socket returned provider error 410, zero subscriptions,
+zero bars and zero candidates. Alpaca defines 410 as an unsupported subscription
+channel, not an entitlement denial. No 24-symbol market coverage was inferred.
+
+Backend #424 passed hosted checks and merged as
+`09452e46b20dac19d427d2790ffe3d09a5ed5281`. The isolated observer is pinned to
+its feature commit `401759041b20b8a36cc668cbbc2ac3dd1774220d`, deployment
+`b9219ca3-7ba7-438c-9e90-62653e7d8f4d` SUCCESS. It negotiates overnight
+quotes/bars/updatedBars separately and preserves verified quotes when optional
+bar channels return 410. Accepted and unavailable channels are explicitly
+reported. Overnight historical reconstruction remains unavailable rather than
+substituting delayed BOATS bars. Process success is not proof that this fix has
+received live market events; actual coverage/restart evidence must follow.
+
+At 02:25:30 UTC the pinned fix actually accepted `quotes` and `bars` for all
+24 symbols; only `updatedBars` was unavailable. Telemetry contained 21 symbols
+with observed quotes and 8 source bars, zero stream errors, zero evaluable
+decisions/candidates/intents, and explicit STALE_BAR/STALE_QUOTE rejections.
+This is accepted subscription coverage, not fresh/evaluable 24-symbol coverage.
+At 02:26:44 UTC after an explicitly authorized isolated restart, market
+subscriptions returned to 24, broker stream was HEALTHY and account quality LIVE.
+No production restart was requested or performed directly.
+
+That restart exposed an overnight warm-start gap: the branch skipped its local
+checkpoint together with the unavailable historical endpoint. The follow-up
+restores matching same-session/source completed checkpoint bars, while quotes
+and subscriptions remain ephemeral and stale bars remain rejected. Restored bar
+count is operational telemetry. Overnight source candles are marked DELAYED and
+quote midpoints marked INDICATIVE; receipt time does not make delayed bars fresh.
+The dedicated test passes; live checkpoint restoration must be attested after
+deployment rather than inferred from unit tests.
+
+The retained rollback branch `rollback/rhen-v4.3.2-0270563-20261007-0145` points
+to exact known-good `0270563a613c57a959d1c6b93b97a01509a418df`. Broker-write
+promotion, adaptive ACTIVE, options execution, shorts, additional leverage,
+crypto and expanded 24/5 authority remain unavailable in the new implementation.

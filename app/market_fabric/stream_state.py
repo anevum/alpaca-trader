@@ -76,7 +76,7 @@ class MarketStateStore:
     def _bar(event):
         return {**event.payload, "symbol": event.symbol, "timestamp": event.source_at.isoformat(),
                 "feed": event.feed, "session": event.session, "provenance": "OBSERVED",
-                "source": f"ALPACA/{event.feed}", "quality_state": "LIVE"}
+                "source": f"ALPACA/{event.feed}", "quality_state": "DELAYED" if event.feed == "overnight" else "LIVE"}
 
     def snapshot(self, symbol: str, now: datetime) -> dict:
         row = self.rows.get(symbol, {})

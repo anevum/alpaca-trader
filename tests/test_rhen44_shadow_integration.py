@@ -21,6 +21,33 @@ from app.market_fabric.staging import create_app, ReadOnlyBroker
 NOW = datetime(2026,10,6,15,30,tzinfo=timezone.utc)
 
 
+def test_overnight_restart_restores_only_matching_observed_bars(tmp_path):
+    now = datetime.now(timezone.utc)
+    settings = Settings(RHEN_MARKET_STREAM_CHECKPOINT_PATH=str(tmp_path/"overnight.db"))
+    assert settings.rhen_market_stream_checkpoint_path == str(tmp_path/"overnight.db")
+    fabric = ShadowFabric(settings, SimpleNamespace())
+    symbol = fabric.store.symbols[0]
+    sid = "2026-10-07/OVERNIGHT"
+    fabric.store.begin("old", "overnight", sid)
+    event = normalize({"T":"b","S":symbol,"t":(now-timedelta(minutes=20)).isoformat(),
+        "o":100,"h":101,"l":99,"c":100,"v":12}, generation="old", sequence=1,
+        feed="overnight", session="OVERNIGHT", session_id=sid, received_at=now)
+    fabric.store.apply(event)
+    fabric.checkpoint.save(fabric.store, now)
+    # The initial supervisor audit runs before the socket establishes context.
+    fabric.checkpoint.save(MarketStateStore(fabric.store.symbols), now)
+    fabric.store.rows.clear()
+    fabric.store.begin("new", "overnight", sid)
+    asyncio.run(fabric.bootstrap("overnight", sid))
+    assert fabric.visual.system["restored_bar_count"] == 1
+    assert fabric.visual.system["bootstrap_error"] == "OVERNIGHT_HISTORY_UNAVAILABLE"
+    assert not fabric.store.subscribed
+    assert "quote" not in fabric.store.rows[symbol]
+    assert fabric.store.rows[symbol]["bars"][0]["quality_state"] == "DELAYED"
+    assert not fabric.store.snapshot(symbol, now)["evaluable"]
+    fabric.checkpoint.close()
+
+
 def ready(store, generation="g1"):
     store.begin(generation, "iex", "2026-10-06/REGULAR")
     store.subscribed = set(store.symbols)
