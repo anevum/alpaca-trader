@@ -217,7 +217,15 @@ def test_champion_reader_uses_only_existing_private_health_get():
     requests = []
     def handle(request):
         requests.append(request)
-        return httpx.Response(200,json={"ok":True,"execution":{"body":{"ok":True,"reconciliation_safe":True,
+        return httpx.Response(200,json={"ok":True,
+            "modules":{"nostra":{"ok":True,"status_code":200,"body":{
+                "running":True,"autorun":True,"foundation_configured":True,"gateway_configured":True,
+                "last_cycle_at":NOW.isoformat(),"last_forecast_at":None,"last_error":None,
+                "last_result":{"status":"HEALTHY","forecast_candidates":0,"forecasts_persisted":0,
+                    "baseline_forecasts_persisted":0,"drift_forecasts_persisted":0,
+                    "gateway_counts":{"candidate_rows_scanned":0,"forecast_candidates":0},
+                    "observed_at":NOW.isoformat()}}}},
+            "execution":{"body":{"ok":True,"reconciliation_safe":True,
             "startup_reconciled":True,"last_reconciliation":{"safe_to_enter":True,"reason":"fixture-safe"},
             "protected_configuration_identity":{"fingerprint":"sha256:fixture"},
             "persistence":{"strategy_version_id":"4.3"},"runtime_provenance":{"git_commit":"fixture"}}}})
@@ -225,6 +233,12 @@ def test_champion_reader_uses_only_existing_private_health_get():
     assert result["runtime_ok"] and result["reconciliation_safe"] and not result["broker_write_authority"]
     assert result["startup_reconciled"] is True
     assert result["reconciliation_detail"] == {"safe_to_enter":True,"reason":"fixture-safe"}
+    assert result["nostra_runtime"]["ok"] is True
+    assert result["nostra_runtime"]["running"] is True
+    assert result["nostra_runtime"]["autorun"] is True
+    assert result["nostra_runtime"]["last_result"]["forecast_candidates"] == 0
+    assert result["nostra_runtime"]["last_result"]["gateway_counts"]["candidate_rows_scanned"] == 0
+    assert result["nostra_runtime"]["execution_authority"] is False
     assert len(requests) == 1 and requests[0].method == "GET"
     assert str(requests[0].url) == "http://alpaca-trader.railway.internal:8080/health"
     assert "authorization" not in requests[0].headers and "apca-api-key-id" not in requests[0].headers
