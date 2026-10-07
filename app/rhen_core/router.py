@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 
 from app.provenance import RHEN_RUNTIME_GENERATION, RHEN_VERSION
@@ -47,6 +47,29 @@ CORE_PREFIXES = (
 )
 
 app = FastAPI(title="RHEN", version=RHEN_VERSION)
+
+
+@app.websocket("/v1/command/stream")
+async def command_stream_proxy(websocket: WebSocket):
+    # Authenticate at execution's existing Command boundary before accepting.
+    from websockets.asyncio.client import connect
+    auth = websocket.headers.get("authorization")
+    if not auth:
+        await websocket.close(code=1008)
+        return
+    try:
+        async with connect("ws://127.0.0.1:8101/v1/command/stream",
+                           additional_headers={"Authorization": auth}, max_queue=64,
+                           open_timeout=10) as upstream:
+            await websocket.accept()
+            # Read-only stream. Client frames are not a control or trading API.
+            async for frame in upstream:
+                if isinstance(frame, bytes):
+                    await websocket.send_bytes(frame)
+                else:
+                    await websocket.send_text(frame)
+    except Exception:
+        await websocket.close(code=1013)
 
 
 def _truthy(value: str | None) -> bool:

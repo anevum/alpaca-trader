@@ -1,0 +1,64 @@
+{
+  "observed_at": "2026-10-07T01:38:38.895484+00:00",
+  "baseline_status": "OBSERVED_HEALTHY_NOT_FULLY_CONFIGURATION_FROZEN",
+  "backend_commit": "0270563a613c57a959d1c6b93b97a01509a418df",
+  "deployment_id": "4ec33727-f98b-4ffe-97f8-1ce30a2e95e2",
+  "system_version": "4.3.2",
+  "runtime": "rhen-unified-v4.3",
+  "strategy_version_id": "LIVE-2026-09-25-003",
+  "execution_authorized": true,
+  "bot_armed": true,
+  "startup_reconciled": true,
+  "reconciliation_safe": true,
+  "last_reconciliation": {
+    "safe_to_enter": true,
+    "reason": "reconciled",
+    "observed_at": "2026-10-07T01:38:19.209919+00:00",
+    "unresolved_intents": [],
+    "unknown_open_orders": [],
+    "untracked_positions": []
+  },
+  "iren_configuration_identity": "d8962a1492f55ffa05dcb1403dbf85bd971a418dbd0aa819dbce8dd492392f8a",
+  "core_storage": {
+    "bytes": 782209144,
+    "mb": 745.973,
+    "effective_bytes": 764604536,
+    "effective_mb": 729.184,
+    "reusable_bytes": 17604608,
+    "reusable_mb": 16.789,
+    "warning": true,
+    "physical_warning": true,
+    "analytics_shedding": false,
+    "shed_basis": "effective_used_bytes",
+    "warning_mb": 500,
+    "shed_mb": 750,
+    "allocated_db_bytes": 780754944,
+    "reclaimable_db_bytes": 17604608,
+    "fragmentation_pct": 2.255,
+    "auto_vacuum_mode": 2,
+    "maintenance_error": null
+  },
+  "module_failures": [],
+  "frontend_source_head": "bd4999cbd98e6c209c451a183e9f965e9682ebdf",
+  "frontend_ci_deploy": "SUCCESS",
+  "unverified": [
+    "exact_regular_and_extended_configuration_fingerprints",
+    "protected_trading_configuration_values",
+    "broker_account_fields_equity_positions_orders",
+    "actual_market_data_entitlement",
+    "active_database_migration_head",
+    "Command_authorized_live_UI"
+  ],
+  "production_changes_made": false,
+  "production_rollback_candidate": {
+    "commit": "0270563a613c57a959d1c6b93b97a01509a418df",
+    "deployment": "4ec33727-f98b-4ffe-97f8-1ce30a2e95e2",
+    "canRollback": true,
+    "canRedeploy": true
+  },
+  "package_drift": [
+    "4.3 overnight runtime logs report execution_authorized=true; preserved unchanged; 4.4 has no broker authority",
+    "core effective storage approaches 750MB shedding threshold; no per-quote durable writes",
+    "24 symbols in package vs 20 regular scanner symbols in live health; 4.4 uses separately configured observation universe"
+  ]
+}
