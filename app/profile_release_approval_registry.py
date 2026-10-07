@@ -132,7 +132,15 @@ class ProfileReleaseApprovalRegistry:
                     if row.get("evidence",{}).get("release_fingerprint")
                     ==candidate["evidence"]["release_fingerprint"]),None)
         if exact and exact.get("evidence",{}).get("revoked") is not True:
-            if exact.get("evidence") != candidate.get("evidence"):
+            immutable_keys=(
+                "authorized_action","release_id","release_fingerprint","profile_id",
+                "profile_version","source_strategy_version","target_strategy_version",
+                "configuration_fingerprint","policy_library_fingerprint",
+                "authorization_reference",
+            )
+            previous=exact.get("evidence",{})
+            proposed=candidate.get("evidence",{})
+            if any(previous.get(key)!=proposed.get(key) for key in immutable_keys):
                 raise ValueError("release_fingerprint_binding_conflict")
             return {**exact,"duplicate":True}
         return {**self._append(candidate),"duplicate":False}
