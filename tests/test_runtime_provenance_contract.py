@@ -25,3 +25,12 @@ def test_provenance_patch_does_not_grant_broker_or_execution_authority():
     assert '"broker_calls": False' in research
     assert '"shadow_only": True' in preopen
     assert '"broker_orders_possible": False' in velum
+
+
+def test_canonical_rhen_runtime_identity_matches_v4_3_release_line():
+    from app.provenance import RHEN_RUNTIME_GENERATION, RHEN_VERSION
+    from app.rhen_core.router import app
+
+    assert RHEN_VERSION == "4.3.2"
+    assert RHEN_RUNTIME_GENERATION == "rhen-unified-v4.3"
+    assert app.version == RHEN_VERSION
