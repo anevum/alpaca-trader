@@ -111,6 +111,44 @@ class ReadOnlyChampion:
             raise ValueError("Champion execution observation unavailable")
         identity = execution.get("protected_configuration_identity",{})
         persistence = execution.get("persistence",{})
+        nostra_probe = (body.get("modules") or {}).get("nostra") or {}
+        nostra_body = nostra_probe.get("body") if isinstance(nostra_probe,dict) else {}
+        if not isinstance(nostra_body,dict):
+            nostra_body = {}
+        nostra_result = nostra_body.get("last_result")
+        if not isinstance(nostra_result,dict):
+            nostra_result = {}
+        gateway_counts = nostra_result.get("gateway_counts")
+        if not isinstance(gateway_counts,dict):
+            gateway_counts = {}
+        nostra_runtime = {
+            "ok":nostra_probe.get("ok") is True if isinstance(nostra_probe,dict) else False,
+            "status_code":nostra_probe.get("status_code") if isinstance(nostra_probe,dict) else None,
+            "running":nostra_body.get("running") is True,
+            "autorun":nostra_body.get("autorun") is True,
+            "foundation_configured":nostra_body.get("foundation_configured") is True,
+            "gateway_configured":nostra_body.get("gateway_configured") is True,
+            "last_cycle_at":nostra_body.get("last_cycle_at"),
+            "last_forecast_at":nostra_body.get("last_forecast_at"),
+            "last_error":str(nostra_body.get("last_error") or "")[:160] or None,
+            "last_result":{
+                "status":nostra_result.get("status"),
+                "forecast_candidates":nostra_result.get("forecast_candidates"),
+                "forecasts_persisted":nostra_result.get("forecasts_persisted"),
+                "baseline_forecasts_persisted":nostra_result.get("baseline_forecasts_persisted"),
+                "drift_forecasts_persisted":nostra_result.get("drift_forecasts_persisted"),
+                "observed_at":nostra_result.get("observed_at"),
+                "gateway_counts":{
+                    key:gateway_counts.get(key) for key in (
+                        "candidate_rows_scanned","forecast_candidates",
+                        "pending_score_outcomes","evaluation_models",
+                        "drift_independent_cycles"
+                    ) if gateway_counts.get(key) is not None
+                },
+            },
+            "research_only":True,
+            "execution_authority":False,
+        }
         return {"observed_at":datetime.now(timezone.utc).isoformat(),
             "source":"RHEN/private_champion_health","provenance":"OPERATIONAL",
             "runtime_ok":response.status_code == 200 and body.get("ok") is True and execution.get("ok") is True,
@@ -129,6 +167,7 @@ class ReadOnlyChampion:
             "run_id":persistence.get("run_id"),
             "protected_configuration_fingerprint":identity.get("fingerprint"),
             "source_commit":execution.get("runtime_provenance",{}).get("git_commit"),
+            "nostra_runtime":nostra_runtime,
             "broker_write_authority":False}
 
 
@@ -341,6 +380,7 @@ def create_app(settings=None):
                             champion_health_lineage=("VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc))
                                 else "DEGRADED_READ" if fabric.champion_observation else "UNAVAILABLE"),
                             protected_configuration_fingerprint=(fabric.champion_observation or {}).get("protected_configuration_fingerprint"),
+                            nostra_runtime=(fabric.champion_observation or {}).get("nostra_runtime"),
                             account_performance_quality=performance.get("quality_state","UNAVAILABLE"),
                             archived_observation_count=fabric.checkpoint.db.execute("SELECT count(*) FROM shadow_visual").fetchone()[0],
                             bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
