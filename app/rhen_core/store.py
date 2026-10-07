@@ -804,6 +804,118 @@ class RhenCoreStore:
             return default, 0
         return _loads(row[0], default), int(row[1])
 
+    def accept_iren_configuration(
+        self,
+        *,
+        expected_revision: int,
+        fingerprint: str,
+        reviewed_by: str,
+    ) -> dict[str, Any]:
+        """Accept the exact current protected configuration as IREN's baseline.
+
+        This is a protected operator action. It is revision-fenced and
+        fingerprint-bound so a stale Command view cannot silently approve a
+        different runtime configuration. The existing incident remains open
+        until subsequent IREN observations verify the accepted fingerprint.
+        """
+        if expected_revision < 0:
+            raise ValueError("invalid_expected_revision")
+        fingerprint = str(fingerprint or "").strip()
+        if not fingerprint.startswith("sha256:") or len(fingerprint) != 71:
+            raise ValueError("invalid_configuration_fingerprint")
+        reviewed_by = str(reviewed_by or "").strip()[:200] or "operator"
+
+        with self._lock, self.connect() as conn:
+            row = conn.execute(
+                """select value_json,revision
+                   from kv_state
+                   where namespace='iren' and key='state'"""
+            ).fetchone()
+            if not row:
+                raise ValueError("iren_state_unavailable")
+
+            state = _loads(row["value_json"], {})
+            current_revision = int(row["revision"] or 0)
+            if current_revision != expected_revision:
+                return {
+                    "ok": True,
+                    "accepted": False,
+                    "conflict": True,
+                    "revision": current_revision,
+                }
+            if not isinstance(state, dict):
+                raise ValueError("iren_state_invalid")
+
+            review = state.get("configuration_review")
+            current = state.get("configuration_current")
+            if not isinstance(review, dict) or str(
+                review.get("status") or ""
+            ) != "CONFIGURATION_REVIEW_REQUIRED":
+                raise ValueError("configuration_review_not_required")
+            if not isinstance(current, dict):
+                raise ValueError("configuration_current_unavailable")
+            if current.get("schema_version") != "rhen_protected_configuration.v2":
+                raise ValueError("configuration_snapshot_not_v2")
+
+            current_fingerprint = str(current.get("fingerprint") or "")
+            review_fingerprint = str(review.get("current_fingerprint") or "")
+            if fingerprint != current_fingerprint or fingerprint != review_fingerprint:
+                raise ValueError("configuration_fingerprint_mismatch")
+
+            accepted_at = _iso()
+            updated = dict(state)
+            updated["configuration_baseline"] = {
+                "fingerprint": fingerprint,
+                "snapshot": current,
+                "observed_at": state.get("observed_at"),
+                "basis": "explicit_operator_acceptance",
+                "accepted_at": accepted_at,
+                "accepted_by": reviewed_by,
+            }
+            updated["configuration_drift"] = None
+            updated["configuration_review"] = {
+                **review,
+                "status": "ACCEPTED_PENDING_REOBSERVATION",
+                "accepted_at": accepted_at,
+                "accepted_by": reviewed_by,
+            }
+            updated["configuration_acceptance"] = {
+                "fingerprint": fingerprint,
+                "accepted_at": accepted_at,
+                "accepted_by": reviewed_by,
+            }
+
+            revision = current_revision + 1
+            conn.execute(
+                """update kv_state
+                   set value_json=?, revision=?, updated_at=?
+                   where namespace='iren' and key='state' and revision=?""",
+                (_json(updated), revision, accepted_at, current_revision),
+            )
+            if conn.total_changes != 1:
+                conn.rollback()
+                latest = conn.execute(
+                    """select revision from kv_state
+                       where namespace='iren' and key='state'"""
+                ).fetchone()
+                return {
+                    "ok": True,
+                    "accepted": False,
+                    "conflict": True,
+                    "revision": int(latest["revision"] if latest else 0),
+                }
+            conn.commit()
+            return {
+                "ok": True,
+                "accepted": True,
+                "conflict": False,
+                "revision": revision,
+                "fingerprint": fingerprint,
+                "accepted_at": accepted_at,
+                "state": updated,
+            }
+
+
     def graen_snapshot(self) -> dict[str, Any]:
         with self.connect() as conn:
             problems = [

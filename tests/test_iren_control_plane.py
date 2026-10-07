@@ -344,6 +344,7 @@ def test_status_is_authenticated_and_legacy_scheduler_routes_preserved(monkeypat
     asyncio.run(scenario())
     paths = {r.path for r in app.routes}
     assert {"/v1/status", "/v1/registry", "/v1/diagnostics"} <= paths
+    assert "/v1/iren/configuration/accept" in paths
     assert not any("promote" in p or "restart" in p or "order" in p for p in paths)
 
 
@@ -364,3 +365,36 @@ def test_optional_preopen_unavailable_does_not_degrade_control_state():
     assert state["state"] == "HEALTHY"
     assert "service.PREOPEN" not in state["incidents"]
     assert not events
+
+
+def test_accepted_configuration_review_remains_visible_until_recovery_verified():
+    state, _ = reduce_state({}, observation(), POLICY)
+    state["configuration_review"] = {
+        "status": "ACCEPTED_PENDING_REOBSERVATION",
+        "current_fingerprint": "synthetic-baseline",
+        "accepted_by": "operator",
+    }
+    state["incidents"]["configuration.drift"] = {
+        "status": "OPEN",
+        "severity": "critical",
+        "reason": "protected_configuration_changed",
+        "failure_count": 1,
+        "recovery_count": 0,
+        "episode": 1,
+    }
+
+    for seconds in (60, 120):
+        state, events = reduce_state(state, observation(seconds), POLICY)
+        assert state["state"] == "ATTENTION_REQUIRED"
+        assert state["configuration_review"]["status"] == "ACCEPTED_PENDING_REOBSERVATION"
+        assert not any(event["transition"] == "RECOVERED" for event in events)
+
+    state, events = reduce_state(state, observation(180), POLICY)
+    assert state["state"] == "HEALTHY"
+    assert state["configuration_review"] is None
+    assert state["incidents"]["configuration.drift"]["status"] == "CLOSED"
+    assert any(
+        event["key"] == "configuration.drift"
+        and event["transition"] == "RECOVERED"
+        for event in events
+    )

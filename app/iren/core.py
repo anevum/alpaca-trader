@@ -125,7 +125,13 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
                 "basis": "observed_production_baseline",
             }
     elif baseline.get("fingerprint") == config.get("fingerprint"):
-        configuration_review = None
+        if (
+            isinstance(configuration_review, dict)
+            and configuration_review.get("status") == "ACCEPTED_PENDING_REOBSERVATION"
+        ):
+            configuration_review = dict(configuration_review)
+        else:
+            configuration_review = None
     scheduler = observation.get("scheduler", {})
     scheduler_enabled = scheduler.get("enabled") is not False
     if scheduler_enabled:
@@ -205,6 +211,17 @@ def reduce_state(previous: dict, observation: dict, policy: dict) -> tuple[dict,
                 events.append({"key": key, "transition": "RECOVERED", "episode": row["episode"], "severity": row["severity"], "reason": "healthy_observations_confirmed"})
         incidents[key] = row
     opened = [row for row in incidents.values() if row["status"] == "OPEN"]
+    if (
+        isinstance(configuration_review, dict)
+        and configuration_review.get("status") == "ACCEPTED_PENDING_REOBSERVATION"
+        and not any(
+            key.startswith("configuration.")
+            and isinstance(row, dict)
+            and row.get("status") == "OPEN"
+            for key, row in incidents.items()
+        )
+    ):
+        configuration_review = None
     state = "ATTENTION_REQUIRED" if any(row["severity"] == "critical" for row in opened) else "DEGRADED" if opened or issues else "HEALTHY"
     for event in events:
         event["event_key"] = identity({"version": policy["version"], "key": event["key"], "transition": event["transition"], "episode": event["episode"]})

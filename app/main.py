@@ -1762,6 +1762,11 @@ def _command_iren_projection(
             bool(status_payload.get("action_required")) or bool(incidents)
         ),
         "source": "rhen_native",
+        "configuration_review": state.get("configuration_review"),
+        "configuration_drift": state.get("configuration_drift"),
+        "configuration_current": state.get("configuration_current"),
+        "configuration_baseline": state.get("configuration_baseline"),
+        "configuration_acceptance": state.get("configuration_acceptance"),
         "strategy_pipeline": strategy_pipeline or {
             "schema_version": "strategy_pipeline.v1",
             "available": False,
@@ -1826,6 +1831,25 @@ async def command_iren_status(authorization: str | None = Header(default=None)):
             if isinstance(research_payload.get("research"), dict)
             else None
         ),
+    )
+
+
+@app.post("/v1/command/iren/configuration/accept")
+async def command_iren_configuration_accept(
+    body: dict,
+    authorization: str | None = Header(default=None),
+):
+    identity = await require_command_admin(authorization)
+    fingerprint = str(body.get("fingerprint") or "").strip()
+    if not fingerprint:
+        raise HTTPException(status_code=400, detail="configuration_fingerprint_required")
+    return await _rhen_native_iren_request(
+        "POST",
+        "/v1/iren/configuration/accept",
+        {
+            "fingerprint": fingerprint,
+            "reviewed_by": str(identity.get("email") or "command-admin"),
+        },
     )
 
 

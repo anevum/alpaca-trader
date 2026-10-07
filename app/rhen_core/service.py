@@ -305,6 +305,15 @@ def scheduler_gateway_write(
             "state": state,
             "revision": revision,
         }
+    if action == "iren_configuration_accept":
+        try:
+            return store.accept_iren_configuration(
+                expected_revision=int(body.get("expected_revision") or 0),
+                fingerprint=str(body.get("fingerprint") or ""),
+                reviewed_by=str(body.get("reviewed_by") or "operator"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if action in {
         "iren_notifications_claim",
         "iren_notification_complete",
