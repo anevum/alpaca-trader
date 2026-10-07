@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import asyncio
 import json
+import math
 import os
 
 import httpx
@@ -17,6 +18,17 @@ from app.rhen44_release import release_status
 from app.sizing import calculate_entry_notional, effective_gross_limit, effective_position_limit, long_exposure
 from app.strategy import RollingMomentumVwapStrategy, OpeningRangeVwapStrategy
 from .runtime import ShadowFabric
+
+
+def telemetry_safe(value):
+    """Keep observer telemetry serializable without inventing numeric evidence."""
+    if isinstance(value, dict):
+        return {str(key): telemetry_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [telemetry_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def assert_observer_only(settings):
@@ -160,39 +172,55 @@ def create_app(settings=None):
                                   ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
             fabric.start()
             async def telemetry():
+                failures = 0
                 while True:
-                    # Private Railway operational logs; no credentials, token,
-                    # account dollars, positions, symbols, orders or fill payloads.
-                    body = await health()
-                    body.update(provenance="OPERATIONAL",observed_at=datetime.now(timezone.utc).isoformat(),
-                        broker_stream_state=fabric.broker.state if fabric.broker else "DISABLED",
-                        account_quality=fabric.visual.system.get("account_observation",{}).get("quality_state","UNAVAILABLE"),
-                        reconstruction_source=fabric.visual.system.get("reconstruction_source"),
-                        restored_bar_count=fabric.visual.system.get("restored_bar_count"),
-                        bootstrap_error=fabric.visual.system.get("bootstrap_error"),
-                        policy_recovery=fabric.policy_recovery,
-                        champion_health_lineage=("VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc))
-                            else "DEGRADED_READ" if fabric.champion_observation else "UNAVAILABLE"),
-                        protected_configuration_fingerprint=(fabric.champion_observation or {}).get("protected_configuration_fingerprint"),
-                        account_performance_quality=fabric.visual.system.get("account_performance",{}).get("quality_state","UNAVAILABLE"),
-                        archived_observation_count=fabric.checkpoint.db.execute("SELECT count(*) FROM shadow_visual").fetchone()[0],
-                        bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
-                        quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
-                        subscribed_channels=sorted(fabric.manager.subscribed_channels),
-                        unavailable_channels=sorted(fabric.manager.unavailable_channels),
-                        scanner_prerequisites={"required_bars":fabric.store.warm_bars,
-                            "symbols_with_required_bars":sum(len(row.get("bars",())) >= fabric.store.warm_bars for row in fabric.store.rows.values()),
-                            "evaluable_symbols":sum(fabric.store.snapshot(s,datetime.now(timezone.utc))["evaluable"] for s in fabric.store.symbols)},
-                        market_processing={"processed_events":fabric.manager.processed_events,
-                            "cooperative_yields":fabric.manager.cooperative_yields,
-                            "max_callback_ms":fabric.manager.max_callback_ms,
-                            "max_publisher_tick_lag_ms":fabric.visual.publisher.max_tick_lag_ms,
-                            "command_clients":len(fabric.visual.publisher.clients)},
-                        scanner_coverage={k:v for k,v in fabric.coverage.summary(fabric.store,datetime.now(timezone.utc)).items() if k != "symbols"},
-                        scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
-                    body["asset_eligibility"] = fabric.asset_summary(datetime.now(timezone.utc))
-                    body["command_transport"] = dict(command_observation)
-                    print("RHEN44_SHADOW_TELEMETRY "+json.dumps(body,allow_nan=False),flush=True)
+                    try:
+                        # Private Railway operational logs; no credentials, token,
+                        # account dollars, positions, symbols, orders or fill payloads.
+                        account = fabric.visual.system.get("account_observation") or {}
+                        performance = fabric.visual.system.get("account_performance") or {}
+                        body = await health()
+                        body.update(provenance="OPERATIONAL",observed_at=datetime.now(timezone.utc).isoformat(),
+                            broker_stream_state=fabric.broker.state if fabric.broker else "DISABLED",
+                            account_quality=account.get("quality_state","UNAVAILABLE"),
+                            reconstruction_source=fabric.visual.system.get("reconstruction_source"),
+                            restored_bar_count=fabric.visual.system.get("restored_bar_count"),
+                            bootstrap_error=fabric.visual.system.get("bootstrap_error"),
+                            policy_recovery=fabric.policy_recovery,
+                            champion_health_lineage=("VERIFIED_READ" if fabric.champion_ready(datetime.now(timezone.utc))
+                                else "DEGRADED_READ" if fabric.champion_observation else "UNAVAILABLE"),
+                            protected_configuration_fingerprint=(fabric.champion_observation or {}).get("protected_configuration_fingerprint"),
+                            account_performance_quality=performance.get("quality_state","UNAVAILABLE"),
+                            archived_observation_count=fabric.checkpoint.db.execute("SELECT count(*) FROM shadow_visual").fetchone()[0],
+                            bar_count=sum(len(row["bars"]) for row in fabric.store.rows.values()),
+                            quote_count=sum(row.get("quote") is not None for row in fabric.store.rows.values()),
+                            subscribed_channels=sorted(fabric.manager.subscribed_channels),
+                            unavailable_channels=sorted(fabric.manager.unavailable_channels),
+                            scanner_prerequisites={"required_bars":fabric.store.warm_bars,
+                                "symbols_with_required_bars":sum(len(row.get("bars",())) >= fabric.store.warm_bars for row in fabric.store.rows.values()),
+                                "evaluable_symbols":sum(fabric.store.snapshot(s,datetime.now(timezone.utc))["evaluable"] for s in fabric.store.symbols)},
+                            market_processing={"processed_events":fabric.manager.processed_events,
+                                "cooperative_yields":fabric.manager.cooperative_yields,
+                                "max_callback_ms":fabric.manager.max_callback_ms,
+                                "max_publisher_tick_lag_ms":fabric.visual.publisher.max_tick_lag_ms,
+                                "command_clients":len(fabric.visual.publisher.clients)},
+                            scanner_coverage={k:v for k,v in fabric.coverage.summary(fabric.store,datetime.now(timezone.utc)).items() if k != "symbols"},
+                            scanner_summary=fabric.rejections.summary(datetime.now(timezone.utc)))
+                        body["asset_eligibility"] = fabric.asset_summary(datetime.now(timezone.utc))
+                        body["command_transport"] = dict(command_observation)
+                        body["canonical_ledger_parity"] = fabric.visual.system.get("canonical_ledger_parity") or {
+                            "quality_state":"UNAVAILABLE","parity_complete":False,
+                            "entry_authority":False,"broker_write_authority":False}
+                        body["execution_recovery"] = fabric.visual.system.get("execution_recovery") or {
+                            "restored_events":0,"coverage_state":"UNAVAILABLE","entry_authority":False}
+                        print("RHEN44_SHADOW_TELEMETRY "+json.dumps(telemetry_safe(body),allow_nan=False),flush=True)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        failures += 1
+                        print("RHEN44_SHADOW_TELEMETRY_ERROR "+json.dumps({
+                            "error":type(exc).__name__,"failure_count":failures,
+                            "execution_authority":False,"broker_orders_possible":False}),flush=True)
                     await asyncio.sleep(30)
             telemetry_task = asyncio.create_task(telemetry())
         try:
