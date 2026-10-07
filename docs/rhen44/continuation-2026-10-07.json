@@ -328,7 +328,6 @@
   },
   "remaining_implementation": [
     "full risk/cost mapped candidate and canonical research export",
-    "canonical NOSTRA forecast producer/reference wiring",
     "normalized/drawdown/session visuals and VELUM artifacts/control integration",
     "strategy threshold overlays and full authenticated visual acceptance"
   ],
@@ -341,44 +340,36 @@
     "Canonical reconciliation now recovers broker websocket gaps after reconnect; raw trade_updates parity is intentionally not labeled complete because one historical gap remains proven."
   ],
   "latest_followup": {
-    "observed_at": "2026-10-07T20:56:30.758840576Z",
-    "backend_commit": "976a49f2ea468ab9a8e27e7eca5e2b164a1b140f",
-    "backend_pr": 430,
-    "hosted_ci": {
-      "run_id": 37685766806,
-      "status": "SUCCESS",
-      "runtime_audit_run_id": 37685766734,
-      "runtime_audit_status": "SUCCESS"
-    },
+    "observed_at": "2026-10-07T22:39:02.966976+00:00",
+    "backend_commit": "57ad13cd1d73e07c52b369c2a141fa3100d41b0a",
+    "backend_pr": 439,
     "shadow_deployment": {
-      "deployment_id": "a28d92b6-f563-4371-ac65-3bc079e0a32c",
+      "deployment_id": "e87aeccb-cbbc-4e92-9dff-fad35e9a7f2b",
       "status": "SUCCESS",
-      "hotset_active": true,
-      "hotset_discovery_count": 100,
-      "current_stream_symbols": 24,
-      "asc_profile_release_state": "UNAVAILABLE",
-      "asc_reason": "NO_CANONICAL_PROFILE_RELEASE",
-      "approved_profiles": [],
-      "active_mode_authorized": false,
-      "canonical_reconciliation_complete": true,
-      "raw_stream_parity_complete": false,
-      "known_historical_missing_orders": 1,
-      "known_historical_missing_fills": 1,
       "execution_authority": false,
-      "broker_write_authority": false
+      "broker_write_authority": false,
+      "canonical_reconciliation_complete": true,
+      "raw_stream_parity_complete": false
+    },
+    "website": {
+      "commit": "f96f0082217fb16e2f1ea11d19eb80fa1cf93ea3",
+      "prs": [
+        198,
+        199
+      ],
+      "hosted_pr_verification": "SUCCESS",
+      "authenticated_bootstrap_reads": 1,
+      "authenticated_websocket_accepts": 1,
+      "authentication_rejections": 0
     },
     "champion": {
-      "source_commit": "13796f7eb1d7461f880d9dc9f6015d9bcfececb5",
-      "deployment_id": "6ec2911b-4a79-4d3e-8b4f-936b60af3914",
-      "railway_deployment_status": "SUCCESS",
-      "behavior_version": "4.3.2",
-      "read_only_support_changes": [
-        "canonical-ledger projection",
-        "canonical-universe projection/refresh",
-        "sealed ASC operator approval registry"
-      ]
+      "source_commit": "7412d31a54d7fdd307ee7c8dfaed18708b45d4ff",
+      "deployment_id": "64446f4d-711b-4825-b382-c10ce9314617",
+      "status": "SUCCESS",
+      "behavior_version": "4.3.2"
     },
-    "next_slice": "canonical NOSTRA forecast producer/reference wiring",
+    "next_slice": "canonical read-only risk/cost candidate mapping and research exports",
+    "implementation_complete": false,
     "production_crossover_performed": false,
     "promotion_eligible": false
   }
