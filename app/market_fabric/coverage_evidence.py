@@ -25,9 +25,10 @@ class CoverageEvidence:
         return coverage_lineage(session_id=store.context[1], feed=store.context[0], symbol=symbol,
                                 strategy_version=self.strategy_version, configuration=self.configuration)
 
-    def advance(self, store, now):
+    def advance(self, store, now, *, symbols=None):
         now = utc(now)
-        for symbol in store.symbols:
+        targets = tuple(symbols) if symbols is not None else store.symbols
+        for symbol in targets:
             prior = self.cursors.get(symbol)
             # Late clocks cannot roll the cursor backwards or count time twice.
             if prior and now < prior["at"]:
