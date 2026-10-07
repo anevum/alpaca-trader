@@ -785,8 +785,13 @@ class RhenCoreStore:
                     "select name, sum(pgsize) as bytes from dbstat "
                     "group by name order by bytes desc limit 12"
                 ).fetchall()
+                event_sizes = conn.execute(
+                    "select event_type, count(*), sum(length(payload_json)) from events "
+                    "group by event_type order by sum(length(payload_json)) desc limit 12"
+                ).fetchall()
             print(json.dumps({"event": "core_storage_allocation",
-                "objects": [{"name": row[0], "bytes": row[1]} for row in rows]},
+                "objects": [{"name": row[0], "bytes": row[1]} for row in rows],
+                "event_types": [{"type": row[0], "count": row[1], "payload_bytes": row[2]} for row in event_sizes]},
                 sort_keys=True), flush=True)
         except Exception as exc:
             self._maintenance_error = f"{type(exc).__name__}: {exc}"
