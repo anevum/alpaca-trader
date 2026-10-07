@@ -245,5 +245,62 @@
     "Current live timing window is short; command_clients=0, so no browser latency or visual gate passed.",
     "Retained original and current champion refs identify code; withheld configuration values prevent claiming a complete rollback freeze.",
     "No production service/source/variable/trading path change was made."
-  ]
+  ],
+  "latest_followup": {
+    "observed_at": "2026-10-07T17:24:31Z",
+    "backend_commit": "b23f9d09c81e360ff9898f168534f4b538f65acc",
+    "backend_pr": 430,
+    "hosted_ci": {
+      "run_id": 37658279361,
+      "status": "SUCCESS",
+      "runtime_audit_run_id": 37658279678,
+      "runtime_audit_status": "SUCCESS"
+    },
+    "local_validation": {
+      "staging_passed": 1071,
+      "staging_skipped": 10,
+      "dedicated_rhen44_passed": 107,
+      "command_passed": 54,
+      "command_typecheck_and_build": "PASSED"
+    },
+    "shadow_deployment": {
+      "deployment_id": "83b95140-d2c6-42ab-8c6d-221e08132aff",
+      "status": "SUCCESS",
+      "broker_write_authority": false,
+      "initial_restored_bars": 2840,
+      "restart_restored_bars": 2842,
+      "restart_broker_stream_state": "HEALTHY",
+      "restart_subscribed_symbols": 24,
+      "restart_policy_state": "RESTORED_SHADOW_ONLY",
+      "anonymous_bootstrap_status": 401
+    },
+    "command": {
+      "pr": 197,
+      "commit": "932e9d4bd742162fa53834cbd7d11d3445498787",
+      "hosted_verification": "IN_PROGRESS_BROWSER_CAPTURE",
+      "production_deployed": false,
+      "live_visual_acceptance": "UNPASSED"
+    },
+    "champion": {
+      "source_commit": "edd089b4c80cd5150a4b0d1a67d3317c3d3e5eac",
+      "deployment_id": "b7676403-c01a-4d9b-adf4-983ad43ca8fc",
+      "railway_deployment_status": "SUCCESS",
+      "code_configuration_restart_mutations": false,
+      "health_read_status": 503,
+      "current_reconciliation_safety": "UNATTESTED",
+      "observed_errors": [
+        "upstream ReadTimeout",
+        "LEDGER_RECONCILE_ERROR"
+      ]
+    },
+    "research": {
+      "observed_prerequisite_coverage_fraction": 0.6918266785527224,
+      "required_forward_coverage_fraction": 0.95,
+      "forward_gate": "UNPASSED",
+      "holdout_gate": "UNPASSED",
+      "source_counters_are_independent_validated_sessions": false
+    },
+    "production_crossover_performed": false,
+    "promotion_eligible": false
+  }
 }

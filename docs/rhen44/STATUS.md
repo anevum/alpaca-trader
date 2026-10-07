@@ -3,6 +3,40 @@
 Canonical workload: ANEVUM.RHEN.PACKAGE.2026-10-06.003.V4-4-VISUAL-INTELLIGENCE.
 All 34 package checksums verified. The complete package is retained under `package/`.
 
+Current verified continuation (2026-10-07, 13:24 ET): isolated backend commit
+`b23f9d09c81e360ff9898f168534f4b538f65acc` passed hosted CI 37658279361 and
+runtime audit 37658279678. Railway shadow deployment
+`83b95140-d2c6-42ab-8c6d-221e08132aff` succeeded. It recovered 2,840 bars,
+restored shadow-only policy, subscribed 24 symbols and reconnected broker
+updates. Anonymous bootstrap was HTTP 401, counted in private transport
+telemetry; shadow health was HTTP 200. Broker-write authority remains false.
+
+Hosted CI caught a missed source-expiry scheduling race on the preceding
+35ea9cb revision. Fixed by publishing already elapsed quote/bar/asset expiry
+before selecting future deadlines, without market polling or invented events.
+Deterministic delayed-start regression and original deadline test pass.
+Current local staging suite: 1,071 passed / 10 skipped; dedicated 4.4: 107 passed.
+No source freshness threshold was relaxed.
+
+Command bootstrap commit `932e9d4` is in PR #197. Its local 54 tests, TypeScript
+and complete production build pass. Hosted verification is still running browser
+capture; it has not been merged or deployed at this observation. Live authenticated
+Command still has frozen/unavailable 4.4 data. UI acceptance remains unpassed.
+
+At 17:22-17:23 UTC, champion health reads returned HTTP 503 and production
+logs showed upstream ReadTimeout plus LEDGER_RECONCILE_ERROR. Railway still
+reported original 4.3.2 commit/deployment SUCCESS. Current reconciliation safety
+cannot be inferred from the earlier healthy snapshot. No champion code/config
+change or restart was performed. The shadow also reports champion health lineage
+UNAVAILABLE; this is an additional crossover blocker.
+
+Observed shadow source coverage is approximately 69%, below the required 95%.
+Signal counters are not complete risk-validated research candidates. No independent
+forward/holdout gate has passed. Hotset rotation, canonical ledger integration,
+trusted approvals, forecast producer and full runtime acceptance remain incomplete.
+Options writes, short equities, expanded leverage, crypto and blanket 24/5 4.4
+execution remain disabled. This continuation is not a complete 4.4 release.
+
 Current follow-up (2026-10-07, 13:14 ET): GitHub mutations recovered. Full
 continuation draft #430 is open and CI/run 37656326159 plus runtime audit/run
 37656326175 passed on `898738a`; #429 closed as superseded. Earlier connector
@@ -393,3 +427,8 @@ unknown key IDs, and converts network/JSON failures into controlled Command 503
 errors. This addresses the observed single production `httpx.ReadTimeout`
 without weakening token signature, issuer, audience, expiry or email checks.
 
+
+Actual restart observation at 17:24:31 UTC: same isolated deployment recovered
+2,842 bars, policy RESTORED_SHADOW_ONLY, broker HEALTHY and 24 subscriptions.
+Broker-write authority false; transport counters reset after container restart.
+No full promotion gate is inferred from this recovery exercise.
