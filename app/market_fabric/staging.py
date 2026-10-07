@@ -161,6 +161,32 @@ class ReadOnlyCanonicalUniverse:
         return body
 
 
+class ReadOnlyCanonicalResearchEvidence:
+    """Authenticated GET-only read of the canonical RHEN research evidence document."""
+    ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/research-agent-gateway"
+
+    def __init__(self, settings, *, transport=None):
+        self.token = str(getattr(settings, "trading_ingest_token", "") or "").strip()
+        self.transport = transport
+
+    async def snapshot(self):
+        if not self.token:
+            raise ValueError("canonical research evidence read unavailable")
+        async with httpx.AsyncClient(timeout=12, transport=self.transport) as http:
+            response = await http.get(
+                self.ENDPOINT,
+                headers={"x-anevum-ingest-token":self.token,"accept":"application/json"})
+            response.raise_for_status()
+            body = response.json()
+        evidence = body.get("evidence") if isinstance(body,dict) else None
+        if (not isinstance(body,dict) or body.get("ok") is not True
+            or body.get("execution_authority") is not False
+            or body.get("broker_orders_possible") is not False
+            or not isinstance(evidence,dict)):
+            raise ValueError("canonical research evidence identity mismatch")
+        return evidence
+
+
 class ReadOnlyCanonicalLedger:
     """Token-authenticated GET-only projection of the canonical RHEN order/fill ledger."""
     ENDPOINT = "http://alpaca-trader.railway.internal:8080/v1/trading-report-read"
@@ -214,6 +240,7 @@ def create_app(settings=None):
             fabric = ShadowFabric(settings, MarketDataClient(settings), evaluator=evaluate, account_reader=broker.snapshot,
                                   champion_reader=ReadOnlyChampion().snapshot,
                                   discovery_reader=ReadOnlyCanonicalUniverse(settings).snapshot,
+                                  asc_reader=ReadOnlyCanonicalResearchEvidence(settings).snapshot,
                                   asset_reader=current_assets,ledger_reader=ReadOnlyCanonicalLedger(settings).snapshot)
             fabric.start()
             async def telemetry():

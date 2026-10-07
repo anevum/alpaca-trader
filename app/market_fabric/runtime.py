@@ -35,11 +35,12 @@ from .contracts import utc
 from .coverage_evidence import CoverageEvidence
 from .asset_eligibility import AssetEligibility
 from .hotset import HotsetSelector
+from .profile_release_registry import TrustedProfileReleaseRegistry
 from zoneinfo import ZoneInfo
 
 
 class ShadowFabric:
-    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, discovery_reader=None, asset_reader=None, ledger_reader=None):
+    def __init__(self, settings, market_data, *, evaluator=None, account_reader=None, champion_reader=None, discovery_reader=None, asc_reader=None, asset_reader=None, ledger_reader=None):
         self.settings = settings
         validate_symbols(settings.extended_equity_symbols, cap=settings.rhen_market_stream_capacity)
         self.store = MarketStateStore(settings.extended_equity_symbols, warm_bars=max(15, settings.slow_window+1))
@@ -65,10 +66,19 @@ class ShadowFabric:
         self.asset_refresh = asyncio.Event()
         self.champion_reader = champion_reader
         self.discovery_reader = discovery_reader
+        self.asc_reader = asc_reader
         self.ledger_reader = ledger_reader
         self.champion_observation = None
         self.discovery_observation = None
         self.discovery_error = None
+        self.asc_registry = TrustedProfileReleaseRegistry(library_fingerprint=self.library.fingerprint)
+        self.asc_approval = {
+            "quality_state":"UNAVAILABLE","reason":"CANONICAL_PROFILE_RELEASE_UNREAD",
+            "approved_profiles":[],"evidence_healthy":False,
+            "entry_authority":False,"broker_write_authority":False,
+            "active_mode_authorized":False,
+        }
+        self.asc_error = None
         self.account_refresh = asyncio.Event()
         self.signal_cache = {}
         self.resolver = EquitySessionResolver(market_data)
@@ -293,9 +303,12 @@ class ShadowFabric:
             self.regime, self.features = regime_observation(self.store, now, fast_window=self.settings.fast_window, slow_window=self.settings.slow_window)
             context = PolicyContext(now, utc(self.regime["feature_as_of"]), event.session, self.regime["primary_regime"],
                 self.regime["confidence"], self.regime["unknown_probability"], self.regime["market_familiarity"],
-                # Missing canonical health/approval lineage is a veto, not an assumed pass.
-                False, self.champion_ready(now), self.champion_ready(now), False, self.shadow_configuration, self.library.fingerprint)
-            self.policy_snapshot = self.policy.observe(context, enabled=True, mode="shadow")
+                self.asc_approval.get("evidence_healthy") is True,
+                self.champion_ready(now), self.champion_ready(now), False,
+                self.shadow_configuration, self.library.fingerprint)
+            self.policy_snapshot = self.policy.observe(
+                context, enabled=True, mode="shadow",
+                approved_profiles=self.asc_approval.get("approved_profiles",()))
             self.policy_state.save(self.policy, event.session_id, now)
             self.regime_key = feature_key
             for symbol, feature in self.features.items():
@@ -310,6 +323,9 @@ class ShadowFabric:
                 "effective": dict(self.policy_snapshot.execution_values), "counterfactual": dict(self.policy_snapshot.counterfactual_values),
                 "reason_codes": list(self.policy_snapshot.reasons), "entry_authority": False,
                 "canonical_health_lineage": "VERIFIED_READ" if self.champion_ready(now) else "UNAVAILABLE",
+                "asc_profile_release_state":self.asc_approval.get("quality_state","UNAVAILABLE"),
+                "approved_profiles":list(self.asc_approval.get("approved_profiles",())),
+                "active_mode_authorized":False,
                 "recovery_state": self.policy_recovery, "profile_since": self.policy.since.isoformat() if self.policy.since else None,
                 "pending_profile": self.policy.pending, "confirmation_count": self.policy.confirmed}})
         evaluation = Evaluation(decision_id, now, event.session, event.feed,
@@ -320,7 +336,9 @@ class ShadowFabric:
             "reasons": list(reasons), "signal_reason": signal.reason if signal else None, "signal_metadata": signal.metadata if signal else {},
             "strategy_version": self.settings.strategy_version_id, "policy_snapshot": self.policy_snapshot.snapshot_fingerprint,
             "policy_library_fingerprint": self.library.fingerprint, "shadow_configuration_fingerprint": self.shadow_configuration,
-            "regime": self.regime, "entry_authority": False, "risk_validation_state": "UNAVAILABLE",
+            "regime": self.regime, "entry_authority": False,
+            "risk_validation_state": "ASC008_SHADOW_APPROVED" if self.asc_approval.get("evidence_healthy") is True else "UNAVAILABLE",
+            "approved_profiles":list(self.asc_approval.get("approved_profiles",())),
             "candidate_kind": "SIGNAL_ONLY_COUNTERFACTUAL", "provenance": "DERIVED", "source": "RHEN/market_fabric"}
         if self.asset_reader is not None:
             evidence["asset_eligibility"] = self.assets.snapshot(event.symbol, event.session, now)
@@ -459,6 +477,36 @@ class ShadowFabric:
             # reads. Evaluate freshness against a clock captured after those reads;
             # using the pre-read account timestamp can create a false negative age.
             self.update_hotset(datetime.now(timezone.utc))
+        if self.asc_reader:
+            try:
+                canonical_research = await self.asc_reader()
+                self.asc_approval = self.asc_registry.review(
+                    canonical_research,
+                    now=datetime.now(timezone.utc),
+                    expected_configuration_fingerprint=str(
+                        (self.champion_observation or {}).get("protected_configuration_fingerprint") or ""),
+                    source_strategy_version=self.settings.strategy_version_id,
+                )
+                self.asc_error = None
+            except Exception as exc:
+                self.asc_error = type(exc).__name__
+                self.asc_approval = {
+                    "quality_state":"UNAVAILABLE","reason":"CANONICAL_PROFILE_RELEASE_READ_FAILED",
+                    "approved_profiles":[],"evidence_healthy":False,
+                    "entry_authority":False,"broker_write_authority":False,
+                    "active_mode_authorized":False,
+                }
+            self.visual.system_patch({"asc_profile_release":dict(self.asc_approval)})
+            print("RHEN44_ASC_PROFILE_RELEASE "+json.dumps({
+                "quality_state":self.asc_approval.get("quality_state"),
+                "reason":self.asc_approval.get("reason"),
+                "proposal_count":self.asc_approval.get("proposal_count",0),
+                "approved_profiles":self.asc_approval.get("approved_profiles",[]),
+                "canonical_read_error":self.asc_error,
+                "evidence_healthy":self.asc_approval.get("evidence_healthy") is True,
+                "active_mode_authorized":False,"entry_authority":False,
+                "broker_write_authority":False,
+            },allow_nan=False),flush=True)
         if self.ledger_reader:
             run_id = (self.champion_observation or {}).get("run_id")
             try:
