@@ -71,7 +71,6 @@ class ShadowFabric:
         self.champion_observation = None
         self.discovery_observation = None
         self.discovery_error = None
-        self.asc_registry = TrustedProfileReleaseRegistry(library_fingerprint=self.library.fingerprint)
         self.asc_approval = {
             "quality_state":"UNAVAILABLE","reason":"CANONICAL_PROFILE_RELEASE_UNREAD",
             "approved_profiles":[],"evidence_healthy":False,
@@ -95,6 +94,7 @@ class ShadowFabric:
             "source":"RHEN/observed_execution_archive","provenance":"OPERATIONAL","entry_authority":False})
         self.performance = AccountPerformance(self.checkpoint.db)
         self.library = PolicyLibrary.load()
+        self.asc_registry = TrustedProfileReleaseRegistry(library_fingerprint=self.library.fingerprint)
         baseline = {k: str(getattr(settings, k)) for k in ("stop_pct", "target_pct", "max_hold_minutes", "reentry_cooldown_minutes", "max_spread_pct", "min_quality_score")}
         # This identifies shadow inputs, not the protected production configuration.
         self.shadow_configuration = fingerprint({"baseline": baseline, "strategy": settings.strategy_version_id,
