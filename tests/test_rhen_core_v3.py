@@ -1547,3 +1547,40 @@ def test_iren_configuration_acceptance_is_revision_and_fingerprint_bound(
     assert conflict["accepted"] is False
     assert conflict["conflict"] is True
     assert conflict["revision"] == revision + 1
+
+
+def test_nostra_forecast_projection_reads_only_still_live_research_forecasts(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    valid = {
+        "forecast_id":"nsf-valid","snapshot_id":"nss-valid","symbol":"SPY",
+        "market_lane":"us_equity","as_of_timestamp":(now-timedelta(minutes=1)).isoformat(),
+        "generated_at":now.isoformat(),"horizon_minutes":10,"target_kind":"return",
+        "model_id":"zero_return","model_version":"nostra-live-zero-return-v1",
+        "forecast_payload":{"expected_return":0.0},"authority_state":"LOW_SUPPORT",
+        "research_only":True,"execution_authority":False,
+    }
+    expired = {**valid,"forecast_id":"nsf-expired",
+        "generated_at":(now-timedelta(minutes=30)).isoformat()}
+    unsafe = {**valid,"forecast_id":"nsf-unsafe","execution_authority":True}
+    store.ingest_events([
+        {"event_key":"nostra:valid","event_type":"nostra_forecast",
+         "occurred_at":now.isoformat(),"source":"NOSTRA","payload":valid},
+        {"event_key":"nostra:expired","event_type":"nostra_forecast",
+         "occurred_at":now.isoformat(),"source":"NOSTRA","payload":expired},
+        {"event_key":"nostra:unsafe","event_type":"nostra_forecast",
+         "occurred_at":now.isoformat(),"source":"NOSTRA","payload":unsafe},
+    ])
+
+    result = store.nostra_forecasts(now)
+
+    assert result["ok"] is True
+    assert result["schema_version"] == "nostra-canonical-forecast-read-v1"
+    assert [row["forecast_id"] for row in result["forecasts"]] == ["nsf-valid"]
+    assert result["returned_count"] == 1
+    assert result["rejected_count"] == 2
+    assert result["research_only"] is True
+    assert result["execution_authority"] is False
+    assert result["broker_write_authority"] is False
