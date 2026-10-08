@@ -75,7 +75,9 @@ def test_profile_report_filters_invalid_or_untrusted_events():
     ]
     result = summarize(lines)
     assert result["valid_sample_count"] == 2
-    assert result["complete_pss_sample_count"] == 0
+    # Missing/invalid cgroup counters do not imply unavailable PSS.
+    # The other valid record advertises a partial PSS sample.
+    assert result["complete_pss_sample_count"] == 1
     assert result["cgroup_memory_mib"]["sample_count"] == 1
     assert result["cgroup_memory_mib"]["median"] == 100
     assert set(result["roles"]) == {"core"}
