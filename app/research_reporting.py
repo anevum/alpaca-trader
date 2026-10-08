@@ -415,8 +415,15 @@ def next_research_action(
         return "compare the dominant rejection reasons with subsequent 15-minute outcomes to test whether the entry gate is excluding useful setups"
     losses = int(metrics.get("losses") or 0)
     wins = int(metrics.get("wins") or 0)
-    if losses > wins:
-        return "compare losing versus winning entry structure using pre-entry features and MFE/MAE before altering thresholds"
+    expectancy = d(metrics.get("expectancy"))
+    profit_factor = metrics.get("profit_factor")
+    pf = d(profit_factor) if profit_factor is not None else None
+    if losses > wins or expectancy < ZERO or (pf is not None and pf < Decimal("1")):
+        return (
+            "run bounded entry-selectivity research across quality score, momentum, "
+            "VWAP and confirmation gates; compare losing versus winning pre-entry "
+            "structure and repeat-symbol/re-entry churn before altering live thresholds"
+        )
     if funnel.get("bounded_history"):
         return "expand durable candidate-decision telemetry so rejection-funnel analysis is not limited by the 200-event runtime buffer"
     return "append this session to the offline validation corpus and re-evaluate expectancy under identical friction assumptions"
