@@ -24,7 +24,7 @@ MODULES = {
     "graen": "http://127.0.0.1:8110/health",
     "velum": "http://127.0.0.1:8113/health",
     "research_agent": "http://127.0.0.1:8114/health",
-    "nostra": "http://127.0.0.1:8115/health",
+    "nostra": CORE_URL + "/v1/nostra/health",
     "iren": "http://127.0.0.1:8116/health",
     "iren_executor": "http://127.0.0.1:8117/health",
     "preopen": "http://127.0.0.1:8118/health",
@@ -45,6 +45,7 @@ CORE_PREFIXES = (
     "/v1/scheduler-gateway",
     "/v1/research-agent-gateway",
     "/v1/nostra-gateway",
+    "/v1/nostra/",
     "/v1/maintenance/",
 )
 

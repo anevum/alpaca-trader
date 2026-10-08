@@ -231,14 +231,15 @@
     {
       "subsystem": "NOSTRA",
       "owner": "NOSTRA",
-      "mode": "independent_autorun",
+      "mode": "embedded_autorun",
       "scheduler_owned": false,
       "health_owner": "IREN",
-      "evidence_store": "Foundation/PostgreSQL",
+      "evidence_store": "RHEN Core",
       "forecast_horizon_minutes": 10,
       "research_only": true,
       "execution_authority": false,
-      "status": "ACTIVE"
+      "status": "ACTIVE",
+      "independent_runtime": false
     }
   ]
 }

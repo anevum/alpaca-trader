@@ -15,6 +15,8 @@ from app.nostra import (
     uniform_direction_baseline,
 )
 from app.nostra.service import NostraGateway, NostraRuntime, require_nostra_api_token
+from app.nostra.embedded import CoreNostraGateway, CoreNostraLedger
+from app.rhen_core.store import RhenCoreStore
 
 
 NOW = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
@@ -497,3 +499,40 @@ def test_live_runtime_scores_nonzero_model_against_zero_return_baseline():
     assert score["baseline_metrics"]["absolute_error"] == 0.01
     assert score["skill"]["absolute_error"] == pytest.approx(0.2)
     assert score["provenance"]["model_id"] == "shrunken_drift"
+
+
+def test_embedded_nostra_core_adapters_preserve_authority_and_persistence(tmp_path):
+    store = RhenCoreStore(tmp_path / "rhen-core.db")
+    gateway = CoreNostraGateway(store)
+    ledger = CoreNostraLedger(store)
+
+    assert gateway.configured is True
+    assert ledger.configured is True
+
+    work = asyncio.run(gateway.work())
+    assert work["ok"] is True
+    assert work["research_only"] is True
+    assert work["execution_authority"] is False
+
+    snapshot = build_snapshot(
+        symbol="AAPL",
+        market_lane="us_equity",
+        as_of_timestamp=NOW,
+        feature_set_version="embedded-test-v1",
+        raw_features={"momentum": 0.001},
+    )
+    assert asyncio.run(
+        ledger.append_snapshot(snapshot, correlation_id="embedded-test")
+    ) is True
+
+    with store.connect() as conn:
+        row = conn.execute(
+            "select event_type,source,payload_json from events "
+            "where event_key=?",
+            (f"nostra:nostra_snapshot:{snapshot['snapshot_id']}",),
+        ).fetchone()
+    assert row is not None
+    assert row["event_type"] == "nostra_snapshot"
+    assert row["source"] == "NOSTRA"
+    assert '"research_only":true' in row["payload_json"]
+    assert '"execution_authority":false' in row["payload_json"]

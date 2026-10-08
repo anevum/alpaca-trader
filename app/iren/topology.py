@@ -5,6 +5,7 @@ from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
 OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "GRAEN", "VELUM"}
+EMBEDDED_INVENTORY = {"NOSTRA"}
 
 INVENTORY = {
     "RHEN": ("SERVICE", "rhen", "Live execution; protected trading runtime"),
@@ -13,7 +14,7 @@ INVENTORY = {
     "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
     "RESEARCH_AGENT": ("WORKER", "rhen-research-agent", "Independent evidence-review worker"),
     "IREN_EXECUTOR": ("SERVICE", "iren-executor", "Bounded IREN execution and GitHub evidence boundary"),
-    "NOSTRA": ("SERVICE", "nostra", "Independent FORWARD forecasting research runtime; research-only evidence authority"),
+    "NOSTRA": ("MODULE", "nostra", "Embedded numerical forecasting module; research-only evidence authority"),
 }
 
 def bounded_health(name, body):
@@ -109,7 +110,10 @@ def topology(observation, state, self_identity):
             if not identity.get("deployment_id") and provider_row.get("deployment"):
                 identity["deployment_id"] = provider_row["deployment"]
                 provider_used = True
-        row = ServiceObservation(service_id=name, runtime_kind=kind, independent_runtime=True,
+        row = ServiceObservation(
+            service_id=name,
+            runtime_kind=kind,
+            independent_runtime=name not in EMBEDDED_INVENTORY,
             service_name=service_name, service_version=identity.get("system_version"),
             deployment=identity.get("deployment_id"), revision=identity.get("git_commit"),
             started_at=identity.get("runtime_started_at"), observed_at=stamp,
