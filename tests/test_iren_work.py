@@ -1,4 +1,7 @@
+import asyncio
+
 from app.iren.work import (
+    IrenWorkEngine,
     action_signature,
     autopilot_decision,
     criteria_satisfied,
@@ -805,3 +808,29 @@ def test_work_prompt_stops_at_research_review_boundary_instead_of_restarting_exh
     assert "MODEL_HYPOTHESIS_GENERATION_REQUIRED" in prompt
     assert "do not restart the exhausted program" in prompt
     assert "parameter shuffling inside the rejected family does not satisfy" in prompt
+
+
+def test_work_engine_defaults_maintenance_autopilot_off(monkeypatch):
+    monkeypatch.delenv("IREN_AUTOPILOT_ENABLED", raising=False)
+
+    async def gateway(action, **kwargs):
+        assert action == "iren_work_snapshot"
+        return {"objectives": [], "jobs": [], "settings": {}}
+
+    engine = IrenWorkEngine(
+        gateway,
+        control_state=lambda: {"state": "HEALTHY"},
+    )
+    current = asyncio.run(engine.snapshot())
+
+    assert current["settings"]["autopilot_enabled"] is False
+    assert (
+        current["settings"]["autopilot_enabled_source"]
+        == "lean_runtime_default_off"
+    )
+
+
+def test_model_worker_verification_is_not_autopilot_safe():
+    from app.iren.work import AUTOPILOT_SAFE_JOB_TYPES
+
+    assert "CONTROL_MODEL_WORKER_VERIFY" not in AUTOPILOT_SAFE_JOB_TYPES

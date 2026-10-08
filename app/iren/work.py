@@ -25,7 +25,6 @@ AUTOPILOT_SAFE_JOB_TYPES = {
     "CONTROL_CAPABILITIES",
     "CONTROL_VERIFIER_SELFTEST",
     "CONTROL_STABLE_BUILD_VERIFY",
-    "CONTROL_MODEL_WORKER_VERIFY",
     "CONTROL_RUNTIME_EVIDENCE_VERIFY",
 }
 MODEL_WORKER_MAX_JOBS_PER_DAY = 1
@@ -1434,18 +1433,18 @@ class IrenWorkEngine:
         snapshot = await self.gateway("iren_work_snapshot")
         settings = dict(snapshot.get("settings") or {})
 
-        # Native RHEN Core replaced the old SQL settings table during the
-        # consolidation. Keep the durable state visible, but allow deployment
-        # policy to explicitly restore/disable bounded maintenance autopilot.
+        # Lean runtime policy: IREN observes and schedules deterministically by
+        # default. Autonomous maintenance job creation is opt-in only.
         raw_enabled = os.getenv("IREN_AUTOPILOT_ENABLED")
-        if raw_enabled is not None:
-            settings["autopilot_enabled"] = raw_enabled.strip().lower() in {
-                "1", "true", "yes", "on",
-            }
-            settings["autopilot_enabled_source"] = "environment"
-        else:
-            settings.setdefault("autopilot_enabled", True)
-            settings["autopilot_enabled_source"] = "durable_state"
+        settings["autopilot_enabled"] = bool(
+            raw_enabled
+            and raw_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        )
+        settings["autopilot_enabled_source"] = (
+            "environment"
+            if raw_enabled is not None
+            else "lean_runtime_default_off"
+        )
 
         raw_cap = os.getenv("IREN_AUTOPILOT_MAX_JOBS_PER_DAY")
         if raw_cap is not None:

@@ -385,7 +385,12 @@ async def health():
             "last_command_at": work_engine.last_command_at, "last_job_at": work_engine.last_job_at,
             "last_autopilot_at": work_engine.last_autopilot_at,
             "last_autopilot_reason": work_engine.last_autopilot_reason,
-            "execution_router_configured": bool(work_engine.executor_url and len(work_engine.executor_token) >= 32)}}
+            "execution_router_configured": bool(
+                os.getenv("IREN_EXECUTOR_ENABLED", "").strip().lower()
+                in {"1", "true", "yes", "on"}
+                and work_engine.executor_url
+                and len(work_engine.executor_token) >= 32
+            )}}
     if not body["ok"]:
         raise HTTPException(status_code=503, detail=body)
     return body
