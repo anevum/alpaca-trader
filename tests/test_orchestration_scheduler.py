@@ -120,7 +120,7 @@ def test_preflight_allows_sleeping_optional_research_agent():
     runtime._dependency_health = AsyncMock(
         return_value={
             "rhen": {"ok": True, "required_for_preflight": True},
-            "velum": {"ok": True, "required_for_preflight": True},
+            "velum": {"ok": False, "required_for_preflight": False},
             "research_agent": {"ok": False, "required_for_preflight": False},
         }
     )
@@ -435,7 +435,8 @@ def test_unified_iren_owns_every_enabled_registry_workflow(monkeypatch):
     assert owned == enabled
     assert "rhen.research.daily" in owned
     assert "rhen.session_close" in owned
-    assert "velum.equity.replay" in owned
+    assert "velum.equity.replay" not in owned
+    assert "graen.research.checkpoint" not in owned
     assert "graen.btc.discovery" not in owned
     assert "velum.crypto.replay" not in owned
     assert "graen.research.adaptive" not in owned
@@ -523,7 +524,7 @@ def test_preflight_recovery_registry_can_supersede_same_day_failure():
         if row["workflow_id"] == "rhen.preflight"
     )
 
-    assert registry["scheduler_version"] == "anevum-scheduler-v1.0.10"
+    assert registry["scheduler_version"] == "anevum-scheduler-v1.1.0"
     assert workflow["version"] == "1.0.2"
     assert workflow["catchup_policy"] == "catch_up"
     assert workflow["stale_after_minutes"] == 180

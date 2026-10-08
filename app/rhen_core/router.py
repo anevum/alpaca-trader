@@ -14,6 +14,8 @@ EXECUTION_URL = "http://127.0.0.1:8101"
 CORE_URL = "http://127.0.0.1:8102"
 
 OPTIONAL_MODULE_ENVS = {
+    "graen": "GRAEN_RUNTIME_ENABLED",
+    "velum": "VELUM_RUNTIME_ENABLED",
     "iren_executor": "IREN_EXECUTOR_ENABLED",
     "preopen": "PREOPEN_STATE_ENABLED",
 }

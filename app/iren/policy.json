@@ -1,5 +1,5 @@
 {
-  "version": "iren-control-v2.1.1",
+  "version": "iren-control-v2.2.0",
   "tick_seconds": 60,
   "stale_after_seconds": 180,
   "failure_observations": 2,
@@ -37,7 +37,9 @@
     {
       "id": "VELUM",
       "url_env": "IREN_VELUM_HEALTH_URL",
-      "default_url": "http://rhen-velum.railway.internal:8080/health"
+      "default_url": "http://rhen-velum.railway.internal:8080/health",
+      "inventory_only": true,
+      "required_inventory": false
     },
     {
       "id": "PREOPEN",
@@ -49,7 +51,9 @@
     {
       "id": "GRAEN",
       "url_env": "IREN_GRAEN_HEALTH_URL",
-      "default_url": "http://graen.railway.internal:8080/health"
+      "default_url": "http://graen.railway.internal:8080/health",
+      "inventory_only": true,
+      "required_inventory": false
     },
     {
       "id": "RESEARCH_AGENT",

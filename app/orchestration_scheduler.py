@@ -398,8 +398,8 @@ class SchedulerRuntime:
 
     def workflow_enabled(self, workflow: dict[str, Any]) -> bool:
         # The registry remains the authoritative workflow set. In unified mode
-        # IREN owns every enabled workflow, including equity/reporting clocks,
-        # daily research, VELUM replay, weekly review, and bounded BTC discovery.
+        # IREN owns every enabled workflow. Replay/research services may be
+        # represented in the registry while disabled for explicit on-demand use.
         return bool(workflow.get("enabled"))
 
     async def start(self) -> None:
@@ -887,7 +887,7 @@ class SchedulerRuntime:
         }
         required_for_preflight = {
             "rhen": True,
-            "velum": True,
+            "velum": False,
             # The research agent is intentionally sleep-capable/on-demand.
             # Its availability is reported, but it must not gate market preflight.
             "research_agent": False,

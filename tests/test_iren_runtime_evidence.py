@@ -11,4 +11,4 @@ def test_v43_runtime_inventory_shape():
         "IREN_EXECUTOR",
         "NOSTRA",
     }
-    assert OPTIONAL_INVENTORY == {"PREOPEN", "IREN_EXECUTOR"}
+    assert OPTIONAL_INVENTORY == {"PREOPEN", "IREN_EXECUTOR", "GRAEN", "VELUM"}

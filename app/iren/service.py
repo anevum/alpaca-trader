@@ -88,7 +88,9 @@ class IrenController:
                     "error_type": type(last_error).__name__ if last_error else "UnknownError",
                 }
             await asyncio.gather(*(probe(item) for item in POLICY["services"]))
-            fallback_targets = ("VELUM",)
+            # Lean topology has no external runtime that requires provider fallback.
+            # On-demand GRAEN/VELUM are deliberately allowed to be offline.
+            fallback_targets: tuple[str, ...] = ()
             fallback_required = [
                 name
                 for name in fallback_targets

@@ -260,7 +260,6 @@ def test_optional_unified_modules_do_not_block_required_inventory():
         result,
         service.IrenController().runtime_identity,
     )
-    assert "PREOPEN" not in projected["required_inventory"]
-    assert "IREN_EXECUTOR" not in projected["required_inventory"]
-    assert "PREOPEN" not in projected["inventory_gaps"]
-    assert "IREN_EXECUTOR" not in projected["inventory_gaps"]
+    for service_id in ("PREOPEN", "IREN_EXECUTOR", "GRAEN", "VELUM"):
+        assert service_id not in projected["required_inventory"]
+        assert service_id not in projected["inventory_gaps"]
