@@ -6,7 +6,13 @@ import json
 import pytest
 
 from app.rhen_core.store import RhenCoreStore
-from app.rhen_core.supervisor import PROCESSES, ProcessSpec, _child_env, _wait_tcp_ready
+from app.rhen_core.supervisor import (
+    LOOPBACK,
+    PROCESSES,
+    ProcessSpec,
+    _child_env,
+    _wait_tcp_ready,
+)
 from app.rhen_core.router import enabled_modules
 from app.provenance import RHEN_RUNTIME_GENERATION, RHEN_VERSION
 
@@ -1662,3 +1668,12 @@ def test_migrated_scan_pages_repack_once_without_changing_logical_evidence(tmp_p
     with store.connect() as conn:
         row = conn.execute("select payload_json from events where event_key='packed-scan'").fetchone()
     assert _loads(row[0], None) == payload
+
+
+def test_nostra_standalone_runtime_is_opt_in_and_iren_reads_embedded_health():
+    nostra = next(spec for spec in PROCESSES if spec.name == "nostra")
+    assert nostra.enabled_env == "NOSTRA_STANDALONE_RUNTIME_ENABLED"
+    assert (
+        LOOPBACK["IREN_NOSTRA_HEALTH_URL"]
+        == "http://127.0.0.1:8102/v1/nostra/health"
+    )
