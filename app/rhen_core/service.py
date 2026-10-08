@@ -4,8 +4,8 @@ import hmac
 import json
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any
+from datetime import date, datetime, timezone
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -16,16 +16,18 @@ from app.nostra.service import (
     NostraRuntime,
     require_nostra_api_token,
 )
+from app.research_agent.embedded import EmbeddedResearchReview
 
 from .store import RhenCoreStore
 
 UTC = timezone.utc
-RUNTIME_VERSION = "rhen-core-v3.1.0"
+RUNTIME_VERSION = "rhen-core-v3.2.0"
 store = RhenCoreStore()
 embedded_nostra = NostraRuntime(
     ledger=CoreNostraLedger(store),
     gateway=CoreNostraGateway(store),
 )
+embedded_research = EmbeddedResearchReview(store)
 
 
 class EvidenceEvent(BaseModel):
@@ -42,6 +44,13 @@ class EvidenceEvent(BaseModel):
 
 class EvidenceBatch(BaseModel):
     events: list[EvidenceEvent] = Field(min_length=1, max_length=100)
+
+
+class DeterministicResearchReviewRequest(BaseModel):
+    cadence: Literal["daily", "weekly"] = "daily"
+    invoke_model: bool = False
+    persist: bool = True
+    expected_session: date | None = None
 
 
 def _expected(*names: str) -> list[str]:
@@ -64,6 +73,23 @@ def _authorized(provided: str | None, *env_names: str) -> bool:
 
 def _require(provided: str | None, *env_names: str) -> None:
     if not _authorized(provided, *env_names):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def _require_research_operator(provided: str | None) -> None:
+    expected = _expected(
+        "RHEN_REVIEW_TOKEN",
+        "RHEN_RESEARCH_ADMIN_TOKEN",
+        "RHEN_CORE_TOKEN",
+    )
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="research operator token is not configured",
+        )
+    if not provided or not any(
+        hmac.compare_digest(provided, item) for item in expected
+    ):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -363,6 +389,81 @@ def scheduler_gateway_write(
         "status": "RECORDED",
         "execution_authority": False,
     }
+
+
+@app.get("/v1/research/health")
+def embedded_research_health() -> dict[str, Any]:
+    return embedded_research.health()
+
+
+@app.get("/v1/research/readiness/public")
+async def embedded_public_research_readiness() -> dict[str, Any]:
+    return await embedded_research.public_readiness()
+
+
+@app.get("/v1/research/theory/public")
+def embedded_public_research_theory() -> dict[str, Any]:
+    return embedded_research.public_theory()
+
+
+@app.get("/v1/research/status")
+async def embedded_research_status(
+    x_rhen_agent_admin_token: str | None = Header(
+        default=None,
+        alias="x-rhen-agent-admin-token",
+    ),
+) -> dict[str, Any]:
+    _require_research_operator(x_rhen_agent_admin_token)
+    return await embedded_research.status()
+
+
+@app.get("/v1/research/readiness")
+async def embedded_research_readiness(
+    cadence: Literal["daily", "weekly"] = Query(default="daily"),
+    x_rhen_agent_admin_token: str | None = Header(
+        default=None,
+        alias="x-rhen-agent-admin-token",
+    ),
+) -> dict[str, Any]:
+    _require_research_operator(x_rhen_agent_admin_token)
+    return await embedded_research.readiness(cadence)
+
+
+@app.post("/v1/research/review")
+async def embedded_research_review(
+    request: DeterministicResearchReviewRequest,
+    x_rhen_agent_admin_token: str | None = Header(
+        default=None,
+        alias="x-rhen-agent-admin-token",
+    ),
+) -> dict[str, Any]:
+    _require_research_operator(x_rhen_agent_admin_token)
+    if request.invoke_model:
+        raise HTTPException(
+            status_code=409,
+            detail="semantic_review_not_available_in_permanent_runtime",
+        )
+    try:
+        return await embedded_research.review(
+            request.cadence,
+            expected_session=(
+                request.expected_session.isoformat()
+                if request.expected_session
+                else None
+            ),
+            persist=request.persist,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if message in {
+            "canonical_report_not_current",
+            "research_review_in_progress",
+        }:
+            raise HTTPException(status_code=409, detail=message) from exc
+        raise HTTPException(
+            status_code=503,
+            detail=f"deterministic_research_review_failed:{message}",
+        ) from exc
 
 
 @app.get("/v1/research-agent-gateway")
