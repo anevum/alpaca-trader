@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date, datetime, timezone
 
 from app.config import Settings
 from app.strategy import RollingMomentumVwapStrategy
@@ -80,3 +81,67 @@ def test_velum_blocking_work_is_thread_offloaded(monkeypatch):
     assert result == 5
     assert len(calls) == 1
     assert calls[0][0] is add
+
+
+
+def test_one_shot_velum_replay_validates_session_and_exits(monkeypatch):
+    runtime = VelumRuntime(settings())
+
+    async def calendar_details(*, start, end):
+        assert start == date(2026, 10, 7)
+        assert end == date(2026, 10, 7)
+        return [{"date": "2026-10-07", "close": "16:00"}]
+
+    async def run_equity(session):
+        runtime.last_equity_session = session.isoformat()
+        runtime.last_equity_run_id = "velum:test"
+        runtime.last_equity_summary = {"trades": 3}
+
+    monkeypatch.setattr(runtime.market_data, "market_calendar_details", calendar_details)
+    monkeypatch.setattr(runtime, "_run_equity", run_equity)
+
+    result = asyncio.run(
+        runtime.run_equity_session(
+            date(2026, 10, 7),
+            now=datetime(2026, 10, 7, 21, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["duplicate"] is False
+    assert result["session"] == "2026-10-07"
+    assert result["velum_run_id"] == "velum:test"
+    assert result["summary"] == {"trades": 3}
+    assert result["broker_orders_possible"] is False
+    assert result["execution_authority"] is False
+    assert runtime.task is None
+
+    duplicate = asyncio.run(
+        runtime.run_equity_session(
+            date(2026, 10, 7),
+            now=datetime(2026, 10, 7, 21, 1, tzinfo=timezone.utc),
+        )
+    )
+    assert duplicate["duplicate"] is True
+    assert duplicate["broker_orders_possible"] is False
+
+
+def test_one_shot_velum_replay_refuses_incomplete_session(monkeypatch):
+    runtime = VelumRuntime(settings())
+
+    async def calendar_details(*, start, end):
+        return [{"date": "2026-10-07", "close": "16:00"}]
+
+    monkeypatch.setattr(runtime.market_data, "market_calendar_details", calendar_details)
+
+    try:
+        asyncio.run(
+            runtime.run_equity_session(
+                date(2026, 10, 7),
+                now=datetime(2026, 10, 7, 19, 0, tzinfo=timezone.utc),
+            )
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "equity session is not complete"
+    else:
+        raise AssertionError("incomplete session should not replay")
