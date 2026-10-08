@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
-OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "GRAEN", "VELUM"}\nEMBEDDED_INVENTORY = {"NOSTRA"}
+OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "GRAEN", "VELUM"}
+EMBEDDED_INVENTORY = {"NOSTRA"}
 
 INVENTORY = {
     "RHEN": ("SERVICE", "rhen", "Live execution; protected trading runtime"),
