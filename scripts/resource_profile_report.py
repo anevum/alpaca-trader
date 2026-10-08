@@ -11,6 +11,14 @@ from typing import Any, Iterable
 from app.rhen_core.resource_profile import SCHEMA_VERSION
 
 
+# Fixed supervisor roles only: report input is exported log data, not a
+# trusted source for arbitrary labels or secrets masquerading as process names.
+ALLOWED_ROLES = frozenset({
+    "core", "execution", "iren", "router", "graen", "velum",
+    "research-agent", "nostra", "iren-executor", "preopen",
+})
+
+
 def _number(value: Any) -> float | None:
     # Booleans and nonfinite/negative metrics are invalid measurements.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -89,7 +97,7 @@ def summarize(lines: Iterable[str]) -> dict[str, Any]:
             if not isinstance(role, dict):
                 continue
             name = role.get("role")
-            if not isinstance(name, str) or not name or len(name) > 40:
+            if name not in ALLOWED_ROLES:
                 continue
             for source, target in (
                 ("pss_mib", "pss_mib"),
