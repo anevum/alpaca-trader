@@ -1,5 +1,5 @@
 {
-  "scheduler_version": "anevum-scheduler-v1.0.10",
+  "scheduler_version": "anevum-scheduler-v1.1.0",
   "schema_version": "anevum-schedule-registry-v1",
   "timezone": "America/New_York",
   "timestamp_storage": "UTC",
@@ -120,7 +120,7 @@
       "workflow_id": "velum.equity.replay",
       "subsystem": "VELUM",
       "owner": "RHEN",
-      "enabled": true,
+      "enabled": false,
       "schedule_type": "market_session_offset",
       "schedule_expression": "market_close+35m",
       "anchor": "close",
@@ -141,13 +141,14 @@
       },
       "implementation_target": "velum_equity",
       "version": "1.0.0",
-      "protected_action_level": "research_only"
+      "protected_action_level": "research_only",
+      "execution_mode": "on_demand"
     },
     {
       "workflow_id": "graen.research.checkpoint",
       "subsystem": "GRAEN",
       "owner": "GRAEN",
-      "enabled": true,
+      "enabled": false,
       "schedule_type": "market_session_offset",
       "schedule_expression": "market_close+50m",
       "anchor": "close",
@@ -168,7 +169,8 @@
       },
       "implementation_target": "graen_checkpoint",
       "version": "1.0.0",
-      "protected_action_level": "read_only_research"
+      "protected_action_level": "read_only_research",
+      "execution_mode": "on_demand"
     },
     {
       "workflow_id": "rhen.weekly_review",
@@ -239,4 +241,4 @@
       "status": "ACTIVE"
     }
   ]
-}
+}\n
