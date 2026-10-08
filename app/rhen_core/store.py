@@ -4185,6 +4185,60 @@ class RhenCoreStore:
             "research": tracking,
         }
 
+    def record_research_audit(
+        self,
+        run: dict[str, Any],
+        *,
+        search_ledger: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist deterministic research audit state inside canonical Core."""
+
+        payload = dict(run or {})
+        run_key = str(
+            payload.get("run_key")
+            or payload.get("run_id")
+            or ("run:" + _hash(payload))
+        ).strip()
+        if not run_key:
+            raise ValueError("research run key is required")
+        now = _iso()
+        ledger_hash: str | None = None
+        ledger_payload: dict[str, Any] | None = None
+        if search_ledger is not None:
+            ledger_payload = dict(search_ledger)
+            ledger_hash = str(
+                ledger_payload.get("ledger_hash")
+                or ("ledger:" + _hash(ledger_payload))
+            ).strip()
+            if not ledger_hash:
+                raise ValueError("research ledger hash is required")
+
+        with self._lock, self.connect() as conn:
+            conn.execute(
+                """insert or replace into research_runs(
+                    run_key,payload_json,created_at
+                ) values(?,?,?)""",
+                (run_key, _json(payload), now),
+            )
+            if ledger_payload is not None and ledger_hash is not None:
+                conn.execute(
+                    """insert or replace into research_ledgers(
+                        ledger_hash,payload_json,created_at
+                    ) values(?,?,?)""",
+                    (ledger_hash, _json(ledger_payload), now),
+                )
+            conn.commit()
+
+        return {
+            "ok": True,
+            "run_key": run_key,
+            "ledger_hash": ledger_hash,
+            "search_ledger_recorded": ledger_hash is not None,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+        }
+
+
     def canonical_evidence(self) -> dict[str, Any]:
         with self.connect() as conn:
             runtime_row = conn.execute(
