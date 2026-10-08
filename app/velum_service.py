@@ -196,6 +196,62 @@ class VelumRuntime:
 
         self.last_success_at = datetime.now(timezone.utc).isoformat()
 
+    async def run_equity_session(
+        self,
+        session: date,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Run one bounded equity replay without starting a resident worker."""
+
+        if not self.enabled:
+            raise RuntimeError("velum_disabled")
+
+        async with self.run_lock:
+            session_key = session.isoformat()
+            if self.last_equity_session == session_key:
+                return {
+                    "ok": True,
+                    "duplicate": True,
+                    "session": session_key,
+                    "velum_run_id": self.last_equity_run_id,
+                    "summary": self.last_equity_summary,
+                    "broker_orders_possible": False,
+                    "execution_authority": False,
+                }
+
+            rows = await self.market_data.market_calendar_details(
+                start=session,
+                end=session,
+            )
+            if not rows:
+                raise ValueError(
+                    "requested date is not a U.S. equity trading session"
+                )
+
+            close_raw = str(rows[0].get("close") or "16:00")
+            close_at = datetime.combine(
+                session,
+                time.fromisoformat(close_raw),
+                tzinfo=self._ny(),
+            ).astimezone(timezone.utc)
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            if close_at > current:
+                raise RuntimeError("equity session is not complete")
+
+            await self._run_equity(session)
+            self.last_success_at = datetime.now(timezone.utc).isoformat()
+            self.last_error = None
+            return {
+                "ok": True,
+                "duplicate": False,
+                "session": self.last_equity_session,
+                "velum_run_id": self.last_equity_run_id,
+                "summary": self.last_equity_summary,
+                "broker_orders_possible": False,
+                "execution_authority": False,
+            }
+
     async def _latest_completed_equity_session(
         self,
         now_utc: datetime,
@@ -483,41 +539,13 @@ async def scheduler_equity(
     x_anevum_scheduler_token: str | None = Header(default=None),
 ):
     require_scheduler_token(x_anevum_scheduler_token)
-    async with velum.run_lock:
-        session_key = request.session.isoformat()
-        if velum.last_equity_session == session_key:
-            return {
-                "ok": True,
-                "duplicate": True,
-                "session": session_key,
-                "velum_run_id": velum.last_equity_run_id,
-                "broker_orders_possible": False,
-            }
-
-        rows = await velum.market_data.market_calendar_details(
-            start=request.session,
-            end=request.session,
-        )
-        if not rows:
-            raise HTTPException(
-                status_code=422,
-                detail="requested date is not a U.S. equity trading session",
-            )
-        close_raw = str(rows[0].get("close") or "16:00")
-        close_at = datetime.combine(
-            request.session,
-            time.fromisoformat(close_raw),
-            tzinfo=velum._ny(),
-        ).astimezone(timezone.utc)
-        if close_at > datetime.now(timezone.utc):
-            raise HTTPException(status_code=409, detail="equity session is not complete")
-
-        await velum._run_equity(request.session)
-        return {
-            "ok": True,
-            "duplicate": False,
-            "session": velum.last_equity_session,
-            "velum_run_id": velum.last_equity_run_id,
-            "summary": velum.last_equity_summary,
-            "broker_orders_possible": False,
-        }
+    try:
+        return await velum.run_equity_session(request.session)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        if str(exc) == "equity session is not complete":
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if str(exc) == "velum_disabled":
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
