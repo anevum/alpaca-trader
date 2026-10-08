@@ -437,14 +437,16 @@ def create_app(settings=None):
     @app.get("/health")
     async def health():
         return {"ok":True,"system":"RHEN44_RESEARCH","source_commit":os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            "execution_authority":False,"broker_orders_possible":False,"isolated_runtime":True,\n            "research_role":"DISCOVER_REVIEW_EVIDENCE_SOURCE",
+            "execution_authority":False,"broker_orders_possible":False,"isolated_runtime":True,
+            "research_role":"DISCOVER_REVIEW_EVIDENCE_SOURCE",
             "rhen44":release_status(settings,fabric),"market_connection":fabric.store.connection if fabric else "DISABLED",
             "stream_errors":fabric.manager.errors if fabric else 0,"stream_error":fabric.manager.last_error if fabric else None,
             "stream_error_code":fabric.manager.last_error_code if fabric else None,
             "subscribed_symbols":len(fabric.store.subscribed) if fabric else 0,"intended_symbols":len(settings.extended_equity_symbols),
             "context":fabric.store.context if fabric else None}
 
-    @app.get("/v1/command/shadow/status")
+    @app.get("/v1/command/research/status")
+    @app.get("/v1/command/shadow/status", include_in_schema=False)
     async def status(authorization: str | None = Header(default=None)):
         await authorize(authorization)
         return fabric.visual.snapshot() if fabric else {"state":"DISABLED"}
@@ -481,7 +483,8 @@ def create_app(settings=None):
         finally:
             fabric.visual.publisher.unsubscribe(queue)
 
-    @app.get("/v1/command/shadow/bootstrap")
+    @app.get("/v1/command/research/bootstrap")
+    @app.get("/v1/command/shadow/bootstrap", include_in_schema=False)
     async def bootstrap(authorization: str | None = Header(default=None)):
         await authorize(authorization)
         if not settings.command_live_stream_enabled or fabric is None:
@@ -489,7 +492,8 @@ def create_app(settings=None):
         command_observation["bootstrap_reads"] += 1
         return fabric.visual.publisher.bootstrap()
 
-    @app.get("/v1/command/shadow/history")
+    @app.get("/v1/command/research/history")
+    @app.get("/v1/command/shadow/history", include_in_schema=False)
     async def history(series: str, start: str, end: str, clock: str | None = None,
                       limit: int = Query(default=2400,ge=1,le=5000), authorization: str | None = Header(default=None)):
         await authorize(authorization)
