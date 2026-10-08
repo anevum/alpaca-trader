@@ -29,12 +29,13 @@ PROCESSES = (
         critical=True,
         market_data_credentials=True,
     ),
-    ProcessSpec("graen", "app.graen.service:app", 8110),
+    ProcessSpec(\n        "graen",\n        "app.graen.service:app",\n        8110,\n        enabled_env="GRAEN_RUNTIME_ENABLED",\n    ),
     ProcessSpec(
         "velum",
         "app.velum_service:app",
         8113,
         market_data_credentials=True,
+        enabled_env="VELUM_RUNTIME_ENABLED",
     ),
     ProcessSpec(
         "research-agent",
