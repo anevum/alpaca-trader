@@ -48,7 +48,12 @@ PROCESSES = (
         8114,
         enabled_env="RHEN_RESEARCH_AGENT_ENABLED",
     ),
-    ProcessSpec("nostra", "app.nostra.service:app", 8115),
+    ProcessSpec(
+        "nostra",
+        "app.nostra.service:app",
+        8115,
+        enabled_env="NOSTRA_STANDALONE_RUNTIME_ENABLED",
+    ),
     ProcessSpec("iren", "app.iren.service:app", 8116),
     ProcessSpec(
         "iren-executor",
@@ -98,7 +103,7 @@ LOOPBACK = {
     "IREN_GRAEN_HEALTH_URL": "http://127.0.0.1:8110/health",
     "IREN_RESEARCH_AGENT_HEALTH_URL": "http://127.0.0.1:8114/health",
     "IREN_EXECUTOR_HEALTH_URL": "http://127.0.0.1:8117/health",
-    "IREN_NOSTRA_HEALTH_URL": "http://127.0.0.1:8115/health",
+    "IREN_NOSTRA_HEALTH_URL": "http://127.0.0.1:8102/v1/nostra/health",
     "RHEN_CORE_DB_PATH": "/data/rhen-core.db",
     "FOUNDATION_OUTBOX_PATH": "/data/foundation-outbox.jsonl",
     "FOUNDATION_SHADOW_ENABLED": "false",
