@@ -140,7 +140,7 @@ Close this package only when all of the following are true:
 - deterministic evidence package verified;
 - NOSTRA point-in-time scoring verified;
 - IREN deterministic operations verified;
-- on-demand GRAEN/VOVELUM workflow verified;
+- on-demand GRAEN/VELUM workflow verified;
 - no permanent production model dependency;
 - shadow removed or explicitly time-bounded for an active gate;
 - 7-day post-cutover resource report recorded;
