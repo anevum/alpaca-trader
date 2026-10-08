@@ -238,7 +238,21 @@ class IntegrityTests(unittest.TestCase):
             environment_id=mapping["environment_id"],
         )
         self.assertEqual({item["role"] for item in normalized}, {"production_trading"})
-        self.assertEqual(evaluate({**evidence(), "railway_services": normalized}, now=NOW)["state"], "HEALTHY")
+        lean = evidence()
+        lean["production_runtime"].update(
+            {
+                "service_id": row["service_id"],
+                "service_name": row["expected_name"],
+                "deployment_id": "deploy-1",
+                "git_commit": "a" * 40,
+            }
+        )
+        normalized[0]["deployment_id"] = "deploy-1"
+        normalized[0]["source_commit"] = "a" * 40
+        self.assertEqual(
+            evaluate({**lean, "railway_services": normalized}, now=NOW)["state"],
+            "HEALTHY",
+        )
 
         configs[row["service_id"]]["privateNetworkEndpoint"] = "legacy-shadow-label"
         self.assertEqual(normalize_services(status, configs)[0]["role"], "production_trading")
