@@ -806,8 +806,9 @@ class SchedulerRuntime:
             ),
             {
                 "subsystem": "NOSTRA",
-                "mode": "independent_autorun",
+                "mode": "embedded_autorun",
                 "scheduler_owned": False,
+                "independent_runtime": False,
                 "health_owner": "IREN",
                 "research_only": True,
                 "execution_authority": False,
