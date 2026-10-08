@@ -1,4 +1,4 @@
-"""Isolated observation process: no ExecutionEngine, main or research runtime."""
+"""Isolated 4.4 research-observation process: no ExecutionEngine or broker-write authority."""
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -404,12 +404,12 @@ def create_app(settings=None):
                             "entry_authority":False,"broker_write_authority":False}
                         body["execution_recovery"] = fabric.visual.system.get("execution_recovery") or {
                             "restored_events":0,"coverage_state":"UNAVAILABLE","entry_authority":False}
-                        print("RHEN44_SHADOW_TELEMETRY "+json.dumps(telemetry_safe(body),allow_nan=False),flush=True)
+                        print("RHEN44_RESEARCH_TELEMETRY "+json.dumps(telemetry_safe(body),allow_nan=False),flush=True)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
                         failures += 1
-                        print("RHEN44_SHADOW_TELEMETRY_ERROR "+json.dumps({
+                        print("RHEN44_RESEARCH_TELEMETRY_ERROR "+json.dumps({
                             "error":type(exc).__name__,"failure_count":failures,
                             "execution_authority":False,"broker_orders_possible":False}),flush=True)
                     await asyncio.sleep(30)
@@ -424,7 +424,7 @@ def create_app(settings=None):
                 await fabric.stop()
                 fabric = None
 
-    app = FastAPI(title="RHEN 4.4 isolated shadow",lifespan=lifespan)
+    app = FastAPI(title="RHEN 4.4 research observation",lifespan=lifespan)
     async def authorize(authorization):
         try:
             return await authenticate_command_admin(authorization,team_domain=settings.command_access_team_domain,
@@ -436,8 +436,8 @@ def create_app(settings=None):
 
     @app.get("/health")
     async def health():
-        return {"ok":True,"system":"RHEN44_SHADOW","source_commit":os.getenv("RAILWAY_GIT_COMMIT_SHA"),
-            "execution_authority":False,"broker_orders_possible":False,"isolated_runtime":True,
+        return {"ok":True,"system":"RHEN44_RESEARCH","source_commit":os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            "execution_authority":False,"broker_orders_possible":False,"isolated_runtime":True,\n            "research_role":"DISCOVER_REVIEW_EVIDENCE_SOURCE",
             "rhen44":release_status(settings,fabric),"market_connection":fabric.store.connection if fabric else "DISABLED",
             "stream_errors":fabric.manager.errors if fabric else 0,"stream_error":fabric.manager.last_error if fabric else None,
             "stream_error_code":fabric.manager.last_error_code if fabric else None,
@@ -485,7 +485,7 @@ def create_app(settings=None):
     async def bootstrap(authorization: str | None = Header(default=None)):
         await authorize(authorization)
         if not settings.command_live_stream_enabled or fabric is None:
-            raise HTTPException(503,"shadow observer unavailable")
+            raise HTTPException(503,"research observation unavailable")
         command_observation["bootstrap_reads"] += 1
         return fabric.visual.publisher.bootstrap()
 
@@ -494,7 +494,7 @@ def create_app(settings=None):
                       limit: int = Query(default=2400,ge=1,le=5000), authorization: str | None = Header(default=None)):
         await authorize(authorization)
         if fabric is None:
-            raise HTTPException(503,"shadow observer unavailable")
+            raise HTTPException(503,"research observation unavailable")
         from .contracts import utc
         now = datetime.now(timezone.utc)
         try:
