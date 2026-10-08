@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
@@ -17,6 +18,7 @@ from app.nostra.service import (
     require_nostra_api_token,
 )
 from app.research_agent.embedded import EmbeddedResearchReview
+from app.research_agent.package import build_research_package
 
 from .store import RhenCoreStore
 
@@ -404,6 +406,26 @@ async def embedded_public_research_readiness() -> dict[str, Any]:
 @app.get("/v1/research/theory/public")
 def embedded_public_research_theory() -> dict[str, Any]:
     return embedded_research.public_theory()
+
+
+@app.get("/v1/research/package")
+async def embedded_research_package(
+    x_rhen_agent_admin_token: str | None = Header(
+        default=None,
+        alias="x-rhen-agent-admin-token",
+    ),
+) -> dict[str, Any]:
+    _require_research_operator(x_rhen_agent_admin_token)
+    canonical, forecasts = await asyncio.gather(
+        asyncio.to_thread(store.canonical_evidence),
+        asyncio.to_thread(store.nostra_forecasts, limit=50),
+    )
+    readiness = await embedded_research.readiness("daily")
+    return build_research_package(
+        canonical,
+        readiness,
+        forecasts,
+    )
 
 
 @app.get("/v1/research/status")
