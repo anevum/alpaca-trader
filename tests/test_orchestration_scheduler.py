@@ -435,7 +435,8 @@ def test_unified_iren_owns_every_enabled_registry_workflow(monkeypatch):
     assert owned == enabled
     assert "rhen.research.daily" in owned
     assert "rhen.session_close" in owned
-    assert "velum.equity.replay" not in owned\n    assert "graen.research.checkpoint" not in owned
+    assert "velum.equity.replay" not in owned
+    assert "graen.research.checkpoint" not in owned
     assert "graen.btc.discovery" not in owned
     assert "velum.crypto.replay" not in owned
     assert "graen.research.adaptive" not in owned
