@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import socket
@@ -8,6 +9,8 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Mapping
+
+from .resource_profile import profile_interval, sample, with_cpu_rates
 
 
 @dataclass(frozen=True)
@@ -252,6 +255,16 @@ def main() -> None:
         # readiness/gateway call during rolling deployment.
         _wait_tcp_ready(spec)
 
+    # Disabled unless explicitly configured. Sample slowly and report only
+    # kernel resource counters, never env vars, tokens, commands, or market
+    # data. Profiling must never become a dependency of live execution.
+    profile_every = profile_interval(
+        os.getenv("RHEN_RESOURCE_PROFILE_INTERVAL_SECONDS")
+    )
+    next_profile_at = time.monotonic()
+    prior_profile: dict[str, object] | None = None
+    prior_profile_at: float | None = None
+
     try:
         while not stopping:
             for name, process in list(children.items()):
@@ -274,6 +287,33 @@ def main() -> None:
                     )
                 time.sleep(2)
                 children[name] = _launch(spec)
+
+            now = time.monotonic()
+            if profile_every and now >= next_profile_at:
+                next_profile_at = now + profile_every
+                try:
+                    reading = sample(children)
+                    reading = with_cpu_rates(
+                        reading,
+                        prior_profile,
+                        now - prior_profile_at
+                        if prior_profile_at is not None
+                        else 0.0,
+                    )
+                    print(json.dumps(reading, sort_keys=True), flush=True)
+                    prior_profile = reading
+                    prior_profile_at = now
+                except Exception as exc:
+                    # A profiling defect is never a trading failure.
+                    print(
+                        json.dumps(
+                            {
+                                "event": "rhen_resource_profile_error",
+                                "error_type": type(exc).__name__,
+                            }
+                        ),
+                        flush=True,
+                    )
             time.sleep(1)
     finally:
         _terminate(children)
