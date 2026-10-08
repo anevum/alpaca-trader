@@ -513,24 +513,7 @@ def research_gateway_write(
             if isinstance(body.get("run"), dict)
             else body
         )
-        key = str(
-            payload.get("run_key")
-            or payload.get("run_id")
-            or f"run:{hash(json.dumps(payload, sort_keys=True, default=str))}"
-        )
-        with store.connect() as conn:
-            conn.execute(
-                """insert or replace into research_runs(
-                    run_key,payload_json,created_at
-                ) values(?,?,?)""",
-                (key, json.dumps(payload, default=str), now),
-            )
-            conn.commit()
-        return {
-            "ok": True,
-            "run_key": key,
-            "execution_authority": False,
-        }
+        return store.record_research_audit(payload)
     if action in {"record_search_ledger", "save_search_ledger"}:
         payload = (
             body.get("ledger")
@@ -561,35 +544,10 @@ def research_gateway_write(
             if isinstance(body.get("search_ledger"), dict)
             else {}
         )
-        run_key = str(
-            run.get("run_key")
-            or run.get("run_id")
-            or f"run:{hash(json.dumps(run, sort_keys=True, default=str))}"
+        return store.record_research_audit(
+            run,
+            search_ledger=ledger,
         )
-        ledger_key = str(
-            ledger.get("ledger_hash")
-            or f"ledger:{hash(json.dumps(ledger, sort_keys=True, default=str))}"
-        )
-        with store.connect() as conn:
-            conn.execute(
-                """insert or replace into research_runs(
-                    run_key,payload_json,created_at
-                ) values(?,?,?)""",
-                (run_key, json.dumps(run, default=str), now),
-            )
-            conn.execute(
-                """insert or replace into research_ledgers(
-                    ledger_hash,payload_json,created_at
-                ) values(?,?,?)""",
-                (ledger_key, json.dumps(ledger, default=str), now),
-            )
-            conn.commit()
-        return {
-            "ok": True,
-            "run_key": run_key,
-            "ledger_hash": ledger_key,
-            "execution_authority": False,
-        }
     raise HTTPException(status_code=422, detail="invalid_action")
 
 
