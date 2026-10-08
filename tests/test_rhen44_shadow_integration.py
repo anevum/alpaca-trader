@@ -235,6 +235,9 @@ def test_isolated_process_rejects_armed_configuration_and_has_no_order_routes(mo
     with TestClient(app) as client:
         assert client.get("/health").json()["broker_orders_possible"] is False
         assert client.post("/v2/orders",json={"symbol":"SPY"}).status_code==404
+        assert client.get("/v1/command/research/status").status_code==401
+        assert client.get("/v1/command/research/bootstrap").status_code==401
+        # Legacy aliases remain temporarily for evidence-preserving migration only.
         assert client.get("/v1/command/shadow/status").status_code==401
         assert client.get("/v1/command/shadow/bootstrap").status_code==401
     for field in ("execution_enabled","bot_armed","live_trading","extended_equity_execution_enabled"):
