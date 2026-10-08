@@ -63,7 +63,7 @@ def test_profile_report_filters_invalid_or_untrusted_events():
     invalid = _event()
     invalid["cgroup_memory_mib"] = -2
     invalid["avg_cgroup_cpu_cores_in_interval"] = float("inf")
-    invalid["roles"][0]["role"] = "x" * 60
+    invalid["roles"][0]["role"] = "private-broker-token"
     valid = _event(memory=100)
     valid["pss_complete"] = False
     lines = [
@@ -82,6 +82,7 @@ def test_profile_report_filters_invalid_or_untrusted_events():
     assert result["cgroup_memory_mib"]["median"] == 100
     assert set(result["roles"]) == {"core"}
     assert "never-return" not in json.dumps(result)
+    assert "private-broker-token" not in json.dumps(result)
 
 
 def test_profile_report_empty_input_has_no_fabricated_metrics():
