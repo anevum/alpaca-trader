@@ -50,7 +50,8 @@ def test_registry_contains_one_owner_for_required_workflows():
         for row in registry.get("independent_runtimes", [])
     }
     assert independent["NOSTRA"]["mode"] == "embedded_autorun"
-    assert independent["NOSTRA"]["scheduler_owned"] is False\n    assert independent["NOSTRA"]["independent_runtime"] is False
+    assert independent["NOSTRA"]["scheduler_owned"] is False
+    assert independent["NOSTRA"]["independent_runtime"] is False
     assert independent["NOSTRA"]["health_owner"] == "IREN"
     assert independent["NOSTRA"]["research_only"] is True
     assert independent["NOSTRA"]["execution_authority"] is False
