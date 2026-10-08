@@ -31,6 +31,7 @@ def test_software_build_requires_explicit_model_authorization(monkeypatch):
 
 
 def test_software_build_fails_closed_when_runtime_configuration_missing(monkeypatch):
+    monkeypatch.setenv("IREN_LEGACY_MODEL_WORKER_ENABLED", "true")
     monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("IREN_GITHUB_TOKEN", raising=False)
@@ -48,6 +49,7 @@ def test_software_build_fails_closed_when_runtime_configuration_missing(monkeypa
 
 
 def test_software_build_rejects_job_budget_above_daily_budget(monkeypatch):
+    monkeypatch.setenv("IREN_LEGACY_MODEL_WORKER_ENABLED", "true")
     monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-" + "x" * 32)
     monkeypatch.setenv("IREN_GITHUB_TOKEN", "g" * 40)
@@ -124,6 +126,7 @@ def test_projected_model_call_cost_is_preventive(monkeypatch):
 
 def test_repository_cutover_allows_rhen_and_rejects_unrelated_repo(monkeypatch):
     runtime = ExecutorRuntime()
+    monkeypatch.setenv("IREN_LEGACY_MODEL_WORKER_ENABLED", "true")
     monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-" + "x" * 32)
     monkeypatch.setenv("IREN_GITHUB_TOKEN", "g" * 40)
@@ -136,3 +139,18 @@ def test_repository_cutover_allows_rhen_and_rejects_unrelated_repo(monkeypatch):
     monkeypatch.setenv("IREN_GITHUB_REPOSITORY", "other/repo")
     assert runtime.software_backend_configured is False
 
+
+
+def test_old_model_authorization_flag_cannot_reactivate_legacy_worker(monkeypatch):
+    monkeypatch.delenv("IREN_LEGACY_MODEL_WORKER_ENABLED", raising=False)
+    monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
+    runtime = ExecutorRuntime()
+
+    assert runtime.service_enabled is False
+    assert runtime.model_execution_authorized is False
+    assert runtime.software_backend_configured is False
+
+    result = runtime.accept(_job())
+    assert result["status"] == "NEEDS_APPROVAL"
+    assert result["reason"] == "model_execution_not_authorized"
+    assert result["model_invoked"] is False
