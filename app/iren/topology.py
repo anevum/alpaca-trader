@@ -8,8 +8,8 @@ OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "GRAEN", "VELUM"}
 
 INVENTORY = {
     "RHEN": ("SERVICE", "rhen", "Live execution; protected trading runtime"),
-    "VELUM": ("ON_DEMAND", "velum", "Replay/counterfactual laboratory; broker-isolated and started only for bounded work"),
-    "GRAEN": ("ON_DEMAND", "graen", "Research methodology and experiment-design workflow; no permanent runtime required"),
+    "VELUM": ("WORKER", "velum", "Replay/counterfactual laboratory; broker-isolated and started only for bounded work"),
+    "GRAEN": ("MODULE", "graen", "Research methodology and experiment-design workflow; no permanent runtime required"),
     "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
     "RESEARCH_AGENT": ("WORKER", "rhen-research-agent", "Independent evidence-review worker"),
     "IREN_EXECUTOR": ("SERVICE", "iren-executor", "Bounded IREN execution and GitHub evidence boundary"),
