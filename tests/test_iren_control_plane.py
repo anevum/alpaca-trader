@@ -107,7 +107,7 @@ def test_protected_failures_open_immediately(field, value, key):
 
 def test_warning_hysteresis_recovery_restart_and_recurrence():
     obs = observation()
-    obs["services"]["VELUM"] = {"ok": False}
+    obs["services"]["RHEN"] = {"ok": False}
     state, events = reduce_state({}, obs, POLICY)
     assert state["state"] == "DEGRADED" and not events
     obs["observed_at"] = observation(60)["observed_at"]
@@ -121,7 +121,7 @@ def test_warning_hysteresis_recovery_restart_and_recurrence():
     assert events[0]["transition"] == "RECOVERED"
     for seconds in (300, 360):
         obs = observation(seconds)
-        obs["services"]["VELUM"] = {"ok": False}
+        obs["services"]["RHEN"] = {"ok": False}
         state, events = reduce_state(state, obs, POLICY)
     assert events[0]["event_key"] != opened_key
 
