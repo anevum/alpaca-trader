@@ -33,7 +33,8 @@ def release_status(settings, observer=None):
         "champion_behavior": "4.3",
         "state": "RESEARCH_OBSERVATION" if running else "IMPLEMENTED_GATED",
         "configured": configured,
-        "observer_constructed": running,\n        "research_observer_constructed": running,
+        "observer_constructed": running,
+        "research_observer_constructed": running,
         "broker_stream_state": observer.broker.state if running and observer.broker else "DISABLED",
         "command_stream_available": running and configured["command_stream"],
         "universe_contract": {
@@ -51,5 +52,12 @@ def release_status(settings, observer=None):
         "broker_write_authority": False,
         "adaptive_active_available": False,
         "promotion_eligible": False,
-        "research_pipeline": {\n            "observation_owner": "DISCOVER",\n            "validation_owner": "REVIEW",\n            "storage_mode": "BOUNDED_DURABLE_EVIDENCE",\n            "execution_authority": False,\n            "automatic_promotion": False,\n        },\n        "promotion_blockers": blockers,
+        "research_pipeline": {
+            "observation_owner": "DISCOVER",
+            "validation_owner": "REVIEW",
+            "storage_mode": "BOUNDED_DURABLE_EVIDENCE",
+            "execution_authority": False,
+            "automatic_promotion": False,
+        },
+        "promotion_blockers": blockers,
     }
