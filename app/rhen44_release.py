@@ -1,4 +1,4 @@
-"""Read-only release truth; configuration cannot grant 4.4 trading authority."""
+"""Read-only 4.4 release truth. Research observation cannot grant trading authority."""
 from __future__ import annotations
 
 
@@ -16,7 +16,7 @@ def release_status(settings, observer=None):
     blockers = [
         "exact_configuration_and_broker_baseline_unattested",
         "live_entitlement_and_stream_coverage_unattested",
-        "replay_and_shadow_validation_incomplete",
+        "discover_and_review_validation_incomplete",
         "runtime_recovery_and_reconciliation_validation_incomplete",
         "command_live_visual_acceptance_incomplete",
         "research_and_holdout_gates_incomplete",
@@ -31,9 +31,9 @@ def release_status(settings, observer=None):
         "implementation_version": "rhen-4.4-foundations-v1",
         "implementation_complete": False,
         "champion_behavior": "4.3",
-        "state": "SHADOW_ONLY" if running else "IMPLEMENTED_GATED",
+        "state": "RESEARCH_OBSERVATION" if running else "IMPLEMENTED_GATED",
         "configured": configured,
-        "observer_constructed": running,
+        "observer_constructed": running,\n        "research_observer_constructed": running,
         "broker_stream_state": observer.broker.state if running and observer.broker else "DISABLED",
         "command_stream_available": running and configured["command_stream"],
         "universe_contract": {
@@ -51,5 +51,5 @@ def release_status(settings, observer=None):
         "broker_write_authority": False,
         "adaptive_active_available": False,
         "promotion_eligible": False,
-        "promotion_blockers": blockers,
+        "research_pipeline": {\n            "observation_owner": "DISCOVER",\n            "validation_owner": "REVIEW",\n            "storage_mode": "BOUNDED_DURABLE_EVIDENCE",\n            "execution_authority": False,\n            "automatic_promotion": False,\n        },\n        "promotion_blockers": blockers,
     }
