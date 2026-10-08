@@ -95,6 +95,8 @@ def test_kernel_only_profile_cgroup_memory_pss_cpu_and_role_order(
     assert result["roles"][1]["pss_mib"] is None
     assert result["sum_rss_mib_not_additive"] == 300
     assert result["sum_pss_mib_if_accessible"] == 150
+    assert result["pss_covered_process_count"] == 1
+    assert result["pss_complete"] is False
     assert result["cgroup_memory_mib"] == 400
     assert result["cgroup_cpu_usage_usec_total"] == 50000000
     encoded = json.dumps(result)
@@ -118,6 +120,7 @@ def test_missing_kernel_counters_fail_open(tmp_path):
     assert result["roles"][0]["cpu_seconds_total"] is None
     assert result["sum_rss_mib_not_additive"] is None
     assert result["sum_pss_mib_if_accessible"] is None
+    assert result["pss_complete"] is False
     assert result["cgroup_memory_mib"] is None
     assert result["cgroup_cpu_usage_usec_total"] is None
 
