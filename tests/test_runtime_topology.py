@@ -56,6 +56,9 @@ def test_nostra_is_embedded_module_and_workers_can_be_idle():
     assert rows["GRAEN"]["status"] == "IDLE"
     assert rows["RHEN"]["status"] == "IDLE"
     assert rows["IREN"]["status"] == "IDLE"
+    assert rows["IREN"]["runtime_kind"] == "MODULE"
+    assert rows["IREN"]["independent_runtime"] is False
+    assert rows["IREN"]["service_name"] == "iren-control"
     assert rows["IREN"]["schema_version"] == "service_heartbeat.v1"
     assert rows["RHEN"]["deployment"] is None  # Never invent provider identity.
     assert rows["RHEN"]["observation_source"] == "iren_http_probe"
