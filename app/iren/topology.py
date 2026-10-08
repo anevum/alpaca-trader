@@ -4,12 +4,12 @@ from datetime import datetime, timezone
 from app.contracts.service_health import ServiceObservation
 from .core import fresh
 
-OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR"}
+OPTIONAL_INVENTORY = {"PREOPEN", "IREN_EXECUTOR", "GRAEN", "VELUM"}
 
 INVENTORY = {
     "RHEN": ("SERVICE", "rhen", "Live execution; protected trading runtime"),
-    "VELUM": ("WORKER", "rhen-velum", "Independent replay worker; broker-isolated research"),
-    "GRAEN": ("SERVICE", "graen", "Independent mathematical and theoretical research runtime"),
+    "VELUM": ("ON_DEMAND", "velum", "Replay/counterfactual laboratory; broker-isolated and started only for bounded work"),
+    "GRAEN": ("ON_DEMAND", "graen", "Research methodology and experiment-design workflow; no permanent runtime required"),
     "PREOPEN": ("WORKER", "rhen-preopen-state", "Independent shadow capture; not an independently activated NOSTRA forecaster"),
     "RESEARCH_AGENT": ("WORKER", "rhen-research-agent", "Independent evidence-review worker"),
     "IREN_EXECUTOR": ("SERVICE", "iren-executor", "Bounded IREN execution and GitHub evidence boundary"),
