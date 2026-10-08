@@ -9,16 +9,16 @@ from pathlib import Path
 from typing import Any
 
 ROLE_MAP_PATH = Path(__file__).with_name("railway_roles.json")
-EXPECTED_ROLES = {"production_trading", "research_agent", "preopen_state", "research_scheduler"}
+EXPECTED_ROLES = {"production_trading"}
 
 
 def load_role_map(path: Path = ROLE_MAP_PATH) -> dict[str, Any]:
     mapping = json.loads(path.read_text(encoding="utf-8"))
     assignments = mapping.get("assignments")
-    if mapping.get("schema_version") != "rhen-railway-roles-v1" or not mapping.get("project_id") or not mapping.get("environment_id"):
+    if mapping.get("schema_version") != "rhen-railway-roles-v2" or not mapping.get("project_id") or not mapping.get("environment_id"):
         raise ValueError("invalid Railway role-map identity")
-    if not isinstance(assignments, list) or len(assignments) != 4:
-        raise ValueError("four current role assignments required")
+    if not isinstance(assignments, list) or len(assignments) != 1:
+        raise ValueError("one permanent Railway role assignment required")
     ids = set()
     roles = set()
     for item in assignments:
