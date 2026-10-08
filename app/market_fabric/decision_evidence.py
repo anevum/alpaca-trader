@@ -1,4 +1,4 @@
-"""Bounded durable shadow decisions, never canonical orders or promotion evidence."""
+"""Bounded durable research observations, never canonical orders or promotion authority.\n\nThe shadow_* SQLite names are retained temporarily for migration compatibility.\n"""
 import json
 from collections import Counter
 from .bounded_retention import trim_oldest
@@ -20,9 +20,9 @@ class DecisionEvidence:
         # independent candidates. Persist source and derived lineage before publishing.
         encoded = json.dumps(body, sort_keys=True, allow_nan=False)
         if len(encoded.encode()) > 16384:
-            raise ValueError("shadow decision evidence exceeds bounded payload")
+            raise ValueError("research observation evidence exceeds bounded payload")
         if body.get("entry_authority") is not False or not body.get("observed_at"):
-            raise ValueError("shadow evidence cannot carry execution authority")
+            raise ValueError("research observation evidence cannot carry execution authority")
         at = body["observed_at"]
         with self.db:
             added = self.db.execute("INSERT OR IGNORE INTO shadow_seen VALUES (?,?)", (identity, at)).rowcount
