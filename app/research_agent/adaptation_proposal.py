@@ -36,6 +36,12 @@ DEFAULT_PARAMETER_POLICY = {
         "daily_step": Decimal("0.001"),
         "weekly_step": Decimal("0.002"),
     },
+    "min_quality_score": {
+        "minimum": Decimal("60"),
+        "maximum": Decimal("95"),
+        "daily_step": Decimal("5"),
+        "weekly_step": Decimal("5"),
+    },
 }
 
 
