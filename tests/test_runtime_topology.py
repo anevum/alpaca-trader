@@ -44,10 +44,10 @@ def test_stale_and_future_heartbeat(seconds):
 def test_missing_heartbeat():
     assert project_status({"state": {}}, STAMP)["stale"]
 
-def test_nostra_is_independent_runtime_and_workers_can_be_idle():
+def test_nostra_is_embedded_module_and_workers_can_be_idle():
     rows = {r["service_id"]: r for r in state()["topology"]["services"]}
-    assert rows["NOSTRA"]["runtime_kind"] == "SERVICE"
-    assert rows["NOSTRA"]["independent_runtime"] is True
+    assert rows["NOSTRA"]["runtime_kind"] == "MODULE"
+    assert rows["NOSTRA"]["independent_runtime"] is False
     assert rows["NOSTRA"]["service_name"] == "nostra"
     assert rows["VELUM"]["status"] == "IDLE"
     assert rows["GRAEN"]["status"] == "IDLE"
