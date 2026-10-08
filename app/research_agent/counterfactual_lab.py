@@ -17,6 +17,7 @@ PARAMETER_FEATURES = {
     "min_vwap_edge_pct": ("vwap_edge_pct", "minimum"),
     "min_confirmations": ("confirmations_passed", "minimum"),
     "max_vwap_extension_pct": ("vwap_edge_pct", "maximum"),
+    "min_quality_score": ("quality_score", "minimum"),
 }
 
 MIN_INDEPENDENT_SESSIONS = 5
@@ -574,6 +575,15 @@ def prepare_counterfactual_rows(
                 "confirmations_ok",
                 "regime_ok",
             ),
+            "min_quality_score": (
+                "fast_above_slow",
+                "rising",
+                "momentum_ok",
+                "vwap_ok",
+                "vwap_extension_ok",
+                "confirmations_ok",
+                "regime_ok",
+            ),
         }[parameter]
 
         known = all(common.get(name) is not None for name in required_by_parameter)
@@ -588,7 +598,15 @@ def prepare_counterfactual_rows(
             "momentum_pct": features.get("momentum_pct"),
             "vwap_edge_pct": features.get("vwap_edge_pct"),
             "confirmations_passed": features.get("confirmation_passes"),
-            "other_gates_passed": other_gates_passed if known else None,
+            "quality_score": features.get("quality_score"),
+            "other_gates_passed": (
+                other_gates_passed
+                if known and (
+                    parameter != "min_quality_score"
+                    or features.get("quality_score") not in (None, "")
+                )
+                else None
+            ),
         }
 
         rows.append(
