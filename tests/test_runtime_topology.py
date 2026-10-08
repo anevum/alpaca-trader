@@ -49,6 +49,9 @@ def test_nostra_is_embedded_module_and_workers_can_be_idle():
     assert rows["NOSTRA"]["runtime_kind"] == "MODULE"
     assert rows["NOSTRA"]["independent_runtime"] is False
     assert rows["NOSTRA"]["service_name"] == "nostra"
+    assert rows["RESEARCH_AGENT"]["runtime_kind"] == "MODULE"
+    assert rows["RESEARCH_AGENT"]["independent_runtime"] is False
+    assert rows["RESEARCH_AGENT"]["service_name"] == "research-evidence"
     assert rows["VELUM"]["status"] == "IDLE"
     assert rows["GRAEN"]["status"] == "IDLE"
     assert rows["RHEN"]["status"] == "IDLE"
