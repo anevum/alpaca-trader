@@ -20,6 +20,8 @@ def _job(**overrides):
 
 
 def test_software_build_requires_explicit_model_authorization(monkeypatch):
+    monkeypatch.setenv("IREN_EXECUTOR_ENABLED", "true")
+    monkeypatch.setenv("IREN_LEGACY_MODEL_WORKER_ENABLED", "true")
     monkeypatch.delenv("IREN_MODEL_EXECUTION_AUTHORIZED", raising=False)
     runtime = ExecutorRuntime()
 
@@ -31,6 +33,7 @@ def test_software_build_requires_explicit_model_authorization(monkeypatch):
 
 
 def test_software_build_fails_closed_when_runtime_configuration_missing(monkeypatch):
+    monkeypatch.setenv("IREN_EXECUTOR_ENABLED", "true")
     monkeypatch.setenv("IREN_LEGACY_MODEL_WORKER_ENABLED", "true")
     monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -49,6 +52,7 @@ def test_software_build_fails_closed_when_runtime_configuration_missing(monkeypa
 
 
 def test_software_build_rejects_job_budget_above_daily_budget(monkeypatch):
+    monkeypatch.setenv("IREN_EXECUTOR_ENABLED", "true")
     monkeypatch.setenv("IREN_LEGACY_MODEL_WORKER_ENABLED", "true")
     monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-" + "x" * 32)
@@ -142,11 +146,12 @@ def test_repository_cutover_allows_rhen_and_rejects_unrelated_repo(monkeypatch):
 
 
 def test_old_model_authorization_flag_cannot_reactivate_legacy_worker(monkeypatch):
+    monkeypatch.setenv("IREN_EXECUTOR_ENABLED", "true")
     monkeypatch.delenv("IREN_LEGACY_MODEL_WORKER_ENABLED", raising=False)
     monkeypatch.setenv("IREN_MODEL_EXECUTION_AUTHORIZED", "true")
     runtime = ExecutorRuntime()
 
-    assert runtime.service_enabled is False
+    assert runtime.service_enabled is True
     assert runtime.model_execution_authorized is False
     assert runtime.software_backend_configured is False
 
