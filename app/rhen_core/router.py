@@ -23,7 +23,7 @@ OPTIONAL_MODULE_ENVS = {
 MODULES = {
     "graen": "http://127.0.0.1:8110/health",
     "velum": "http://127.0.0.1:8113/health",
-    "research_agent": "http://127.0.0.1:8114/health",
+    "research_agent": CORE_URL + "/v1/research/health",
     "nostra": CORE_URL + "/v1/nostra/health",
     "iren": "http://127.0.0.1:8116/health",
     "iren_executor": "http://127.0.0.1:8117/health",
@@ -31,8 +31,8 @@ MODULES = {
 }
 
 PUBLIC_MODULE_ROUTES = {
-    "/v1/research/readiness/public": "http://127.0.0.1:8114/v1/readiness/public",
-    "/v1/research/theory/public": "http://127.0.0.1:8114/v1/theory/public",
+    "/v1/research/readiness/public": CORE_URL + "/v1/research/readiness/public",
+    "/v1/research/theory/public": CORE_URL + "/v1/research/theory/public",
 }
 
 CORE_PREFIXES = (
@@ -44,6 +44,7 @@ CORE_PREFIXES = (
     "/v1/graen-gateway",
     "/v1/scheduler-gateway",
     "/v1/research-agent-gateway",
+    "/v1/research/",
     "/v1/nostra-gateway",
     "/v1/nostra/",
     "/v1/maintenance/",
