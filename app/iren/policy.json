@@ -58,7 +58,7 @@
     {
       "id": "RESEARCH_AGENT",
       "url_env": "IREN_RESEARCH_AGENT_HEALTH_URL",
-      "default_url": "http://rhen-research-agent.railway.internal:8080/health",
+      "default_url": "http://127.0.0.1:8102/v1/research/health",
       "inventory_only": true
     },
     {

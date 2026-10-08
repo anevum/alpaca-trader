@@ -1,5 +1,8 @@
+import asyncio
 import json
+from pathlib import Path
 
+from app.research_agent.embedded import EmbeddedResearchReview
 from app.research_agent.evidence import CanonicalEvidenceReader
 from app.research_agent.runner import ResearchAgentRunner
 from scripts.rhen_research_agent import main
@@ -341,3 +344,67 @@ def test_foundation_verification_strategy_blocks_semantic_review():
         row["code"] == "NON_PRODUCTION_STRATEGY_IDENTITY"
         for row in readiness["blockers"]
     )
+
+
+class _EmbeddedResearchStore:
+    def __init__(self):
+        self.document = canonical_fixture()
+        self.persisted = []
+
+    def canonical_evidence(self):
+        return self.document
+
+    def record_research_audit(self, run, *, search_ledger=None):
+        record = dict(run)
+        self.persisted.append(record)
+        self.document.setdefault("agent_runs", []).insert(0, record)
+        return {
+            "ok": True,
+            "run_key": record["run_key"],
+            "search_ledger_recorded": False,
+            "execution_authority": False,
+            "broker_orders_possible": False,
+        }
+
+
+def test_embedded_research_review_is_deterministic_only_and_persists_audit():
+    store = _EmbeddedResearchStore()
+    embedded = EmbeddedResearchReview(store)
+
+    health = embedded.health()
+    assert health["ok"] is True
+    assert health["embedded"] is True
+    assert health["independent_runtime"] is False
+    assert health["deterministic_only"] is True
+    assert health["semantic_model"]["enabled"] is False
+    assert health["research_director"]["enabled"] is False
+    assert health["authority"]["broker_calls"] is False
+    assert health["authority"]["production_promotion"] is False
+
+    readiness = asyncio.run(embedded.readiness("daily"))
+    assert readiness["model_invoked"] is False
+
+    result = asyncio.run(embedded.review("daily", persist=True))
+    assert result["model_invoked"] is False
+    assert result["persisted"] is True
+    assert result["approval_required"] is False
+    assert result["llm_usage"]["invoked"] is False
+    assert result["output"]["semantic_review"] is None
+    assert len(store.persisted) == 1
+
+    duplicate = asyncio.run(embedded.review("daily", persist=True))
+    assert duplicate["status"] == "NOOP"
+    assert duplicate["reason"] == "duplicate_run_key"
+    assert duplicate["model_invoked"] is False
+
+
+def test_embedded_research_module_has_no_model_or_network_client_imports():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "research_agent"
+        / "embedded.py"
+    ).read_text()
+    assert "OpenAISemanticReviewer" not in source
+    assert "OpenAIResearchDirector" not in source
+    assert "import httpx" not in source

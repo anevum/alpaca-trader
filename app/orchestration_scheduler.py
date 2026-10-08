@@ -884,7 +884,11 @@ class SchedulerRuntime:
         urls = {
             "rhen": self.trader_url.split("/v1/scheduler", 1)[0] + "/health",
             "velum": self.velum_url.split("/v1/scheduler", 1)[0] + "/health",
-            "research_agent": self.research_url.split("/v1/", 1)[0] + "/health",
+            "research_agent": os.getenv(
+                "IREN_RESEARCH_AGENT_HEALTH_URL",
+                self.research_url.rsplit("/v1/research/review", 1)[0]
+                + "/v1/research/health",
+            ),
         }
         required_for_preflight = {
             "rhen": True,
