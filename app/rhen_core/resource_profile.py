@@ -145,7 +145,15 @@ def sample(
         "roles": roles,
         "sum_rss_mib_not_additive": sum_available("rss_mib"),
         "sum_pss_mib_if_accessible": sum_available("pss_mib"),
-        "cgroup_memory_mib": _mib_from_bytes(_integer(cgroup_root / "memory.current")),
+        "pss_covered_process_count": sum(
+            row["pss_mib"] is not None for row in roles
+        ),
+        "pss_complete": bool(roles) and all(
+            row["pss_mib"] is not None for row in roles
+        ),
+        "cgroup_memory_mib": _mib_from_bytes(
+            _integer(cgroup_root / "memory.current")
+        ),
         "cgroup_cpu_usage_usec_total": cpu_usec,
         "broker_data_included": False,
     }
