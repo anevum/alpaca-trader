@@ -453,10 +453,10 @@ def test_router_exposes_sanitized_public_research_projections():
 
     assert PUBLIC_MODULE_ROUTES == {
         "/v1/research/readiness/public": (
-            "http://127.0.0.1:8114/v1/readiness/public"
+            "http://127.0.0.1:8102/v1/research/readiness/public"
         ),
         "/v1/research/theory/public": (
-            "http://127.0.0.1:8114/v1/theory/public"
+            "http://127.0.0.1:8102/v1/research/theory/public"
         ),
     }
 
