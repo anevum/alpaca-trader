@@ -308,3 +308,80 @@ def test_incomplete_affected_outcomes_reduce_coverage():
         "INSUFFICIENT_FORWARD_COVERAGE" in row["reason_codes"]
         for row in looser
     )
+
+
+def test_quality_score_counterfactual_can_test_entry_selectivity():
+    rows = []
+    for session_index in range(7):
+        session = f"2026-10-{session_index + 1:02d}"
+        for i in range(20):
+            score = 75 if i < 10 else 85
+            # Lower-quality entries lose after costs; higher-quality entries are mildly positive.
+            forward = -0.003 if score < 80 else 0.003
+            rows.append(
+                {
+                    "candidate_id": f"{session}-{i}",
+                    "session": session,
+                    "gate_inputs": {
+                        "quality_score": score,
+                        "other_gates_passed": True,
+                    },
+                    "forward_outcomes": [
+                        {
+                            "horizon_minutes": 15,
+                            "status": "complete",
+                            "forward_return": forward,
+                            "max_favorable_return": max(forward, 0) + 0.001,
+                            "max_adverse_return": min(forward, 0) - 0.001,
+                        }
+                    ],
+                }
+            )
+    result = run_counterfactual_search(
+        rows=rows,
+        parameter="min_quality_score",
+        current_value="80",
+        round_trip_cost="0.0022",
+    )
+    assert result["search_ledger"]["parameter"] == "min_quality_score"
+    assert result["search_ledger"]["grid_frozen_before_evaluation"] is True
+    assert any(float(row["requested_value"]) > 80 for row in result["results"])
+
+
+def test_candidate_projection_exposes_quality_score_for_counterfactuals():
+    candidate = {
+        "candidate_id": 3,
+        "session": "2026-10-07",
+        "features": {
+            "quality_score": "84.5",
+            "current_close": "100.20",
+            "session_vwap": "100.00",
+            "momentum_pct": "0.002",
+            "vwap_edge_pct": "0.002",
+            "confirmation_passes": 2,
+            "checks": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": True,
+                "vwap_ok": True,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            },
+        },
+        "checks": {
+            "strategy": {
+                "fast_above_slow": True,
+                "rising": True,
+                "momentum_ok": True,
+                "vwap_ok": True,
+                "vwap_extension_ok": True,
+                "confirmations_ok": True,
+                "regime_ok": True,
+            }
+        },
+        "outcomes": [],
+    }
+    row = prepare_counterfactual_rows([candidate], parameter="min_quality_score")[0]
+    assert row["gate_inputs"]["quality_score"] == "84.5"
+    assert row["gate_inputs"]["other_gates_passed"] is True

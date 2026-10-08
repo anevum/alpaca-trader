@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from app.research_reporting import (
     classify_daily,
+    next_research_action,
     enrich_excursions,
     reconstruct_closed_trades,
     trade_metrics,
@@ -142,3 +143,20 @@ def test_daily_classification_prioritizes_runtime_defect():
     result = classify_daily(metrics, runtime)
     assert result["classification"] == "CHANGE"
     assert result["defects"]
+
+
+def test_weak_session_routes_to_entry_selectivity_research():
+    action = next_research_action(
+        {
+            "trade_count": 24,
+            "wins": 13,
+            "losses": 11,
+            "expectancy": Decimal("-0.01"),
+            "profit_factor": Decimal("0.95"),
+        },
+        {"bounded_history": False},
+        {"classification": "INVESTIGATE"},
+    )
+    assert "entry-selectivity" in action
+    assert "quality score" in action
+    assert "re-entry churn" in action

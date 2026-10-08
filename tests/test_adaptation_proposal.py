@@ -124,3 +124,21 @@ def test_proposal_id_is_deterministic_for_same_evidence():
     first = propose_parameter_change(**kwargs)
     second = propose_parameter_change(**kwargs)
     assert first["proposal_id"] == second["proposal_id"]
+
+
+def test_quality_score_change_is_bounded_and_requires_authorization():
+    result = propose_parameter_change(
+        parameter="min_quality_score",
+        current_value="80",
+        requested_value="95",
+        control_state="RESEARCH",
+        evidence={"reason": "entry selectivity counterfactual"},
+        confidence="0.8",
+        cadence="daily",
+        source_strategy_version="LIVE-2026-09-25-003",
+    )
+    assert result["proposed_value"] == "85"
+    assert result["clipped_by_change_budget"] is True
+    assert result["authorization_required"] is True
+    assert result["automatic_application_authorized"] is False
+    assert result["execution_authority"] is False
