@@ -1677,3 +1677,51 @@ def test_nostra_standalone_runtime_is_opt_in_and_iren_reads_embedded_health():
         LOOPBACK["IREN_NOSTRA_HEALTH_URL"]
         == "http://127.0.0.1:8102/v1/nostra/health"
     )
+
+
+def test_research_standalone_runtime_is_opt_in_and_scheduler_reads_core():
+    research = next(spec for spec in PROCESSES if spec.name == "research-agent")
+    assert (
+        research.enabled_env
+        == "RHEN_RESEARCH_STANDALONE_RUNTIME_ENABLED"
+    )
+    assert (
+        LOOPBACK["RHEN_RESEARCH_REVIEW_URL"]
+        == "http://127.0.0.1:8102/v1/research/review"
+    )
+    assert (
+        LOOPBACK["IREN_RESEARCH_AGENT_HEALTH_URL"]
+        == "http://127.0.0.1:8102/v1/research/health"
+    )
+
+
+def test_core_research_audit_persistence_is_deterministic_and_brokerless(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path, monkeypatch)
+    record = {
+        "run_key": "embedded-daily:2026-10-08",
+        "run_id": "run-embedded",
+        "status": "NOOP",
+        "llm_usage": {"invoked": False, "provider": None, "model": None},
+        "output_artifact": {
+            "safety": {
+                "broker_calls": 0,
+                "live_strategy_changes": 0,
+                "production_promotions": 0,
+            }
+        },
+    }
+    result = store.record_research_audit(record)
+    assert result["ok"] is True
+    assert result["execution_authority"] is False
+    assert result["broker_orders_possible"] is False
+    with store.connect() as conn:
+        row = conn.execute(
+            "select payload_json from research_runs where run_key=?",
+            ("embedded-daily:2026-10-08",),
+        ).fetchone()
+    assert row is not None
+    persisted = json.loads(row["payload_json"])
+    assert persisted["llm_usage"]["invoked"] is False
+    assert persisted["output_artifact"]["safety"]["broker_calls"] == 0
