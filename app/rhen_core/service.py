@@ -3,17 +3,29 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.nostra.embedded import CoreNostraGateway, CoreNostraLedger
+from app.nostra.service import (
+    BaselineEvidenceRequest,
+    NostraRuntime,
+    require_nostra_api_token,
+)
+
 from .store import RhenCoreStore
 
 UTC = timezone.utc
-RUNTIME_VERSION = "rhen-core-v3.0.0"
+RUNTIME_VERSION = "rhen-core-v3.1.0"
 store = RhenCoreStore()
+embedded_nostra = NostraRuntime(
+    ledger=CoreNostraLedger(store),
+    gateway=CoreNostraGateway(store),
+)
 
 
 class EvidenceEvent(BaseModel):
@@ -55,7 +67,20 @@ def _require(provided: str | None, *env_names: str) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
-app = FastAPI(title="RHEN Core", version=RUNTIME_VERSION)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await embedded_nostra.start()
+    try:
+        yield
+    finally:
+        await embedded_nostra.stop()
+
+
+app = FastAPI(
+    title="RHEN Core",
+    version=RUNTIME_VERSION,
+    lifespan=lifespan,
+)
 
 
 @app.get("/")
@@ -465,6 +490,28 @@ def research_gateway_write(
             "execution_authority": False,
         }
     raise HTTPException(status_code=422, detail="invalid_action")
+
+
+@app.get("/v1/nostra/health")
+def embedded_nostra_health() -> dict[str, Any]:
+    return {
+        **embedded_nostra.health(),
+        "embedded": True,
+        "host": "RHEN_CORE",
+        "independent_runtime": False,
+    }
+
+
+@app.post("/v1/nostra/evidence/baseline")
+async def embedded_nostra_baseline_evidence(
+    req: BaselineEvidenceRequest,
+    x_nostra_api_token: str | None = Header(
+        default=None,
+        alias="x-nostra-api-token",
+    ),
+) -> dict[str, Any]:
+    require_nostra_api_token(x_nostra_api_token)
+    return await embedded_nostra.baseline_evidence(req)
 
 
 @app.get("/v1/nostra-forecasts")
