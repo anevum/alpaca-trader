@@ -116,11 +116,14 @@ class ExecutorRuntime:
 
     @property
     def service_enabled(self) -> bool:
-        return _enabled("IREN_EXECUTOR_ENABLED", True)
+        return _enabled("IREN_EXECUTOR_ENABLED", False)
 
     @property
     def model_execution_authorized(self) -> bool:
-        return _enabled("IREN_MODEL_EXECUTION_AUTHORIZED", False)
+        return (
+            _enabled("IREN_LEGACY_MODEL_WORKER_ENABLED", False)
+            and _enabled("IREN_MODEL_EXECUTION_AUTHORIZED", False)
+        )
 
     @property
     def token(self) -> str:
