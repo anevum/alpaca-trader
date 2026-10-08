@@ -13,12 +13,14 @@ from zoneinfo import ZoneInfo
 NY = ZoneInfo("America/New_York")
 SCHEMA_VERSION = "rhen-support-context-v1"
 ROLE_COMMANDS = {
-    "production_trading": "app.main:app",
-    "preopen_state": "app.preopen_state.service:app",
-    "research_agent": "app.research_agent.service:app",
-    "research_scheduler": "./run.sh",
+    "production_trading": "app.rhen_core.supervisor",
 }
-KNOWN_ROLES = set(ROLE_COMMANDS) | {"shadow_comparison"}
+KNOWN_ROLES = set(ROLE_COMMANDS) | {
+    "shadow_comparison",
+    "preopen_state",
+    "research_agent",
+    "research_scheduler",
+}
 RANK = {"HEALTHY": 0, "DEGRADED": 1, "BLOCKED": 2}
 
 
@@ -99,14 +101,15 @@ def evaluate(evidence: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
             add("SERVICE_UNHEALTHY", "BLOCKED" if role == "production_trading" else "DEGRADED", "railway", str(service_id))
         if role == "shadow_comparison" and "app.main:app" not in command:
             add("SERVICE_ROLE_COMMAND_MISMATCH", "BLOCKED", "railway", str(service_id))
-    for role in ("production_trading", "preopen_state"):
-        if role not in by_role:
-            add("REQUIRED_SERVICE_MISSING", "BLOCKED", "railway", role)
-    for role in ("research_agent", "research_scheduler"):
-        if role not in by_role:
-            add("REQUIRED_SERVICE_MISSING", "DEGRADED", "railway", role)
-    if "shadow_comparison" not in by_role:
-        add("SHADOW_SERVICE_UNRESOLVED", "DEGRADED", "railway", "shadow_comparison")
+    if "production_trading" not in by_role:
+        add("REQUIRED_SERVICE_MISSING", "BLOCKED", "railway", "production_trading")
+    if "shadow_comparison" in by_role:
+        add(
+            "UNEXPECTED_PERSISTENT_SHADOW",
+            "DEGRADED",
+            "railway",
+            str(by_role["shadow_comparison"].get("id") or "shadow_comparison"),
+        )
 
     # Consume the Research Agent's canonical readiness verdict; never recreate
     # its report/queue classification or turn READY into an invocation.

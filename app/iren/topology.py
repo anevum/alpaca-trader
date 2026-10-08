@@ -129,14 +129,15 @@ def topology(observation, state, self_identity):
             observation_source="iren_http_probe+github_railway_status" if provider_used else "iren_http_probe", scope=scope)
         rows.append(row.model_dump())
     rows.append(ServiceObservation(schema_version="service_heartbeat.v1", service_id="IREN",
-        runtime_kind="SERVICE", independent_runtime=True, service_name="rhen-research-scheduler",
+        runtime_kind="MODULE", independent_runtime=False, service_name="iren-control",
         service_version=self_identity["version"], deployment=self_identity.get("deployment"),
         revision=self_identity.get("revision"), started_at=self_identity["started_at"],
         observed_at=stamp, last_heartbeat_at=stamp, liveness=True, readiness=True, status="IDLE",
         current_activity=None,
         last_success=stamp, dependency_state={"durable_state": "commit_required"},
         configuration_identity=self_identity["configuration_identity"],
-        observation_source="durable_iren_commit", scope="Independent from RHEN; shares its process with the scheduler").model_dump())
+        observation_source="durable_iren_commit",
+        scope="Embedded deterministic control and scheduler inside the RHEN supervisor").model_dump())
     scheduler = observation.get("scheduler", {})
     scheduler_enabled = scheduler.get("enabled") is not False
     scheduler_ok = (

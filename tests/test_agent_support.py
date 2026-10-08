@@ -19,19 +19,11 @@ def evidence():
     return {
         "schema_version": SCHEMA_VERSION,
         "railway_services": [
-            {"id": "prod-id", "name": "current-production", "role": "production_trading",
-             "start_command": "uvicorn app.main:app", "status": "SUCCESS",
+            {"id": "prod-id", "name": "rhen", "role": "production_trading",
+             "start_command": "python -m app.rhen_core.supervisor", "status": "SUCCESS",
              "deployment_id": "deploy-1", "source_commit": "a" * 40},
-            {"id": "pre-id", "name": "current-preopen", "role": "preopen_state",
-             "start_command": "uvicorn app.preopen_state.service:app", "status": "SUCCESS"},
-            {"id": "shadow-id", "name": "current-comparison", "role": "shadow_comparison",
-             "start_command": "uvicorn app.main:app", "status": "SUCCESS"},
-            {"id": "agent-id", "name": "current-agent", "role": "research_agent",
-             "start_command": "uvicorn app.research_agent.service:app", "status": "SUCCESS"},
-            {"id": "scheduler-id", "name": "current-scheduler", "role": "research_scheduler",
-             "start_command": "./run.sh encoded", "status": "SUCCESS"},
         ],
-        "production_runtime": {"service_id": "prod-id", "service_name": "current-production",
+        "production_runtime": {"service_id": "prod-id", "service_name": "rhen",
                                "deployment_id": "deploy-1", "git_commit": "a" * 40,
                                "strategy_name": "rolling_momentum_vwap", "strategy_version_id": "LIVE-1"},
         "research_readiness": {"state": "IDLE", "cadence": "daily", "gpt_would_run_now": False,
@@ -104,7 +96,7 @@ class IntegrityTests(unittest.TestCase):
     def test_duplicate_service_and_bad_command(self):
         item = evidence()
         item["railway_services"].append(dict(item["railway_services"][0]))
-        item["railway_services"][0]["start_command"] = "uvicorn app.research_agent.service:app"
+        item["railway_services"][0]["start_command"] = "uvicorn app.main:app"
         self.assertTrue({"DUPLICATE_SERVICE_IDENTITY", "SERVICE_ROLE_COMMAND_MISMATCH"} <= codes(evaluate(item, now=NOW)))
 
     def test_missing_critical_evidence_fails_closed(self):
@@ -224,38 +216,69 @@ class IntegrityTests(unittest.TestCase):
 
     def test_current_role_map_verifies_source_and_command(self):
         mapping = load_role_map()
-        status = [{"id": row["service_id"], "name": row["expected_name"],
-                   "latestDeployment": {"status": "SUCCESS"},
-                   "cronSchedule": None}
-                  for row in mapping["assignments"]]
-        configs = {row["service_id"]: {
-            "start_command": f"uvicorn {row['command_marker']}",
-            "source": {"repo": row["source_repo"]} if row.get("source_repo") else {"image": row["source_image"]},
-        } for row in mapping["assignments"]}
-        normalized = normalize_services(status, configs, project_id=mapping["project_id"],
-                                        environment_id=mapping["environment_id"])
-        self.assertEqual({row["role"] for row in normalized},
-                         {"production_trading", "research_agent", "preopen_state", "research_scheduler"})
-        self.assertIn("SHADOW_SERVICE_UNRESOLVED", codes(evaluate({**evidence(), "railway_services": normalized}, now=NOW)))
-        # The old private endpoint label does not override current source/command.
-        configs[status[1]["id"]]["privateNetworkEndpoint"] = "alpaca-trader-shadow"
-        self.assertEqual(normalize_services(status, configs)[1]["role"], "research_agent")
-        # A reused stable ID with a changed command loses the old mapped role.
-        configs[status[1]["id"]]["start_command"] = "uvicorn app.main:app"
+        self.assertEqual(mapping["schema_version"], "rhen-railway-roles-v2")
+        self.assertEqual(len(mapping["assignments"]), 1)
+        row = mapping["assignments"][0]
+        status = [{
+            "id": row["service_id"],
+            "name": row["expected_name"],
+            "latestDeployment": {"status": "SUCCESS"},
+            "cronSchedule": None,
+        }]
+        configs = {
+            row["service_id"]: {
+                "start_command": "python -m app.rhen_core.supervisor",
+                "source": {"repo": "anevum/rhen"},
+            }
+        }
+        normalized = normalize_services(
+            status,
+            configs,
+            project_id=mapping["project_id"],
+            environment_id=mapping["environment_id"],
+        )
+        self.assertEqual({item["role"] for item in normalized}, {"production_trading"})
+        lean = evidence()
+        lean["production_runtime"].update(
+            {
+                "service_id": row["service_id"],
+                "service_name": row["expected_name"],
+                "deployment_id": "deploy-1",
+                "git_commit": "a" * 40,
+            }
+        )
+        normalized[0]["deployment_id"] = "deploy-1"
+        normalized[0]["source_commit"] = "a" * 40
+        self.assertEqual(
+            evaluate({**lean, "railway_services": normalized}, now=NOW)["state"],
+            "HEALTHY",
+        )
+
+        configs[row["service_id"]]["privateNetworkEndpoint"] = "legacy-shadow-label"
+        self.assertEqual(normalize_services(status, configs)[0]["role"], "production_trading")
+
+        configs[row["service_id"]]["start_command"] = "uvicorn app.main:app"
         repurposed = normalize_services(status, configs)
-        self.assertEqual(repurposed[1]["role"], "unclassified")
-        self.assertIn("SERVICE_ROLE_MAPPING_DRIFT", codes(evaluate({**evidence(), "railway_services": repurposed}, now=NOW)))
-        configs[status[1]["id"]]["start_command"] = "uvicorn app.research_agent.service:app"
-        status[1]["name"] = "renamed-current-agent"
+        self.assertEqual(repurposed[0]["role"], "unclassified")
+        self.assertIn(
+            "SERVICE_ROLE_MAPPING_DRIFT",
+            codes(evaluate({**evidence(), "railway_services": repurposed}, now=NOW)),
+        )
+
+        configs[row["service_id"]]["start_command"] = "python -m app.rhen_core.supervisor"
+        status[0]["name"] = "renamed-rhen"
         renamed = normalize_services(status, configs)
-        self.assertEqual(renamed[1]["role"], "research_agent")
-        self.assertIn("SERVICE_NAME_DRIFT", codes(evaluate({**evidence(), "railway_services": renamed}, now=NOW)))
+        self.assertEqual(renamed[0]["role"], "production_trading")
+        self.assertIn(
+            "SERVICE_NAME_DRIFT",
+            codes(evaluate({**evidence(), "railway_services": renamed}, now=NOW)),
+        )
 
     def test_role_map_rejects_duplicate_identity_and_wrong_project(self):
         mapping = load_role_map()
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "roles.json"
-            mapping["assignments"][1]["service_id"] = mapping["assignments"][0]["service_id"]
+            mapping["assignments"].append(dict(mapping["assignments"][0]))
             path.write_text(json.dumps(mapping))
             with self.assertRaises(ValueError):
                 load_role_map(path)
@@ -268,17 +291,20 @@ class ContractTests(unittest.TestCase):
         base = evidence()
         mapping = load_role_map()
         prod_id = mapping["assignments"][0]["service_id"]
-        pre_id = mapping["assignments"][2]["service_id"]
         base["production_runtime"]["service_id"] = prod_id
-        base["production_runtime"]["service_name"] = "alpaca-trader"
-        status = [{"id": prod_id, "name": "alpaca-trader",
-                   "latestDeployment": {"id": "deploy-1", "status": "SUCCESS"}},
-                  {"id": pre_id, "name": "rhen-preopen-state",
-                   "latestDeployment": {"status": "SUCCESS"}}]
-        configs = {prod_id: {"start_command": "uvicorn app.main:app", "source_commit": "a" * 40,
-                             "source_repo": "anevum/alpaca-trader"},
-                   pre_id: {"start_command": "uvicorn app.preopen_state.service:app",
-                            "source_repo": "anevum/alpaca-trader"}}
+        base["production_runtime"]["service_name"] = "rhen"
+        status = [{
+            "id": prod_id,
+            "name": "rhen",
+            "latestDeployment": {"id": "deploy-1", "status": "SUCCESS"},
+        }]
+        configs = {
+            prod_id: {
+                "start_command": "python -m app.rhen_core.supervisor",
+                "source_commit": "a" * 40,
+                "source_repo": "anevum/rhen",
+            }
+        }
         adapted = from_canonical_sources(
             command_evidence={"evidence_version": "rhen-command-evidence-v1",
                               "provenance": {"runtime": {**base["production_runtime"]},
@@ -295,7 +321,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(adapted["railway_services"][0]["id"], prod_id)
         self.assertEqual(adapted["production_runtime"]["strategy_name"], "rolling_momentum_vwap")
         self.assertNotIn("private-id", json.dumps(adapted))
-        self.assertIn("SHADOW_SERVICE_UNRESOLVED", codes(evaluate(adapted, now=NOW)))
+        self.assertEqual(evaluate(adapted, now=NOW)["state"], "HEALTHY")
 
         waiting = {**base["research_readiness"], "state": "WAITING",
                    "waiting_strategy_question_count": 1, "strategy_question_count": 1,
