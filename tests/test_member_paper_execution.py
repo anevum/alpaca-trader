@@ -151,3 +151,48 @@ def test_reject_invalid_contracts_and_no_account_takeover():
     with pytest.raises(ValueError):
         db.create_paper_account("user", 0, policy())
     db.close()
+
+
+def test_idempotency_rejects_conflicting_replays_without_mutating_any_account():
+    """An ID is a durable binding to one complete signal, not a reusable order slot."""
+    with TemporaryDirectory() as directory:
+        db_path = Path(directory) / "paper-conflicts.sqlite3"
+        kernel = PaperExecutionKernel(db_path)
+        kernel.create_paper_account("member-a", 10000, policy())
+        kernel.create_paper_account("member-b", 10000, policy())
+        a = kernel.verified_scope("member-a")
+        b = kernel.verified_scope("member-b")
+        a.resume_new_entries()
+        first = a.submit_signal(signal("shared-id"), now=EPOCH)
+        original = a.status()
+        for conflict in (
+            signal("shared-id", cents=1001),
+            signal("shared-id", notional=1550),
+            signal("shared-id", version="unapproved"),
+            signal("shared-id", published=EPOCH - 1),
+            signal("shared-id", side="sell"),
+            signal("shared-id", symbol="QQQ"),
+        ):
+            with pytest.raises(ValueError, match="Signal ID conflicts"):
+                a.submit_signal(conflict, now=EPOCH)
+            assert a.status() == original
+        assert a.submit_signal(signal("shared-id"), now=EPOCH + 1000) == first
+        assert b.submit_signal(signal("shared-id", symbol="QQQ"), now=EPOCH).reason == "paused"
+        assert b.status()["positions"] == []
+
+        # A rejected decision cannot be repurposed into a later entry either.
+        rejected = a.submit_signal(signal("old-id", published=EPOCH - 91), now=EPOCH)
+        assert rejected.reason == "stale_or_future_signal"
+        with pytest.raises(ValueError, match="Signal ID conflicts"):
+            a.submit_signal(signal("old-id"), now=EPOCH)
+        assert a.submit_signal(signal("old-id", published=EPOCH - 91), now=EPOCH) == rejected
+        kernel.close()
+
+        reopened = PaperExecutionKernel(db_path)
+        durable = reopened.verified_scope("member-a")
+        with pytest.raises(ValueError, match="Signal ID conflicts"):
+            durable.submit_signal(signal("shared-id", cents=2000), now=EPOCH)
+        assert durable.submit_signal(signal("shared-id"), now=EPOCH + 1000) == first
+        assert durable.status()["cashCents"] == original["cashCents"]
+        assert durable.status()["receiptCount"] == 2
+        reopened.close()
