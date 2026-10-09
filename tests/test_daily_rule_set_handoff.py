@@ -17,8 +17,8 @@ def report():
         "session": "2026-10-09",
         "source_fingerprint": "a" * 64,
         "strategy_version_id": "LIVE-2026-09-25-003",
-        "broker_history": {"pagination": "EXHAUSTED_WITHIN_BOUNDS"},
-        "reconstruction": {"unmatched_sell_qty": {}},
+        "broker_history": {"pagination": "EXHAUSTED_WITHIN_BOUNDS", "fill_count": 0},
+        "reconstruction": {"unmatched_sell_qty": {}, "included_fill_count": 0, "excluded_fill_count": 0},
         "data_quality_warnings": [],
         "runtime": {"persistence": {"shed_count": 0}},
         "candidate_forward_evidence": {
