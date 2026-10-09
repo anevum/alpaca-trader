@@ -30,6 +30,13 @@ PROCESSES = (
         market_data_credentials=True,
     ),
     ProcessSpec(
+        "observer",
+        "app.live_observer.service:app",
+        8120,
+        market_data_credentials=True,
+        enabled_env="RHEN_OBSERVER_ENABLED",
+    ),
+    ProcessSpec(
         "graen",
         "app.graen.service:app",
         8110,
@@ -162,6 +169,15 @@ def _child_env(spec: ProcessSpec) -> dict[str, str]:
     env["PORT"] = str(spec.port)
     env["RHEN_UNIFIED_RUNTIME"] = "true"
     env["RHEN_UNIFIED_ROLE"] = spec.name
+    if spec.name == "observer":
+        # Observer gets broker read credentials but never execution/control tokens.
+        for key in (
+            "ADMIN_TOKEN", "RHEN_CORE_TOKEN", "TRADING_INGEST_TOKEN",
+            "FOUNDATION_INGEST_TOKEN", "GRAEN_GATEWAY_TOKEN",
+            "RHEN_REVIEW_TOKEN", "RHEN_RESEARCH_ADMIN_TOKEN",
+            "IREN_EXECUTOR_TOKEN",
+        ):
+            env[key] = ""
     if spec.name == "velum":
         env["VELUM_AUTORUN"] = "false"
     return env
