@@ -97,6 +97,8 @@ class LiveAuthority:
         )
         if any(type(flag) is not bool for flag in (*required, self.member_armed, self.revoked)):
             raise LiveOrderDenied("Non-boolean authorization signal")
+        if not isinstance(self.scopes, tuple) or not all(isinstance(scope, str) for scope in self.scopes):
+            raise LiveOrderDenied("Invalid broker OAuth scope attestation")
         if not all(required) or self.revoked or "trading" not in self.scopes:
             raise LiveOrderDenied("Member live authorization incomplete or revoked")
         if not allow_exit_when_paused and not self.member_armed:
@@ -165,6 +167,7 @@ class BrokerObservation:
     open_position_count: int
     held_shares: int
     pending_sell_shares: int
+    pending_new_positions: int
 
     def __post_init__(self):
         identity(self.broker_account_id, "snapshot account")
@@ -176,7 +179,7 @@ class BrokerObservation:
             "bid_cents", "ask_cents", "equity_cents", "buying_power_cents",
             "gross_exposure_cents", "pending_buy_exposure_cents",
             "daily_realized_loss_cents", "open_position_count",
-            "held_shares", "pending_sell_shares"
+            "held_shares", "pending_sell_shares", "pending_new_positions"
         ):
             v = getattr(self, name)
             if type(v) is not int or v < 0:
@@ -233,7 +236,7 @@ def validate_live_intent(
         raise LiveOrderDenied("Order exceeds per-member notional cap")
     if notional > snapshot.buying_power_cents:
         raise LiveOrderDenied("Order exceeds broker buying power")
-    if snapshot.held_shares == 0 and snapshot.open_position_count >= policy.max_positions:
+    if snapshot.held_shares == 0 and (snapshot.open_position_count + snapshot.pending_new_positions) >= policy.max_positions:
         raise LiveOrderDenied("Member position count cap reached")
     if intent.limit_price_cents * 10000 > snapshot.ask_cents * (10000 + policy.max_buy_chase_bp):
         raise LiveOrderDenied("Limit buy price chases the market")
