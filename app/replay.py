@@ -312,6 +312,9 @@ class ReplayEngine:
         )
         stop = max(hard_stop, protected) if protected is not None else hard_stop
 
+        # Live prioritizes the scheduled forced flatten before ordinary exits.
+        if now.time() >= self.settings.force_flat_time:
+            return "eod", close
         if low > 0 and low <= stop:
             # Stop-first, including gap-through at the next bar open.
             reference = min(stop, opened) if opened > 0 else stop
@@ -382,8 +385,6 @@ class ReplayEngine:
                     )
                     position.profit_protection_active = True
 
-        if now.time() >= self.settings.force_flat_time:
-            return "eod", close
         return None
 
     @staticmethod
