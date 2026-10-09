@@ -316,7 +316,7 @@ class AlpacaClient:
             or not 1 <= max_pages <= 20
         ):
             raise ValueError("invalid bounded research-fill session")
-        __import__("datetime").date.fromisoformat(date)
+        datetime.strptime(date, "%Y-%m-%d")
         token: str | None = None
         seen: set[str] = set()
         records: list[dict[str, Any]] = []
