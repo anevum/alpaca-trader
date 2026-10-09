@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -76,7 +77,7 @@ def test_scorecard_respects_session_pairing_and_untouched_holdout_boundary():
     validation = result["leaderboard"][0]["by_phase"]["WALK_FORWARD"]
     assert validation["independent_sessions"] == 3
     assert validation["positive_sessions"] == 3
-    assert validation["bonferroni_sign_test_p"] == "0.5"
+    assert Decimal(validation["bonferroni_sign_test_p"]) == Decimal("0.5")
     assert result["leaderboard"][0]["eligible_for_live_promotion"] is False
     assert result["scorecard_fingerprint"] == paired_rule_set_scorecard(runs())["scorecard_fingerprint"]
 
