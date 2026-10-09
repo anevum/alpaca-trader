@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from copy import deepcopy
 
 import pytest
 
@@ -52,12 +51,15 @@ def runs():
     for i in range(1, 10):
         phase = "DEVELOPMENT" if i <= 3 else ("WALK_FORWARD" if i <= 6 else "HOLDOUT")
         records.append({
-            "session": (day + timedelta(days=i - 1)).isoformat(),
+            "session": day.isoformat(),
             "phase": phase,
             "source_fingerprint": f"{i + 100:064x}",
             "market_regime": "LOW_VOL",
             "tournament": tournament(i),
         })
+        day += timedelta(days=1)
+        while day.weekday() >= 5:
+            day += timedelta(days=1)
     return records
 
 
@@ -117,4 +119,10 @@ def test_scorecard_refuses_authorized_live_changes():
     records = runs()
     records[0]["tournament"]["results"][1]["promotion_authorized"] = True
     with pytest.raises(ValueError, match="promotion-authorized"):
+        paired_rule_set_scorecard(records)
+
+def test_weekend_dates_are_not_accidentally_treated_as_independent_sessions():
+    records = runs()
+    records[2]["session"] = "2026-09-26"
+    with pytest.raises(ValueError, match="weekends"):
         paired_rule_set_scorecard(records)
