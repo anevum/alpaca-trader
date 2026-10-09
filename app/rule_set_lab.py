@@ -45,6 +45,8 @@ class EntryRule:
             raise ValueError(f"untrusted research rule indicator: {self.indicator}")
         if not 3 <= self.min_bars <= 30:
             raise ValueError("entry rule min_bars must be between 3 and 30")
+        if not isinstance(self.threshold, Decimal) or not self.threshold.is_finite():
+            raise ValueError("entry rule threshold must be a finite Decimal")
         if self.threshold < 0:
             raise ValueError("entry rule threshold must be nonnegative")
         if self.indicator == "trend_persistence" and self.threshold > 1:
