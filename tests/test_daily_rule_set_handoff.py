@@ -32,6 +32,7 @@ def report():
                 "coverage_15m": "1",
                 "blocking_reasons": [],
                 "cohort_fingerprint": "b" * 64,
+                "full_population_attested": True,
             },
         },
         "live_vs_offline_consistency": {"summary": []},
