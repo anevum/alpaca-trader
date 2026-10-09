@@ -98,6 +98,43 @@ The angle-bracket values above are explanatory placeholders; provide actual valu
 
 **Current limitation:** The available GitHub, Railway and Alpaca market-data connectors do not expose the private \`/v1/research/package\` payload or authenticated trade fills to this workstream. No actual dated challenger tournament was performed; all current offline-lab tests are deterministic fixtures. The queue is not attached to IREN's production scheduler and must remain broker-isolated.
 
+## Real-fill observational screening (private, preliminary)
+
+If a private broker-execution cohort has already been independently reconciled,
+you can screen the frozen rules against those *observed* entries without
+pretending to reproduce a full strategy run:
+
+\`\`\`sh
+python -m scripts.observed_fill_screen \
+  --evidence-json /private/rhen-observed-fills.json \
+  --output /private/rhen-observed-screen-aggregate.json
+\`\`\`
+
+The strict input schema is \`anevum-rhen-email-fill-observed-trade-screen-v1\`.
+Each trade must contain a canonical session and HH:MM Eastern entry/exit time,
+distinct round-trip identity, positive fill quantity/prices, matching arithmetic
+gross P/L, completed-bar count (at least eight) and **point-in-time
+precomputed** \`relative_volume_21bars\` /
+\`trend_persistence_last_9_closes\` values. The source envelope must document
+Alpaca execution and IEX market-bar provenance. The aggregate output contains
+no per-fill rows or account identities. It executes the three **originally
+frozen** challengers from the agenda, not an adaptive threshold search.
+
+Critical limitations: The screen **reuses the true original exit** for retained
+entries and excludes original P/L for rejected entries; it does not reproduce
+what orders might have replaced those entries, cash allocation, entry fills,
+protective stop behavior, spread regimes or live replay. Nor can derived features
+prove historical bar as-of fidelity without an original raw-bar archive. Hence
+it is \`OBSERVED_FILLED_ENTRIES_ONLY\`, \`research_only=true\`,
+\`automatic_promotion_authorized=false\`, and never a production release
+criterion on its own.
+
+A private October 7-9 research cohort was recovered from execution emails and
+IEX minute bars outside GitHub. Its trade-level material and realized P/L
+**are not committed to source control**. Review the owner's private research
+package directly for any observed screen outcome; no result is used to infer
+a new production champion.
+
 ## Integration with ANEVUM Commons 2.0
 
 The owner RHEN bot stays private. Member RHEN Cloud strategies and journals are separate from founder trading. When review reports are published to Commons, emit only opt-in, sanitized research summaries and methodology, never live private orders, customer broker data, credentials, or strategy details that are not approved for disclosure. A Commons badge, supporter payment or GitHub merge does not grant broker execution permissions.
