@@ -18,6 +18,7 @@ OPTIONAL_MODULE_ENVS = {
     "velum": "VELUM_RUNTIME_ENABLED",
     "iren_executor": "IREN_EXECUTOR_ENABLED",
     "preopen": "PREOPEN_STATE_ENABLED",
+    "observer": "RHEN_OBSERVER_ENABLED",
 }
 
 MODULES = {
@@ -28,6 +29,7 @@ MODULES = {
     "iren": "http://127.0.0.1:8116/health",
     "iren_executor": "http://127.0.0.1:8117/health",
     "preopen": "http://127.0.0.1:8118/health",
+    "observer": "http://127.0.0.1:8120/health",
 }
 
 PUBLIC_MODULE_ROUTES = {
@@ -67,6 +69,34 @@ async def command_stream_proxy(websocket: WebSocket):
                            open_timeout=10) as upstream:
             await websocket.accept()
             # Read-only stream. Client frames are not a control or trading API.
+            async for frame in upstream:
+                if isinstance(frame, bytes):
+                    await websocket.send_bytes(frame)
+                else:
+                    await websocket.send_text(frame)
+    except Exception:
+        await websocket.close(code=1013)
+
+
+@app.websocket("/v1/command/live")
+async def readonly_live_stream_proxy(websocket: WebSocket):
+    # Only the owner receives private broker data; verify both at Cloudflare
+    # and again at the dedicated observation process.
+    if not _truthy(os.getenv("RHEN_OBSERVER_ENABLED")):
+        await websocket.close(code=1013)
+        return
+    auth = websocket.headers.get("authorization")
+    if not auth:
+        await websocket.close(code=1008)
+        return
+    from websockets.asyncio.client import connect
+    try:
+        async with connect(
+            "ws://127.0.0.1:8120/v1/command/live",
+            additional_headers={"Authorization": auth},
+            max_queue=64, open_timeout=10,
+        ) as upstream:
+            await websocket.accept()
             async for frame in upstream:
                 if isinstance(frame, bytes):
                     await websocket.send_bytes(frame)
