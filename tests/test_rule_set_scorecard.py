@@ -102,7 +102,7 @@ def test_scorecard_fails_closed_on_strategy_changes_and_holdout_leak():
     with pytest.raises(ValueError, match="settings drifted"):
         paired_rule_set_scorecard(records)
     records = runs()
-    records[5]["phase"] = "HOLDOUT"
+    records[3]["phase"] = "HOLDOUT"
     with pytest.raises(ValueError, match="chronology"):
         paired_rule_set_scorecard(records)
     records = runs()
