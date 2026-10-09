@@ -245,7 +245,7 @@ async def trading_public_events(request: Request) -> StreamingResponse:
                         yield public_events.frame(projection)
                         last_snapshot = monotonic()
                     else:
-                        yield ": heartbeat\\n\\n"
+                        yield ": heartbeat\n\n"
                     continue
                 # Coalesce bursts into one truthful snapshot. This is not polling
                 # and never changes trading decisions or source-data timestamps.
@@ -259,7 +259,7 @@ async def trading_public_events(request: Request) -> StreamingResponse:
             raise
         except Exception:
             # Fail closed. Never serialize an exception or private record.
-            yield "event: unavailable\\ndata:{}\\n\\n"
+            yield "event: unavailable\ndata:{}\n\n"
         finally:
             public_events.unsubscribe(client)
 
