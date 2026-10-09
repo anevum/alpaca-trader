@@ -42,6 +42,7 @@ def policy():
         max_order_notional_cents=10_000,
         max_gross_exposure_bp=3000,
         max_positions=2, max_daily_loss_cents=1_000,
+        max_symbol_exposure_cents=10_000,
     )
 
 
@@ -63,6 +64,7 @@ def observation(**kwargs):
         gross_exposure_cents=0, pending_buy_exposure_cents=0,
         daily_realized_loss_cents=0, open_position_count=0,
         held_shares=0, pending_sell_shares=0, pending_new_positions=0,
+        symbol_exposure_cents=0, symbol_pending_buy_exposure_cents=0,
     )
     attrs.update(kwargs)
     return BrokerObservation(**attrs)
@@ -162,6 +164,8 @@ def test_bounded_live_buy_and_owner_separation_rules():
         (sample, observation(open_position_count=1, pending_new_positions=1)),
         (sample, observation(gross_exposure_cents=29_000)),
         (sample, observation(pending_buy_exposure_cents=29_000)),
+        (sample, observation(symbol_exposure_cents=9_500)),
+        (sample, observation(symbol_pending_buy_exposure_cents=9_500)),
         (replace(sample, quantity=100), quote),
         (replace(sample, limit_price_cents=2000), quote),
         (replace(sample, observed_at=NOW - 31), quote),
@@ -311,4 +315,4 @@ def test_invalid_contracts_reject_abnormal_inputs_and_owner_data_path():
         LiveRelease("v1", "not-a-sha256", ("SPY",))
     with pytest.raises(LiveOrderDenied):
         LivePolicy(max_order_notional_cents=1000, max_gross_exposure_bp=15000,
-                   max_positions=1, max_daily_loss_cents=100)
+                   max_positions=1, max_daily_loss_cents=100, max_symbol_exposure_cents=1000)
