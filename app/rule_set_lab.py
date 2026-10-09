@@ -7,6 +7,7 @@ does not have live mutation, promotion, or order authority.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -17,7 +18,7 @@ from typing import Any, Mapping, Sequence
 
 from .research_agent.strategy_family_registry import build_strategy_family_registry
 from .config import Settings, get_settings
-from .replay import ReplayEngine
+from .replay import ReplayEngine, stamp
 from .strategy import Signal
 from .strategy_lab import build_strategy
 
@@ -167,8 +168,14 @@ class EntryRuleFilteredStrategy:
         order_notional: Decimal,
         now: Any,
     ) -> Signal:
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise ValueError("research rule evaluation requires a timezone-aware decision time")
+        completed_bars = [
+            row for row in bars
+            if stamp(row) + timedelta(minutes=1) <= now
+        ]
         signal = self.production_strategy.evaluate(
-            bars=bars,
+            bars=completed_bars,
             confirmation_bars=confirmation_bars,
             symbol=symbol,
             has_position=has_position,
@@ -179,7 +186,7 @@ class EntryRuleFilteredStrategy:
             return signal
         diagnostics = []
         for rule in self.spec.entry_rules:
-            observed = _indicator_value(rule, bars)
+            observed = _indicator_value(rule, completed_bars)
             passed = observed is not None and observed >= rule.threshold
             diagnostics.append({
                 "indicator": rule.indicator,
