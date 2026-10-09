@@ -14,6 +14,15 @@ def complete_report():
         "candidate_forward_evidence": {
             "status": {"incomplete_rows": 0, "error_rows": 0},
             "readiness": {"state": "READY"},
+            "cohort_audit": {
+                "audit_version": "rhen-candidate-cohort-audit-v1",
+                "state": "READY",
+                "candidate_count": 30,
+                "complete_15m": 30,
+                "coverage_15m": "1",
+                "blocking_reasons": [],
+                "cohort_fingerprint": "c" * 64,
+            },
         },
         "reconstruction": {"unmatched_sell_qty": {}},
         "runtime": {"persistence": {"shed_count": 0}},
@@ -73,3 +82,26 @@ def test_agenda_identity_changes_with_immutable_evidence_source():
     b = complete_report()
     b["source_fingerprint"] = "b" * 64
     assert build_rule_set_agenda(a)["manifest_sha256"] != build_rule_set_agenda(b)["manifest_sha256"]
+
+def test_unverified_15m_cohort_cannot_claim_screening_readiness():
+    report = complete_report()
+    report["candidate_forward_evidence"].pop("cohort_audit")
+    agenda = build_rule_set_agenda(report)
+    assert agenda["research_state"] == "AWAITING_COMPLETE_EVIDENCE"
+    assert "CANONICAL_15M_COHORT_AUDIT_MISSING" in agenda["blocking_evidence"]
+
+
+def test_15m_coverage_does_not_pass_when_sample_is_small():
+    report = complete_report()
+    report["candidate_forward_evidence"]["cohort_audit"]["candidate_count"] = 4
+    result = build_rule_set_agenda(report)
+    assert "CANONICAL_15M_COHORT_COVERAGE_INSUFFICIENT" in result["blocking_evidence"]
+
+
+def test_unreconstructable_state_count_is_read_from_actual_projection():
+    report = complete_report()
+    report["live_vs_offline_consistency"]["summary"] = [
+        {"session": "2026-10-09", "match_state": "UNRECONSTRUCTABLE", "count": 2}
+    ]
+    result = build_rule_set_agenda(report)
+    assert "LIVE_VS_REPLAY_EVENTS_UNRECONSTRUCTABLE" in result["blocking_evidence"]
