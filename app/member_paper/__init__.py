@@ -7,11 +7,12 @@ scope; a supplied client-side user ID is never an authorization credential.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 MICROSHARES = 1_000_000
@@ -154,6 +155,7 @@ class PaperExecutionKernel:
               quantity_microshares INTEGER NOT NULL,
               cash_delta_cents INTEGER NOT NULL,
               recorded_at INTEGER NOT NULL,
+              signal_digest TEXT NOT NULL CHECK(length(signal_digest)=64),
               PRIMARY KEY(member_id,signal_id)
             );
             """
@@ -229,17 +231,24 @@ class PaperExecutionKernel:
         epoch = int(time.time()) if now is None else now
         if type(epoch) is not int or epoch < 1:
             raise ValueError("Invalid reference clock")
+        # Replay must be byte-for-byte semantically identical, not merely reuse an ID.
+        signal_digest = hashlib.sha256(
+            json.dumps(asdict(signal), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         db = self._connection
         db.execute("BEGIN IMMEDIATE")
         try:
             previous = db.execute(
                 "SELECT member_id,signal_id,status,reason,symbol,side,"
-                "quantity_microshares,cash_delta_cents FROM paper_receipts "
+                "quantity_microshares,cash_delta_cents,signal_digest FROM paper_receipts "
                 "WHERE member_id=? AND signal_id=?", (member_id, signal.signal_id)
             ).fetchone()
             if previous:
+                prior = dict(previous)
+                if prior.pop("signal_digest") != signal_digest:
+                    raise ValueError("Signal ID conflicts with a previously recorded signal")
                 db.execute("COMMIT")
-                return PaperReceipt(**dict(previous))
+                return PaperReceipt(**prior)
             account = db.execute(
                 "SELECT cash_cents,initial_cash_cents,paused,paper_mode FROM paper_accounts "
                 "WHERE member_id=?", (member_id,)
@@ -325,9 +334,9 @@ class PaperExecutionKernel:
             )
             db.execute(
                 "INSERT INTO paper_receipts "
-                "(member_id,signal_id,status,reason,symbol,side,quantity_microshares,cash_delta_cents,recorded_at)"
-                "VALUES(?,?,?,?,?,?,?,?,?)",
-                (*receipt.__dict__.values(), epoch),
+                "(member_id,signal_id,status,reason,symbol,side,quantity_microshares,cash_delta_cents,recorded_at,signal_digest)"
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (*receipt.__dict__.values(), epoch, signal_digest),
             )
             db.execute("COMMIT")
             return receipt
