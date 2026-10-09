@@ -1212,6 +1212,10 @@ class ResearchReportScheduler:
                 )
                 or None,
                 "metrics": evidence["metrics"],
+                "broker_history": evidence.get("broker_history"),
+                "reconstruction": evidence["reconstruction"],
+                "data_quality_warnings": daily_warnings,
+                "runtime_git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA"),
                 "forward_outcomes": post_event.get(
                     "forward_outcomes_by_horizon"
                 )
