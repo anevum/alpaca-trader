@@ -2435,6 +2435,60 @@ class RhenCoreStore:
             event.get("event_type") == "reconciliation"
             for event in recent_2h
         )
+        reconciliation_history = [
+            event for event in recent_2h
+            if event.get("event_type") == "reconciliation"
+        ]
+
+        def reconciliation_status(event: dict[str, Any]) -> str | None:
+            payload = event.get("payload") or {}
+            if payload.get("action") == "error" or payload.get("error"):
+                return "ERROR"
+            if payload.get("safe_to_enter") is True:
+                return "SAFE"
+            if payload.get("safe_to_enter") is False:
+                return "BLOCKED"
+            return None
+
+        # RHEN records a canonical reconcile result and also publishes a
+        # runtime event. Count successful checks once, plus failed attempts.
+        reconciliation_checks_2h = sum(
+            event.get("source") == "rhen-core" or
+            (event.get("payload") or {}).get("action") == "error"
+            for event in reconciliation_history
+        )
+        latest_reconciliation = (
+            reconciliation_history[0] if reconciliation_history else
+            next(iter(self._event_rows(
+                event_types={"reconciliation"}, limit=1, newest_first=True,
+            )), None)
+        )
+        last_reconciliation_at = stamp(
+            latest_reconciliation.get("occurred_at") if latest_reconciliation else None
+        )
+        latest_reconciliation_status = (
+            reconciliation_status(latest_reconciliation)
+            if latest_reconciliation else None
+        )
+        reconciliation_state = (
+            "STALE"
+            if last_reconciliation_at is not None and
+            (current - last_reconciliation_at).total_seconds() > 600
+            else latest_reconciliation_status or "UNKNOWN"
+        )
+        # Public activity reports only safety transitions; every check remains
+        # in the canonical audit and still controls RHEN broker-entry gates.
+        reconciliation_transitions: dict[str, str] = {}
+        previous_status: str | None = None
+        for event in reversed(reconciliation_history):
+            status = reconciliation_status(event)
+            if status is None:
+                continue
+            if (previous_status is None and status != "SAFE") or (
+                previous_status is not None and status != previous_status
+            ):
+                reconciliation_transitions[str(event.get("event_key") or "")] = status
+            previous_status = status
         errors_2h = sum(
             event.get("event_type") in {
                 "runtime_error"
@@ -2483,10 +2537,6 @@ class RhenCoreStore:
                 "execute",
                 "Position lifecycle recorded an exit event.",
             ),
-            "reconciliation": (
-                "learn",
-                "Broker state and canonical state were reconciled.",
-            ),
             "runtime_start": ("system", "RHEN unified runtime started."),
             "runtime_stop": ("system", "RHEN unified runtime stopped."),
             "runtime_error": (
@@ -2494,13 +2544,23 @@ class RhenCoreStore:
                 "Runtime reported an operational exception.",
             ),
         }
-        public_types = set(event_labels)
+        public_types = set(event_labels) | {"reconciliation"}
         public_events = []
         for event in recent_2h:
             event_type = str(event.get("event_type") or "")
             if event_type not in public_types:
                 continue
-            kind, label = event_labels[event_type]
+            if event_type == "reconciliation":
+                transition = reconciliation_transitions.get(str(event.get("event_key") or ""))
+                if transition is None:
+                    continue
+                kind, label = {
+                    "SAFE": ("system", "Broker reconciliation recovered; safety check passed."),
+                    "BLOCKED": ("warning", "Broker/canonical mismatch; new entries blocked."),
+                    "ERROR": ("warning", "Broker reconciliation failed; new entries blocked."),
+                }[transition]
+            else:
+                kind, label = event_labels[event_type]
             public_events.append(
                 {
                     "at": event.get("occurred_at"),
@@ -2842,6 +2902,14 @@ class RhenCoreStore:
             },
             "activity": activity,
             "events": public_events,
+            "broker_reconciliation": {
+                "state": reconciliation_state,
+                "last_checked_at": (
+                    last_reconciliation_at.isoformat()
+                    if last_reconciliation_at is not None else None
+                ),
+                "checks_2h": reconciliation_checks_2h,
+            },
             "operational": {"latest_scan": operational_scan},
             "research": {
                 "current_focus": research_focus,
