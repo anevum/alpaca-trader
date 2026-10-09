@@ -16,14 +16,14 @@ The new `app/member_paper` module uses only Python standard library and an indep
 - `PaperPolicy` pins one validated strategy version, U.S. equity/ETF symbol allowlist, max position count, gross cost-basis exposure, and maximum order/position notional. Long-only, unlevered, paper-only; no live authorization.
 - `PaperSignal` uses an immutable ID, signed/approved-version contract to be enforced by an upstream service, completed-bar timestamp and input price; invalid or stale signals are rejected.
 - `PaperAccountScope.submit_signal` simulates instantaneous fractional buy and full-position sell at the supplied signal price; no bid/ask, slippage, broker queue, actual order placement, distributed trade confirmation, broker stop order, mark-to-market, cash transfer, fees, or fill promise.
-- Each receipt is unique by **(member ID, signal ID)**. Accepted and rejected decisions are persisted atomically with resulting account/cash/position state. `BEGIN IMMEDIATE` serializes concurrent SQLite writers and duplicate signal replay returns the same receipt.
+- Each receipt is unique by **(member ID, signal ID)** and stores a SHA-256 digest of the full immutable signal payload. Accepted and rejected decisions are persisted atomically with resulting account/cash/position state. `BEGIN IMMEDIATE` serializes concurrent SQLite writers; identical replays return the original receipt while conflicting payloads using an existing signal ID are rejected without changing account state, including after restart. This is a new draft-only schema, not a production migration.
 - Pause prevents new simulated buys. Explicit long exits remain possible while paused. Balances/positions/receipts are query-scoped by member ID; no global all-accounts API.
 - Flat sell only, no short/negative quantity. The engine rejects unknown symbols, stale and future data, unapproved strategy versions, excessive notional, missing policy and missing accounts.
 
 ## Tests
 
 `pytest -q tests/test_member_paper_execution.py` verifies:
-1. Independent accounts, identical signal IDs per tenant and persistence across restarts.
+1. Independent accounts, identical signal IDs per tenant, full-payload replay conflict rejection and persistence across restarts.
 2. Duplicate account creation refusal.
 3. Signal freshness, version, allowlist and paused-account denials.
 4. Fractional buying and notional/gross exposure limits, cash nonnegativity.
