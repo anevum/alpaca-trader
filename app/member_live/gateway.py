@@ -128,8 +128,8 @@ class LiveOrderJournal:
         from_state: str, to_state: str,
         broker_order_id: str | None = None, broker_status: str | None = None
     ) -> LiveReceipt:
-        if to_state not in ("uncertain", "confirmed", "blocked"):
-            raise LiveOrderDenied("Invalid order state transition")
+        if (from_state, to_state) not in {("reserved", "uncertain"), ("reserved", "blocked"), ("uncertain", "confirmed")}:
+            raise LiveOrderDenied("Invalid or unsafe journal state transition")
         result = self._db.execute(
             "UPDATE member_live_intents SET state=?, broker_order_id=COALESCE(?,broker_order_id),"
             "broker_status=COALESCE(?,broker_status) "
@@ -166,7 +166,8 @@ class LiveMemberGateway:
     """
 
     def __init__(self, journal: LiveOrderJournal, *, network_writes_enabled: bool = False):
-        if not isinstance(journal, LiveOrderJournal) or type(network_writes_enabled) is not bool:
+        from .postgres_journal import PostgresLiveOrderJournal
+        if not isinstance(journal, (LiveOrderJournal, PostgresLiveOrderJournal)) or type(network_writes_enabled) is not bool:
             raise LiveOrderDenied("Isolated live order journal required")
         self._journal = journal
         self._enabled = network_writes_enabled
