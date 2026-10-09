@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anevum.com/contracts/foundation/workspace-state.v1.schema.json",
+  "title": "ANEVUM V5 Foundation private workspace state",
+  "description": "An authenticated, server-scoped status projection only. No broker balances, orders, positions, tokens, performance or owner emails.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workspace_id",
+    "member_id",
+    "workspace_kind",
+    "engine_source",
+    "evidence_state",
+    "execution_permission",
+    "broker_link_state",
+    "capabilities",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "anevum.workspace-state.v1"
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^wrk_[A-Za-z0-9_-]{8,64}$"
+    },
+    "member_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "workspace_kind": {
+      "enum": [
+        "FOUNDER_PRIVATE",
+        "MEMBER_PRIVATE"
+      ]
+    },
+    "engine_source": {
+      "enum": [
+        "LEGACY_FOUNDER",
+        "RHEN_NEXT"
+      ]
+    },
+    "evidence_state": {
+      "enum": [
+        "NOT_CONFIGURED",
+        "AWAITING_EVIDENCE",
+        "BLOCKED",
+        "REPRODUCIBLE"
+      ]
+    },
+    "execution_permission": {
+      "enum": [
+        "NONE",
+        "PAPER_ONLY",
+        "LIVE_AUTHORIZED"
+      ]
+    },
+    "broker_link_state": {
+      "enum": [
+        "NOT_LINKED",
+        "PENDING",
+        "READ_ONLY",
+        "LIVE_APPROVED"
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "VIEW",
+          "RESEARCH",
+          "PAPER"
+        ]
+      },
+      "maxItems": 3
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "workspace_kind": {
+            "const": "MEMBER_PRIVATE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "engine_source": {
+            "const": "RHEN_NEXT"
+          },
+          "execution_permission": {
+            "enum": [
+              "NONE",
+              "PAPER_ONLY"
+            ]
+          },
+          "broker_link_state": {
+            "enum": [
+              "NOT_LINKED",
+              "PENDING",
+              "READ_ONLY"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "engine_source": {
+            "const": "LEGACY_FOUNDER"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "workspace_kind": {
+            "const": "FOUNDER_PRIVATE"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "execution_permission": {
+            "const": "PAPER_ONLY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "PAPER"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
