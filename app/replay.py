@@ -454,6 +454,7 @@ class ReplayEngine:
                 float(max_drawdown / initial_equity) if initial_equity > 0 else 0.0,
                 6,
             ),
+            "research_rule_blocks": counters["research_rule_blocks"],
             "signals_scored": counters["signals_scored"],
             "quality_blocks": counters["quality_blocks"],
             "universe_snapshot_missing_cycles": counters["universe_snapshot_missing_cycles"],
@@ -642,6 +643,8 @@ class ReplayEngine:
                         now=now,
                     )
                     if signal.action != "buy":
+                        if (signal.metadata or {}).get("research_rule_rejected") is True:
+                            counters["research_rule_blocks"] += 1
                         continue
                     allowed, _, quality = self._historical_market_quality(
                         signal,
