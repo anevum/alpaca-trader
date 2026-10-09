@@ -20,6 +20,11 @@ MIN_SCREEN_CANDIDATES = 20
 MIN_OUTCOME_COVERAGE = Decimal("0.95")
 MAX_SOURCE_CANDIDATES = 5000
 
+# An internal compact RHEN Core projection preserves only a sample of
+# rejected decisions. Valid 15-minute outcomes cannot certify that the
+# underlying decision population is complete.
+POPULATION_ATTESTATION_SCHEMA = "rhen-full-decision-population-v1"
+
 
 def _moment(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
@@ -46,6 +51,7 @@ def audit_candidate_cohort(
     candidates: Sequence[Mapping[str, Any]],
     *,
     expected_strategy: str,
+    population_attestation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return explicit completeness; no selection or strategy evaluation.
 
@@ -68,6 +74,7 @@ def audit_candidate_cohort(
     invalid_forward = 0
     causal_time_error = 0
     incomplete_market_data = 0
+    compacted_source_count = 0
 
     for item in candidates:
         if not isinstance(item, Mapping):
@@ -93,16 +100,24 @@ def audit_candidate_cohort(
             incomplete_market_data += 1
         elif str(scan.get("data_status") or "").lower() not in {"ok", "complete"}:
             incomplete_market_data += 1
+            if str(scan.get("data_status") or "").lower() == "compact_core_v3":
+                compacted_source_count += 1
 
-        outcomes = item.get("outcomes")
-        if not isinstance(outcomes, list):
-            missing += 1
-            continue
-        fifteen = [
-            result for result in outcomes
-            if isinstance(result, Mapping)
-            and str(result.get("horizon_minutes")) == "15"
-        ]
+        # Core returns forward_outcomes={"15": {...}}. Foundation's older
+        # export uses outcomes=[{"horizon_minutes": 15, ...}].
+        native = item.get("outcomes")
+        compacted = item.get("forward_outcomes")
+        if isinstance(native, list):
+            fifteen = [
+                outcome for outcome in native
+                if isinstance(outcome, Mapping)
+                and str(outcome.get("horizon_minutes")) == "15"
+            ]
+        elif isinstance(compacted, Mapping):
+            record = compacted.get("15")
+            fifteen = [record] if isinstance(record, Mapping) else []
+        else:
+            fifteen = []
         if len(fifteen) != 1:
             missing += 1
             continue
