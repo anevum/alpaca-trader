@@ -11,7 +11,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .opportunity import correlation_checks, score_opportunity
 from .sizing import calculate_entry_notional, effective_gross_limit
-from .strategy import Signal
+from .strategy import RollingMomentumVwapStrategy, Signal
 
 
 NY = ZoneInfo("America/New_York")
@@ -54,6 +54,13 @@ class ReplayPosition:
     entry_at: datetime
     notional: Decimal
     quality_score: float
+    risk_stop_pct: Decimal = Decimal("0")
+    peak_return_pct: Decimal = Decimal("0")
+    protected_floor_pct: Decimal | None = None
+    profit_protection_active: bool = False
+    thesis_failure_count: int = 0
+    last_thesis_failure_bar_time: str | None = None
+    target_reached: bool = False
 
     def market_value(self, mark: Decimal) -> Decimal:
         return self.qty * mark
@@ -142,10 +149,17 @@ class ReplayEngine:
         account: dict[str, Any],
         position_payloads: list[dict[str, Any]],
         entry_orders_today: int,
+        *,
+        active_entry_universe: set[str] | None = None,
     ) -> tuple[bool, str]:
+        if self.settings.dynamic_universe_enabled:
+            if active_entry_universe is None:
+                return False, "as-of dynamic entry universe is unavailable"
+            if symbol.upper() not in active_entry_universe:
+                return False, "symbol is not in as-of active dynamic universe"
         if symbol.upper() not in self.settings.allowed_symbols:
             return False, "symbol is not allowlisted"
-        if symbol.upper() not in self.settings.scan_symbols:
+        if not self.settings.dynamic_universe_enabled and symbol.upper() not in self.settings.scan_symbols:
             return False, "symbol is not in scan universe"
         if any(
             str(item.get("symbol", "")).upper() == symbol.upper()
@@ -263,29 +277,109 @@ class ReplayEngine:
             return reference * (Decimal("1") + adjustment)
         return reference * (Decimal("1") - adjustment)
 
+    def _rolling_strategy(self) -> RollingMomentumVwapStrategy | None:
+        """Research wrappers expose their underlying production strategy."""
+        underlying = getattr(self.strategy, "production_strategy", self.strategy)
+        return underlying if isinstance(underlying, RollingMomentumVwapStrategy) else None
+
     def _exit_decision(
         self,
         position: ReplayPosition,
         bar: dict[str, Any],
         now: datetime,
+        *,
+        visible: dict[str, list[dict[str, Any]]] | None = None,
     ) -> tuple[str, Decimal] | None:
+        """Approximate completed-bar exits; never infer broker fills from bars.
+
+        Existing (previous-bar) stops are evaluated before updating the peak to
+        avoid pretending a newly raised intrabar stop was already resting.
+        """
         low = price(bar, "l")
         high = price(bar, "h")
         close = price(bar, "c")
-        stop = position.entry_price * (Decimal("1") - self.settings.stop_pct)
+        opened = price(bar, "o")
+        risk_stop = position.risk_stop_pct or self.settings.stop_pct
+        hard_stop = position.entry_price * (Decimal("1") - risk_stop)
         target = position.entry_price * (Decimal("1") + self.settings.target_pct)
+        protected = (
+            position.entry_price * (Decimal("1") + position.protected_floor_pct)
+            if position.profit_protection_active
+            and position.protected_floor_pct is not None
+            else None
+        )
+        stop = max(hard_stop, protected) if protected is not None else hard_stop
 
-        stop_hit = low > 0 and low <= stop
-        target_hit = high > 0 and high >= target
-        if stop_hit:
-            # One-minute bars do not reveal intrabar ordering. Stop-first is conservative.
-            return "stop", stop
-        if target_hit:
-            return "target", target
-        if self.settings.max_hold_minutes > 0:
-            elapsed = (now - position.entry_at).total_seconds() / 60
-            if elapsed >= self.settings.max_hold_minutes:
-                return "time", close
+        if low > 0 and low <= stop:
+            # Stop-first, including gap-through at the next bar open.
+            reference = min(stop, opened) if opened > 0 else stop
+            return ("protect" if protected is not None and protected > hard_stop else "stop", reference)
+
+        rolling = self._rolling_strategy()
+        if rolling is None:
+            if high > 0 and high >= target:
+                return "target", target
+            if self.settings.max_hold_minutes > 0:
+                elapsed = (now - position.entry_at).total_seconds() / 60
+                if elapsed >= self.settings.max_hold_minutes:
+                    return "time", close
+        else:
+            # Live rolling momentum uses the target to arm protection, not to
+            # force take-profit, and deliberately bypasses MAX_HOLD_MINUTES.
+            if high >= target:
+                position.target_reached = True
+            if (
+                self.settings.thesis_exit_enabled
+                and visible is not None
+            ):
+                health = rolling.position_health(
+                    bars=visible.get(position.symbol, []),
+                    confirmation_bars={
+                        key: visible.get(key, [])
+                        for key in self.settings.confirmation_symbols
+                    },
+                    symbol=position.symbol,
+                    now=now,
+                )
+                current_return = (
+                    (close - position.entry_price) / position.entry_price
+                    if position.entry_price > 0 else Decimal("0")
+                )
+                failed = (
+                    health.get("strong_failure") is True
+                    and current_return <= self.settings.thesis_exit_max_return_pct
+                )
+                bar_time = str(health.get("bar_time") or "")
+                if failed and bar_time and bar_time != position.last_thesis_failure_bar_time:
+                    position.thesis_failure_count += 1
+                    position.last_thesis_failure_bar_time = bar_time
+                elif not failed:
+                    position.thesis_failure_count = 0
+                    position.last_thesis_failure_bar_time = None
+                if failed and position.thesis_failure_count >= self.settings.thesis_failure_cycles:
+                    return "thesis", close
+
+            if high > 0:
+                observed_peak = (high - position.entry_price) / position.entry_price
+                position.peak_return_pct = max(position.peak_return_pct, observed_peak)
+            if self.settings.profit_protect_enabled:
+                activation = max(
+                    self.settings.profit_protect_activation_pct,
+                    self.settings.target_pct,
+                )
+                if position.peak_return_pct >= activation:
+                    floor = max(
+                        self.settings.profit_protect_min_pct,
+                        position.peak_return_pct * self.settings.profit_protect_retain_fraction,
+                    )
+                    position.protected_floor_pct = max(
+                        position.protected_floor_pct
+                        if position.protected_floor_pct is not None
+                        else floor,
+                        floor,
+                    )
+                    position.profit_protection_active = True
+
         if now.time() >= self.settings.force_flat_time:
             return "eod", close
         return None
