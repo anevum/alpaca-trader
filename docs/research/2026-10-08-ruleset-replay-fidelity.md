@@ -86,7 +86,7 @@ does not construct an execution/broker client. Supply the actual as-of
 snapshots if `DYNAMIC_UNIVERSE_ENABLED=true`:
 
 ```sh
-python scripts/rule_set_lab.py \
+python -m scripts.rule_set_lab \
   --bars-json frozen_bars.json \
   --rules-json challenger_rules.json \
   --universe-snapshots-json asof_universe.json \
@@ -105,11 +105,11 @@ For the existing, unexecuted October 8 experiment specs, supply the exact
 source-report fingerprint before putting them in the isolated queue:
 
 ```sh
-python scripts/research_experiment_queue.py \
+python -m scripts.research_experiment_queue \
   --db isolated_research.sqlite propose \
   --specs-json experiment_specs.json \
   --source-fingerprint <64-character-source-sha256>
-python scripts/research_experiment_queue.py \
+python -m scripts.research_experiment_queue \
   --db isolated_research.sqlite list
 ```
 
