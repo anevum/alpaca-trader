@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.provenance import RHEN_RUNTIME_GENERATION, RHEN_VERSION
 
@@ -171,6 +171,49 @@ async def health() -> JSONResponse:
                 for name, row in modules.items()
                 if row.get("enabled") is not False and not row.get("ok")
             ],
+        },
+    )
+
+
+@app.get("/v1/trading-public-events")
+async def public_event_stream_proxy() -> Response:
+    """Stream Core's already-sanitized SSE bytes instead of buffering HTTP."""
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=6.0, read=None, write=6.0, pool=6.0),
+    )
+    try:
+        request = client.build_request(
+            "GET", CORE_URL + "/v1/trading-public-events",
+            headers={"Accept": "text/event-stream"},
+        )
+        upstream = await client.send(request, stream=True)
+    except Exception:
+        await client.aclose()
+        return JSONResponse(status_code=503, content={
+            "ok": False, "message": "Public stream unavailable",
+        })
+    if upstream.status_code != 200:
+        await upstream.aclose()
+        await client.aclose()
+        return JSONResponse(status_code=503, content={
+            "ok": False, "message": "Public stream unavailable",
+        })
+
+    async def relay():
+        try:
+            async for part in upstream.aiter_bytes():
+                if part:
+                    yield part
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        relay(), media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Accel-Buffering": "no",
         },
     )
 
