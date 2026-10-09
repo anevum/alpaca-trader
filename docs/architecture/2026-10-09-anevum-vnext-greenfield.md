@@ -1,7 +1,7 @@
-# ANEVUM vNext: greenfield platform contract (design only)
+# ANEVUM V5 — FOUNDATION: greenfield platform contract
 
-**Status:** proposed, not deployed; release name vNext is provisional.  
-**Owner tracking:** #468; existing incomplete evidence issue #467 and unmerged research PR #466.  
+**Status:** OWNER-LOCKED ARCHITECTURE for development on 2026-10-09; implementation staged, no production release authorized.  
+**Program ID:** `ANEVUM.V5.FOUNDATION.2026-10-09.001`; owner tracking #468; research blocker #467 and draft #466. Website Commons V5.1 shell is draft `anevum/anevum-web#256`; ANEVUM V5 is the overarching program, not a claim that either app is production version 5.  
 **Policy:** do not restart/migrate current live founder RHEN or merge this proposal into `main` without an explicit maintenance and broker-exposure preflight.
 
 ## Product + security boundaries
