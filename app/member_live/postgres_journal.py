@@ -113,6 +113,8 @@ class PostgresLiveOrderJournal:
         }
         if (from_state, to_state) not in valid_edges:
             raise LiveOrderDenied("Invalid or unsafe journal state transition")
+        if to_state == "confirmed" and (not isinstance(broker_order_id, str) or not broker_order_id):
+            raise LiveOrderDenied("Broker order ID required for confirmed orders")
         if broker_order_id is not None and (not isinstance(broker_order_id, str) or len(broker_order_id) > 128):
             raise LiveOrderDenied("Invalid broker order ID")
         if broker_status is not None and (not isinstance(broker_status, str) or len(broker_status) > 128):
