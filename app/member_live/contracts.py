@@ -111,12 +111,14 @@ class LivePolicy:
     max_gross_exposure_bp: int
     max_positions: int
     max_daily_loss_cents: int
+    max_symbol_exposure_cents: int
     max_spread_bp: int = 80
     max_buy_chase_bp: int = 100
 
     def __post_init__(self):
         positive_int(self.max_order_notional_cents, "order cap")
         positive_int(self.max_daily_loss_cents, "daily loss cap")
+        positive_int(self.max_symbol_exposure_cents, "single-symbol exposure cap")
         for v, low, high, label in (
             (self.max_gross_exposure_bp, 1, 10000, "gross exposure cap"),
             (self.max_positions, 1, 20, "position cap"),
@@ -168,6 +170,8 @@ class BrokerObservation:
     held_shares: int
     pending_sell_shares: int
     pending_new_positions: int
+    symbol_exposure_cents: int
+    symbol_pending_buy_exposure_cents: int
 
     def __post_init__(self):
         identity(self.broker_account_id, "snapshot account")
@@ -179,7 +183,8 @@ class BrokerObservation:
             "bid_cents", "ask_cents", "equity_cents", "buying_power_cents",
             "gross_exposure_cents", "pending_buy_exposure_cents",
             "daily_realized_loss_cents", "open_position_count",
-            "held_shares", "pending_sell_shares", "pending_new_positions"
+            "held_shares", "pending_sell_shares", "pending_new_positions",
+            "symbol_exposure_cents", "symbol_pending_buy_exposure_cents"
         ):
             v = getattr(self, name)
             if type(v) is not int or v < 0:
@@ -232,6 +237,8 @@ def validate_live_intent(
     notional = intent.quantity * intent.limit_price_cents
     if snapshot.daily_realized_loss_cents >= policy.max_daily_loss_cents:
         raise LiveOrderDenied("Daily realized loss cap reached")
+    if (snapshot.symbol_exposure_cents + snapshot.symbol_pending_buy_exposure_cents + notional) > policy.max_symbol_exposure_cents:
+        raise LiveOrderDenied("Single-symbol position cap reached")
     if notional > policy.max_order_notional_cents:
         raise LiveOrderDenied("Order exceeds per-member notional cap")
     if notional > snapshot.buying_power_cents:
