@@ -73,3 +73,37 @@ def test_initial_broker_failure_is_visible_without_a_prior_safe_check(tmp_path):
     notifications = [e for e in feed["events"] if e["type"] == "reconciliation"]
     assert len(notifications) == 1
     assert notifications[0]["kind"] == "warning"
+
+
+def test_runtime_timeout_is_a_failure_not_a_position_mismatch(tmp_path):
+    store = RhenCoreStore(tmp_path / "rhen-runtime-reconciliation-failure.db")
+    start = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
+    records = [
+        ("canonical-1", "rhen-core", 0, {"safe_to_enter": True}),
+        ("runtime-1", "alpaca-trader", 1, {"action": "safe", "safe_to_enter": True}),
+        ("runtime-err-1", "alpaca-trader", 60, {"action": "error", "safe_to_enter": False, "error": "ReadTimeout"}),
+        ("runtime-err-2", "alpaca-trader", 120, {"action": "error", "safe_to_enter": False, "error": "ReadTimeout"}),
+        ("canonical-2", "rhen-core", 180, {"safe_to_enter": True}),
+        ("runtime-2", "alpaca-trader", 181, {"action": "safe", "safe_to_enter": True}),
+    ]
+    store.ingest_events([
+        {
+            "event_key": key,
+            "event_type": "reconciliation",
+            "occurred_at": (start + timedelta(seconds=offset)).isoformat(),
+            "run_id": "run-timeout",
+            "strategy_version_id": "test",
+            "source": source,
+            "payload": payload,
+        }
+        for key, source, offset, payload in records
+    ])
+    feed = store.public_live_feed(now=start + timedelta(seconds=182))
+    assert feed["broker_reconciliation"]["state"] == "SAFE"
+    assert feed["broker_reconciliation"]["checks_2h"] == 4
+    visible = [event for event in feed["events"] if event["type"] == "reconciliation"]
+    assert len(visible) == 2
+    assert "recovered" in visible[0]["label"].lower()
+    assert "failed" in visible[1]["label"].lower()
+    assert "mismatch" not in visible[1]["label"].lower()
+    assert "ReadTimeout" not in str(feed)
