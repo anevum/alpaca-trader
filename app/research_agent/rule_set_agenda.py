@@ -132,6 +132,8 @@ def build_rule_set_agenda(report: Mapping[str, Any]) -> dict[str, Any]:
                 blockers.append("CANONICAL_15M_COHORT_COVERAGE_INSUFFICIENT")
         if cohort.get("blocking_reasons") or cohort.get("state") != "READY":
             blockers.append("CANONICAL_15M_COHORT_AUDIT_BLOCKED")
+        if cohort.get("full_population_attested") is not True:
+            blockers.append("CANONICAL_CANDIDATE_POPULATION_NOT_ATTESTED")
         if not re.fullmatch(r"[a-fA-F0-9]{64}", str(cohort.get("cohort_fingerprint") or "")):
             blockers.append("CANONICAL_15M_COHORT_FINGERPRINT_MISSING")
     if _integer(status.get("incomplete_rows")) or _integer(status.get("error_rows")):
