@@ -316,3 +316,20 @@ def test_invalid_contracts_reject_abnormal_inputs_and_owner_data_path():
     with pytest.raises(LiveOrderDenied):
         LivePolicy(max_order_notional_cents=1000, max_gross_exposure_bp=15000,
                    max_positions=1, max_daily_loss_cents=100, max_symbol_exposure_cents=1000)
+
+
+def test_prototype_journal_never_allows_connection_rebound_to_another_broker():
+    with TemporaryDirectory() as temp:
+        journal = LiveOrderJournal(Path(temp) / "member-live.sqlite3")
+        original = binding()
+        wrong = replace(original, broker_account_id="a-different-broker")
+        first, is_new = journal.reserve(original, release(), intent(), NOW)
+        assert is_new and first.state == "reserved"
+        assert journal.read(wrong, "decision-1") is None
+        assert journal.list_owned(wrong) == ()
+        with pytest.raises(LiveOrderDenied, match="another brokerage"):
+            journal.reserve(wrong, release(), intent("different-signal"), NOW)
+        with pytest.raises(LiveOrderDenied, match="Broker order ID"):
+            journal.transition(original, "decision-1", from_state="uncertain", to_state="confirmed")
+        assert journal.list_owned(original) == (first,)
+        journal.close()
