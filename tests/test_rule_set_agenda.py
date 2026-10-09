@@ -10,7 +10,7 @@ def complete_report():
         "session": "2026-10-09",
         "source_fingerprint": "a" * 64,
         "strategy_version_id": "LIVE-2026-09-25-003",
-        "broker_history": {"pagination": "EXHAUSTED_WITHIN_BOUNDS"},
+        "broker_history": {"pagination": "EXHAUSTED_WITHIN_BOUNDS", "fill_count": 0},
         "candidate_forward_evidence": {
             "status": {"incomplete_rows": 0, "error_rows": 0},
             "readiness": {"state": "READY"},
@@ -24,7 +24,7 @@ def complete_report():
                 "cohort_fingerprint": "c" * 64,
             },
         },
-        "reconstruction": {"unmatched_sell_qty": {}},
+        "reconstruction": {"unmatched_sell_qty": {}, "included_fill_count": 0, "excluded_fill_count": 0},
         "runtime": {"persistence": {"shed_count": 0}},
         "live_vs_offline_consistency": {"summary": []},
         "data_quality_warnings": [],
@@ -105,3 +105,15 @@ def test_unreconstructable_state_count_is_read_from_actual_projection():
     ]
     result = build_rule_set_agenda(report)
     assert "LIVE_VS_REPLAY_EVENTS_UNRECONSTRUCTABLE" in result["blocking_evidence"]
+
+def test_fill_audit_cannot_hide_unattributed_or_missing_activity():
+    report = complete_report()
+    report["broker_history"]["fill_count"] = 1
+    result = build_rule_set_agenda(report)
+    assert "BROKER_FILL_AUDIT_COUNTS_DO_NOT_RECONCILE" in result["blocking_evidence"]
+    report["reconstruction"]["excluded_fill_count"] = 1
+    result = build_rule_set_agenda(report)
+    assert "BROKER_FILL_ATTRIBUTION_EXCLUSIONS_REQUIRE_AUDIT" in result["blocking_evidence"]
+    report["reconstruction"].pop("included_fill_count")
+    result = build_rule_set_agenda(report)
+    assert "BROKER_FILL_AUDIT_COUNTS_MISSING_OR_INVALID" in result["blocking_evidence"]
