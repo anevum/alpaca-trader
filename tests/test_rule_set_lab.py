@@ -117,6 +117,10 @@ def test_relative_volume_rule_uses_only_visible_completed_bars():
     insufficient = strategy.evaluate(bars=history[:2], **call)
     rejected = strategy.evaluate(bars=history[:3], **call)
     accepted = strategy.evaluate(bars=history[:4], **call)
+    early_call = dict(call)
+    early_call["now"] = datetime(2026, 9, 21, 9, 33, tzinfo=NY)
+    future_not_allowed = strategy.evaluate(bars=history[:4], **early_call)
+    assert future_not_allowed.action == "hold"
     assert insufficient.action == "hold"
     assert insufficient.metadata["research_rule_rejected"] is True
     assert rejected.action == "hold"
@@ -151,6 +155,12 @@ def test_rule_set_tournament_freezes_control_and_refuses_promotion():
     assert all(not row["promotion_authorized"] for row in result["results"])
     assert len(result["fingerprint"]) == 64
     assert len(result["manifest"]["data_fingerprint"]) == 64
+    families = result["research_family_registry"]["families"]
+    challenger_family = next(
+        item for item in families if item["family_key"] == "rhen-rule-rv-15"
+    )
+    assert challenger_family["status"] == "SPEC_ONLY"
+    assert challenger_family["automatic_promotion_authorized"] is False
     assert result["results"][0]["assumptions"]["broker_orders_possible"] is False
 
 
