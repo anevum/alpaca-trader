@@ -97,6 +97,19 @@ def build_rule_set_agenda(report: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("STRATEGY_VERSION_MISSING")
     if broker.get("pagination") != "EXHAUSTED_WITHIN_BOUNDS":
         blockers.append("BROKER_FILL_ORDER_PAGINATION_UNVERIFIED")
+    try:
+        source_fill_count = int(broker["fill_count"])
+        included = int(recon["included_fill_count"])
+        excluded = int(recon["excluded_fill_count"])
+        if min(source_fill_count, included, excluded) < 0:
+            raise ValueError("negative fill counts")
+    except (KeyError, TypeError, ValueError):
+        blockers.append("BROKER_FILL_AUDIT_COUNTS_MISSING_OR_INVALID")
+    else:
+        if source_fill_count != included + excluded:
+            blockers.append("BROKER_FILL_AUDIT_COUNTS_DO_NOT_RECONCILE")
+        if excluded:
+            blockers.append("BROKER_FILL_ATTRIBUTION_EXCLUSIONS_REQUIRE_AUDIT")
     if recon.get("unmatched_sell_qty"):
         if any(str(value) not in {"0", "0.0", "0.00"} for value in recon["unmatched_sell_qty"].values()):
             blockers.append("UNMATCHED_BROKER_FILLS")
