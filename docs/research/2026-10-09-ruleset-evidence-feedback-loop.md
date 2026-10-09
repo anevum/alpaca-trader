@@ -62,6 +62,42 @@ Do not search dozens of strategy families and parameters at once on 2–3 bad se
 
 **Weekly:** compare the fixed challengers across sessions/regimes, examine false positive/negative opportunities, and publish an operator-only scorecard. Inspect the causal rule and execution chain; do not chase yesterday's optimum. Only a human can authorize a champion replacement.
 
+## Implemented D2 offline research flow
+
+1. At 16:05 ET, the existing daily reporter gathers bounded broker fills and order history; **new source identity includes broker pagination, reconstruction and storage warnings**. The report attaches \`candidate_forward_evidence.cohort_audit\`, with explicit 15-minute coverage, event-time strategy identity, duplicate IDs, candidate timestamps and data status.
+2. \`build_rule_set_agenda()\` marks the frozen three-rule slate **AWAITING_COMPLETE_EVIDENCE** if the 15-minute cohort is absent, fewer than 20 sampled candidates, below 95% measured coverage, not causally timed, version drifted, or a broker/retention error exists. This is only an *offline-screen readiness* designation; a complete daily sample does not prove the database had no omitted event rows.
+3. The existing authenticated read-only \`/v1/research/package\` can be saved outside the repository as a JSON file; this workstream does **not** fetch any secret, broker record, or private package for public GitHub.
+4. From a controlled private environment, run:
+
+\`\`\`sh
+python -m scripts.daily_rule_set_handoff --report-json /private/rhen-daily.json
+python -m scripts.daily_rule_set_handoff --report-json /private/rhen-daily.json --db /private/offline-rhen.sqlite --commit
+\`\`\`
+
+The first call prints a sanitized dry-run; the second creates at most three immutable proposals in a **separate SQLite research file**, idempotently transitions each only to \`AWAITING_EVIDENCE\`, and prints only experiment IDs and blockers. It never infers readiness from claimed summary text, changes live settings, imports broker modules or opens research authority beyond that state.
+
+5. Offline bar/universe exports and an explicit reviewed evidence freeze must come **after** the handoff, and a separate operator must approve state transitions. Use \`python -m scripts.rule_set_lab\` on same-cohort inputs per independent session. Bundle the outputs as:
+
+\`\`\`json
+[
+  {
+    "session": "2026-10-09",
+    "phase": "DEVELOPMENT",
+    "source_fingerprint": "<immutable 64-character daily source hash>",
+    "market_regime": "UNKNOWN",
+    "tournament": "<whole JSON object from rule_set_lab, not a string>"
+  }
+]
+\`\`\`
+
+The angle-bracket values above are explanatory placeholders; provide actual values and a JSON object in an actual input file, not the literal quoted placeholder.
+
+6. Run \`python -m scripts.rule_set_scorecard --sessions-json /private/frozen-tournaments.json --output /private/rhen-paired-scorecard.json\`. This combines one frozen tournament per U.S. equity session, rejects duplicate periods/fingerprints, weekend pseudo-sessions, change of control/rule set/friction model, unauthorized promotion claims, and baseline-versus-challenger P/L inconsistencies. It reports paired net deltas and exact **session-level** two-sided sign tests, with Bonferroni multiplicity correction, in separately declared DEVELOPMENT, WALK_FORWARD and HOLDOUT partitions. Ranking uses walk-forward, not holdout. **Even 100% positive results are descriptive research**, not verified executable returns or live promotion authority.
+
+7. Publish the operator's scorecard only after checking session independence and a provably pre-registered holdout, real spreads/fills, actual retained candidate cohort and historical as-of universe snapshots. An independent human-reviewed release, with risk/rollback checks, is needed before any replacement of the current champion.
+
+**Current limitation:** The available GitHub, Railway and Alpaca market-data connectors do not expose the private \`/v1/research/package\` payload or authenticated trade fills to this workstream. No actual dated challenger tournament was performed; all current offline-lab tests are deterministic fixtures. The queue is not attached to IREN's production scheduler and must remain broker-isolated.
+
 ## Integration with ANEVUM Commons 2.0
 
 The owner RHEN bot stays private. Member RHEN Cloud strategies and journals are separate from founder trading. When review reports are published to Commons, emit only opt-in, sanitized research summaries and methodology, never live private orders, customer broker data, credentials, or strategy details that are not approved for disclosure. A Commons badge, supporter payment or GitHub merge does not grant broker execution permissions.
