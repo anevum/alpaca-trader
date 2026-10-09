@@ -50,3 +50,11 @@
 - https://docs.alpaca.markets/us/docs/using-oauth2-and-trading-api
 - https://docs.alpaca.markets/us/reference/postorder
 - https://docs.alpaca.markets/us/reference/getorderbyclientorderid
+
+## 2026-10-09 — Member risk draft → live risk policy compiler (draft-only)
+
+The existing per-user RHEN configuration draft on ANEVUM Web is the **only** proposed member preference surface. Do not create a second member risk configuration system. The new `app/member_live/policy.py` `compile_member_live_policy` function accepts an independently verified member draft, an operator-approved hard risk ceiling, the verified member ID, and the latest authenticated broker equity in integer cents. It derives the **more restrictive** per-order, gross-exposure, position-count, and single-symbol limits, keeping operator daily-loss, spread and chase caps unchanged. An account mismatch or low/invalid equity fails closed.
+
+The `LivePolicy.max_symbol_exposure_cents` limit is now mandatory. `BrokerObservation` includes both filled **and pending** exposure for the current symbol; `validate_live_intent` rejects additions that would exceed that position cap, even if each individual order is below its own notional ceiling. This prevents breaking a single-position limit by stacking multiple small orders. Quotes, positions, orders and equity must still be fetched server-side from the member's bound brokerage connection, not from UI data.
+
+**Crucial distinction:** this compiler is an isolated, tested primitive only. It is not yet connected to a live order service or website settings. A saved draft, SHA-256 strategy digest, simulated authority object, or passing unit test does **not** authorize live execution. Staging must prove signed/authenticated member-to-service policy delivery, broker-sourced per-symbol pending exposure, transaction-level reservation across workers, and manual execution release. Member settings may only lower the independent operator ceiling.
