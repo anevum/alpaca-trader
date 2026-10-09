@@ -168,17 +168,22 @@ class PaperExecutionKernel:
             raise ValueError("Invalid paper seed capital")
         if not isinstance(policy, PaperPolicy):
             raise ValueError("Paper policy required")
-        # Deliberately no INSERT OR REPLACE: an existing member's state must
-        # never be reset by a repeat account-creation request.
-        with self._connection:
-            self._connection.execute(
+        # Serializes account creation: no orphan policy or partial first-time setup.
+        db = self._connection
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.execute(
                 "INSERT INTO paper_accounts(member_id,cash_cents,initial_cash_cents) VALUES(?,?,?)",
                 (member_id, cash_cents, cash_cents),
             )
-            self._connection.execute(
+            db.execute(
                 "INSERT INTO paper_policies(member_id,policy_json) VALUES(?,?)",
                 (member_id, json.dumps(policy.__dict__, separators=(",", ":"))),
             )
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
 
     def verified_scope(self, server_verified_member_id: str) -> PaperAccountScope:
         member_id = _identity(server_verified_member_id, "member identity")
