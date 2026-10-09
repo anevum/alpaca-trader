@@ -49,6 +49,8 @@ class EntryRule:
             raise ValueError("entry rule threshold must be nonnegative")
         if self.indicator == "trend_persistence" and self.threshold > 1:
             raise ValueError("trend persistence threshold must be at most 1")
+        if self.indicator == "trend_persistence" and self.min_bars > 9:
+            raise ValueError("trend persistence uses at most nine completed bars")
         if self.indicator == "relative_volume" and self.threshold > 10:
             raise ValueError("relative-volume threshold must be at most 10")
 
@@ -245,6 +247,19 @@ def run_rule_set_tournament(
         "spread_bps": str(spread_bps),
         "slippage_bps_per_side": str(slippage_bps),
         "min_trades": min_trades,
+        "data_fingerprint": sha256(
+            json.dumps(
+                bars_by_symbol, sort_keys=True, separators=(",", ":"), default=str
+            ).encode()
+        ).hexdigest(),
+        "asof_universe_fingerprint": (
+            sha256(
+                json.dumps(
+                    universe_snapshots, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            if universe_snapshots is not None else None
+        ),
     }
     fingerprint = sha256(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
