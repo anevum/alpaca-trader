@@ -2435,6 +2435,44 @@ class RhenCoreStore:
             event.get("event_type") == "reconciliation"
             for event in recent_2h
         )
+        reconciliation_history = [
+            event for event in recent_2h
+            if event.get("event_type") == "reconciliation"
+        ]
+        latest_reconciliation = (
+            reconciliation_history[0] if reconciliation_history else
+            next(iter(self._event_rows(
+                event_types={"reconciliation"}, limit=1, newest_first=True,
+            )), None)
+        )
+        last_reconciliation_at = stamp(
+            latest_reconciliation.get("occurred_at") if latest_reconciliation else None
+        )
+        last_reconciliation_safe = (
+            (latest_reconciliation.get("payload") or {}).get("safe_to_enter")
+            if latest_reconciliation else None
+        )
+        reconciliation_state = (
+            "STALE"
+            if last_reconciliation_at is not None and
+            (current - last_reconciliation_at).total_seconds() > 600
+            else "SAFE" if last_reconciliation_safe is True
+            else "BLOCKED" if last_reconciliation_safe is False
+            else "UNKNOWN"
+        )
+        # Public activity should report changes in broker safety, not every
+        # normal reconciliation heartbeat. The underlying evidence is retained.
+        reconciliation_transitions: dict[str, bool] = {}
+        previous_safe: bool | None = None
+        for event in reversed(reconciliation_history):
+            safe = (event.get("payload") or {}).get("safe_to_enter")
+            if type(safe) is not bool:
+                continue
+            if (previous_safe is None and not safe) or (
+                previous_safe is not None and safe != previous_safe
+            ):
+                reconciliation_transitions[str(event.get("event_key") or "")] = safe
+            previous_safe = safe
         errors_2h = sum(
             event.get("event_type") in {
                 "runtime_error"
@@ -2483,10 +2521,6 @@ class RhenCoreStore:
                 "execute",
                 "Position lifecycle recorded an exit event.",
             ),
-            "reconciliation": (
-                "learn",
-                "Broker state and canonical state were reconciled.",
-            ),
             "runtime_start": ("system", "RHEN unified runtime started."),
             "runtime_stop": ("system", "RHEN unified runtime stopped."),
             "runtime_error": (
@@ -2494,13 +2528,23 @@ class RhenCoreStore:
                 "Runtime reported an operational exception.",
             ),
         }
-        public_types = set(event_labels)
+        public_types = set(event_labels) | {"reconciliation"}
         public_events = []
         for event in recent_2h:
             event_type = str(event.get("event_type") or "")
             if event_type not in public_types:
                 continue
-            kind, label = event_labels[event_type]
+            if event_type == "reconciliation":
+                safe = reconciliation_transitions.get(str(event.get("event_key") or ""))
+                if safe is None:
+                    continue
+                kind, label = (
+                    ("system", "Broker reconciliation recovered; safety check passed.")
+                    if safe else
+                    ("warning", "Broker reconciliation found a discrepancy; new entries blocked.")
+                )
+            else:
+                kind, label = event_labels[event_type]
             public_events.append(
                 {
                     "at": event.get("occurred_at"),
@@ -2842,6 +2886,14 @@ class RhenCoreStore:
             },
             "activity": activity,
             "events": public_events,
+            "broker_reconciliation": {
+                "state": reconciliation_state,
+                "last_checked_at": (
+                    last_reconciliation_at.isoformat()
+                    if last_reconciliation_at is not None else None
+                ),
+                "checks_2h": reconciliations_2h,
+            },
             "operational": {"latest_scan": operational_scan},
             "research": {
                 "current_focus": research_focus,
