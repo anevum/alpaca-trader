@@ -22,6 +22,7 @@ def complete_report():
                 "coverage_15m": "1",
                 "blocking_reasons": [],
                 "cohort_fingerprint": "c" * 64,
+                "full_population_attested": True,
             },
         },
         "reconstruction": {"unmatched_sell_qty": {}, "included_fill_count": 0, "excluded_fill_count": 0},
@@ -117,3 +118,11 @@ def test_fill_audit_cannot_hide_unattributed_or_missing_activity():
     report["reconstruction"].pop("included_fill_count")
     result = build_rule_set_agenda(report)
     assert "BROKER_FILL_AUDIT_COUNTS_MISSING_OR_INVALID" in result["blocking_evidence"]
+
+
+def test_compacted_real_core_candidates_do_not_enable_research_from_full_outcomes():
+    report = complete_report()
+    report["candidate_forward_evidence"]["cohort_audit"]["full_population_attested"] = False
+    result = build_rule_set_agenda(report)
+    assert result["research_state"] == "AWAITING_COMPLETE_EVIDENCE"
+    assert "CANONICAL_CANDIDATE_POPULATION_NOT_ATTESTED" in result["blocking_evidence"]
