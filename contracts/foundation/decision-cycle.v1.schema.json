@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anevum.com/contracts/foundation/decision-cycle.v1.schema.json",
+  "title": "ANEVUM V5 private lossless decision-cycle event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workspace_id",
+    "run_id",
+    "cycle_id",
+    "sequence_no",
+    "session_date",
+    "occurred_at",
+    "execution_mode",
+    "strategy_version",
+    "config_sha256",
+    "code_sha256",
+    "market_source",
+    "universe_symbols",
+    "candidates"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "anevum.decision-cycle.v1"
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^wrk_[A-Za-z0-9_-]{8,64}$"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "cycle_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "sequence_no": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "session_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "execution_mode": {
+      "const": "PAPER_RESEARCH_ONLY"
+    },
+    "strategy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "config_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "code_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "market_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feed",
+        "data_status",
+        "asof_timestamp",
+        "universe_ref"
+      ],
+      "properties": {
+        "feed": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "data_status": {
+          "enum": [
+            "COMPLETE",
+            "PARTIAL",
+            "UNAVAILABLE"
+          ]
+        },
+        "asof_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "universe_ref": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bars_ref": {
+          "$ref": "#/$defs/sha256"
+        },
+        "quotes_ref": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "data_status": {
+                "const": "COMPLETE"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "bars_ref",
+              "quotes_ref"
+            ]
+          }
+        }
+      ]
+    },
+    "universe_symbols": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/symbol"
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "symbol",
+          "decision",
+          "reason",
+          "observed_at",
+          "features"
+        ],
+        "properties": {
+          "symbol": {
+            "$ref": "#/$defs/symbol"
+          },
+          "decision": {
+            "enum": [
+              "QUALIFIED",
+              "REJECTED",
+              "UNMEASURABLE"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "features": {
+            "type": "object",
+            "maxProperties": 150,
+            "additionalProperties": {
+              "type": [
+                "number",
+                "string",
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9.]{0,14}$"
+    }
+  }
+}
