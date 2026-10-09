@@ -63,3 +63,31 @@ def test_router_can_rank_validated_positive_family_in_research():
     assert result["no_trade_selected"] is False
     assert result["execution_authority"] is False
     assert result["promotion_authorized"] is False
+
+
+def test_research_router_accepts_registry_status_without_granting_authority():
+    from app.research_agent.strategy_family_registry import (
+        build_strategy_family_registry,
+    )
+
+    registry = build_strategy_family_registry([{
+        "family_key": "momentum-volume-study",
+        "strategy_name": "rolling_momentum_vwap",
+        "direction": "LONG",
+        "asset_class": "US_EQUITY",
+        "status": "FROZEN_VALIDATION",
+        "regime_evidence": {
+            "TREND_EXPANSION": {
+                "expected_utility": "0.0012",
+                "confidence": "0.82",
+                "minimums_met": True,
+            }
+        },
+    }])
+    result = rank_strategy_families(
+        regime_state={"regime": "TREND_EXPANSION"},
+        families=registry["families"],
+    )
+    assert result["selected_research_family"] == "momentum-volume-study"
+    assert result["execution_authority"] is False
+    assert result["promotion_authorized"] is False

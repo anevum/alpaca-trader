@@ -13,33 +13,79 @@ def _count(value: Any) -> int:
     return len(value) if isinstance(value, list) else 0
 
 
+def _first_present(*values: Any) -> Any:
+    """Preserve valid zeroes and empty values when resolving schema generations."""
+    return next((value for value in values if value is not None), None)
+
+
 def _daily_summary(report: Any) -> dict[str, Any]:
     if not isinstance(report, dict):
         return {"available": False}
+    # rhen-daily-v1.7 writes the realized trade metrics under `metrics`.
+    # Older handoff examples used `performance`, so preserve that fallback.
+    metrics = report.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
     performance = report.get("performance")
     performance = performance if isinstance(performance, dict) else {}
     evidence = report.get("evidence")
     evidence = evidence if isinstance(evidence, dict) else {}
+    funnel = report.get("candidate_funnel")
+    funnel = funnel if isinstance(funnel, dict) else {}
+    classification = report.get("classification")
+    if isinstance(classification, dict):
+        classification = _first_present(
+            classification.get("classification"),
+            classification.get("decision"),
+            classification.get("status"),
+        )
+    warnings = report.get("data_quality_warnings")
+    warnings = list(warnings) if isinstance(warnings, list) else []
     return {
         "available": True,
         "session": report.get("session"),
+        "report_version": report.get("report_version"),
+        "report_key": report.get("report_key"),
+        "source_fingerprint": report.get("source_fingerprint"),
+        "runtime_git_commit": report.get("runtime_git_commit"),
         "strategy_version_id": report.get("strategy_version_id"),
-        "classification": report.get("classification")
-        or report.get("decision")
-        or report.get("status"),
-        "closed_trades": performance.get("closed_trades")
-        or performance.get("trades"),
-        "net_pnl": performance.get("net_pnl"),
-        "return_pct": performance.get("return_pct"),
-        "win_rate": performance.get("win_rate"),
-        "expectancy": performance.get("expectancy"),
-        "profit_factor": performance.get("profit_factor"),
+        "classification": _first_present(
+            classification, report.get("decision"), report.get("status")
+        ),
+        "closed_trades": _first_present(
+            metrics.get("trade_count"),
+            performance.get("closed_trades"),
+            performance.get("trades"),
+        ),
+        "net_pnl": _first_present(
+            metrics.get("realized_pnl"), performance.get("net_pnl")
+        ),
+        "return_pct": _first_present(
+            metrics.get("return_pct"), performance.get("return_pct")
+        ),
+        "win_rate": _first_present(
+            metrics.get("win_rate"), performance.get("win_rate")
+        ),
+        "expectancy": _first_present(
+            metrics.get("expectancy"), performance.get("expectancy")
+        ),
+        "profit_factor": _first_present(
+            metrics.get("profit_factor"), performance.get("profit_factor")
+        ),
+        "max_realized_drawdown": metrics.get("max_realized_drawdown"),
         "max_drawdown_pct": performance.get("max_drawdown_pct"),
-        "candidate_count": evidence.get("candidate_count"),
-        "qualified_count": evidence.get("qualified_count"),
+        "candidate_count": _first_present(
+            evidence.get("candidate_count"), funnel.get("candidate_count")
+        ),
+        "qualified_count": _first_present(
+            evidence.get("qualified_count"), funnel.get("qualified_count")
+        ),
         "blocker_count": evidence.get("blocker_count"),
+        "data_quality_warnings": warnings,
+        "data_quality_warning_count": len(warnings),
+        "next_offline_research_action": _first_present(
+            report.get("next_offline_research_action"), report.get("focus")
+        ),
     }
-
 
 def _markdown(
     *,

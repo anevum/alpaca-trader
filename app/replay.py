@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from hashlib import sha256
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
@@ -11,7 +13,7 @@ from .config import Settings
 from .market_data import MarketDataClient
 from .opportunity import correlation_checks, score_opportunity
 from .sizing import calculate_entry_notional, effective_gross_limit
-from .strategy import Signal
+from .strategy import RollingMomentumVwapStrategy, Signal
 
 
 NY = ZoneInfo("America/New_York")
@@ -54,6 +56,13 @@ class ReplayPosition:
     entry_at: datetime
     notional: Decimal
     quality_score: float
+    risk_stop_pct: Decimal = Decimal("0")
+    peak_return_pct: Decimal = Decimal("0")
+    protected_floor_pct: Decimal | None = None
+    profit_protection_active: bool = False
+    thesis_failure_count: int = 0
+    last_thesis_failure_bar_time: str | None = None
+    target_reached: bool = False
 
     def market_value(self, mark: Decimal) -> Decimal:
         return self.qty * mark
@@ -142,10 +151,17 @@ class ReplayEngine:
         account: dict[str, Any],
         position_payloads: list[dict[str, Any]],
         entry_orders_today: int,
+        *,
+        active_entry_universe: set[str] | None = None,
     ) -> tuple[bool, str]:
+        if self.settings.dynamic_universe_enabled:
+            if active_entry_universe is None:
+                return False, "as-of dynamic entry universe is unavailable"
+            if symbol.upper() not in active_entry_universe:
+                return False, "symbol is not in as-of active dynamic universe"
         if symbol.upper() not in self.settings.allowed_symbols:
             return False, "symbol is not allowlisted"
-        if symbol.upper() not in self.settings.scan_symbols:
+        if not self.settings.dynamic_universe_enabled and symbol.upper() not in self.settings.scan_symbols:
             return False, "symbol is not in scan universe"
         if any(
             str(item.get("symbol", "")).upper() == symbol.upper()
@@ -263,31 +279,112 @@ class ReplayEngine:
             return reference * (Decimal("1") + adjustment)
         return reference * (Decimal("1") - adjustment)
 
+    def _rolling_strategy(self) -> RollingMomentumVwapStrategy | None:
+        """Research wrappers expose their underlying production strategy."""
+        underlying = getattr(self.strategy, "production_strategy", self.strategy)
+        return underlying if isinstance(underlying, RollingMomentumVwapStrategy) else None
+
     def _exit_decision(
         self,
         position: ReplayPosition,
         bar: dict[str, Any],
         now: datetime,
+        *,
+        visible: dict[str, list[dict[str, Any]]] | None = None,
     ) -> tuple[str, Decimal] | None:
+        """Approximate completed-bar exits; never infer broker fills from bars.
+
+        Existing (previous-bar) stops are evaluated before updating the peak to
+        avoid pretending a newly raised intrabar stop was already resting.
+        """
         low = price(bar, "l")
         high = price(bar, "h")
         close = price(bar, "c")
-        stop = position.entry_price * (Decimal("1") - self.settings.stop_pct)
+        opened = price(bar, "o")
+        risk_stop = position.risk_stop_pct or self.settings.stop_pct
+        hard_stop = position.entry_price * (Decimal("1") - risk_stop)
         target = position.entry_price * (Decimal("1") + self.settings.target_pct)
+        protected = (
+            position.entry_price * (Decimal("1") + position.protected_floor_pct)
+            if position.profit_protection_active
+            and position.protected_floor_pct is not None
+            else None
+        )
+        stop = max(hard_stop, protected) if protected is not None else hard_stop
 
-        stop_hit = low > 0 and low <= stop
-        target_hit = high > 0 and high >= target
-        if stop_hit:
-            # One-minute bars do not reveal intrabar ordering. Stop-first is conservative.
-            return "stop", stop
-        if target_hit:
-            return "target", target
-        if self.settings.max_hold_minutes > 0:
-            elapsed = (now - position.entry_at).total_seconds() / 60
-            if elapsed >= self.settings.max_hold_minutes:
-                return "time", close
+        # Live prioritizes the scheduled forced flatten before ordinary exits.
         if now.time() >= self.settings.force_flat_time:
             return "eod", close
+        if low > 0 and low <= stop:
+            # Stop-first, including gap-through at the next bar open.
+            reference = min(stop, opened) if opened > 0 else stop
+            return ("protect" if protected is not None and protected > hard_stop else "stop", reference)
+
+        rolling = self._rolling_strategy()
+        if rolling is None:
+            if high > 0 and high >= target:
+                return "target", target
+            if self.settings.max_hold_minutes > 0:
+                elapsed = (now - position.entry_at).total_seconds() / 60
+                if elapsed >= self.settings.max_hold_minutes:
+                    return "time", close
+        else:
+            # Live rolling momentum uses the target to arm protection, not to
+            # force take-profit, and deliberately bypasses MAX_HOLD_MINUTES.
+            if high >= target:
+                position.target_reached = True
+            if (
+                self.settings.thesis_exit_enabled
+                and visible is not None
+            ):
+                health = rolling.position_health(
+                    bars=visible.get(position.symbol, []),
+                    confirmation_bars={
+                        key: visible.get(key, [])
+                        for key in self.settings.confirmation_symbols
+                    },
+                    symbol=position.symbol,
+                    now=now,
+                )
+                current_return = (
+                    (close - position.entry_price) / position.entry_price
+                    if position.entry_price > 0 else Decimal("0")
+                )
+                failed = (
+                    health.get("strong_failure") is True
+                    and current_return <= self.settings.thesis_exit_max_return_pct
+                )
+                bar_time = str(health.get("bar_time") or "")
+                if failed and bar_time and bar_time != position.last_thesis_failure_bar_time:
+                    position.thesis_failure_count += 1
+                    position.last_thesis_failure_bar_time = bar_time
+                elif not failed:
+                    position.thesis_failure_count = 0
+                    position.last_thesis_failure_bar_time = None
+                if failed and position.thesis_failure_count >= self.settings.thesis_failure_cycles:
+                    return "thesis", close
+
+            if high > 0:
+                observed_peak = (high - position.entry_price) / position.entry_price
+                position.peak_return_pct = max(position.peak_return_pct, observed_peak)
+            if self.settings.profit_protect_enabled:
+                activation = max(
+                    self.settings.profit_protect_activation_pct,
+                    self.settings.target_pct,
+                )
+                if position.peak_return_pct >= activation:
+                    floor = max(
+                        self.settings.profit_protect_min_pct,
+                        position.peak_return_pct * self.settings.profit_protect_retain_fraction,
+                    )
+                    position.protected_floor_pct = max(
+                        position.protected_floor_pct
+                        if position.protected_floor_pct is not None
+                        else floor,
+                        floor,
+                    )
+                    position.profit_protection_active = True
+
         return None
 
     @staticmethod
@@ -357,6 +454,10 @@ class ReplayEngine:
                 float(max_drawdown / initial_equity) if initial_equity > 0 else 0.0,
                 6,
             ),
+            "research_rule_blocks": counters["research_rule_blocks"],
+            "signals_scored": counters["signals_scored"],
+            "quality_blocks": counters["quality_blocks"],
+            "universe_snapshot_missing_cycles": counters["universe_snapshot_missing_cycles"],
             "signals_qualified": counters["signals_qualified"],
             "entries": counters["entries"],
             "correlation_blocks": counters["correlation_blocks"],
@@ -372,12 +473,33 @@ class ReplayEngine:
         initial_equity: Decimal,
         spread_bps: Decimal,
         slippage_bps: Decimal,
+        universe_snapshots: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         if initial_equity <= 0:
             raise ValueError("initial_equity must be positive")
         if spread_bps < 0 or slippage_bps < 0:
             raise ValueError("spread_bps and slippage_bps cannot be negative")
 
+        # Time-indexed universe snapshots are mandatory for dynamic replay.
+        # The current production universe cannot be reconstructed by reading
+        # today's universe into earlier history.
+        asof_universe: list[tuple[datetime, set[str]]] = []
+        if self.settings.dynamic_universe_enabled:
+            if not universe_snapshots:
+                raise ValueError(
+                    "dynamic universe replay requires time-indexed as-of universe_snapshots"
+                )
+            for raw_time, symbols in universe_snapshots.items():
+                asof = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                if asof.tzinfo is None:
+                    raise ValueError("universe snapshot timestamps must be timezone-aware")
+                if not isinstance(symbols, (list, tuple)):
+                    raise ValueError("universe snapshot symbols must be lists")
+                asof_universe.append((
+                    asof.astimezone(NY),
+                    {str(symbol).upper() for symbol in symbols if str(symbol).strip()},
+                ))
+            asof_universe.sort(key=lambda row: row[0])
         sessions = self._session_bar_map(bars_by_symbol)
         if not sessions:
             raise ValueError("no regular-session historical bars were returned")
@@ -392,10 +514,29 @@ class ReplayEngine:
 
         for session_day in sorted(sessions):
             session = sessions[session_day]
+            snapshots_for_day = [
+                (at, symbols) for at, symbols in asof_universe
+                if at.date() == session_day
+            ]
+            scanned = (
+                set().union(*(symbols for _, symbols in snapshots_for_day))
+                if self.settings.dynamic_universe_enabled
+                else set(self.settings.scan_symbols)
+            )
+            if self.settings.dynamic_universe_enabled and not snapshots_for_day:
+                raise ValueError(
+                    f"missing as-of dynamic universe snapshots for {session_day}"
+                )
+            missing_symbols = scanned.difference(session)
+            if self.settings.dynamic_universe_enabled and missing_symbols:
+                raise ValueError(
+                    "dynamic replay missing bar histories for: "
+                    + ",".join(sorted(missing_symbols))
+                )
             timeline = sorted(
                 {
                     stamp(bar)
-                    for symbol in self.settings.scan_symbols
+                    for symbol in scanned
                     for bar in session.get(symbol, [])
                 }
             )
@@ -403,7 +544,7 @@ class ReplayEngine:
                 continue
 
             visible: dict[str, list[dict[str, Any]]] = {
-                symbol: [] for symbol in set(self.settings.scan_symbols) | set(self.settings.confirmation_symbols)
+                symbol: [] for symbol in scanned | set(self.settings.confirmation_symbols)
             }
             index: dict[str, int] = {symbol: 0 for symbol in visible}
             last_exit: dict[str, datetime] = {}
@@ -426,7 +567,9 @@ class ReplayEngine:
                     if not current or stamp(current[-1]) != bar_time:
                         continue
                     position = positions[symbol]
-                    decision = self._exit_decision(position, current[-1], now)
+                    decision = self._exit_decision(
+                        position, current[-1], now, visible=visible
+                    )
                     if decision is None:
                         continue
                     exit_reason, exit_reference = decision
@@ -480,7 +623,17 @@ class ReplayEngine:
                     symbol: visible.get(symbol, [])
                     for symbol in self.settings.confirmation_symbols
                 }
-                for symbol in self.settings.scan_symbols:
+                active_universe = (
+                    next(
+                        (symbols for at, symbols in reversed(snapshots_for_day) if at <= now),
+                        set(),
+                    )
+                    if self.settings.dynamic_universe_enabled
+                    else set(self.settings.scan_symbols)
+                )
+                if self.settings.dynamic_universe_enabled and not active_universe:
+                    counters["universe_snapshot_missing_cycles"] += 1
+                for symbol in sorted(active_universe):
                     signal = self.strategy.evaluate(
                         bars=visible.get(symbol, []),
                         confirmation_bars=confirmation_bars,
@@ -490,6 +643,8 @@ class ReplayEngine:
                         now=now,
                     )
                     if signal.action != "buy":
+                        if (signal.metadata or {}).get("research_rule_rejected") is True:
+                            counters["research_rule_blocks"] += 1
                         continue
                     allowed, _, quality = self._historical_market_quality(
                         signal,
@@ -511,6 +666,10 @@ class ReplayEngine:
                     signal.metadata["quality_components"] = ranking["components"]
                     signal.metadata["relative_volume_ratio"] = ranking["relative_volume_ratio"]
                     signal.metadata["trend_persistence"] = ranking["trend_persistence"]
+                    counters["signals_scored"] += 1
+                    if Decimal(str(ranking["score"])) < self.settings.min_quality_score:
+                        counters["quality_blocks"] += 1
+                        continue
                     buy_signals.append(signal)
                     counters["signals_qualified"] += 1
 
@@ -565,6 +724,7 @@ class ReplayEngine:
                         account,
                         payloads,
                         entries_today,
+                        active_entry_universe=active_universe,
                     )
                     if not risk_allowed:
                         counters["risk_blocks"] += 1
@@ -592,6 +752,10 @@ class ReplayEngine:
                         entry_at=now,
                         notional=cost,
                         quality_score=float((signal.metadata or {}).get("quality_score", 0) or 0),
+                        risk_stop_pct=d(
+                            (signal.metadata or {}).get("effective_stop_pct")
+                            or self.settings.stop_pct
+                        ),
                     )
                     entries_today += 1
                     planned += 1
@@ -656,8 +820,33 @@ class ReplayEngine:
                 "commission_per_order": "0",
                 "intrabar_stop_target_policy": "stop_first",
                 "historical_quotes_available": False,
-                "same_strategy_logic": True,
+                "same_strategy_logic": False,
                 "broker_orders_possible": False,
+                "live_execution_parity": "UNVERIFIED",
+                "research_only": True,
+                "production_promotion_authorized": False,
+                "dynamic_universe_asof_required": self.settings.dynamic_universe_enabled,
+                "dynamic_universe_asof_supplied": bool(asof_universe),
+                "universe_snapshot_fingerprint": (
+                    sha256(
+                        json.dumps(
+                            [
+                                [at.isoformat(), sorted(symbols)]
+                                for at, symbols in asof_universe
+                            ],
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest()
+                    if asof_universe else None
+                ),
+                "protection_model": "prior_completed_bar_ratchet",
+                "thesis_model": "distinct_completed_bar_approximation",
+                "fidelity_limitations": [
+                    "No historical broker-order, fill, or standing-stop reconstruction.",
+                    "Bar-only simulation has uncertain intrabar ordering and stop fills.",
+                    "Historical quote spreads, live account/risk and scan selection can differ.",
+                    "Replay is an offline approximation, not a production parity certificate.",
+                ],
             },
             "strategy": {
                 "name": self.settings.strategy_name,

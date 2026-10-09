@@ -125,3 +125,61 @@ def test_research_package_handles_missing_session_evidence_without_fabrication()
     assert "Session: unavailable" in package["handoff_markdown"]
     assert package["summary"]["active_forecast_count"] == 0
     assert package["summary"]["hypothesis_count"] == 0
+
+
+def test_canonical_v17_daily_report_summary_matches_real_metrics_layout():
+    canonical = {
+        "current_strategy": {"strategy_version_id": "LIVE-2026-09-25-003"},
+        "latest_daily_report": {
+            "report_version": "rhen-daily-v1.7",
+            "report_key": "2026-10-08:rhen-daily-v1.7:test",
+            "source_fingerprint": "deadbeef",
+            "runtime_git_commit": "abc123",
+            "session": "2026-10-08",
+            "classification": {"classification": "INVESTIGATE", "reason": "weak edge"},
+            "metrics": {
+                "trade_count": 7,
+                "realized_pnl": "-0.0092",
+                "win_rate": "0.142857",
+                "expectancy": "-0.001314",
+                "profit_factor": "0.864",
+                "max_realized_drawdown": "0.03",
+            },
+            "data_quality_warnings": ["missing point-in-time quote"],
+            "next_offline_research_action": "verify replay parity",
+        },
+        "agent_runs": [],
+        "search_ledger": {},
+    }
+    package = build_research_package(
+        canonical, {"state": "WAITING"}, {"forecasts": []},
+        generated_at=datetime(2026, 10, 8, 21, 0, tzinfo=UTC),
+    )
+    daily = package["summary"]["latest_session"]
+    assert daily["closed_trades"] == 7
+    assert daily["classification"] == "INVESTIGATE"
+    assert daily["net_pnl"] == "-0.0092"
+    assert daily["profit_factor"] == "0.864"
+    assert daily["max_realized_drawdown"] == "0.03"
+    assert daily["source_fingerprint"] == "deadbeef"
+    assert daily["runtime_git_commit"] == "abc123"
+    assert daily["data_quality_warning_count"] == 1
+    assert daily["next_offline_research_action"] == "verify replay parity"
+    assert "closed trades: 7" in package["handoff_markdown"]
+
+
+def test_canonical_summary_preserves_zero_metrics_and_legacy_fallback():
+    canonical = {
+        "latest_daily_report": {
+            "session": "2026-10-08",
+            "metrics": {"trade_count": 0, "realized_pnl": 0, "win_rate": 0},
+            "performance": {"closed_trades": 18, "net_pnl": "12"},
+            "classification": {"classification": "NO_TRADE"},
+        }
+    }
+    zero = build_research_package(canonical, {}, {"forecasts": []})
+    daily = zero["summary"]["latest_session"]
+    assert daily["closed_trades"] == 0
+    assert daily["net_pnl"] == 0
+    assert daily["win_rate"] == 0
+    assert daily["classification"] == "NO_TRADE"

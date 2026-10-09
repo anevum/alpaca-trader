@@ -43,12 +43,15 @@ def rank_strategy_families(
         expected_utility = _d(row.get("expected_utility"))
         confidence = _d(row.get("confidence"))
         minimums_met = row.get("minimums_met") is True
+        # Registry normalizes `status`, while older research evidence uses
+        # `validation_status`. Either can describe research eligibility.
+        validation_status = family.get("validation_status") or family.get("status")
         eligible = bool(
             expected_utility is not None
             and confidence is not None
             and confidence >= confidence_floor
             and minimums_met
-            and family.get("validation_status") in {
+            and validation_status in {
                 "FROZEN_VALIDATION",
                 "HOLDOUT_COMPLETE",
                 "CHALLENGER_CANDIDATE",
@@ -57,7 +60,7 @@ def rank_strategy_families(
         ranked.append(
             {
                 "family_key": family_key,
-                "validation_status": family.get("validation_status"),
+                "validation_status": validation_status,
                 "expected_utility": (
                     str(expected_utility) if expected_utility is not None else None
                 ),
