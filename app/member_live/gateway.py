@@ -86,8 +86,8 @@ class LiveOrderJournal:
 
     def _row(self, binding: MemberBinding, signal_id: str):
         return self._db.execute(
-            "SELECT * FROM member_live_intents WHERE member_id = ? AND connection_id = ? AND signal_id = ?",
-            (binding.member_id, binding.connection_id, signal_id)
+            "SELECT * FROM member_live_intents WHERE member_id = ? AND connection_id = ? AND broker_account_id = ? AND signal_id = ?",
+            (binding.member_id, binding.connection_id, binding.broker_account_id, signal_id)
         ).fetchone()
 
     @staticmethod
@@ -105,6 +105,15 @@ class LiveOrderJournal:
         self._db.execute("BEGIN IMMEDIATE")
         try:
             existing = self._row(binding, intent.signal_id)
+            # A server connection ID is permanently bound to one Alpaca account.
+            # Never let it be silently recycled across brokerage identities.
+            other = self._db.execute(
+                "SELECT 1 FROM member_live_intents WHERE member_id=? AND connection_id=?"
+                " AND broker_account_id<>? LIMIT 1",
+                (binding.member_id, binding.connection_id, binding.broker_account_id)
+            ).fetchone()
+            if other:
+                raise LiveOrderDenied("Connection ID belongs to another brokerage account")
             if existing:
                 if existing["digest"] != digest or existing["broker_account_id"] != binding.broker_account_id:
                     raise LiveOrderDenied("Duplicate signal ID with changed live order payload")
@@ -130,6 +139,8 @@ class LiveOrderJournal:
     ) -> LiveReceipt:
         if (from_state, to_state) not in {("reserved", "uncertain"), ("reserved", "blocked"), ("uncertain", "confirmed")}:
             raise LiveOrderDenied("Invalid or unsafe journal state transition")
+        if to_state == "confirmed" and (not isinstance(broker_order_id, str) or not broker_order_id):
+            raise LiveOrderDenied("Broker order ID required for confirmed orders")
         result = self._db.execute(
             "UPDATE member_live_intents SET state=?, broker_order_id=COALESCE(?,broker_order_id),"
             "broker_status=COALESCE(?,broker_status) "
@@ -151,9 +162,9 @@ class LiveOrderJournal:
         if not isinstance(binding, MemberBinding) or type(limit) is not int or not 1 <= limit <= 100:
             raise LiveOrderDenied("Invalid member scope")
         rows = self._db.execute(
-            "SELECT * FROM member_live_intents WHERE member_id=? AND connection_id=?"
+            "SELECT * FROM member_live_intents WHERE member_id=? AND connection_id=? AND broker_account_id=?"
             " ORDER BY created_at DESC, client_order_id DESC LIMIT ?",
-            (binding.member_id, binding.connection_id, limit)
+            (binding.member_id, binding.connection_id, binding.broker_account_id, limit)
         ).fetchall()
         return tuple(self._receipt(row) for row in rows)
 
