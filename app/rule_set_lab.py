@@ -12,8 +12,10 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
+from .research_agent.strategy_family_registry import build_strategy_family_registry
 from .config import Settings, get_settings
 from .replay import ReplayEngine
 from .strategy import Signal
@@ -64,8 +66,8 @@ class RuleSetSpec:
     entry_rules: tuple[EntryRule, ...]
 
     def __post_init__(self) -> None:
-        if not self.name or len(self.name) > 80:
-            raise ValueError("rule-set name must be 1-80 characters")
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", self.name):
+            raise ValueError("rule-set name must be a lowercase stable slug")
         if not self.hypothesis.strip() or len(self.hypothesis) > 600:
             raise ValueError("every challenger needs a bounded hypothesis")
         if not self.entry_rules or len(self.entry_rules) > 3:
@@ -294,10 +296,25 @@ def run_rule_set_tournament(
             "validated_alpha": False,
             "promotion_authorized": False,
         })
+    registered_families = build_strategy_family_registry([
+        {
+            "family_key": f"rhen-rule-{spec.name}",
+            "strategy_name": settings.strategy_name,
+            "direction": "LONG",
+            "asset_class": "US_EQUITY",
+            "status": "SPEC_ONLY",
+            "parent_family_key": "rhen-long-momentum-v1",
+            "hypothesis": spec.hypothesis,
+            "research_execution_authority": False,
+            "automatic_promotion_authorized": False,
+        }
+        for spec in rule_sets
+    ])
     return {
         "methodology": METHODOLOGY,
         "fingerprint": fingerprint,
         "manifest": manifest,
+        "research_family_registry": registered_families,
         "results": results,
         "research_only": True,
         "automatic_promotion_authorized": False,
