@@ -62,7 +62,7 @@ def observation(**kwargs):
         equity_cents=100_000, buying_power_cents=50_000,
         gross_exposure_cents=0, pending_buy_exposure_cents=0,
         daily_realized_loss_cents=0, open_position_count=0,
-        held_shares=0, pending_sell_shares=0,
+        held_shares=0, pending_sell_shares=0, pending_new_positions=0,
     )
     attrs.update(kwargs)
     return BrokerObservation(**attrs)
@@ -130,7 +130,7 @@ def test_every_independent_approval_is_required_before_any_broker_call():
                                intent(f"approval-{index}"), observation(), broker, now=NOW)
         for invalid in (
             authority(scopes=()), authority(scopes=("account:write",)),
-            authority(revoked=True), authority(member_armed="true"),
+            authority(revoked=True), authority(member_armed="true"), authority(scopes="trading"),
         ):
             with pytest.raises(LiveOrderDenied):
                 service.submit(binding(), invalid, release(), policy(),
@@ -159,6 +159,7 @@ def test_bounded_live_buy_and_owner_separation_rules():
         (sample, observation(equity_cents=2000)),
         (sample, observation(daily_realized_loss_cents=1000)),
         (sample, observation(open_position_count=2)),
+        (sample, observation(open_position_count=1, pending_new_positions=1)),
         (sample, observation(gross_exposure_cents=29_000)),
         (sample, observation(pending_buy_exposure_cents=29_000)),
         (replace(sample, quantity=100), quote),
