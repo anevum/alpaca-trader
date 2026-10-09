@@ -6,6 +6,8 @@ It cannot mutate strategies, place orders, access brokers, or promote results.
 from __future__ import annotations
 
 from hashlib import sha256
+from decimal import Decimal, InvalidOperation
+from .candidate_cohort_audit import AUDIT_VERSION, MIN_SCREEN_CANDIDATES, MIN_OUTCOME_COVERAGE
 import json
 import re
 from typing import Any, Mapping
@@ -81,6 +83,7 @@ def build_rule_set_agenda(report: Mapping[str, Any]) -> dict[str, Any]:
     candidate = _dictionary(report.get("candidate_forward_evidence"))
     status = _dictionary(candidate.get("status"))
     readiness = _dictionary(candidate.get("readiness"))
+    cohort = _dictionary(candidate.get("cohort_audit"))
     recon = _dictionary(report.get("reconstruction"))
     runtime = _dictionary(report.get("runtime"))
     persistence = _dictionary(runtime.get("persistence"))
@@ -101,11 +104,32 @@ def build_rule_set_agenda(report: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("ANALYTICS_RETENTION_LOSS")
     if str(readiness.get("state") or "").upper() not in READY_STATES:
         blockers.append("CANDIDATE_FORWARD_READINESS_NOT_VERIFIED")
+    if cohort.get("audit_version") != AUDIT_VERSION:
+        blockers.append("CANONICAL_15M_COHORT_AUDIT_MISSING")
+    else:
+        try:
+            n = int(cohort.get("candidate_count"))
+            c = Decimal(str(cohort.get("coverage_15m")))
+            if not c.is_finite():
+                raise ValueError("nonfinite coverage")
+        except (TypeError, ValueError, InvalidOperation):
+            blockers.append("CANONICAL_15M_COHORT_AUDIT_INVALID")
+        else:
+            if n < MIN_SCREEN_CANDIDATES or c < MIN_OUTCOME_COVERAGE:
+                blockers.append("CANONICAL_15M_COHORT_COVERAGE_INSUFFICIENT")
+        if cohort.get("blocking_reasons") or cohort.get("state") != "READY":
+            blockers.append("CANONICAL_15M_COHORT_AUDIT_BLOCKED")
+        if not re.fullmatch(r"[a-fA-F0-9]{64}", str(cohort.get("cohort_fingerprint") or "")):
+            blockers.append("CANONICAL_15M_COHORT_FINGERPRINT_MISSING")
     if _integer(status.get("incomplete_rows")) or _integer(status.get("error_rows")):
         blockers.append("CANDIDATE_FORWARD_OUTCOMES_INCOMPLETE")
     summary = live_offline.get("summary")
     if isinstance(summary, list) and any(
         _integer(row.get("unreconstructable"))
+        or (
+            str(row.get("match_state") or "").upper() == "UNRECONSTRUCTABLE"
+            and _integer(row.get("count"))
+        )
         for row in summary if isinstance(row, Mapping)
     ):
         blockers.append("LIVE_VS_REPLAY_EVENTS_UNRECONSTRUCTABLE")
