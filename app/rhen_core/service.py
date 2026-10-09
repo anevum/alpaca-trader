@@ -4,11 +4,13 @@ import asyncio
 import hmac
 import json
 import os
+from time import monotonic
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.nostra.embedded import CoreNostraGateway, CoreNostraLedger
@@ -21,10 +23,12 @@ from app.research_agent.embedded import EmbeddedResearchReview
 from app.research_agent.package import build_research_package
 
 from .store import RhenCoreStore
+from .public_events import PublicEventBus
 
 UTC = timezone.utc
 RUNTIME_VERSION = "rhen-core-v3.2.0"
 store = RhenCoreStore()
+public_events = PublicEventBus()
 embedded_nostra = NostraRuntime(
     ledger=CoreNostraLedger(store),
     gateway=CoreNostraGateway(store),
@@ -97,10 +101,12 @@ def _require_research_operator(provided: str | None) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    public_events.start()
     await embedded_nostra.start()
     try:
         yield
     finally:
+        public_events.stop()
         await embedded_nostra.stop()
 
 
@@ -198,13 +204,74 @@ def ingest_events(
         "NOSTRA_GATEWAY_TOKEN",
     )
     payload = [event.model_dump(mode="json") for event in batch.events]
-    return store.ingest_events(payload)
+    result = store.ingest_events(payload)
+    if result.get("inserted"):
+        public_events.signal()
+    return result
 
 
 
 @app.get("/v1/trading-public-feed")
 def trading_public_feed() -> dict[str, Any]:
     return store.public_live_feed()
+
+
+@app.get("/v1/trading-public-events")
+async def trading_public_events(request: Request) -> StreamingResponse:
+    """Read-only SSE, emitted on persisted changes; never private broker data.
+
+    A quiet publisher sends heartbeat comments and refreshes source freshness
+    every 45 seconds. No heartbeat is misrepresented as a market observation.
+    """
+    try:
+        client = public_events.subscribe()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="public activity stream at capacity") from exc
+
+    async def stream():
+        last_snapshot = monotonic()
+        try:
+            initial = await public_events.snapshot(store.public_live_feed)
+            yield public_events.frame(initial)
+            last_snapshot = monotonic()
+            while not await request.is_disconnected():
+                try:
+                    await asyncio.wait_for(client.get(), timeout=12)
+                except asyncio.TimeoutError:
+                    if monotonic() - last_snapshot >= 45:
+                        projection = await public_events.snapshot(
+                            store.public_live_feed, refresh=True,
+                        )
+                        yield public_events.frame(projection)
+                        last_snapshot = monotonic()
+                    else:
+                        yield ": heartbeat\n\n"
+                    continue
+                # Coalesce bursts into one truthful snapshot. This is not polling
+                # and never changes trading decisions or source-data timestamps.
+                await asyncio.sleep(0.25)
+                while not client.empty():
+                    client.get_nowait()
+                projection = await public_events.snapshot(store.public_live_feed)
+                yield public_events.frame(projection)
+                last_snapshot = monotonic()
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
+        except Exception:
+            # Fail closed. Never serialize an exception or private record.
+            yield "event: unavailable\ndata:{}\n\n"
+        finally:
+            public_events.unsubscribe(client)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/v1/strategy-pipeline")
@@ -258,7 +325,9 @@ def trading_reconcile(
         "TRADING_INGEST_TOKEN",
     )
     try:
-        return store.reconcile(body)
+        result = store.reconcile(body)
+        public_events.signal()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
