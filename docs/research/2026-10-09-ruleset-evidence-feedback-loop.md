@@ -14,7 +14,7 @@ The October 8 investigation found report-only research with no executed promotio
 Every evaluation must carry stable `session`, event/candidate IDs, trading strategy version, runtime commit, as-of universe membership, completed bars, quote/source timestamp and spread, entry signal / all rejection gates, at-decision NOSTRA regime, order intent/client ID, broker order, every partial fill, stop/exit reason, costs, forward outcomes, and canonical replay identity. A missing link remains missing rather than an invented zero.
 
 Broker session orders and fill activities now use bounded **read-only pagination**:
-- Orders: Alpine Trading API `GET /v2/orders` with `status=all` and stable `before_order_id` cursor (without incompatible time-based cursor parameters). Retrieve until crossing the earliest requested local calendar date; preserve a conservative 20-page ceiling; any cursor anomaly, missing ID/timestamp or saturation fails the report instead of claiming completeness.
+- Orders: Alpaca Trading API `GET /v2/orders` with `status=all` and stable `before_order_id` cursor (without incompatible time-based cursor parameters). Retrieve until crossing the earliest requested local calendar date; preserve a conservative 20-page ceiling; any cursor anomaly, missing ID/timestamp or saturation fails the report instead of claiming completeness.
 - FILL activities: `GET /v2/account/activities/FILL` with session date, `page_size=100`, `page_token` equal to the final activity ID. A repeated cursor or page ceiling raises and must surface as a failed IREN research job.
 - Reconstruction warns when same-window sells cannot pair to opening lots. A carry position needs earlier fills; do not compute round-trip expectancy from such a window.
 
