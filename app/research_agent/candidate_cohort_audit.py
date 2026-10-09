@@ -137,6 +137,27 @@ def audit_candidate_cohort(
     total = len(candidates)
     coverage = Decimal(complete) / Decimal(total) if total else Decimal("0")
     reasons: list[str] = []
+    attestation = (
+        population_attestation
+        if isinstance(population_attestation, Mapping)
+        else {}
+    )
+    source_digest = attestation.get("archive_sha256")
+    population_verified = (
+        attestation.get("schema_version") == POPULATION_ATTESTATION_SCHEMA
+        and attestation.get("source") == "immutable_precompaction_decision_archive"
+        and attestation.get("complete_candidate_population") is True
+        and attestation.get("rejected_candidates_preserved") is True
+        and attestation.get("all_decision_cycles_reconciled") is True
+        and attestation.get("retention_loss_verified_absent") is True
+        and isinstance(source_digest, str)
+        and len(source_digest) == 64
+        and all(ch in "0123456789abcdefABCDEF" for ch in source_digest)
+    )
+    if not population_verified:
+        reasons.append("CANDIDATE_POPULATION_NOT_ATTESTED")
+    if compacted_source_count:
+        reasons.append("CANDIDATE_DECISION_CONTEXT_SAMPLED_OR_COMPACTED")
     if not total:
         reasons.append("NO_CANDIDATES_EXPORTED")
     if total == MAX_SOURCE_CANDIDATES:
@@ -164,14 +185,23 @@ def audit_candidate_cohort(
             "strategy_version_id": item.get("strategy_version_id"),
             "outcomes": [
                 {
-                    "horizon_minutes": outcome.get("horizon_minutes"),
+                    "horizon_minutes": outcome.get("horizon_minutes", 15),
                     "status": outcome.get("status"),
                     "forward_return": outcome.get("forward_return"),
                     "computed_at": outcome.get("computed_at"),
                 }
-                for outcome in (item.get("outcomes") if isinstance(item.get("outcomes"), list) else [])
+                for outcome in (
+                    item.get("outcomes")
+                    if isinstance(item.get("outcomes"), list)
+                    else (
+                        [item["forward_outcomes"]["15"]]
+                        if isinstance(item.get("forward_outcomes"), Mapping)
+                        and isinstance(item["forward_outcomes"].get("15"), Mapping)
+                        else []
+                    )
+                )
                 if isinstance(outcome, Mapping)
-                and str(outcome.get("horizon_minutes")) == "15"
+                and str(outcome.get("horizon_minutes", 15)) == "15"
             ],
         }
         for item in candidates
@@ -193,6 +223,8 @@ def audit_candidate_cohort(
         "missing_decision_time": missing_time,
         "causal_time_errors": causal_time_error,
         "market_data_incomplete": incomplete_market_data,
+        "compacted_source_count": compacted_source_count,
+        "full_population_attested": population_verified,
         "blocking_reasons": sorted(set(reasons)),
         "cohort_fingerprint": sha256(
             json.dumps(
