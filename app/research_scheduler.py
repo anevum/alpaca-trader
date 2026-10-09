@@ -266,24 +266,23 @@ class ResearchReportScheduler:
                 "funnel": scan_funnel(self.state.decision_history),
             }
 
-        orders = await self.client.recent_orders(limit=500)
+        # Research reads must not quietly truncate broker history. Use stable
+        # order-ID and activity-ID pagination, never the live order writer.
+        start_at = datetime.combine(sessions[0], time.min, tzinfo=NY)
+        end_at = datetime.combine(
+            sessions[-1] + timedelta(days=1), time.min, tzinfo=NY
+        )
+        orders = await self.client.research_orders_for_window(
+            start_at=start_at, end_at=end_at
+        )
         data_quality_warnings: list[str] = []
-        if len(orders) >= 500:
-            data_quality_warnings.append(
-                "recent order response reached the 500-order request limit"
-            )
-
         fills: list[dict[str, Any]] = []
         for session in sessions:
-            session_fills = await self.client.fill_activities(
-                date=session.isoformat(),
-                limit=100,
-            )
-            if len(session_fills) >= 100:
-                data_quality_warnings.append(
-                    f"{session.isoformat()} fill activity reached the 100-record request limit"
+            fills.extend(
+                await self.client.research_fills_for_session(
+                    date=session.isoformat()
                 )
-            fills.extend(session_fills)
+            )
 
         positions = await self.client.positions()
 
@@ -293,6 +292,11 @@ class ResearchReportScheduler:
             owner_tag=str(getattr(self.settings, "order_owner_tag", "") or ""),
         )
         trades = rebuilt["trades"]
+        if any(qty > 0 for qty in rebuilt.get("unmatched_sell_qty", {}).values()):
+            data_quality_warnings.append(
+                "Broker sell fills could not be paired with same-window buy lots; "
+                "carry positions require earlier immutable fills before P/L inference."
+            )
 
         symbols = sorted({trade["symbol"] for trade in trades})
         if symbols:
@@ -311,6 +315,15 @@ class ResearchReportScheduler:
             "fills": fills,
             "positions": positions,
             "data_quality_warnings": data_quality_warnings,
+            "broker_history": {
+                "pagination": "EXHAUSTED_WITHIN_BOUNDS",
+                "order_count": len(orders),
+                "fill_count": len(fills),
+                "requested_session_dates": [day.isoformat() for day in sessions],
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "does_not_certify_candidate_quote_or_live_replay_parity": True,
+            },
             "trades": trades,
             "reconstruction": {
                 key: value
@@ -1297,6 +1310,7 @@ class ResearchReportScheduler:
                 "strategy_health": adaptive_control.get("strategy_health") or {},
                 "graen_validation": adaptive_control.get("graen_validation") or {},
                 "reconstruction": evidence["reconstruction"],
+                "broker_history": evidence.get("broker_history"),
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,
                 "classification": classification,
