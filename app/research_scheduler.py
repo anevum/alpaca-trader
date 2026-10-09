@@ -44,6 +44,7 @@ from .research_agent.strategy_family_registry import (
 )
 from .research_agent.strategy_health import compute_strategy_health
 from .research_agent.rule_set_agenda import build_rule_set_agenda
+from .research_agent.candidate_cohort_audit import audit_candidate_cohort
 from .research_agent.strategy_router import rank_strategy_families
 from .research_agent.shadow_economics_validation import evaluate_shadow_economics
 from .research_agent.shadow_allocation_validation import evaluate_shadow_allocation
@@ -1052,8 +1053,35 @@ class ResearchReportScheduler:
         ads002 = canonical.get("ads002") or {}
         ads002_v2 = canonical.get("ads002_v2") or {}
         candidates = list(canonical.get("candidates") or [])
-        evidence_readiness = canonical.get("evidence_readiness") or {}
-        outcome_status = post_event.get("forward_outcome_status") or {}
+        cohort_audit = audit_candidate_cohort(
+            candidates,
+            expected_strategy=str(
+                getattr(self.settings, "strategy_version_id", "") or ""
+            ),
+        )
+        canonical_readiness = canonical.get("evidence_readiness") or {}
+        evidence_readiness = dict(cohort_audit)
+        if canonical_readiness:
+            evidence_readiness["canonical"] = canonical_readiness
+            if str(canonical_readiness.get("state") or "").upper() not in {
+                "READY", "COMPLETE"
+            }:
+                evidence_readiness["state"] = "PARTIAL"
+                evidence_readiness["blocking_reasons"] = sorted(set(
+                    [*evidence_readiness["blocking_reasons"],
+                     "CANONICAL_READINESS_NOT_COMPLETE"]
+                ))
+        outcome_status = dict(post_event.get("forward_outcome_status") or {})
+        # The canonical report-read endpoint can provide per-candidate
+        # outcomes without top-level forward_outcome_status counts.
+        # Publish audited status separately: never conflate all horizons
+        # with the exact 15-minute candidate cohort.
+        outcome_status["audited_15m_complete_rows"] = cohort_audit["complete_15m"]
+        outcome_status["audited_15m_missing_rows"] = cohort_audit["missing_15m"]
+        outcome_status["audited_15m_invalid_or_error_rows"] = (
+            cohort_audit["incomplete_or_error_15m"]
+            + cohort_audit["invalid_forward_return_15m"]
+        )
         shadow_economics_validation = evaluate_shadow_economics(candidates)
         shadow_allocation_validation = evaluate_shadow_allocation(candidates)
         counterfactual_lab, counterfactual_warning = (
@@ -1112,6 +1140,11 @@ class ResearchReportScheduler:
                 "candidate-score performance"
             )
         daily_warnings = list(evidence["data_quality_warnings"])
+        if cohort_audit["blocking_reasons"]:
+            daily_warnings.append(
+                "Canonical 15-minute candidate evidence not research-complete: "
+                + ", ".join(cohort_audit["blocking_reasons"])
+            )
         persistence = runtime.get("persistence") or {}
         if persistence.get("storage_analytics_shedding") or int(persistence.get("shed_count") or 0):
             daily_warnings.append(
@@ -1224,6 +1257,7 @@ class ResearchReportScheduler:
                 "ads002": ads002,
                 "ads002_v2": ads002_v2,
                 "evidence_readiness": evidence_readiness,
+                "cohort_audit": cohort_audit,
                 "shadow_economics_validation": shadow_economics_validation,
                 "shadow_allocation_validation": shadow_allocation_validation,
                 "counterfactual_lab": counterfactual_lab,
@@ -1297,6 +1331,7 @@ class ResearchReportScheduler:
                     "by_horizon": post_event.get("forward_outcomes_by_horizon") or [],
                     "status": outcome_status,
                     "readiness": evidence_readiness,
+                    "cohort_audit": cohort_audit,
                     "post_event_only": True,
                     "counterfactual_not_realized_trades": True,
                 },
