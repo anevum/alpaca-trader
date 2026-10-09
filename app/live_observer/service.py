@@ -341,14 +341,21 @@ async def private_live(websocket: WebSocket) -> None:
         await websocket.close(code=1013)
         return
     authorization = websocket.headers.get("authorization")
+    owner_email = os.getenv("RHEN_OWNER_EMAIL", "").strip().lower()
+    if not owner_email:
+        await websocket.close(code=1013)
+        return
     try:
-        await authenticate_command_admin(
+        identity = await authenticate_command_admin(
             authorization,
             team_domain=os.getenv("CF_ACCESS_TEAM_DOMAIN", ""),
             audience=os.getenv("CF_ACCESS_AUD", ""),
             allowed_emails=os.getenv("COMMAND_ACCESS_EMAILS", ""),
         )
     except CommandAuthError:
+        await websocket.close(code=1008)
+        return
+    if identity.get("email") != owner_email:
         await websocket.close(code=1008)
         return
     if len(observer.publisher.clients) >= MAX_SUBSCRIBERS:
