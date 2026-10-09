@@ -303,7 +303,7 @@ def test_invalid_contracts_reject_abnormal_inputs_and_owner_data_path():
     with pytest.raises(LiveOrderDenied):
         LiveOrderJournal("/data/rhen-core.db")
     for sample in (dict(quantity=0), dict(quantity=True), dict(limit_price_cents=-1),
-                   dict(side="short"), dict(symbol="BTCUSD")):
+                   dict(side="short"), dict(symbol="BTC/USD")):
         with pytest.raises(LiveOrderDenied):
             intent(**sample)
     with pytest.raises(LiveOrderDenied):
