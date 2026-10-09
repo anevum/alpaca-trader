@@ -101,6 +101,8 @@ def paired_rule_set_scorecard(
     expected_costs: str | None = None
     variants: tuple[str, ...] | None = None
     last_phase = -1
+    if any(not isinstance(item, Mapping) for item in sessions):
+        raise ValueError("session row must be an object")
     for row in sorted(sessions, key=lambda item: str(item.get("session") or "")):
         if not isinstance(row, Mapping):
             raise ValueError("session row must be an object")
@@ -110,6 +112,8 @@ def paired_rule_set_scorecard(
                 raise ValueError("invalid date")
         except ValueError as exc:
             raise ValueError("session must be YYYY-MM-DD") from exc
+        if date.fromisoformat(day).weekday() >= 5:
+            raise ValueError("U.S. equity trading sessions cannot fall on weekends")
         if day in seen_days:
             raise ValueError("duplicate independent trading session")
         seen_days.add(day)
@@ -140,6 +144,11 @@ def paired_rule_set_scorecard(
         if not SHA_RE.fullmatch(source_data) or source_data in seen_data:
             raise ValueError("missing or duplicated independently frozen bar data")
         seen_data.add(source_data)
+        if (
+            not isinstance(manifest.get("frozen_settings"), Mapping)
+            or not isinstance(manifest.get("rules"), list)
+        ):
+            raise ValueError("tournament control settings or rule slate missing")
         settings_hash = _signature(manifest.get("frozen_settings"))
         rules_hash = _signature(manifest.get("rules"))
         costs_hash = _signature({
@@ -160,9 +169,18 @@ def paired_rule_set_scorecard(
         result_rows = tournament.get("results")
         if not isinstance(result_rows, list):
             raise ValueError("tournament missing paired rule-set results")
+        if any(not isinstance(item, Mapping) for item in result_rows):
+            raise ValueError("tournament result must be an object")
         names = tuple(str(item.get("name") or "") for item in result_rows)
         if not names or names[0] != "production" or len(set(names)) != len(names):
             raise ValueError("production control must precede distinct challengers")
+        declared = tuple(
+            str(item.get("name") or "")
+            for item in manifest["rules"]
+            if isinstance(item, Mapping)
+        )
+        if names != declared:
+            raise ValueError("result names are not identical to the frozen rule slate")
         if variants is not None and names != variants:
             raise ValueError("some sessions evaluated a different challenger slate")
         variants = names
