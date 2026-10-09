@@ -43,6 +43,7 @@ from .research_agent.strategy_family_registry import (
     build_strategy_family_registry,
 )
 from .research_agent.strategy_health import compute_strategy_health
+from .research_agent.rule_set_agenda import build_rule_set_agenda
 from .research_agent.strategy_router import rank_strategy_families
 from .research_agent.shadow_economics_validation import evaluate_shadow_economics
 from .research_agent.shadow_allocation_validation import evaluate_shadow_allocation
@@ -1326,6 +1327,9 @@ class ResearchReportScheduler:
                 "promotion_authorized": False,
                 "capital_scaling_authorized": False,
             }
+        )
+        payload["rule_set_research_agenda"] = serialize(
+            build_rule_set_agenda(payload)
         )
         payload["runtime_git_commit"] = os.environ.get("RAILWAY_GIT_COMMIT_SHA")
         persisted = await self.event_sink.emit_critical(
