@@ -89,9 +89,11 @@ class MeteredStore:
             raise ArchiveIntegrityError("staging object must be binary")
         if self.writes + 1 > MAX_WRITE_CALLS or self.bytes + len(value) > MAX_DATA_WRITTEN:
             raise ArchiveIntegrityError("staging budget exceeded before write")
-        self.underlying.put_once(key, value)
+        # Failed 412/network attempts still consume requests and potentially
+        # provider budget; count them *before* invoking external storage.
         self.writes += 1
         self.bytes += len(value)
+        self.underlying.put_once(key, value)
 
     def get(self, key: str) -> bytes | None:
         if self.reads + 1 > MAX_READ_CALLS:
@@ -218,6 +220,7 @@ def run_staging_probe(
             "cycles":EVENTS,"candidates":CANDIDATES,"rejected":EVENTS,
             "local_batches":len(batches),"remote_receipts":len(receipts),
             "remote_source_restore_sha256":proof["restored_jsonl_sha256"],
+            "receipt_anchors_for_independent_recovery":dict(sorted(anchors.items())),
             "sha256_receipts_pinned_outside_remote":True,
             "conflicting_conditional_put_rejected":True,
             "temporary_source_closed_before_restore":True,
