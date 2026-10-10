@@ -129,6 +129,69 @@ def test_reader_blocks_broker_routes_before_calling_transport():
     assert wrapper.calls == 0
 
 
+def _canonical_probe_query(path):
+    if path == BARS_PATH:
+        return {"symbols":"AAPL,MSFT",
+                "start":(AT-timedelta(minutes=3)).isoformat(),
+                "end":(AT-timedelta(microseconds=1)).isoformat(),
+                "feed":"iex","limit":"300","sort":"asc","timeframe":"1Min"}
+    return {"symbols":"AAPL",
+            "start":(AT-timedelta(minutes=2)).isoformat(),
+            "end":AT.isoformat(),"feed":"iex","limit":"1","sort":"desc"}
+
+
+@pytest.mark.parametrize("path,changes", [
+    (BARS_PATH, {"start":(AT-timedelta(minutes=4)).isoformat()}),
+    (BARS_PATH, {"end":AT.isoformat()}),
+    (BARS_PATH, {"end":(AT+timedelta(days=1)).isoformat()}),
+    (BARS_PATH, {"timeframe":"1Day"}),
+    (BARS_PATH, {"limit":"1200"}),
+    (BARS_PATH, {"sort":"desc"}),
+    (BARS_PATH, {"symbols":"AAPL"}),
+    (BARS_PATH, {"symbols":"AAPL,MSFT,TSLA"}),
+    (BARS_PATH, {"feed":"sip"}),
+    (BARS_PATH, {"page_token":""}),
+    (BARS_PATH, {"page_token":"x"*513}),
+    (BARS_PATH, {"unexpected":"anything"}),
+    (QUOTES_PATH, {"start":(AT-timedelta(days=1)).isoformat()}),
+    (QUOTES_PATH, {"end":(AT+timedelta(minutes=1)).isoformat()}),
+    (QUOTES_PATH, {"sort":"asc"}),
+    (QUOTES_PATH, {"limit":"200"}),
+    (QUOTES_PATH, {"feed":"sip"}),
+    (QUOTES_PATH, {"symbols":"MSFT,TSLA"}),
+    (QUOTES_PATH, {"page_token":"older"}),
+    (QUOTES_PATH, {"unexpected":"anything"}),
+])
+def test_exact_market_request_envelope_is_enforced_before_transport(path,changes):
+    class NoNetwork:
+        def get(self,*,path,params):
+            raise AssertionError("unsafe market query reached transport")
+    reader=probe.BoundedPaperReader(NoNetwork(),symbols=["AAPL","MSFT"],at=AT)
+    params=_canonical_probe_query(path)
+    params.update(changes)
+    with pytest.raises(probe.PaperProbeError):
+        reader.get(path=path,params=params)
+    assert reader.calls==0
+    assert reader.routes_seen==[]
+
+
+def test_valid_complete_bar_window_and_existing_page_cursor_are_permitted():
+    class RecordingTransport:
+        def __init__(self):self.params=[]
+        def get(self,*,path,params):
+            self.params.append((path,params))
+            return {"bars":{},"next_page_token":None}
+    transport=RecordingTransport()
+    reader=probe.BoundedPaperReader(transport,symbols=["AAPL","MSFT"],at=AT)
+    first=_canonical_probe_query(BARS_PATH)
+    second={**first,"page_token":"one-opaque-cursor"}
+    reader.get(path=BARS_PATH,params=first)
+    reader.get(path=BARS_PATH,params=second)
+    assert reader.calls==2
+    assert reader.routes_seen==[BARS_PATH,BARS_PATH]
+    assert transport.params==[(BARS_PATH,first),(BARS_PATH,second)]
+
+
 def test_reader_hard_cap_prevents_extra_billable_requests():
     transport = probe.OfflineSyntheticReader(at=AT,symbols=["AAPL","MSFT"])
     wrapper = probe.BoundedPaperReader(transport,symbols=["AAPL","MSFT"],at=AT)
