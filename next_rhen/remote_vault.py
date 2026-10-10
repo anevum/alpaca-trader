@@ -47,14 +47,25 @@ class R2S3ImmutableStore:
     approved bucket. Never infer off-host attestation from this object alone.
     """
 
-    def __init__(self, client: S3CompatibleClient, bucket: str):
+    def __init__(
+        self, client: S3CompatibleClient, bucket: str, *,
+        workspace_id: str, run_id: str,
+    ):
         if not isinstance(bucket, str) or not _BUCKET.fullmatch(bucket):
             raise EvidenceContractError("invalid private storage bucket name")
+        _scope(workspace_id, run_id)
         self._client = client
         self.bucket = bucket
+        self.workspace_id, self.run_id = workspace_id, run_id
+        self.key_prefix = f"{PRIVATE_PREFIX}{workspace_id}/{run_id}/"
+
+    def _assert_scope(self, key: str) -> None:
+        _private_key(key)
+        if not key.startswith(self.key_prefix):
+            raise ArchiveIntegrityError("cross-workspace remote storage access forbidden")
 
     def _get_bounded(self, key: str) -> bytes | None:
-        _private_key(key)
+        self._assert_scope(key)
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=key)
         except Exception as exc:
@@ -88,7 +99,7 @@ class R2S3ImmutableStore:
         return self._get_bounded(key)
 
     def put_once(self, key: str, value: bytes) -> None:
-        _private_key(key)
+        self._assert_scope(key)
         if not isinstance(value, bytes) or not 0 < len(value) <= MAX_OBJECT_BYTES:
             raise ArchiveIntegrityError("invalid remote object size")
         try:
