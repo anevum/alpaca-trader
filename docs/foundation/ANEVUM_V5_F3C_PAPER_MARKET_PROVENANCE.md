@@ -14,9 +14,11 @@ Status: ISOLATED DRAFT. NOT DEPLOYED. NO AUTHENTICATED PROVIDER REQUEST HAS BEEN
    No POST, account, order, broker, or OAuth API method is available.
    Importing the module, CI tests and mock runs make zero network calls.
 2. Bounded, minute-aligned as-of historical fetch for a separately planned
-   F3b paper scan slot. Explicit IEX feed (default) or SIP, sorted ascending,
-   one-minute historical bars plus quotes. Full pagination with hard
-   cursor, byte, row and request ceilings. Future or incomplete bars,
+   F3b paper scan slot. Explicit IEX feed (default) or SIP; completed
+   one-minute bars are fully paginated ascending, while quotes are sampled
+   independently for each symbol using descending limit=1 latest-as-of.
+   The quote-history cursor is preserved, NOT fully exhausted, with hard
+   time/byte/row/request ceilings. Future or incomplete bars,
    out-of-range quotes, duplicate observations, repeated tokens,
    out-of-universe symbols and invalid price/size contracts fail closed.
 3. Every raw provider page, sanitized query, response hash, endpoint identity
@@ -31,14 +33,18 @@ Status: ISOLATED DRAFT. NOT DEPLOYED. NO AUTHENTICATED PROVIDER REQUEST HAS BEEN
    source manifest and pinned receipt in a scoped private namespace.
    Independent remote-only replay requires the receipt key plus a pinned
    SHA-256 held outside the remote source. It replays ALL original provider
-   pages through the same ingest parser after local WAL and market loss.
+   fetched pages through the same ingest parser after local WAL and market loss.
+   Unrequested older quote history is never presented as captured.
    Corruption, omitted pages, scope confusion and invalid anchors fail closed.
 
 ## Hard request and storage bounds
 
-- At most 10 equity symbols, 4 pages per endpoint and 1,200 combined rows.
+- At most 10 equity symbols, 4 fully paginated bar pages plus 1 latest-quote
+  page per requested symbol (14 GETs maximum), 1,200 combined records.
+- Quote results are explicitly latest-as-of SAMPLES, not a complete
+  historical quote stream or proof of all-market venue coverage.
 - At most 256 KB per HTTPS response and 1 MB total recorded response evidence.
-- At most 12 immutable archive objects and 1.3 MB attempted bytes per cycle.
+- At most 16 immutable source archive objects and 1.3 MB attempted bytes per cycle.
 - 8-second HTTP timeout, HTTPS host data.alpaca.markets only, GET only.
 - Redirects, non-200 status, invalid pagination, malformed content,
   unsupported feeds, unknown symbols, nonfinite or future values fail.
