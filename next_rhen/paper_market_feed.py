@@ -182,7 +182,7 @@ def build_paper_snapshot(reader: PageReader, *, slot: dict[str, Any],
     or independent scheduler authentication is made.
     """
     validate_slot(slot)
-    if feed not in FEEDS:
+    if not isinstance(feed,str) or feed not in FEEDS:
         raise MarketFeedError("equities market-data feed must be explicitly iex or sip")
     if (not isinstance(symbols, list) or not 1 <= len(symbols) <= MAX_SYMBOLS or
             any(not isinstance(s,str) or not re.fullmatch(r"[A-Z][A-Z0-9.]{0,14}",s) for s in symbols) or
@@ -202,6 +202,8 @@ def build_paper_snapshot(reader: PageReader, *, slot: dict[str, Any],
     quote_rows, quote_pages = _paged(reader,path=QUOTES_PATH,params={
         **common,"start":fmt(begin_quotes)
     },symbols=symbols)
+    if len(bar_rows) + len(quote_rows) > MAX_ITEMS:
+        raise MarketFeedError("combined market-data rows exceed source budget")
     bars: list[dict[str, Any]] = []
     bar_seen: set[tuple[str,str]] = set()
     for row in bar_rows:
