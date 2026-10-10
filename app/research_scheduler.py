@@ -43,6 +43,8 @@ from .research_agent.strategy_family_registry import (
     build_strategy_family_registry,
 )
 from .research_agent.strategy_health import compute_strategy_health
+from .research_agent.rule_set_agenda import build_rule_set_agenda
+from .research_agent.candidate_cohort_audit import audit_candidate_cohort
 from .research_agent.strategy_router import rank_strategy_families
 from .research_agent.shadow_economics_validation import evaluate_shadow_economics
 from .research_agent.shadow_allocation_validation import evaluate_shadow_allocation
@@ -266,24 +268,23 @@ class ResearchReportScheduler:
                 "funnel": scan_funnel(self.state.decision_history),
             }
 
-        orders = await self.client.recent_orders(limit=500)
+        # Research reads must not quietly truncate broker history. Use stable
+        # order-ID and activity-ID pagination, never the live order writer.
+        start_at = datetime.combine(sessions[0], time.min, tzinfo=NY)
+        end_at = datetime.combine(
+            sessions[-1] + timedelta(days=1), time.min, tzinfo=NY
+        )
+        orders = await self.client.research_orders_for_window(
+            start_at=start_at, end_at=end_at
+        )
         data_quality_warnings: list[str] = []
-        if len(orders) >= 500:
-            data_quality_warnings.append(
-                "recent order response reached the 500-order request limit"
-            )
-
         fills: list[dict[str, Any]] = []
         for session in sessions:
-            session_fills = await self.client.fill_activities(
-                date=session.isoformat(),
-                limit=100,
-            )
-            if len(session_fills) >= 100:
-                data_quality_warnings.append(
-                    f"{session.isoformat()} fill activity reached the 100-record request limit"
+            fills.extend(
+                await self.client.research_fills_for_session(
+                    date=session.isoformat()
                 )
-            fills.extend(session_fills)
+            )
 
         positions = await self.client.positions()
 
@@ -293,6 +294,11 @@ class ResearchReportScheduler:
             owner_tag=str(getattr(self.settings, "order_owner_tag", "") or ""),
         )
         trades = rebuilt["trades"]
+        if any(qty > 0 for qty in rebuilt.get("unmatched_sell_qty", {}).values()):
+            data_quality_warnings.append(
+                "Broker sell fills could not be paired with same-window buy lots; "
+                "carry positions require earlier immutable fills before P/L inference."
+            )
 
         symbols = sorted({trade["symbol"] for trade in trades})
         if symbols:
@@ -311,6 +317,15 @@ class ResearchReportScheduler:
             "fills": fills,
             "positions": positions,
             "data_quality_warnings": data_quality_warnings,
+            "broker_history": {
+                "pagination": "EXHAUSTED_WITHIN_BOUNDS",
+                "order_count": len(orders),
+                "fill_count": len(fills),
+                "requested_session_dates": [day.isoformat() for day in sessions],
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "does_not_certify_candidate_quote_or_live_replay_parity": True,
+            },
             "trades": trades,
             "reconstruction": {
                 key: value
@@ -1038,8 +1053,35 @@ class ResearchReportScheduler:
         ads002 = canonical.get("ads002") or {}
         ads002_v2 = canonical.get("ads002_v2") or {}
         candidates = list(canonical.get("candidates") or [])
-        evidence_readiness = canonical.get("evidence_readiness") or {}
-        outcome_status = post_event.get("forward_outcome_status") or {}
+        cohort_audit = audit_candidate_cohort(
+            candidates,
+            expected_strategy=str(
+                getattr(self.settings, "strategy_version_id", "") or ""
+            ),
+        )
+        canonical_readiness = canonical.get("evidence_readiness") or {}
+        evidence_readiness = dict(cohort_audit)
+        if canonical_readiness:
+            evidence_readiness["canonical"] = canonical_readiness
+            if str(canonical_readiness.get("state") or "").upper() not in {
+                "READY", "COMPLETE"
+            }:
+                evidence_readiness["state"] = "PARTIAL"
+                evidence_readiness["blocking_reasons"] = sorted(set(
+                    [*evidence_readiness["blocking_reasons"],
+                     "CANONICAL_READINESS_NOT_COMPLETE"]
+                ))
+        outcome_status = dict(post_event.get("forward_outcome_status") or {})
+        # The canonical report-read endpoint can provide per-candidate
+        # outcomes without top-level forward_outcome_status counts.
+        # Publish audited status separately: never conflate all horizons
+        # with the exact 15-minute candidate cohort.
+        outcome_status["audited_15m_complete_rows"] = cohort_audit["complete_15m"]
+        outcome_status["audited_15m_missing_rows"] = cohort_audit["missing_15m"]
+        outcome_status["audited_15m_invalid_or_error_rows"] = (
+            cohort_audit["incomplete_or_error_15m"]
+            + cohort_audit["invalid_forward_return_15m"]
+        )
         shadow_economics_validation = evaluate_shadow_economics(candidates)
         shadow_allocation_validation = evaluate_shadow_allocation(candidates)
         counterfactual_lab, counterfactual_warning = (
@@ -1098,6 +1140,11 @@ class ResearchReportScheduler:
                 "candidate-score performance"
             )
         daily_warnings = list(evidence["data_quality_warnings"])
+        if cohort_audit["blocking_reasons"]:
+            daily_warnings.append(
+                "Canonical 15-minute candidate evidence not research-complete: "
+                + ", ".join(cohort_audit["blocking_reasons"])
+            )
         persistence = runtime.get("persistence") or {}
         if persistence.get("storage_analytics_shedding") or int(persistence.get("shed_count") or 0):
             daily_warnings.append(
@@ -1198,6 +1245,10 @@ class ResearchReportScheduler:
                 )
                 or None,
                 "metrics": evidence["metrics"],
+                "broker_history": evidence.get("broker_history"),
+                "reconstruction": evidence["reconstruction"],
+                "data_quality_warnings": daily_warnings,
+                "runtime_git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA"),
                 "forward_outcomes": post_event.get(
                     "forward_outcomes_by_horizon"
                 )
@@ -1206,6 +1257,7 @@ class ResearchReportScheduler:
                 "ads002": ads002,
                 "ads002_v2": ads002_v2,
                 "evidence_readiness": evidence_readiness,
+                "cohort_audit": cohort_audit,
                 "shadow_economics_validation": shadow_economics_validation,
                 "shadow_allocation_validation": shadow_allocation_validation,
                 "counterfactual_lab": counterfactual_lab,
@@ -1279,6 +1331,7 @@ class ResearchReportScheduler:
                     "by_horizon": post_event.get("forward_outcomes_by_horizon") or [],
                     "status": outcome_status,
                     "readiness": evidence_readiness,
+                    "cohort_audit": cohort_audit,
                     "post_event_only": True,
                     "counterfactual_not_realized_trades": True,
                 },
@@ -1297,6 +1350,7 @@ class ResearchReportScheduler:
                 "strategy_health": adaptive_control.get("strategy_health") or {},
                 "graen_validation": adaptive_control.get("graen_validation") or {},
                 "reconstruction": evidence["reconstruction"],
+                "broker_history": evidence.get("broker_history"),
                 "candidate_funnel": evidence["funnel"],
                 "runtime": runtime,
                 "classification": classification,
@@ -1312,6 +1366,9 @@ class ResearchReportScheduler:
                 "promotion_authorized": False,
                 "capital_scaling_authorized": False,
             }
+        )
+        payload["rule_set_research_agenda"] = serialize(
+            build_rule_set_agenda(payload)
         )
         payload["runtime_git_commit"] = os.environ.get("RAILWAY_GIT_COMMIT_SHA")
         persisted = await self.event_sink.emit_critical(

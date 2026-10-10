@@ -225,6 +225,130 @@ class AlpacaClient:
             },
         )
 
+    async def research_orders_for_window(
+        self,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Read session order history using stable order-ID cursors.
+
+        This research-only reader does not change recent_orders, order submission,
+        risk, positions, or execution. A page cap or invalid cursor FAILS CLOSED
+        instead of silently producing incomplete research statistics.
+        """
+        if (
+            start_at.tzinfo is None
+            or end_at.tzinfo is None
+            or end_at <= start_at
+            or not 1 <= max_pages <= 20
+        ):
+            raise ValueError("invalid bounded research-order window")
+        page_size = 500
+        before_id: str | None = None
+        seen: set[str] = set()
+        records: list[dict[str, Any]] = []
+        for _ in range(max_pages):
+            params: dict[str, Any] = {
+                "status": "all",
+                "limit": page_size,
+                "direction": "desc",
+                "nested": "true",
+            }
+            if before_id:
+                params["before_order_id"] = before_id
+            page = await self._request("GET", "/v2/orders", params=params)
+            if not isinstance(page, list):
+                raise RuntimeError("research order history returned an invalid page")
+            for order in page:
+                if not isinstance(order, dict) or not order.get("id"):
+                    raise RuntimeError("research order history has an invalid ID")
+                identity = str(order["id"])
+                if identity in seen:
+                    raise RuntimeError("research order pagination repeated an order")
+                seen.add(identity)
+                raw_stamp = order.get("submitted_at")
+                try:
+                    submitted = datetime.fromisoformat(
+                        str(raw_stamp).replace("Z", "+00:00")
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "research order history missing submission timestamp"
+                    ) from exc
+                if submitted.tzinfo is None:
+                    raise RuntimeError("research order submission timestamp lacks timezone")
+                if start_at <= submitted < end_at:
+                    records.append(order)
+
+            if not page or len(page) < page_size:
+                return records
+
+            last = page[-1]
+            oldest = datetime.fromisoformat(
+                str(last["submitted_at"]).replace("Z", "+00:00")
+            )
+            if oldest < start_at:
+                return records
+            next_id = str(last["id"])
+            if next_id == before_id:
+                raise RuntimeError("research order pagination cursor did not advance")
+            before_id = next_id
+        raise RuntimeError(
+            "research order history exceeded 20 pages; do not infer complete fills"
+        )
+
+    async def research_fills_for_session(
+        self,
+        *,
+        date: str,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Read all available FILL activity pages for one explicit session date.
+
+        Alpaca uses an activity-id page_token, not the order cursor. Never
+        silently truncate a full page or retry an already-seen token.
+        """
+        if (
+            not isinstance(date, str)
+            or len(date) != 10
+            or not 1 <= max_pages <= 20
+        ):
+            raise ValueError("invalid bounded research-fill session")
+        datetime.strptime(date, "%Y-%m-%d")
+        token: str | None = None
+        seen: set[str] = set()
+        records: list[dict[str, Any]] = []
+        for _ in range(max_pages):
+            params: dict[str, Any] = {
+                "direction": "desc", "page_size": 100, "date": date
+            }
+            if token:
+                params["page_token"] = token
+            page = await self._request(
+                "GET", "/v2/account/activities/FILL", params=params
+            )
+            if not isinstance(page, list):
+                raise RuntimeError("research fill history returned an invalid page")
+            for fill in page:
+                if not isinstance(fill, dict) or not fill.get("id"):
+                    raise RuntimeError("research fill history has an invalid activity ID")
+                identity = str(fill["id"])
+                if identity in seen:
+                    raise RuntimeError("research fill pagination repeated an activity")
+                seen.add(identity)
+                records.append(fill)
+            if len(page) < 100:
+                return records
+            next_token = str(page[-1]["id"])
+            if next_token == token:
+                raise RuntimeError("research fill pagination cursor did not advance")
+            token = next_token
+        raise RuntimeError(
+            "research fill history exceeded 20 pages; result is incomplete"
+        )
+
     async def portfolio_history(
         self,
         *,
