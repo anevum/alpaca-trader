@@ -1,6 +1,7 @@
 """ANEVUM V5 FOUNDATION F1: fail-closed, no-broker decision capture."""
 from __future__ import annotations
 
+from hashlib import sha1
 from copy import deepcopy
 import json
 import sqlite3
@@ -230,3 +231,9 @@ def test_no_production_or_broker_adapter_imports():
     text = source.read_text(encoding="utf-8")
     for forbidden in ("from app.", "from alpaca", "import alpaca", "import boto3", "import httpx"):
         assert forbidden not in text
+
+
+def test_cross_repository_workspace_contract_is_byte_pinned():
+    raw = (Path(__file__).resolve().parents[1] / "contracts" / "foundation" / "workspace-state.v1.schema.json").read_bytes()
+    git_blob = sha1(b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw).hexdigest()
+    assert git_blob == "7d351b2e0f4164df097fbf3a864c41ad6c8777b9", "V5 contract drift requires coordinated version bump in both repos"
