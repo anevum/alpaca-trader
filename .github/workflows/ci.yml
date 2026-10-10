@@ -26,7 +26,7 @@ jobs:
       - run: pip install pytest==8.3.5
       - run: python -m scripts.staging_check
       - name: ANEVUM V5 FOUNDATION F1 journal and F2a local archive
-        run: python -m pytest -q tests/test_v5_decision_journal.py tests/test_v5_evidence_vault.py tests/test_v5_remote_vault.py tests/test_v5_f2c_stage_probe.py tests/test_v5_source_attestation.py tests/test_v5_source_attestation_integration.py tests/test_v5_paper_capture.py tests/test_v5_paper_market_feed.py tests/test_v5_paper_witness.py tests/test_v5_quote_fairness.py tests/test_v5_f3f_market_stage_probe.py tests/test_v5_research_outcomes.py
+        run: python -m pytest -q tests/test_v5_decision_journal.py tests/test_v5_evidence_vault.py tests/test_v5_remote_vault.py tests/test_v5_f2c_stage_probe.py tests/test_v5_source_attestation.py tests/test_v5_source_attestation_integration.py tests/test_v5_paper_capture.py tests/test_v5_paper_market_feed.py tests/test_v5_paper_witness.py tests/test_v5_quote_fairness.py tests/test_v5_f3f_market_stage_probe.py tests/test_v5_research_outcomes.py tests/test_v5_replay_scorecard.py
       - name: ANEVUM V5 F2c offline staging rehearsal (no external credentials)
         run: python -m scripts.v5_f2c_r2_stage_probe
       - name: ANEVUM V5 F3b scanner-first offline paper rehearsal (no broker/network)
