@@ -194,8 +194,8 @@ class FakeS3:
 
 def test_r2_injected_s3_client_uses_atomic_create_and_full_readback():
     fake = FakeS3()
-    store = R2S3ImmutableStore(fake, "private-staging-bucket")
-    key = "private/anevum-v5/wrk_member012345/testrun/part-0001.jsonl.gz"
+    store = R2S3ImmutableStore(fake, "private-staging-bucket", workspace_id=WORKSPACE, run_id=RUN)
+    key = f"private/anevum-v5/{WORKSPACE}/{RUN}/part-0001.jsonl.gz"
     assert store.get(key) is None
     store.put_once(key, b"first")
     store.put_once(key, b"first")
@@ -210,8 +210,8 @@ def test_r2_missing_conditional_support_refuses_unconditional_fallback():
     class UnsafeS3(FakeS3):
         def put_object(self, **kwargs):
             raise FakeS3Error("InvalidRequest")
-    store = R2S3ImmutableStore(UnsafeS3(), "private-staging-bucket")
-    key = "private/anevum-v5/wrk_member012345/testrun/part-0001.jsonl.gz"
+    store = R2S3ImmutableStore(UnsafeS3(), "private-staging-bucket", workspace_id=WORKSPACE, run_id=RUN)
+    key = f"private/anevum-v5/{WORKSPACE}/{RUN}/part-0001.jsonl.gz"
     with pytest.raises(ArchiveIntegrityError, match="conditional write"):
         store.put_once(key, b"secret")
     with pytest.raises(ArchiveIntegrityError, match="outside private"):
@@ -222,26 +222,26 @@ def test_r2_truncated_and_oversize_get_rejected():
     class TruncatedS3(FakeS3):
         def get_object(self, **kwargs):
             return {"Body": BytesIO(b"abc"), "ContentLength": 10}
-    key = "private/anevum-v5/wrk_member012345/testrun/part-0001.jsonl.gz"
+    key = f"private/anevum-v5/{WORKSPACE}/{RUN}/part-0001.jsonl.gz"
     with pytest.raises(ArchiveIntegrityError, match="truncated"):
-        R2S3ImmutableStore(TruncatedS3(), "private-staging-bucket").get(key)
+        R2S3ImmutableStore(TruncatedS3(), "private-staging-bucket", workspace_id=WORKSPACE, run_id=RUN).get(key)
 
     class LargeS3(FakeS3):
         def get_object(self, **kwargs):
             return {"Body": BytesIO(b"abc"), "ContentLength": 99_999_999}
     with pytest.raises(ArchiveIntegrityError, match="oversized"):
-        R2S3ImmutableStore(LargeS3(), "private-staging-bucket").get(key)
+        R2S3ImmutableStore(LargeS3(), "private-staging-bucket", workspace_id=WORKSPACE, run_id=RUN).get(key)
 
 
 def test_r2_like_mock_transport_enforces_same_remote_restore_contract(tmp_path):
     fake = FakeS3()
-    r2 = R2S3ImmutableStore(fake, "private-staging-bucket")
+    r2 = R2S3ImmutableStore(fake, "private-staging-bucket", workspace_id=WORKSPACE, run_id=RUN)
     journal, vault, _, replicator = make_stack(tmp_path, remote=r2)
     create_local(journal, vault, cycles=3)
     receipts = replicate_all(replicator)
     keys = replicator.receipt_keys(workspace_id=WORKSPACE, run_id=RUN)
     proof = restore_remote_receipts(
-        R2S3ImmutableStore(fake, "private-staging-bucket"), keys,
+        R2S3ImmutableStore(fake, "private-staging-bucket", workspace_id=WORKSPACE, run_id=RUN), keys,
         workspace_id=WORKSPACE, run_id=RUN,
         trusted_receipt_hashes={receipt["receipt_key"]:receipt["receipt_sha256"] for receipt in receipts},
         independent_expected_cycle_count=3,
@@ -255,3 +255,16 @@ def test_no_broker_or_live_import_or_deployment_code():
     content = (Path(__file__).resolve().parents[1] / "next_rhen" / "remote_vault.py").read_text()
     for fragment in ("import alpaca", "from app.", "import boto3", "os.environ", "create_bucket("):
         assert fragment not in content
+
+
+def test_r2_adapter_denies_cross_workspace_even_when_bucket_credentials_are_shared():
+    fake = FakeS3()
+    store = R2S3ImmutableStore(
+        fake, "private-staging-bucket", workspace_id=WORKSPACE, run_id=RUN,
+    )
+    other_key = "private/anevum-v5/wrk_different00001/paper-rhen-next-001/part-0001.jsonl.gz"
+    with pytest.raises(ArchiveIntegrityError, match="cross-workspace"):
+        store.put_once(other_key, b"not authorized")
+    with pytest.raises(ArchiveIntegrityError, match="cross-workspace"):
+        store.get(other_key)
+    assert fake.writes == []
