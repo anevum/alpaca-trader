@@ -125,7 +125,7 @@ def test_missing_quote_is_unmeasurable_not_green(tmp_path):
     (lambda p:p[BARS_PATH,None]["bars"]["AAPL"][0].__setitem__("t",ts(0)),"incomplete"),
     (lambda p:p[QUOTES_PATH,"AAPL"]["quotes"]["AAPL"][0].__setitem__("t",ts(1)),"future"),
     (lambda p:p[BARS_PATH,"b2"]["bars"].__setitem__("OTHER",[]),"symbol scope"),
-    (lambda p:p[QUOTES_PATH,"AAPL"].__setitem__("quotes",[]),"symbol scope"),
+    (lambda p:p[QUOTES_PATH,"AAPL"].__setitem__("quotes",[]),"quote scope"),
     (lambda p:p[BARS_PATH,"b2"]["bars"].__setitem__("AAPL",deepcopy(p[BARS_PATH,None]["bars"]["AAPL"])),"duplicate bar"),
 ])
 def test_missing_invalid_future_and_duplicate_provider_pages_block(edit,message):
@@ -196,7 +196,7 @@ def test_read_only_https_fixed_host_no_order_routes_or_secret_logging():
 def test_combined_bar_and_quote_response_budget_is_not_silently_doubled():
     d=pages()
     d[BARS_PATH,None]["bars"]["AAPL"] *= 700
-    d[QUOTES_PATH,None]["quotes"]["AAPL"] *= 600
+    d[BARS_PATH,"b2"]["bars"]["MSFT"] *= 500
     with pytest.raises(MarketFeedError,match="combined market-data rows"):
         capture(FakeReader(d))
 
