@@ -66,6 +66,13 @@ Future IREN — *not part of this release*
 - Role and evidence status contracts are shared with Commons; each user only accesses their own RHEN workspace. The founder's legacy terminal remains strictly owner-only.
 - Failed backtests and evidence-blocked runs are legitimate explicit outcomes. No alpha claims until full accepted/rejected source evidence, same-engine replay and independent holdout have been proven.
 
+
+### Legacy data waiver — owner decision 2026-10-09
+
+The owner explicitly authorized **discarding the old RHEN 4.3.2 Railway on-volume data** rather than upgrading to Railway Pro for snapshots or building a historical database migration. The legacy system's execution was disarmed in its Railway deployment, and the detached shadow volume has already been deleted. A permanent site retirement/cutover is being developed in [anevum-web PR #260](https://github.com/anevum/anevum-web/pull/260); the remaining legacy service/volume must not be deleted until the public and protected website routes stop calling it.
+
+This is **not** permission to discard code, V5 evidence, member accounts, member D1 data, or cloud-brokerage records. Preserve GitHub history and strict tenant isolation. The new RHEN Evidence Vault begins with freshly observed paper cycles and must capture every candidate and independent source reference. Never imply continuity, completeness or recovered research from the intentionally discarded old SQLite database.
+
 ## Migration — preserve functionality, remove needless complexity
 
 1. **Inventory** existing prototype imports, CLI commands, routes, tests, datasets and published pages. Record owners and consumers; no mass deletion while legacy trading operates.
