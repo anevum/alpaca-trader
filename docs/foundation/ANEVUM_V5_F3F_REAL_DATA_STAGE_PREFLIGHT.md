@@ -80,6 +80,16 @@ exercise F3e's new code, its private staging secrets or source-specific R2.
   paper snapshot was internally replayable. Evidence state stays
   \`AWAITING_EVIDENCE\` instead of \`ARCHIVED_VERIFIED\`.
 
+## Exact pre-network query envelope — hardening child draft
+
+The F3f staging reader rejects not only non-market paths, wrong symbols, SIP feeds, and excessive GET counts but also **any changed range or response scope** before it can reach its authenticated transport:
+
+- Historical bars: exactly the planned two-symbol 1Min IEX `start = scheduled minute - 3 minutes`, `end = scheduled minute - 1 microsecond`, page size 300, ascending, with only a bounded provider-returned page cursor permitted for continuation.
+- Quote sampling: exactly one requested member of the planned symbol set per GET, IEX `start = scheduled minute - 2 minutes`, `end = scheduled minute`, one descending last-as-of quote, no quote cursor or additional key.
+- Unrecognized parameters, widened historical periods, attempted current/incomplete bars, extra symbols, elevated data feeds, altered pagination sizes or sorting, and malformed cursors abort **before** the request counter increments or the provider client is invoked.
+
+The F3e market-data builder remains the sole creator of approved query shapes, and its own evidence quality controls still mark local data `AWAITING_EVIDENCE` without source attestation. Added negative tests verify no transport call for altered queries and a positive test preserves legitimate bounded bar pagination. This is a code/CI-only safety change; it does not execute a real provider request or update the separately pinned workflow-only draft #487. Any later real workflow must pin a newly reviewed exact commit.
+
 ## Security
 
 Never place \`ANEVUM_F3F_PAPER_DATA_KEY_ID\` or its secret in
