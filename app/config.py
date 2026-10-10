@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     acknowledge_live: str = Field(default="NO", alias="I_ACKNOWLEDGE_LIVE_TRADING")
     bot_armed: bool = Field(default=False, alias="BOT_ARMED")
     scan_only: bool = Field(default=False, alias="SCAN_ONLY")
+    # Owner-approved V5 migration hold: block NEW buys while retaining risk-reducing exits.
+    legacy_new_entries_locked: bool = Field(default=False, alias="RHEN_LEGACY_NEW_ENTRY_LOCK")
 
     admin_token: str = Field(default="", alias="ADMIN_TOKEN")
 
