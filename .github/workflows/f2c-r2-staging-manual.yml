@@ -1,0 +1,115 @@
+name: ANEVUM F2c R2 Staging - Manual Synthetic Only
+
+# Intentionally no push, pull_request, schedule, or repository_dispatch.
+# GitHub requires workflow_dispatch files on the default branch.
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: 'Type RUN_SYNTHETIC_R2_ONLY to execute one synthetic staging test'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: anevum-f2c-private-r2-staging
+  cancel-in-progress: false
+
+jobs:
+  r2-conditional-restore:
+    name: Synthetic R2 S3 conditional write and independent restore
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.approval == 'RUN_SYNTHETIC_R2_ONLY' }}
+    environment:
+      name: f2c-r2-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      AWS_EC2_METADATA_DISABLED: 'true'
+
+    steps:
+      - name: Checkout independently reviewed F2c synthetic runner (immutable commit)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: '63aa78b379627cbc87d9cf8c03011b3715c25e70'
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install staging-only S3 SDK
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'boto3==1.40.0'
+
+      - name: Verify no-secret offline acceptance before remote access
+        run: |
+          set -euo pipefail
+          python -m scripts.v5_f2c_r2_stage_probe > "$RUNNER_TEMP/offline-acceptance.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result=json.loads((Path(os.environ["RUNNER_TEMP"])/"offline-acceptance.json").read_text())
+          assert result["claim"] == "MOCK_PROTOCOL_ONLY"
+          assert result["restored"] and not result["broker_write_authorized"]
+          print("F2c synthetic offline preflight passed")
+          PY
+
+      - name: Execute one private staging R2 S3 acceptance trial
+        # Secrets are ONLY available in this job's manually approved environment.
+        # Do not print env, boto3 configuration, object bodies, or receipt keys.
+        env:
+          ANEVUM_F2C_STAGING_APPROVED: 'YES_SYNTHETIC_R2_ONLY'
+          ANEVUM_F2C_R2_ACCOUNT_ID: ${{ secrets.ANEVUM_F2C_R2_ACCOUNT_ID }}
+          ANEVUM_F2C_R2_ACCESS_KEY_ID: ${{ secrets.ANEVUM_F2C_R2_ACCESS_KEY_ID }}
+          ANEVUM_F2C_R2_SECRET_ACCESS_KEY: ${{ secrets.ANEVUM_F2C_R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ANEVUM_F2C_R2_ACCOUNT_ID" || -z "$ANEVUM_F2C_R2_ACCESS_KEY_ID" || -z "$ANEVUM_F2C_R2_SECRET_ACCESS_KEY" ]]; then
+            echo 'F2c staging environment is missing one or more required secrets.' >&2
+            exit 2
+          fi
+          umask 077
+          python -m scripts.v5_f2c_r2_stage_probe --execute > "$RUNNER_TEMP/real-r2-private-result.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result=json.loads((Path(os.environ["RUNNER_TEMP"])/"real-r2-private-result.json").read_text())
+          expected={
+              "provider_tested":"REAL_CLOUDFLARE_R2_STAGING",
+              "claim":"STAGING_R2_CONDITIONAL_AND_RESTORE_ONLY",
+              "evidence_state":"AWAITING_EVIDENCE",
+          }
+          if any(result.get(k)!=v for k,v in expected.items()):
+              raise SystemExit("Staging report provider or evidence state mismatch")
+          must_true=("synthetic_only","conflicting_conditional_put_rejected",
+                     "temporary_source_deleted_before_restore","restored")
+          if any(result.get(k) is not True for k in must_true):
+              raise SystemExit("Staging acceptance evidence missing")
+          if result.get("broker_calls")!=0 or result.get("production_wal_offhost_state_promoted") is not False:
+              raise SystemExit("Stage must never authorize broker or production WAL writes")
+          for key in ("cycles","candidates","rejected","remote_receipts"):
+              print(f"{key}: {result[key]}")
+          print("Real private staging R2 S3 conditional write and restore: VERIFIED")
+          print("Upstream market source coverage: UNVERIFIED")
+          print("Live trading or production archive promotion: DISABLED")
+          summary=Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "### ANEVUM F2c synthetic staging result\\n"
+              "R2 S3 conditional create, overwrite refusal, exact-byte readback and "
+              "remote-only restore: **VERIFIED**.\\n"
+              "Dataset: synthetic only. Market source attestation and production WAL "
+              "promotion: **NOT VERIFIED / DISABLED**.\\n"
+              f"Cycles: {result['cycles']}, candidates: {result['candidates']}, "
+              f"rejected: {result['rejected']}, receipt objects: {result['remote_receipts']}.\\n"
+          )
+          PY
