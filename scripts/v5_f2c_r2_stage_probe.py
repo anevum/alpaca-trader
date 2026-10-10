@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import tempfile
 from typing import Any
 
@@ -194,6 +195,12 @@ def run_staging_probe(
                     (WORKSPACE,run_id))), "incorrectly promoted source journal off-host state")
         finally:
             journal.close()
+        # Destroy all local source files before recovery. This protects
+        # against accidentally succeeding by consulting the original WAL
+        # or local archive rather than the remote provider.
+        shutil.rmtree(root/"local")
+        for suffix in ("", "-wal", "-shm"):
+            (root/("source.sqlite"+suffix)).unlink(missing_ok=True)
 
         # Restore ONLY from independently retrieved remote objects, with
         # trusted manifest digests that were pinned outside the object store.
@@ -223,7 +230,7 @@ def run_staging_probe(
             "receipt_anchors_for_independent_recovery":dict(sorted(anchors.items())),
             "sha256_receipts_pinned_outside_remote":True,
             "conflicting_conditional_put_rejected":True,
-            "temporary_source_closed_before_restore":True,
+            "temporary_source_deleted_before_restore":True,
             "storage_operation_budget":{"put_requests":remote.writes,
                 "get_requests":remote.reads+clean.reads,"uploaded_bytes":remote.bytes,
                 "maximum_uploaded_bytes":MAX_DATA_WRITTEN},
