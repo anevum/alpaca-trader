@@ -2,6 +2,8 @@ name: ANEVUM F3f IEX Staging - Manual Read Only
 
 # No push, pull_request, schedule, or repository_dispatch triggers.
 # Workflow-only registration on main does not start a market-data request.
+# Checked-out exact source additionally enforces F3f pre-network IEX as-of query bounds
+# from CI-verified child draft #488; no credentials are used by the offline job.
 on:
   workflow_dispatch:
     inputs:
@@ -31,7 +33,7 @@ jobs:
       - name: Checkout audited F3f development commit (never PR head)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: 'a98202dbce476df80643c0cfc915fc14e8da915d'
+          ref: 'e5c367fa5fa77eda852f05f83bf22aff3a03f11e'
           fetch-depth: 1
           persist-credentials: false
       - name: Set up Python 3.12
@@ -68,7 +70,7 @@ jobs:
       - name: Checkout immutable reviewed source (no repository credentials)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: 'a98202dbce476df80643c0cfc915fc14e8da915d'
+          ref: 'e5c367fa5fa77eda852f05f83bf22aff3a03f11e'
           fetch-depth: 1
           persist-credentials: false
       - name: Set up Python 3.12
