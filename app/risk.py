@@ -69,7 +69,7 @@ def validate_buy(
     entry_symbols: set[str] | None = None,
     stop_pct_override: Decimal | None = None,
 ) -> RiskDecision:
-    if settings.legacy_new_entries_locked:
+    if getattr(settings, "legacy_new_entries_locked", False):
         return RiskDecision(False, "V5 migration new-entry lock is active")
     blocked = (
         _execution_gate(
@@ -166,7 +166,7 @@ def validate_extended_buy(
     stop_pct_override: Decimal | None = None,
 ) -> RiskDecision:
     """Shared-account risk gate for the 24/5 extended-equity lane."""
-    if settings.legacy_new_entries_locked:
+    if getattr(settings, "legacy_new_entries_locked", False):
         return RiskDecision(False, "V5 migration new-entry lock is active")
     symbol = symbol.upper()
     if not settings.extended_equity_execution_authorized:
