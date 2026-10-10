@@ -19,6 +19,13 @@
 
 **Prototype policy:** do not ship or describe GRAEN/VELUM/NOSTRA as separate production apps. Keep historical references and consumers working while the successor absorbs tested functionality. Same codebase does not require same process; launch isolated, bounded research/replay jobs when requested, without live order privileges.
 
+
+### Legacy data waiver — owner decision 2026-10-09
+
+The owner explicitly authorized **discarding the old RHEN 4.3.2 Railway on-volume data** rather than upgrading to Railway Pro for snapshots or building a historical database migration. The legacy system's execution was disarmed in its Railway deployment, and the detached shadow volume has already been deleted. A permanent site retirement/cutover is being developed in [anevum-web PR #260](https://github.com/anevum/anevum-web/pull/260); the remaining legacy service/volume must not be deleted until the public and protected website routes stop calling it.
+
+This is **not** permission to discard code, V5 evidence, member accounts, member D1 data, or cloud-brokerage records. Preserve GitHub history and strict tenant isolation. The new RHEN Evidence Vault begins with freshly observed paper cycles and must capture every candidate and independent source reference. Never imply continuity, completeness or recovered research from the intentionally discarded old SQLite database.
+
 ### Deployment starting point
 
 - Retain existing `anevum-web` Worker + member D1. Do not rewrite auth from scratch.
