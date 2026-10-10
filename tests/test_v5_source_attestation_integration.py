@@ -31,7 +31,7 @@ def scanner_fixture_from_independent_scan_input(row):
         "scan_origin": "SYNTHETIC_FIXTURE", "strategy_version": row["strategy_version"],
         "config_sha256": row["config_sha256"], "code_sha256": row["code_sha256"],
         "market_source_sha256": digest(row["market_source"]),
-        "universe_symbols": row["universe_symbols"],
+        "universe_symbols": list(row["universe_symbols"]),
         "evaluations": [
             {"symbol": candidate["symbol"], "decision": candidate["decision"],
              "reason": candidate["reason"], "observed_at": candidate["observed_at"],
@@ -70,6 +70,7 @@ def test_authentic_f1_journal_detects_synthetic_extra_source_candidate(tmp_path)
     row = cycle(sequence=1)
     scan = scanner_fixture_from_independent_scan_input(row)
     scan["universe_symbols"].append("TSLA")
+    assert len(row["universe_symbols"]) == 2, "scanner fixture must not mutate journal source"
     scan["evaluations"].append({
         "symbol": "TSLA", "decision": "REJECTED",
         "reason": "source_only_rejected_candidate",
