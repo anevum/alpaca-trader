@@ -35,7 +35,7 @@ class S3CompatibleClient(Protocol):
 
 def _private_key(key: str) -> None:
     parts = _checked_key(key)
-    if len(parts) < 6 or not key.startswith(PRIVATE_PREFIX) or parts[:2] != ("private", "anevum-v5"):
+    if len(parts) < 5 or not key.startswith(PRIVATE_PREFIX) or parts[:2] != ("private", "anevum-v5"):
         raise ArchiveIntegrityError("object key outside private RHEN evidence namespace")
 
 
