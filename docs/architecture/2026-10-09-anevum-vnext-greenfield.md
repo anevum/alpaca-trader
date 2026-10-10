@@ -2,17 +2,22 @@
 
 **Status:** OWNER-LOCKED ARCHITECTURE for development on 2026-10-09; implementation staged, no production release authorized.  
 **Program ID:** `ANEVUM.V5.FOUNDATION.2026-10-09.001`; owner tracking #468; research blocker #467 and draft #466. Website Commons V5.1 shell is draft `anevum/anevum-web#256`; ANEVUM V5 is the overarching program, not a claim that either app is production version 5.  
-**Policy:** do not restart/migrate current live founder RHEN or merge this proposal into `main` without an explicit maintenance and broker-exposure preflight.
+**Policy:** do not restart/migrate current live founder RHEN or merge this proposal into `main` without an explicit maintenance and broker-exposure preflight. **Locked product consolidation:** RHEN is the sole near-term trading/research/operations product. GRAEN, VELUM and NOSTRA are historical prototypes whose useful ideas are internal RHEN modules. IREN is postponed; see [decision 002](2026-10-10-rhen-integrated-prototype-consolidation.md).
 
 ## Product + security boundaries
 
 | Plane | Roles and contract |
 | --- | --- |
 | ANEVUM Commons | React/TS/Vite Cloudflare Worker, current Better Auth + D1, community/content/supporter membership. No private broker data. |
-| RHEN Account | Founder legacy account remains alone in existing deployed RHEN; successor starts separate repo and paper-only Railway staging. Future member accounts share pooled compute but get independent scoped strategy, risk, cash, permissions and broker token. |
-| Evidence Vault | Lossless complete decision/rejection source archive, immutable content SHA, indexed outbox/WAL, market/quote/universe references, broker order/FILL lineage and per-horizon outcomes. |
-| Research Lab | Offline deterministic GRAEN hypotheses, typed Strategy Genome, NOSTRA point-in-time forecast/calibration, VELUM same-engine replay, sealed holdout and signed Evidence Passport. No live broker credentials. |
-| IREN | Deterministic schedule, source completeness, broker protection, queued job health, incident dedup, Slack webhook, truthful Command status, spend/latency budget. No required LLM. |
+| RHEN | **One application** with deterministic market ingestion, scanner, strategy/risk engine, paper/live broker adapter (separate approval), account-scoped operations and authentic research data. Founder legacy remains isolated; successor starts paper-only. |
+| RHEN Evidence Vault | Lossless capture and immutable archive of every evaluated/rejected candidate, point-in-time bars/universe and broker order/FILL lineage; an internal RHEN data layer, not a separate app. |
+| RHEN Research | Internal on-demand experiments and rule-set verification (incorporates ideas from the **GRAEN prototype**); no independent always-on server or broker-write credentials. |
+| RHEN Replay | Internal on-demand full-market deterministic backtesting (incorporates ideas from the **VELUM prototype**); same pure strategy/risk engine and sealed holdout. |
+| RHEN Forecast | Optional offline feature/forecast calibration (incorporates ideas from the **NOSTRA prototype**); not a live strategy dependency without independent authorization. |
+| RHEN Operations | Lightweight native schedule/health/evidence integrity/incident reporting; no separate IREN service required. |
+| Future IREN | **Deferred project**, potentially a local GPU/hosted AI and cross-application operator after RHEN is reliable and affordable; its absence must not degrade RHEN risk controls or monitoring. |
+
+**Prototype policy:** do not ship or describe GRAEN/VELUM/NOSTRA as separate production apps. Keep historical references and consumers working while the successor absorbs tested functionality. Same codebase does not require same process; launch isolated, bounded research/replay jobs when requested, without live order privileges.
 
 ### Deployment starting point
 
@@ -20,25 +25,25 @@
 - Retain existing founder live `anevum/rhen:main` as independent legacy service; not a testing sandbox.
 - Develop `rhen-next` in a **new independent codebase** and staging deployment only when authorized. No founder OAuth or broker-write secrets in the new staging environment.
 - Begin with SQLite WAL/outbox on private persistent storage for successor single-account hot state and **private Cloudflare R2** for full immutable batch archives. Maintain off-host backups with proven restore, source manifests, and configured retention/bucket locks. A Railway volume is not a backup.
-- Research jobs are isolated and **on-demand** (Python, DuckDB/Parquet/Polars), not permanent servers. Prefer a typed modular monolith with no Kafka/Kubernetes/Redis/GPU by default.
+- RHEN's internal Research, Replay, and optional Forecast modules execute as isolated **on-demand** jobs (Python, DuckDB/Parquet/Polars), not permanent GRAEN/VELUM/NOSTRA servers. Prefer one typed RHEN modular monolith with no Kafka/Kubernetes/Redis/GPU by default. This does not preclude later GPU-based IREN.
 - Introduce a managed PostgreSQL control database when multiple accounts/jobs require leases and transactional concurrency; keep large immutable bars/candidates in R2. Never depend on autosuspending free DB for a live safety-critical order.
 - Market data acquired once per licensed feed, batched/deduplicated across permitted internal users; this does **not** grant public redistribution rights.
 
 ```mermaid
 flowchart TB
- A[Licensed market data] --> B[RHEN pure feature/rule/risk kernel]
- B --> C[Account-local paper or approved broker adapter]
- B --> D[Atomic decision journal + outbox]
- C --> E[Append-only broker order/FILL ledger]
- D --> F[Private R2 immutable evidence archive]
+ A[Licensed market data] --> B[RHEN pure strategy / risk kernel]
+ B --> C[Account-local paper or separately approved live broker adapter]
+ B --> D[RHEN append-only decision journal + outbox]
+ C --> E[RHEN broker order / FILL ledger]
+ D --> F[RHEN private immutable Evidence Vault on R2]
  E --> F
- F --> G[Data completeness verifier]
- G -->|PASS| H[GRAEN experiment registry]
- G -->|BLOCKED| I[IREN incident + research hold]
- H --> J[On-demand VELUM frozen full-candidate replay]
- J --> K[NOSTRA calibration + cost/stress/holdout scorecard]
- K --> L[Human review / separately signed release]
- M[Cloudflare Commons + Better Auth / D1] --> N[Private member Terminal/API]
+ F --> G[RHEN evidence completeness verifier]
+ G -->|PASS| H[RHEN Research: bounded challenger experiments]
+ G -->|BLOCKED| I[RHEN Operations: incident + research hold]
+ H --> J[RHEN Replay: on-demand same-kernel backtests]
+ J --> K[Optional RHEN Forecast + holdout/cost scorecard]
+ K --> L[Explicit human strategy-release review]
+ M[Commons + Better Auth / D1] --> N[Private account-scoped RHEN Terminal/API]
  N --> B
 ```
 
@@ -64,13 +69,13 @@ R2 layout: `environment/workspace/session/schema/kind/part-N.jsonl.zst` for immu
 
 `market_source` (feed entitlement/as-of calendar), `universe` (point-in-time membership), `features` (pure completed-bar calculations), `strategy_rules` (restricted typed AST), `portfolio` (account-local ledger), `risk` (protective order and safety policy), `broker_adapter` (paper + later approved OAuth), `journal`, `replay`, `projection`.
 
-Use **the same pure strategy and risk functions** for paper/live and VELUM. Live broker IO is a separate adapter; research/replay workers hold no live order credentials. Each account has a single-writer/fenced lock and deterministic idempotent client-order IDs. No order changes from AI-generated text, social/community actions, subscriptions or external web callbacks.
+Use **the same pure strategy and risk functions** for paper/live and internal RHEN Replay (formerly VELUM). Live broker IO is a separate adapter; research/replay workers hold no live order credentials. Each account has a single-writer/fenced lock and deterministic idempotent client-order IDs. No order changes from AI-generated text, social/community actions, subscriptions or external web callbacks.
 
 ## Actual research, not a scheduled-success illusion
 
 State transitions: `PROPOSED -> SOURCE_AUDIT -> DEVELOPMENT -> WALK_FORWARD -> HOLDOUT -> SHADOW -> REVIEWED`. Any missing evidence yields `AWAITING_EVIDENCE` or `BLOCKED`. A successful null result is a *completed experiment*; a complete backtest that found no edge is useful.
 
-GRAEN proposes explicitly bounded rule changes, including rule *structures*, not only parameters; freezes control, candidate universe, code/container/environment hashes, filters and cost model before evaluation. VELUM evaluates all original decision opportunities using account-local capital, order limits, slippage/spread, stops, partial fills and EOD mechanics. NOSTRA forecasts are recorded before outcomes and compared with trivial baselines. Walk-forward must be chronologically separate; HOLDOUT must be unopened during selection. Include session-level dependence, multiplicity adjustment, foregone winners, drawdown, net expectancy, and opportunity costs. Do not claim alpha from 3 days or only the subset of trades that actually filled.
+RHEN Research (formerly GRAEN) proposes explicitly bounded rule changes, including rule *structures*, not only parameters; freezes control, candidate universe, code/container/environment hashes, filters and cost model before evaluation. RHEN Replay (formerly VELUM) evaluates all original decision opportunities using account-local capital, order limits, slippage/spread, stops, partial fills and EOD mechanics. Optional RHEN Forecast (formerly NOSTRA) predictions must be recorded before outcomes and compared with trivial baselines; forecasting is not required for a correct research pipeline. Walk-forward must be chronologically separate; HOLDOUT must be unopened during selection. Include session-level dependence, multiplicity adjustment, foregone winners, drawdown, net expectancy, and opportunity costs. Do not claim alpha from 3 days or only the subset of trades that actually filled.
 
 Innovations to implement as view/contract features: **Decision Twin**, **Strategy Genome**, **Counterfactual Lab**, **Evidence Passport**, **Shadow Portfolios**, and a community-facing **Research Commons** that never exposes owner raw fills or prohibited licensed market data.
 
@@ -105,13 +110,14 @@ Capacity sanity: 100 symbols x 390 1-minute cycles = 39,000 candidate observatio
 | 6 Member isolation | Two pilot accounts never read, control or receive one another's or the founder's broker/research data, including stale socket and forged URL cases. |
 | 7 Approved growth | Paper beta then legal + Alpaca app approval; live account rollout separately signed and rollback verified. |
 
-**Build order:** baseline + contracts -> lossless Evidence Vault first -> market/outcome recorder + shared paper engine -> verifier/on-demand GRAEN/VELUM -> IREN integrity/cost state -> member Command + Commons paper beta -> independent holdout -> optionally approved member live. The UI can proceed against mocks in parallel after contracts freeze.
+**Build order:** baseline + Commons contracts -> RHEN lossless Evidence Vault -> market/outcome recorder + shared paper engine -> integrated RHEN Research/Replay -> native RHEN Operations integrity/cost alerts -> optional RHEN Forecast behind research gates -> private member Command + Commons paper beta -> unseen holdout and separately approved live trading. **IREN is deferred** and not on the V5 critical path. Website UI work proceeds against explicit schemas and honest unavailable states.
 
 ## Links
 
+- Prototype consolidation decision: [002 — RHEN integrated](2026-10-10-rhen-integrated-prototype-consolidation.md)
 - Major overhaul acceptance issue #468: https://github.com/anevum/rhen/issues/468
 - Existing research work #467: https://github.com/anevum/rhen/issues/467
 - Incomplete draft research PR #466: https://github.com/anevum/rhen/pull/466
 - Lean-runtime merged change #449: https://github.com/anevum/rhen/pull/449
 
-**No implementation approval inferred:** this is a proposed design. No live RHEN change or production deployment is authorized by merging a documentation PR.
+**The owner locked this design for development, not production release.** No live RHEN change or production deployment is authorized by merging this documentation PR.
