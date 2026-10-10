@@ -182,12 +182,20 @@ def restore_provider_snapshot(
     scope={"workspace_id":workspace_id,"run_id":run_id,"cycle_id":cycle_id,
            "session_date":session_date}
     prefix=_prefix(scope)
-    if (not isinstance(receipt_key,str) or not receipt_key.startswith(prefix+"receipt-")
-            or receipt_key!=prefix+"receipt-"+pinned_receipt_sha256+".json"):
+    if (not isinstance(pinned_receipt_sha256,str) or not HEX.fullmatch(pinned_receipt_sha256)
+            or not isinstance(receipt_key,str) or
+            receipt_key!=prefix+"receipt-"+pinned_receipt_sha256+".json"):
         raise PaperRemoteIntegrityError("receipt key does not match external anchor scope")
     receipt=_load(store,receipt_key,pinned_receipt_sha256)
+    receipt_scope=receipt.get("scope")
+    if (not isinstance(receipt_scope,dict) or
+            any(receipt_scope.get(k)!=v for k,v in scope.items()) or
+            isinstance(receipt_scope.get("sequence_no"),bool) or
+            not isinstance(receipt_scope.get("sequence_no"),int) or
+            receipt_scope["sequence_no"]<1):
+        raise PaperRemoteIntegrityError("remote receipt scope or sequence invalid")
     if (receipt.get("schema_version") != RECEIPT_SCHEMA or
-            receipt.get("scope") != scope or receipt.get("broker_calls") != 0 or
+            receipt.get("broker_calls") != 0 or
             receipt.get("paper_only") is not True or
             receipt.get("evidence_state") != "AWAITING_EVIDENCE" or
             receipt.get("independent_feed_authentication_proven") is not False):
@@ -197,7 +205,7 @@ def restore_provider_snapshot(
     if not isinstance(manifest_key,str) or not isinstance(manifest_sha,str) or manifest_key!=prefix+"manifest-"+manifest_sha+".json":
         raise PaperRemoteIntegrityError("manifest key escapes scoped remote receipt")
     manifest=_load(store,manifest_key,manifest_sha)
-    if (manifest.get("schema_version")!=SCHEMA or manifest.get("scope")!=scope or
+    if (manifest.get("schema_version")!=SCHEMA or manifest.get("scope")!=receipt_scope or
             manifest.get("broker_calls")!=0 or manifest.get("research_ready") is not False
             or manifest.get("transport_result")!="OBJECTS_SEALED_PROVIDER_ORIGIN_UNVERIFIED"):
         raise PaperRemoteIntegrityError("remote manifest falsely promotes readiness")
@@ -221,6 +229,9 @@ def restore_provider_snapshot(
         "paper_only":True,"broker_calls":0,
         "evidence_state":"AWAITING_EVIDENCE",
     }
+    if (not isinstance(manifest.get("slot"),dict) or
+            any(manifest["slot"].get(k)!=v for k,v in receipt_scope.items())):
+        raise PaperRemoteIntegrityError("restored schedule differs from pinned source receipt")
     try:
         _verify_capture(manifest["slot"],captured)
     except (MarketFeedError,PaperCaptureError,KeyError,TypeError,ValueError) as exc:
