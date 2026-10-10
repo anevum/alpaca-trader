@@ -297,6 +297,11 @@ def build_paper_snapshot(reader: PageReader, *, slot: dict[str, Any],
         bars.append({"symbol":sym,"start":start.isoformat(),"end":end.isoformat(),
                      "open":b["o"],"high":b["h"],"low":b["l"],
                      "close":b["c"],"volume":volume})
+    # JSON object field ordering is not data. Provider bar maps can be in
+    # a different order after canonical byte publication/remote restore.
+    # Normalize by REQUESTED universe order, then source timestamp.
+    universe_rank = {symbol: i for i, symbol in enumerate(symbols)}
+    bars.sort(key=lambda bar: (universe_rank[bar["symbol"]], bar["start"]))
     quote_latest: dict[str,dict[str,Any]] = {}
     quote_seen: set[tuple[str,str]] = set()
     for row in quote_rows:
