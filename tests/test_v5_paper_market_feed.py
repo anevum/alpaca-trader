@@ -182,3 +182,11 @@ def test_read_only_https_fixed_host_no_order_routes_or_secret_logging():
             cli.get(path=BARS_PATH,params=args())
         assert "SECRET_NEVER_LOG" not in str(exc.value)
         assert "KEY_NEVER_LOG" not in str(exc.value)
+
+
+def test_combined_bar_and_quote_response_budget_is_not_silently_doubled():
+    d=pages()
+    d[BARS_PATH,None]["bars"]["AAPL"] *= 700
+    d[QUOTES_PATH,None]["quotes"]["AAPL"] *= 600
+    with pytest.raises(MarketFeedError,match="combined market-data rows"):
+        capture(FakeReader(d))
