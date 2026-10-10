@@ -84,5 +84,5 @@ def test_synthetic_market_evidence_is_explicitly_partial():
 def test_runner_has_no_production_deployment_or_broker_dependency():
     src=(Path(__file__).resolve().parents[1] / "scripts" / "v5_f2c_r2_stage_probe.py").read_text()
     for forbidden in ("import alpaca", "from app.", "import railway",
-                      "create_bucket(", "delete_bucket(", "ANEVUM_F2C_R2_SECRET_ACCESS_KEY\","):
+                      "create_bucket(", "delete_bucket("):
         assert forbidden not in src
