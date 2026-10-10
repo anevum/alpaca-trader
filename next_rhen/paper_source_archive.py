@@ -15,7 +15,8 @@ from typing import Any, Mapping
 from .evidence_vault import ImmutableObjectStore, ArchiveIntegrityError
 from .paper_market_feed import (
     build_paper_snapshot, _json, MarketFeedError, BARS_PATH, QUOTES_PATH,
-    MAX_RESPONSE_BYTES,
+    MAX_RESPONSE_BYTES, MAX_TOTAL_PAGES, MAX_PAGES_PER_ENDPOINT,
+    MAX_SYMBOLS, QUOTE_SAMPLING_MODE, QUOTE_SAMPLE_LIMIT,
 )
 from .paper_schedule import validate_slot
 from .paper_capture import validate_snapshot, PaperCaptureError
@@ -23,7 +24,7 @@ from .source_attestation import _validate_scope, ID_PATTERN
 
 SCHEMA = "anevum.paper-provider-archive.v1"
 RECEIPT_SCHEMA = "anevum.paper-provider-archive-receipt.v1"
-MAX_REMOTE_OBJECTS = 12
+MAX_REMOTE_OBJECTS = MAX_TOTAL_PAGES + 2
 MAX_REMOTE_BYTES = 1_300_000
 HEX = re.compile(r"^[0-9a-f]{64}$")
 
@@ -65,10 +66,32 @@ def _verify_capture(slot: dict[str,Any], captured: dict[str,Any]) -> None:
     if provenance.get("scope") != scope or provenance.get("snapshot_sha256") != sha256(_json(snapshot)).hexdigest():
         raise PaperRemoteIntegrityError("capture and source receipt hashes differ")
     pages=provenance.get("raw_pages")
-    if (not isinstance(pages,list) or not 2 <= len(pages) <= 8 or
+    if (not isinstance(pages,list) or not 2 <= len(pages) <= MAX_TOTAL_PAGES or
             provenance.get("page_count") != len(pages) or
-            provenance.get("response_pagination_exhausted") is not True):
-        raise PaperRemoteIntegrityError("missing or truncated provider pages")
+            provenance.get("response_pagination_exhausted") is not False or
+            provenance.get("bar_pagination_exhausted") is not True or
+            provenance.get("quote_history_exhausted") is not False or
+            provenance.get("quote_sampling_mode") != QUOTE_SAMPLING_MODE or
+            provenance.get("quote_symbols_requested") != snapshot["universe_symbols"]):
+        raise PaperRemoteIntegrityError("source pages must report honest quote sampling")
+    bar_pages = [page for page in pages if isinstance(page,dict) and page.get("path") == BARS_PATH]
+    quote_pages = [page for page in pages if isinstance(page,dict) and page.get("path") == QUOTES_PATH]
+    if (not 1 <= len(bar_pages) <= MAX_PAGES_PER_ENDPOINT or
+            len(quote_pages) != len(snapshot["universe_symbols"]) or
+            pages != bar_pages + quote_pages):
+        raise PaperRemoteIntegrityError("missing, excess, or reordered source pages")
+    for symbol, page in zip(snapshot["universe_symbols"], quote_pages):
+        query = page.get("query")
+        response = page.get("response")
+        if (not isinstance(query,dict) or query.get("symbols") != symbol
+                or query.get("sort") != "desc"
+                or query.get("limit") != str(QUOTE_SAMPLE_LIMIT)
+                or "page_token" in query or not isinstance(response,dict)
+                or not isinstance(response.get("quotes"),dict)
+                or not set(response["quotes"]).issubset({symbol})
+                or not isinstance(response["quotes"].get(symbol,[]),list)
+                or len(response["quotes"].get(symbol,[])) > QUOTE_SAMPLE_LIMIT):
+            raise PaperRemoteIntegrityError("malformed or starved per-symbol quote page")
     for page in pages:
         if (not isinstance(page,dict) or set(page) != {
                 "path","query","response","response_sha256"} or
@@ -210,7 +233,7 @@ def restore_provider_snapshot(
             or manifest.get("transport_result")!="OBJECTS_SEALED_PROVIDER_ORIGIN_UNVERIFIED"):
         raise PaperRemoteIntegrityError("remote manifest falsely promotes readiness")
     pages=manifest.get("raw_pages")
-    if (not isinstance(pages,list) or not 2<=len(pages)<=8 or
+    if (not isinstance(pages,list) or not 2<=len(pages)<=MAX_TOTAL_PAGES or
             receipt.get("page_objects")!=len(pages)):
         raise PaperRemoteIntegrityError("remote pages missing or over cap")
     restored=[]

@@ -15,8 +15,8 @@ def pages():
     return {
       (BARS_PATH,None):{"bars":{"AAPL":[{"t":ts(-1),"o":100.0,"h":100.7,"l":99.9,"c":100.5,"v":1000}]},"next_page_token":"b2"},
       (BARS_PATH,"b2"):{"bars":{"MSFT":[{"t":ts(-1),"o":300.0,"h":300.1,"l":299.5,"c":299.7,"v":1200}]},"next_page_token":None},
-      (QUOTES_PATH,None):{"quotes":{"AAPL":[{"t":ts(0,-2),"bp":100.0,"ap":100.1,"bs":30,"as":30}]},"next_page_token":"q2"},
-      (QUOTES_PATH,"q2"):{"quotes":{"MSFT":[{"t":ts(0,-3),"bp":299.8,"ap":299.9,"bs":40,"as":25}]},"next_page_token":None},
+      (QUOTES_PATH,"AAPL"):{"quotes":{"AAPL":[{"t":ts(0,-2),"bp":100.0,"ap":100.1,"bs":30,"as":30}]},"next_page_token":"older-aapl-quotes"},
+      (QUOTES_PATH,"MSFT"):{"quotes":{"MSFT":[{"t":ts(0,-3),"bp":299.8,"ap":299.9,"bs":40,"as":25}]},"next_page_token":None},
     }
 class FakeReader:
     def __init__(self,data=None):
@@ -24,7 +24,7 @@ class FakeReader:
         self.calls=[]
     def get(self,*,path,params):
         self.calls.append((path,dict(params)))
-        key=(path,params.get("page_token"))
+        key=(path,params.get("page_token") if path==BARS_PATH else params["symbols"])
         if key not in self.data:
             raise MarketFeedError("missing fake provider page")
         return deepcopy(self.data[key])
@@ -42,6 +42,15 @@ def test_alpaca_two_endpoint_paginated_input_integrates_real_f1_and_f3b(tmp_path
     reader=FakeReader()
     inp=capture(reader)
     assert len(reader.calls)==4
+    quote_calls=[args for path,args in reader.calls if path==QUOTES_PATH]
+    assert [q["symbols"] for q in quote_calls]==["AAPL","MSFT"]
+    assert all(q["sort"]=="desc" and q["limit"]=="1" and "page_token" not in q for q in quote_calls)
+    assert inp["provenance"]["response_pagination_exhausted"] is False
+    assert inp["provenance"]["bar_pagination_exhausted"] is True
+    assert inp["provenance"]["quote_history_exhausted"] is False
+    assert inp["provenance"]["quote_sampling_mode"]=="PER_SYMBOL_DESC_LATEST_ASOF_V1"
+    assert inp["provenance"]["quote_symbols_requested"]==["AAPL","MSFT"]
+    assert inp["provenance"]["raw_pages"][2]["response"]["next_page_token"]=="older-aapl-quotes"
     assert {p for p,_ in reader.calls}=={BARS_PATH,QUOTES_PATH}
     assert inp["provenance"]["page_count"]==4
     assert inp["provenance"]["missing_bar_symbols"]==[]
@@ -102,7 +111,7 @@ def test_wrong_receipt_hash_and_workspace_are_blocked():
 
 def test_missing_quote_is_unmeasurable_not_green(tmp_path):
     d=pages()
-    d[QUOTES_PATH,"q2"]["quotes"]={"MSFT":[]}
+    d[QUOTES_PATH,"MSFT"]["quotes"]={"MSFT":[]}
     inp=capture(FakeReader(d))
     assert inp["provenance"]["missing_quote_symbols"]==["MSFT"]
     with system(tmp_path) as (sch,src,journal,market):
@@ -114,9 +123,9 @@ def test_missing_quote_is_unmeasurable_not_green(tmp_path):
 @pytest.mark.parametrize("edit,message",[
     (lambda p:p[BARS_PATH,None].__setitem__("next_page_token","unavailable"),"missing fake"),
     (lambda p:p[BARS_PATH,None]["bars"]["AAPL"][0].__setitem__("t",ts(0)),"incomplete"),
-    (lambda p:p[QUOTES_PATH,None]["quotes"]["AAPL"][0].__setitem__("t",ts(1)),"future"),
+    (lambda p:p[QUOTES_PATH,"AAPL"]["quotes"]["AAPL"][0].__setitem__("t",ts(1)),"future"),
     (lambda p:p[BARS_PATH,"b2"]["bars"].__setitem__("OTHER",[]),"symbol scope"),
-    (lambda p:p[QUOTES_PATH,None].__setitem__("quotes",[]),"symbol scope"),
+    (lambda p:p[QUOTES_PATH,"AAPL"].__setitem__("quotes",[]),"quote scope"),
     (lambda p:p[BARS_PATH,"b2"]["bars"].__setitem__("AAPL",deepcopy(p[BARS_PATH,None]["bars"]["AAPL"])),"duplicate bar"),
 ])
 def test_missing_invalid_future_and_duplicate_provider_pages_block(edit,message):
@@ -187,6 +196,82 @@ def test_read_only_https_fixed_host_no_order_routes_or_secret_logging():
 def test_combined_bar_and_quote_response_budget_is_not_silently_doubled():
     d=pages()
     d[BARS_PATH,None]["bars"]["AAPL"] *= 700
-    d[QUOTES_PATH,None]["quotes"]["AAPL"] *= 600
+    d[BARS_PATH,"b2"]["bars"]["MSFT"] *= 500
     with pytest.raises(MarketFeedError,match="combined market-data rows"):
         capture(FakeReader(d))
+
+
+def test_no_shared_quote_limit_can_starve_symbols_and_no_raw_history_claim():
+    reader=FakeReader()
+    out=capture(reader)
+    quotes=[a for path,a in reader.calls if path==QUOTES_PATH]
+    assert len(quotes)==2
+    assert {a["symbols"] for a in quotes}=={"AAPL","MSFT"}
+    assert all(a["sort"]=="desc" and a["limit"]=="1" for a in quotes)
+    assert len(out["snapshot"]["quotes"])==2
+    assert out["provenance"]["response_pagination_exhausted"] is False
+    assert out["provenance"]["quote_history_exhausted"] is False
+    assert out["provenance"]["quote_sampling_mode"]=="PER_SYMBOL_DESC_LATEST_ASOF_V1"
+
+
+def test_one_per_symbol_sample_is_not_exhaustive_even_when_provider_has_older_pages():
+    d=pages()
+    d[QUOTES_PATH,"AAPL"]["next_page_token"]="opaque-valid-older-quote-page"
+    reader=FakeReader(d)
+    out=capture(reader)
+    assert len(reader.calls)==4
+    assert all(args.get("page_token") is None for path,args in reader.calls if path==QUOTES_PATH)
+    assert out["provenance"]["raw_pages"][2]["response"]["next_page_token"]=="opaque-valid-older-quote-page"
+    assert out["provenance"]["quote_history_exhausted"] is False
+    assert len(out["snapshot"]["quotes"])==2
+
+
+def test_bar_query_excludes_incomplete_at_bar_boundary():
+    from datetime import datetime, timedelta
+    reader=FakeReader()
+    capture(reader)
+    bar_query=next(args for path,args in reader.calls if path==BARS_PATH)
+    assert datetime.fromisoformat(bar_query["end"])==datetime.fromisoformat(ts(0))-timedelta(microseconds=1)
+
+
+@pytest.mark.parametrize("change,match",[
+    (lambda d:d[QUOTES_PATH,"AAPL"]["quotes"]["AAPL"].append(deepcopy(d[QUOTES_PATH,"AAPL"]["quotes"]["AAPL"][0])), "one record"),
+    (lambda d:d[QUOTES_PATH,"AAPL"]["quotes"].__setitem__("MSFT",[]), "scope invalid"),
+    (lambda d:d[QUOTES_PATH,"AAPL"].__setitem__("next_page_token", ["unsafe"]), "pagination indicator"),
+])
+def test_per_symbol_quote_is_strictly_bounded(change,match):
+    d=pages()
+    change(d)
+    with pytest.raises(MarketFeedError,match=match):
+        capture(FakeReader(d))
+
+
+def test_missing_required_per_symbol_response_fails_closed():
+    d=pages()
+    del d[QUOTES_PATH,"MSFT"]
+    with pytest.raises(MarketFeedError,match="missing fake provider page"):
+        capture(FakeReader(d))
+
+
+def test_provenance_cannot_falsely_promote_full_quote_history():
+    out=capture()
+    out["provenance"]["quote_history_exhausted"]=True
+    _,store=remote()
+    with pytest.raises(PaperRemoteIntegrityError,match="honest quote sampling"):
+        seal_provider_snapshot(store,slot=slot(),captured=out)
+
+
+def test_readonly_http_enforces_per_symbol_desc_latest_quote_and_rejects_mixed_requests():
+    spy=Spy(body=b'{"quotes":{"MSFT":[]},"next_page_token":null}')
+    cli=AlpacaHTTPSReadOnly(key_id="fake-id",secret_key="fake-secret",opener=spy)
+    quote_query={"symbols":"MSFT","start":ts(-2),"end":ts(0),
+                 "feed":"iex","limit":"1","sort":"desc"}
+    assert cli.get(path=QUOTES_PATH,params=quote_query)["quotes"]=={"MSFT":[]}
+    assert len(spy.calls)==1
+    assert spy.calls[0].get_method()=="GET"
+    for q in ({**quote_query,"symbols":"AAPL,MSFT"},
+              {**quote_query,"sort":"asc","limit":"300"},
+              {**quote_query,"page_token":"older"}):
+        with pytest.raises(MarketFeedError):
+            cli.get(path=QUOTES_PATH,params=q)
+    assert len(spy.calls)==1
