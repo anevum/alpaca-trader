@@ -8,8 +8,9 @@ import pytest
 
 from next_rhen.evidence_vault import ArchiveIntegrityError
 from scripts.v5_f2c_r2_stage_probe import (
-    BUCKET, MAX_DATA_WRITTEN, WORKSPACE, EVENTS, CANDIDATES,
-    StrictSyntheticS3, MeteredStore, _real_s3_client, main,
+    BUCKET, MAX_DATA_WRITTEN, MAX_READ_CALLS, WORKSPACE, EVENTS, CANDIDATES,
+    StrictSyntheticS3, MeteredStore, StagingS3RequestBudget,
+    _real_s3_client, main,
     run_staging_probe, synthetic_cycle,
 )
 from next_rhen.remote_vault import R2S3ImmutableStore
@@ -37,6 +38,11 @@ def test_full_synthetic_mock_proves_conditional_transport_and_restore():
     assert report["upstream_market_attested"] is False
     assert report["broker_write_authorized"] is False
     assert client.conditional_writes >= 7  # six objects + rejected overwrite
+    budget=report["storage_operation_budget"]
+    assert budget["put_requests"]==client.conditional_writes
+    assert budget["get_requests"] > budget["put_requests"]
+    assert budget["counting_scope"]=="ALL_S3_METHOD_CALLS_INCLUDING_INTERNAL_READBACKS"
+    assert budget["attempted_upload_bytes"] < MAX_DATA_WRITTEN
     assert all(key[0] == BUCKET for key in client.objects)
     assert all(key[1].startswith("private/anevum-v5/"+WORKSPACE+"/f2c-offline-001/")
                for key in client.objects)
@@ -92,3 +98,42 @@ def test_runner_has_no_production_deployment_or_broker_dependency():
     for forbidden in ("import alpaca", "from app.", "import railway",
                       "create_bucket(", "delete_bucket("):
         assert forbidden not in src
+
+
+
+def test_underlying_s3_budget_counts_implicit_get_and_failed_conditional_put():
+    client=StrictSyntheticS3()
+    budget=StagingS3RequestBudget(client,workspace_id=WORKSPACE,run_id="f2c-offline-001")
+    store=R2S3ImmutableStore(budget,BUCKET,workspace_id=WORKSPACE,run_id="f2c-offline-001")
+    key="private/anevum-v5/"+WORKSPACE+"/f2c-offline-001/forged-test.json"
+    store.put_once(key,b"original")
+    assert budget.put_requests==1
+    assert budget.get_requests==1  # Implicit exact-byte GET inside put_once.
+    with pytest.raises(ArchiveIntegrityError,match="differs"):
+        store.put_once(key,b"conflicting")
+    assert budget.put_requests==2
+    assert budget.get_requests==2
+    assert budget.attempted_put_bytes==len(b"original")+len(b"conflicting")
+    assert store.get(key)==b"original"
+    assert budget.get_requests==3
+
+
+def test_s3_request_budget_fails_closed_on_wrong_tenant_bucket_or_read_count():
+    client=StrictSyntheticS3()
+    budget=StagingS3RequestBudget(client,workspace_id=WORKSPACE,run_id="f2c-offline-001")
+    key="private/anevum-v5/"+WORKSPACE+"/f2c-offline-001/genuine.json"
+    with pytest.raises(ArchiveIntegrityError,match="bucket"):
+        budget.get_object(Bucket="production-bucket",Key=key)
+    with pytest.raises(ArchiveIntegrityError,match="cross-workspace"):
+        budget.put_object(Bucket=BUCKET,Key="private/anevum-v5/wrk_another00000/f2c-offline-001/bad",Body=b"x",IfNoneMatch="*")
+    with pytest.raises(ArchiveIntegrityError,match="create-only"):
+        budget.put_object(Bucket=BUCKET,Key=key,Body=b"x")
+    assert budget.get_requests==0
+    assert budget.put_requests==0
+    for _ in range(MAX_READ_CALLS):
+        with pytest.raises(Exception) as exc:
+            budget.get_object(Bucket=BUCKET,Key=key)
+        assert "NoSuchKey" in str(exc.value)
+    with pytest.raises(ArchiveIntegrityError,match="read request budget"):
+        budget.get_object(Bucket=BUCKET,Key=key)
+    assert budget.get_requests==MAX_READ_CALLS
