@@ -19,6 +19,7 @@ def test_full_synthetic_mock_proves_conditional_transport_and_restore():
     client = StrictSyntheticS3()
     report = run_staging_probe(client, "f2c-offline-001", provider="MOCK_S3")
     assert report["restored"] is True
+    assert report["temporary_source_deleted_before_restore"] is True
     assert report["provider_tested"] == "MOCK_S3"
     assert report["cycles"] == EVENTS
     assert report["candidates"] == CANDIDATES
