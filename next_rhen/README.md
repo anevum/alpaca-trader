@@ -22,6 +22,19 @@ Run the isolated tests with: python -m pytest -q tests/test_v5_decision_journal.
 
 Export is **PRIVATE** and deterministically checks the stored run. Every F1 export reports AWAITING_OFFHOST_ARCHIVE_AND_UPSTREAM_ATTESTATION: a local WAL is not an R2 backup, cannot prove an upstream cycle was never lost, and cannot prove original bars/quotes were actually archived.
 
+## Canonical V5 product boundary
+
+The owner consolidated **GRAEN, VELUM, and NOSTRA exploratory prototypes into RHEN** for the V5 successor architecture. Treat them as research concepts to assess and absorb, not separately deployed servers or separate paid products:
+
+- `next_rhen/research/`: experiment registry, rule-set proposals, verification (GRAEN ideas).
+- `next_rhen/replay/`: deterministic paper/frozen backtests, same engine/risk logic (VELUM ideas).
+- `next_rhen/forecast/`: optional research-only regime/forecast evaluation (NOSTRA ideas).
+- `next_rhen/ops/`: minimal deterministic scheduler, archive health, incident/log/Slack support.
+
+These are **planned internal namespaces**, not implementation claims. They share one successor RHEN application/codebase; CPU-intensive research can run separately as **bounded jobs without live trading keys**, not always-on prototype services. Existing legacy imports remain untouched until safely migrated. Future **IREN** is outside the V5 critical path and can be reconsidered for local GPU/hosted intelligence later. RHEN retains native health, safety and notifications now, without an IREN dependency or GPU.
+
+Decision record: https://github.com/anevum/rhen/blob/design/anevum-vnext-greenfield-platform-20261009/docs/architecture/2026-10-10-rhen-integrated-prototype-consolidation.md
+
 ## F2 follows before staging
 
 1. Bounded separate off-host archive job: export from WAL to private R2 immutable batches, verify object SHA/length, archive acknowledgements and idempotent restart.
