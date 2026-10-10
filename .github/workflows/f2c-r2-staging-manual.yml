@@ -104,12 +104,12 @@ jobs:
           print("Live trading or production archive promotion: DISABLED")
           summary=Path(os.environ["GITHUB_STEP_SUMMARY"])
           summary.write_text(
-              "### ANEVUM F2c synthetic staging result\\n"
+              "### ANEVUM F2c synthetic staging result\n"
               "R2 S3 conditional create, overwrite refusal, exact-byte readback and "
-              "remote-only restore: **VERIFIED**.\\n"
+              "remote-only restore: **VERIFIED**.\n"
               "Dataset: synthetic only. Market source attestation and production WAL "
-              "promotion: **NOT VERIFIED / DISABLED**.\\n"
+              "promotion: **NOT VERIFIED / DISABLED**.\n"
               f"Cycles: {result['cycles']}, candidates: {result['candidates']}, "
-              f"rejected: {result['rejected']}, receipt objects: {result['remote_receipts']}.\\n"
+              f"rejected: {result['rejected']}, receipt objects: {result['remote_receipts']}.\n"
           )
           PY
