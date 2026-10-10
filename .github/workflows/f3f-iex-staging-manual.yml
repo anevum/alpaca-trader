@@ -1,0 +1,130 @@
+name: ANEVUM F3f IEX Staging - Manual Read Only
+
+# No push, pull_request, schedule, or repository_dispatch triggers.
+# Workflow-only registration on main does not start a market-data request.
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: 'Type RUN_READONLY_IEX_TWO_SYMBOLS_ONLY to approve one bounded GET-only trial'
+        type: string
+        required: true
+      scan_at:
+        description: 'Completed historical minute in UTC (example 2026-10-09T14:33:00+00:00)'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: anevum-f3f-manual-paper-iex
+  cancel-in-progress: false
+
+jobs:
+  offline-preflight:
+    name: Verify pinned read-only scanner with NO secrets or HTTP
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.approval == 'RUN_READONLY_IEX_TWO_SYMBOLS_ONLY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout audited F3f development commit (never PR head)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 'a98202dbce476df80643c0cfc915fc14e8da915d'
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Offline scan/journal/source rehearsal (no network)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.v5_f3f_market_stage_probe > "$RUNNER_TEMP/f3f-offline.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data=json.loads((Path(os.environ["RUNNER_TEMP"])/"f3f-offline.json").read_text())
+          if not (data["probe_mode"]=="OFFLINE_MOCK"
+                  and data["provider_tested"]=="OFFLINE_INJECTED_FAKE"
+                  and data["evidence_state"]=="AWAITING_EVIDENCE"
+                  and data["broker_calls"]==0
+                  and data["scanner_and_journal_locally_replayable"] is True):
+              raise SystemExit("F3f offline preflight blocked")
+          print("F3f no-network paper research preflight: PASSED")
+          PY
+
+  read-only-iex-trial:
+    name: One authenticated historical IEX GET-only paper staging trial
+    needs: offline-preflight
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.approval == 'RUN_READONLY_IEX_TWO_SYMBOLS_ONLY' }}
+    environment:
+      name: f3f-market-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout immutable reviewed source (no repository credentials)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 'a98202dbce476df80643c0cfc915fc14e8da915d'
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: One bounded read-only IEX eligibility probe - no raw market logs
+        shell: bash
+        env:
+          ANEVUM_F3F_PAPER_DATA_APPROVED: READONLY_IEX_PAPER_DATA_ONLY
+          ANEVUM_F3F_PAPER_DATA_KEY_ID: ${{ secrets.ANEVUM_F3F_PAPER_DATA_KEY_ID }}
+          ANEVUM_F3F_PAPER_DATA_SECRET_KEY: ${{ secrets.ANEVUM_F3F_PAPER_DATA_SECRET_KEY }}
+          F3F_SCAN_AT: ${{ inputs.scan_at }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ANEVUM_F3F_PAPER_DATA_KEY_ID" || -z "$ANEVUM_F3F_PAPER_DATA_SECRET_KEY" ]]; then
+            echo "Required isolated paper-data environment secrets are missing." >&2
+            exit 2
+          fi
+          umask 077
+          if ! python -m scripts.v5_f3f_market_stage_probe --execute --scan-at "$F3F_SCAN_AT" --symbols AAPL,MSFT > "$RUNNER_TEMP/f3f-result-private.json"; then
+            echo "F3f read-only IEX eligibility blocked. No research or production promotion." >&2
+            exit 2
+          fi
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result=json.loads((Path(os.environ["RUNNER_TEMP"])/"f3f-result-private.json").read_text())
+          expected={
+              "probe_mode":"REAL_READONLY_IEX",
+              "provider_tested":"REAL_ALPACA_IEX_GET_ONLY",
+              "claim":"READONLY_LOCAL_ELIGIBILITY_ONLY",
+              "evidence_state":"AWAITING_EVIDENCE",
+              "broker_calls":0,
+              "live_trading_authorized":False,
+              "remote_R2_source_restore_verified":False,
+              "offhost_raw_evidence_retained":False,
+          }
+          if any(result.get(k)!=v for k,v in expected.items()):
+              raise SystemExit("F3f source provider or research status mismatch")
+          if (result.get("requested_symbols")!=2 or
+                  result.get("symbols_with_complete_bar")!=2 or
+                  result.get("symbols_with_sampled_quote")!=2 or
+                  not 3 <= result.get("get_requests",0) <= 6 or
+                  result.get("issues") or
+                  result.get("scanner_and_journal_locally_replayable") is not True):
+              raise SystemExit("F3f source coverage gate did not pass")
+          print("Real IEX historical two-symbol GET-only preflight: VERIFIED")
+          print("Full source session, durable offhost archive and signed provider origin: NOT VERIFIED")
+          summary=Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "### F3f bounded IEX paper-source eligibility\n"
+              "AAPL + MSFT latest-as-of quote coverage and completed-minute bars: **VERIFIED IN A BOUNDED SAMPLE**.\n"
+              "No raw market data or credentials retained in GitHub artifacts.\n"
+              "Provider-signed coverage, full session, R2 source archive, independent witness, "
+              "production WAL ACK, brokerage and research readiness: **NOT VERIFIED**.\n"
+              f"GET calls: {result['get_requests']}; source pages: {result['source_pages_fetched']}.\n"
+          )
+          PY
