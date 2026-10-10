@@ -68,10 +68,11 @@ def score_paper_horizons(outcomes: Mapping[str, Any], *, cost_model: Mapping[str
     digest = outcomes.get("content_sha256")
     original = {key: value for key, value in outcomes.items() if key != "content_sha256"}
     try:
-        if not isinstance(digest, str) or digest != _digest(original):
-            raise ReplayContractError("canonical outcome digest mismatch")
+        computed_digest = _digest(original)
     except (ValueError, TypeError) as exc:
         raise ReplayContractError("malformed outcome document") from exc
+    if not isinstance(digest, str) or digest != computed_digest:
+        raise ReplayContractError("canonical outcome digest mismatch")
     if not isinstance(cost_model, dict) or set(cost_model) != _COST_KEYS:
         raise ReplayContractError("exact declared cost assumptions required")
     costs = {key: _cost(cost_model[key], key) for key in sorted(_COST_KEYS)}
