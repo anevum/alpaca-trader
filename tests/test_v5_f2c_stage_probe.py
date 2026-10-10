@@ -27,6 +27,11 @@ def test_full_synthetic_mock_proves_conditional_transport_and_restore():
     assert report["remote_receipts"] == 2
     assert report["storage_operation_budget"]["uploaded_bytes"] < MAX_DATA_WRITTEN
     assert report["sha256_receipts_pinned_outside_remote"] is True
+    anchors=report["receipt_anchors_for_independent_recovery"]
+    assert len(anchors)==2
+    assert all(key.endswith(".remote-receipt.json") and len(value)==64
+               for key,value in anchors.items())
+    assert report["storage_operation_budget"]["put_requests"]>=7
     assert report["evidence_state"] == "AWAITING_EVIDENCE"
     assert report["upstream_market_attested"] is False
     assert report["broker_write_authorized"] is False
