@@ -23,7 +23,7 @@ from .paper_schedule import (
     validate_slot,
 )
 from .source_attestation import (
-    SourceScanLedger, SOURCE_SCHEMA, _validate_scope, digest,
+    SourceScanLedger, SOURCE_SCHEMA, _validate_scope, WORKSPACE_PATTERN, ID_PATTERN, digest,
     verify_scan_population, SourceIntegrityError, SourceContractError,
 )
 
@@ -32,7 +32,6 @@ RECORD_SCHEMA = "anevum.paper-market-record.v1"
 INDEX_SCHEMA = "anevum.paper-market-index.v1"
 STRATEGY_VERSION = "F3B_OFFLINE_BASELINE_V1"
 RULE_CONFIG = {"min_body_bps": 15.0, "max_spread_bps": 80.0}
-RULE_SHA256 = sha256(b"ANEVUM_F3B_OFFLINE_PAPER_RULESET_V1").hexdigest()
 SOURCE_ORIGINS = {"SYNTHETIC_OFFLINE", "UNATTESTED_IMPORTED"}
 SNAPSHOT_FIELDS = {
     "schema_version", "workspace_id", "run_id", "cycle_id", "sequence_no",
@@ -94,7 +93,8 @@ def _quantity(value: Any, name: str) -> None:
 
 
 def _validate_bar(bar: Any, at: datetime, universe: set[str]) -> None:
-    if not isinstance(bar, dict) or set(bar) != BAR_FIELDS or bar["symbol"] not in universe:
+    if (not isinstance(bar, dict) or set(bar) != BAR_FIELDS or
+            not isinstance(bar["symbol"], str) or bar["symbol"] not in universe):
         raise PaperCaptureError("invalid or out-of-universe market bar")
     start, end = _utc(bar["start"], "bar.start"), _utc(bar["end"], "bar.end")
     if end - start != timedelta(minutes=1) or end > at:
@@ -108,7 +108,8 @@ def _validate_bar(bar: Any, at: datetime, universe: set[str]) -> None:
 
 
 def _validate_quote(quote: Any, at: datetime, universe: set[str]) -> None:
-    if not isinstance(quote, dict) or set(quote) != QUOTE_FIELDS or quote["symbol"] not in universe:
+    if (not isinstance(quote, dict) or set(quote) != QUOTE_FIELDS or
+            not isinstance(quote["symbol"], str) or quote["symbol"] not in universe):
         raise PaperCaptureError("invalid or out-of-universe quote")
     when = _utc(quote["observed_at"], "quote.observed_at")
     if when > at:
@@ -130,7 +131,7 @@ def validate_snapshot(snapshot: Mapping[str, Any], slot: Mapping[str, Any]) -> N
     for key in ("workspace_id", "run_id", "cycle_id", "sequence_no", "session_date"):
         if snapshot[key] != slot[key]:
             raise PaperCaptureError(f"snapshot mismatches independently planned {key}")
-    if snapshot["source_origin"] not in SOURCE_ORIGINS:
+    if not isinstance(snapshot["source_origin"], str) or snapshot["source_origin"] not in SOURCE_ORIGINS:
         raise PaperCaptureError("source must be explicitly synthetic or unverified")
     if not isinstance(snapshot["provider"], str) or not PROVIDER.fullmatch(snapshot["provider"]):
         raise PaperCaptureError("invalid market provider identity")
@@ -178,7 +179,9 @@ class MarketEvidenceStore:
         self.objects = LocalImmutableObjectStore(self.root)
 
     def _key(self, workspace_id: str, run_id: str, kind: str, h: str) -> str:
-        _validate_scope(workspace_id, run_id, "2026-10-09")  # scope only, not a market date claim
+        if (not isinstance(workspace_id, str) or not WORKSPACE_PATTERN.fullmatch(workspace_id)
+                or not isinstance(run_id, str) or not ID_PATTERN.fullmatch(run_id)):
+            raise PaperCaptureError("invalid market object workspace or run scope")
         if kind not in {"bar", "quote", "bars_index", "quotes_index", "universe"}:
             raise PaperCaptureError("unknown market object kind")
         if not isinstance(h, str) or not HEX.fullmatch(h):
@@ -301,7 +304,8 @@ def capture_scheduled_paper_scan(
                                           "sequence_no","session_date","occurred_at")},
         "execution_mode": "PAPER_RESEARCH_ONLY",
         "strategy_version": STRATEGY_VERSION,
-        "config_sha256": digest(RULE_CONFIG), "code_sha256": RULE_SHA256,
+        "config_sha256": digest(RULE_CONFIG),
+        "code_sha256": sha256(Path(__file__).read_bytes()).hexdigest(),
         "market_source": market_source,
         "universe_symbols": list(snapshot["universe_symbols"]),
         "candidates": candidates,
