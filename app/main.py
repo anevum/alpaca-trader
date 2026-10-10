@@ -962,6 +962,10 @@ def _runtime_configuration_snapshot() -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runtime_provenance
+    # Freeze new orders BEFORE launching either execution loop; do not set paused,
+    # scan-only, or disarm the engine: those may interrupt protective exits.
+    if settings.legacy_new_entries_locked:
+        runtime_state.entries_enabled = False
     print(
         "SAFE_RUNTIME_CONFIG",
         {
@@ -2234,6 +2238,8 @@ async def command_disable_entries(authorization: str | None = Header(default=Non
 @app.post("/v1/command/entries/enable")
 async def command_enable_entries(authorization: str | None = Header(default=None)):
     await require_command_admin(authorization)
+    if settings.legacy_new_entries_locked:
+        raise HTTPException(status_code=409, detail="V5 migration entry lock cannot be overridden by Command")
     if settings.scan_only:
         raise HTTPException(status_code=409, detail="scan-only service cannot enable entries")
     if runtime_state.paused:
