@@ -76,6 +76,51 @@ class StrictSyntheticS3:
         return {"Body": BytesIO(body), "ContentLength": len(body)}
 
 
+class StagingS3RequestBudget:
+    """Bound *all* S3 SDK calls, including implicit post-PUT readbacks.
+
+    Counts SDK calls/attempted bytes before dispatch and shares one budget
+    across archive replication, overwrite-rejection testing and recovery.
+    The underlying SDK has bounded retries configured separately; these
+    counts reflect SDK method calls, not a claim about wire-level retries.
+    """
+
+    def __init__(self, client: Any, *, workspace_id: str, run_id: str) -> None:
+        self.client = client
+        self.workspace_id, self.run_id = workspace_id, run_id
+        self.prefix = f"private/anevum-v5/{workspace_id}/{run_id}/"
+        self.put_requests = 0
+        self.get_requests = 0
+        self.attempted_put_bytes = 0
+
+    def _assert_scoped(self, kwargs: dict[str, Any]) -> None:
+        if kwargs.get("Bucket") != BUCKET:
+            raise ArchiveIntegrityError("staging client refuses unexpected bucket")
+        key = kwargs.get("Key")
+        if not isinstance(key, str) or not key.startswith(self.prefix):
+            raise ArchiveIntegrityError("staging client refuses cross-workspace object")
+
+    def put_object(self, **kwargs: Any) -> Any:
+        self._assert_scoped(kwargs)
+        body = kwargs.get("Body")
+        if kwargs.get("IfNoneMatch") != "*" or not isinstance(body, bytes):
+            raise ArchiveIntegrityError("staging client requires binary create-only PUT")
+        if (self.put_requests + 1 > MAX_WRITE_CALLS or
+                self.attempted_put_bytes + len(body) > MAX_DATA_WRITTEN):
+            raise ArchiveIntegrityError("S3 staging upload request budget exceeded")
+        # Even a rejected conditional-write request has provider cost.
+        self.put_requests += 1
+        self.attempted_put_bytes += len(body)
+        return self.client.put_object(**kwargs)
+
+    def get_object(self, **kwargs: Any) -> Any:
+        self._assert_scoped(kwargs)
+        if self.get_requests + 1 > MAX_READ_CALLS:
+            raise ArchiveIntegrityError("S3 staging read request budget exceeded")
+        self.get_requests += 1
+        return self.client.get_object(**kwargs)
+
+
 class MeteredStore:
     """Hard cap staging upload/read calls and total bytes, fail-closed."""
 
@@ -162,7 +207,12 @@ def run_staging_probe(
                 batches.append(row)
             _assert([x["archived_events"] for x in batches]==[2,1],"local archive boundary mismatch")
 
-            remote = MeteredStore(R2S3ImmutableStore(client,BUCKET,workspace_id=WORKSPACE,run_id=run_id))
+            metered_client=StagingS3RequestBudget(
+                client,workspace_id=WORKSPACE,run_id=run_id,
+            )
+            remote = MeteredStore(R2S3ImmutableStore(
+                metered_client,BUCKET,workspace_id=WORKSPACE,run_id=run_id,
+            ))
             replicator = RemoteVaultReplicator(vault,remote)
             receipts = []
             while row := replicator.replicate_next(workspace_id=WORKSPACE,run_id=run_id):
@@ -204,7 +254,9 @@ def run_staging_probe(
 
         # Restore ONLY from independently retrieved remote objects, with
         # trusted manifest digests that were pinned outside the object store.
-        clean=MeteredStore(R2S3ImmutableStore(client,BUCKET,workspace_id=WORKSPACE,run_id=run_id))
+        clean=MeteredStore(R2S3ImmutableStore(
+            metered_client,BUCKET,workspace_id=WORKSPACE,run_id=run_id,
+        ))
         result=restore_remote_receipts(
             clean,keys,workspace_id=WORKSPACE,run_id=run_id,
             trusted_receipt_hashes=anchors,independent_expected_cycle_count=EVENTS,
@@ -231,9 +283,16 @@ def run_staging_probe(
             "sha256_receipts_pinned_outside_remote":True,
             "conflicting_conditional_put_rejected":True,
             "temporary_source_deleted_before_restore":True,
-            "storage_operation_budget":{"put_requests":remote.writes,
-                "get_requests":remote.reads+clean.reads,"uploaded_bytes":remote.bytes,
-                "maximum_uploaded_bytes":MAX_DATA_WRITTEN},
+            "storage_operation_budget":{
+                "put_requests":metered_client.put_requests,
+                "get_requests":metered_client.get_requests,
+                "attempted_upload_bytes":metered_client.attempted_put_bytes,
+                "maximum_put_requests":MAX_WRITE_CALLS,
+                "maximum_get_requests":MAX_READ_CALLS,
+                "maximum_uploaded_bytes":MAX_DATA_WRITTEN,
+                "counting_scope":"ALL_S3_METHOD_CALLS_INCLUDING_INTERNAL_READBACKS",
+                "sdk_retry_max_attempts":2,
+            },
             "restored":True,"upstream_market_attested":False,
             "production_wal_offhost_state_promoted":False,
             "evidence_state":"AWAITING_EVIDENCE",
