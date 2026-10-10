@@ -27,7 +27,7 @@ def test_full_synthetic_mock_proves_conditional_transport_and_restore():
     assert report["rejected"] == EVENTS
     assert report["conflicting_conditional_put_rejected"] is True
     assert report["remote_receipts"] == 2
-    assert report["storage_operation_budget"]["uploaded_bytes"] < MAX_DATA_WRITTEN
+    assert report["storage_operation_budget"]["attempted_upload_bytes"] < MAX_DATA_WRITTEN
     assert report["sha256_receipts_pinned_outside_remote"] is True
     anchors=report["receipt_anchors_for_independent_recovery"]
     assert len(anchors)==2
