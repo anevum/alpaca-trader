@@ -40,12 +40,15 @@ def test_wal_snapshot_contains_committed_uncheckpointed_rows(tmp_path):
         target = tmp_path / "copy"
         manifest = _snapshot(source, target)
         assert _verify(target)["totals"]["files"] == 3
-        with sqlite3.connect(target / "payload" / "rhen-core.db") as restored:
+        # Assert the snapshot itself omitted transient WAL files BEFORE opening it;
+        # sqlite3.connect() in read-write mode can recreate sidecars on inspection.
+        assert not (target / "payload" / "rhen-core.db-wal").exists()
+        assert not (target / "payload" / "rhen-core.db-shm").exists()
+        db = target / "payload" / "rhen-core.db"
+        with sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True) as restored:
             assert restored.execute("SELECT decision FROM evidence").fetchall() == [
                 ("REJECTED",)
             ]
-        assert not (target / "payload" / "rhen-core.db-wal").exists()
-        assert not (target / "payload" / "rhen-core.db-shm").exists()
         assert manifest["snapshot_kind"] == "per-database-consistent;not-globally-atomic"
         assert manifest["research_completeness_proven"] is False
         assert manifest["ready_for_volume_deletion"] is False
