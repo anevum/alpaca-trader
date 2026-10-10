@@ -99,8 +99,11 @@ def test_sequence_gap_and_rewind_are_forbidden(tmp_path):
             journal.append_cycle(cycle(sequence=3))
         row = cycle(sequence=2)
         assert journal.append_cycle(row)["status"] == "RECORDED"
+        changed_old_cycle = cycle()
+        changed_old_cycle["candidates"][0]["reason"] = "conflicting_rewrite"
         with pytest.raises(EvidenceIntegrityError, match="overwrite forbidden"):
-            journal.append_cycle(cycle())
+            journal.append_cycle(changed_old_cycle)
+        assert journal.append_cycle(cycle())["status"] == "ALREADY_RECORDED"
 
 
 def test_conflicting_reuse_of_cycle_id_is_blocked(tmp_path):
