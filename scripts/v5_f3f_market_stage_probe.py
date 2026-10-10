@@ -24,7 +24,7 @@ from next_rhen.paper_capture import (
 )
 from next_rhen.paper_market_feed import (
     AlpacaHTTPSReadOnly, BARS_PATH, QUOTES_PATH, MarketFeedError,
-    build_paper_snapshot,
+    PAGE_LIMIT, build_paper_snapshot,
 )
 from next_rhen.paper_schedule import PaperScheduleLedger
 from next_rhen.source_attestation import SourceScanLedger
@@ -90,25 +90,44 @@ class BoundedPaperReader:
         self.routes_seen: list[str] = []
 
     def get(self, *, path: str, params: Mapping[str, str]) -> dict[str, Any]:
+        """Reject widened, shifted, or mutated market queries BEFORE network IO.
+
+        Merely limiting endpoint and symbol is insufficient: a changed start,
+        end, pagination, or limit can silently alter evidence coverage.
+        The canonical F3e builder owns the full request envelope.
+        """
         if path not in (BARS_PATH, QUOTES_PATH):
             raise PaperProbeError("paper probe refuses non-market endpoint")
         if self.calls >= 4 + len(self.symbols):
             raise PaperProbeError("paper staging GET budget exhausted")
-        if params.get("feed") != "iex" or not isinstance(params.get("symbols"), str):
-            raise PaperProbeError("paper staging requires explicit IEX and symbol scope")
+        if not isinstance(params, Mapping):
+            raise PaperProbeError("paper staging query missing")
         if path == BARS_PATH:
-            if (params["symbols"] != ",".join(self.symbols) or
-                    params.get("sort") != "asc" or
-                    params.get("timeframe") != "1Min"):
+            expected = {
+                "symbols": ",".join(self.symbols),
+                "start": (self.at - timedelta(minutes=3)).isoformat(),
+                "end": (self.at - timedelta(microseconds=1)).isoformat(),
+                "feed": "iex", "limit": str(PAGE_LIMIT), "sort": "asc",
+                "timeframe": "1Min",
+            }
+            keys = set(params)
+            if keys != set(expected) and keys != set(expected) | {"page_token"}:
                 raise PaperProbeError("paper staging bar query scope invalid")
+            if "page_token" in params and (
+                    not isinstance(params["page_token"], str)
+                    or not 1 <= len(params["page_token"]) <= 512):
+                raise PaperProbeError("paper staging bar cursor invalid")
         else:
-            if (params["symbols"] not in self.symbols or
-                    params.get("sort") != "desc" or
-                    params.get("limit") != "1" or
-                    "page_token" in params):
+            expected = {
+                "symbols": params.get("symbols"),
+                "start": (self.at - timedelta(minutes=2)).isoformat(),
+                "end": self.at.isoformat(),
+                "feed": "iex", "limit": "1", "sort": "desc",
+            }
+            if params.get("symbols") not in self.symbols or set(params) != set(expected):
                 raise PaperProbeError("paper staging quote must be one as-of symbol")
-        if params.get("end") is None:
-            raise PaperProbeError("paper staging end timestamp required")
+        if any(params.get(field) != value for field, value in expected.items()):
+            raise PaperProbeError("paper staging query deviates from predeclared as-of window")
         self.calls += 1
         self.routes_seen.append(path)
         return self.transport.get(path=path, params=dict(params))
