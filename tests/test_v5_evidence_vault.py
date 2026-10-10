@@ -9,7 +9,7 @@ from next_rhen.evidence_journal import DecisionJournal
 from next_rhen.evidence_vault import (
  LocalEvidenceVault, LocalImmutableObjectStore, restore_local_vault, ArchiveIntegrityError,
 )
-from tests.test_v5_decision_journal import cycle
+from test_v5_decision_journal import cycle
 
 W="wrk_owner000001"
 R="paper-rhen-next-001"
