@@ -346,3 +346,51 @@ def test_f3b_code_cannot_import_broker_production_or_network():
                           "import httpx","import boto3","from foundation.","import railway",
                           "from .execution","broker.submit_order"):
             assert forbidden not in code
+
+
+@pytest.mark.parametrize("mutate,marker",[
+    (lambda x:x.__setitem__("source_origin", ["SYNTHETIC_OFFLINE"]), "source must be"),
+    (lambda x:x["bars"][0].__setitem__("symbol", ["AAPL"]), "invalid or out-of-universe"),
+    (lambda x:x["quotes"][0].__setitem__("symbol", ["AAPL"]), "invalid or out-of-universe"),
+])
+def test_unhashable_untrusted_market_fields_fail_as_contract_errors(tmp_path,mutate,marker):
+    with system(tmp_path) as (sch,src,jour,market):
+        sch.record_slot(slot())
+        s=snapshot()
+        mutate(s)
+        with pytest.raises(PaperCaptureError,match=marker):
+            capture(sch,src,jour,market,snap=s)
+
+
+def test_market_key_path_scope_cannot_escape_private_namespace(tmp_path):
+    store=MarketEvidenceStore(tmp_path/"paper-market")
+    for bad_workspace,bad_run in (("../escape",R),(W,"../escape"),(W,{"evil":"id"})):
+        with pytest.raises(PaperCaptureError,match="invalid market object"):
+            store.put(workspace_id=bad_workspace,run_id=bad_run,
+                      kind="universe",document={"symbols":["AAPL"]})
+    assert not list(store.root.rglob("*.json"))
+
+
+def test_code_digest_is_exact_scanner_python_source_not_label(tmp_path):
+    from hashlib import sha256
+    import next_rhen.paper_capture as paper_module
+    with system(tmp_path) as (sch,src,jour,market):
+        sch.record_slot(slot())
+        capture(sch,src,jour,market)
+        row=jour.export_session(workspace_id=W,run_id=R,session_date=D)["private_cycles"][0]
+    assert row["code_sha256"]==sha256(Path(paper_module.__file__).read_bytes()).hexdigest()
+
+
+def test_unverified_imported_market_source_still_not_evidence_pass(tmp_path):
+    with system(tmp_path) as (sch,src,jour,market):
+        sch.record_slot(slot(1,origin="INJECTED_SCHEDULER_UNVERIFIED"))
+        s=snapshot()
+        s["source_origin"]="UNATTESTED_IMPORTED"
+        capture(sch,src,jour,market,snap=s,
+                scheduled=slot(1,origin="INJECTED_SCHEDULER_UNVERIFIED"))
+        event=src.read_session_verified(workspace_id=W,run_id=R,session_date=D)["scans"][0]
+        assert event["scan_origin"]=="PRE_JOURNAL_SCANNER"
+        result=audit(sch,src,jour,market)
+    assert result["evidence_state"]=="AWAITING_EVIDENCE"
+    assert result["upstream_schedule_independently_attested"] is False
+    assert result["provider_market_data_independently_attested"] is False
