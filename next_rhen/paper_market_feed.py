@@ -33,6 +33,9 @@ MAX_BODY_BYTES = 256_000
 MAX_RESPONSE_BYTES = 1_000_000
 TIMEOUT_SECONDS = 8
 PAGE_LIMIT = 300
+QUOTE_SAMPLE_LIMIT = 1
+QUOTE_SAMPLING_MODE = "PER_SYMBOL_DESC_LATEST_ASOF_V1"
+MAX_TOTAL_PAGES = MAX_PAGES_PER_ENDPOINT + MAX_SYMBOLS
 
 
 class MarketFeedError(RuntimeError):
@@ -88,12 +91,31 @@ class AlpacaHTTPSReadOnly:
             raise MarketFeedError("unexpected market-data query parameters")
         if ((path == BARS_PATH) != ("timeframe" in params)):
             raise MarketFeedError("timeframe allowed for historical bars only")
-        if params.get("feed") not in FEEDS or params.get("sort") != "asc":
-            raise MarketFeedError("feed/sort contract mismatch")
-        if params.get("timeframe", "1Min") != "1Min" or params.get("limit") != str(PAGE_LIMIT):
-            raise MarketFeedError("unexpected timeframe or page limit")
         if any(not isinstance(v, str) or len(v) > 512 for v in params.values()):
             raise MarketFeedError("query parameter exceeds bounds")
+        if params.get("feed") not in FEEDS:
+            raise MarketFeedError("feed contract mismatch")
+        if path == BARS_PATH:
+            if (params.get("sort") != "asc"
+                    or params.get("timeframe") != "1Min"
+                    or params.get("limit") != str(PAGE_LIMIT)):
+                raise MarketFeedError("unexpected bar timeframe, sort or page limit")
+            requested = params.get("symbols", "").split(",")
+        else:
+            if (params.get("sort") != "desc"
+                    or params.get("limit") != str(QUOTE_SAMPLE_LIMIT)
+                    or "page_token" in params):
+                raise MarketFeedError("latest quote requires one descending sample")
+            requested = [params.get("symbols", "")]
+        if (not 1 <= len(requested) <= MAX_SYMBOLS
+                or len(set(requested)) != len(requested)
+                or any(not re.fullmatch(r"[A-Z][A-Z0-9.]{0,14}", x)
+                       for x in requested)):
+            raise MarketFeedError("invalid or oversized market symbol scope")
+        begin = _utc(params["start"], "provider start")
+        end = _utc(params["end"], "provider end")
+        if begin >= end:
+            raise MarketFeedError("market source time window invalid")
         url = "https://" + HOST + path + "?" + urlencode(params)
         req = Request(
             url, method="GET",
@@ -102,7 +124,7 @@ class AlpacaHTTPSReadOnly:
                      "APCA-API-SECRET-KEY":self._secret},
         )
         self.requests += 1
-        if self.requests > 2 * MAX_PAGES_PER_ENDPOINT:
+        if self.requests > MAX_TOTAL_PAGES:
             raise MarketFeedError("market-data request budget exceeded")
         try:
             with self._opener.open(req, timeout=TIMEOUT_SECONDS) as response:
@@ -130,7 +152,9 @@ class AlpacaHTTPSReadOnly:
 
 def _paged(reader: PageReader, *, path: str, params: dict[str, str],
            symbols: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    label = "bars" if path == BARS_PATH else "quotes"
+    if path != BARS_PATH:
+        raise MarketFeedError("only completed bar pages may be exhaustively paginated")
+    label = "bars"
     seen_tokens: set[str] = set()
     pages: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
@@ -172,14 +196,60 @@ def _paged(reader: PageReader, *, path: str, params: dict[str, str],
         token = following
 
 
+def _sample_latest_quotes(
+    reader: PageReader, *, symbols: list[str], feed: str,
+    start: datetime, at: datetime,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Exactly one descending, as-of sample per symbol.
+
+    A quote response can legitimately have a next_page_token for older
+    records. We preserve that cursor, DO NOT claim quote-history exhaustion,
+    and intentionally avoid retrieving that older high-frequency history.
+    """
+    rows: list[dict[str, Any]] = []
+    pages: list[dict[str, Any]] = []
+    for symbol in symbols:
+        query = {
+            "symbols": symbol, "start": start.isoformat(),
+            "end": at.isoformat(), "feed": feed,
+            "limit": str(QUOTE_SAMPLE_LIMIT), "sort": "desc",
+        }
+        response = reader.get(path=QUOTES_PATH, params=query)
+        if (not isinstance(response, dict) or
+                not isinstance(response.get("quotes"), dict) or
+                not set(response["quotes"]).issubset({symbol})):
+            raise MarketFeedError("per-symbol provider quote scope invalid")
+        quote_rows = response["quotes"].get(symbol, [])
+        if not isinstance(quote_rows, list) or len(quote_rows) > QUOTE_SAMPLE_LIMIT:
+            raise MarketFeedError("latest quote sample exceeds one record per symbol")
+        if any(not isinstance(row, dict) for row in quote_rows):
+            raise MarketFeedError("provider latest quote record malformed")
+        continuation = response.get("next_page_token")
+        if (continuation not in (None, "") and
+                (not isinstance(continuation, str) or len(continuation) > 512)):
+            raise MarketFeedError("malformed older-quote pagination indicator")
+        if continuation not in (None, "") and not quote_rows:
+            raise MarketFeedError("no latest quote despite indicated older quote pages")
+        raw = _json(response)
+        if len(raw) > MAX_BODY_BYTES:
+            raise MarketFeedError("provider quote source page exceeds body limit")
+        pages.append({
+            "path": QUOTES_PATH, "query": query, "response": response,
+            "response_sha256": sha256(raw).hexdigest(),
+        })
+        if quote_rows:
+            rows.append({"symbol": symbol, "value": quote_rows[0]})
+    return rows, pages
+
+
 def build_paper_snapshot(reader: PageReader, *, slot: dict[str, Any],
                          symbols: list[str], feed: str = "iex"
                          ) -> dict[str, Any]:
-    """Read two immutable historical time windows and preserve every response.
+    """Fully page completed bars; sample latest as-of quote for EACH symbol.
 
-    Input is an independently predeclared F3b schedule slot, but its origin
-    may still be locally synthetic. No claim of complete SIP/venue/market data
-    or independent scheduler authentication is made.
+    The single-symbol descending sampling is intentionally not an archival
+    capture of every quote. It prevents per-symbol starvation under a shared
+    provider limit while retaining all fetched pages for reproducible replay.
     """
     validate_slot(slot)
     if not isinstance(feed,str) or feed not in FEEDS:
@@ -194,14 +264,17 @@ def build_paper_snapshot(reader: PageReader, *, slot: dict[str, Any],
     begin_bars = at - timedelta(minutes=3)
     begin_quotes = at - timedelta(minutes=2)
     fmt = lambda dt: dt.isoformat()
-    common = {"symbols":",".join(symbols),"end":fmt(at),
-              "feed":feed,"limit":str(PAGE_LIMIT),"sort":"asc"}
+    # Alpaca's end boundary can include a bar that starts at 'at' and is
+    # therefore not completed. Exclude that bar explicitly.
+    bar_end = at - timedelta(microseconds=1)
     bar_rows, bar_pages = _paged(reader,path=BARS_PATH,params={
-        **common,"timeframe":"1Min","start":fmt(begin_bars)
+        "symbols": ",".join(symbols), "end": fmt(bar_end),
+        "feed": feed, "limit": str(PAGE_LIMIT), "sort": "asc",
+        "timeframe": "1Min", "start": fmt(begin_bars),
     },symbols=symbols)
-    quote_rows, quote_pages = _paged(reader,path=QUOTES_PATH,params={
-        **common,"start":fmt(begin_quotes)
-    },symbols=symbols)
+    quote_rows, quote_pages = _sample_latest_quotes(
+        reader, symbols=symbols, feed=feed, start=begin_quotes, at=at,
+    )
     if len(bar_rows) + len(quote_rows) > MAX_ITEMS:
         raise MarketFeedError("combined market-data rows exceed source budget")
     bars: list[dict[str, Any]] = []
@@ -271,7 +344,11 @@ def build_paper_snapshot(reader: PageReader, *, slot: dict[str, Any],
         "page_count":len(bar_pages)+len(quote_pages),
         "bar_records":len(bar_rows),
         "quote_records":len(quote_rows),
-        "response_pagination_exhausted":True,
+        "response_pagination_exhausted":False,
+        "bar_pagination_exhausted":True,
+        "quote_sampling_mode":QUOTE_SAMPLING_MODE,
+        "quote_history_exhausted":False,
+        "quote_symbols_requested":list(symbols),
         "missing_bar_symbols":sorted(set(symbols)-{b["symbol"] for b in bars}),
         "missing_quote_symbols":sorted(set(symbols)-set(quote_latest)),
         "snapshot_sha256":sha256(_json(snapshot)).hexdigest(),
